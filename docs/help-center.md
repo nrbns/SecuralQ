@@ -11,7 +11,7 @@ No — this is "zero-start mode" by design (see [user-manual.md](./user-manual.m
 Check `GET /api/health` — it reports which backend is configured (`MODEL_BACKEND` in `.env`) and whether it's reachable. For Ollama, run `ollama pull <model>` first; for `openai_compat` (LM Studio), confirm the local server is running on the configured port.
 
 **I imported a scan but no vulnerabilities showed up.**
-Confirm the `tool` query param matches a supported adapter (Trivy, Semgrep, Gitleaks, Grype, Checkov, Bandit, SonarQube, ZAP — see `app/scanner_adapters.py`) and that the file is valid JSON in that tool's native export format, not a summary/HTML report.
+Confirm the `tool` query param matches a supported adapter (Trivy, Semgrep, Gitleaks, Grype, Checkov, Bandit, SonarQube, SecuraIQ Web Scanner / ZAP export — see `app/scanner_adapters.py`) and that the file is valid JSON in that tool's native export format, not a summary/HTML report.
 
 **MFA is required and I'm locked out of the API.**
 That's `MFA_REQUIRED_FOR_ADMIN=true` working as intended (see `docs/beta-deploy.md` § MFA enforcement) — every endpoint except `/api/auth/status`, `/api/auth/logout`, and `/api/auth/mfa/*` will 403 until you enroll. If you're genuinely locked out (lost authenticator), an operator with filesystem access can unset `mfa_enabled` directly in `data/securaiq.db` for that user as a break-glass step, then re-enroll.

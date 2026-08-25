@@ -1,4 +1,4 @@
-"""OWASP ZAP scan-engine adapter — parse/normalize (no ZAP binary required)."""
+"""SecuraIQ Web Scanner scan-engine adapter — parse/normalize (no external install required)."""
 
 from __future__ import annotations
 
@@ -69,9 +69,16 @@ def test_normalize_zap(tmp_path):
     raw = RawScanResult(exit_code=0, stdout="", stderr="", artifact_paths=[])
     parsed = sc.parse(raw, ctx)
     normalized = sc.normalize(parsed, ctx)
-    assert normalized.summary["scanner"] == "zap"
+    assert normalized.summary["scanner"] == "securaiq_web"
     assert normalized.summary["alerts"] == 2
     assert any(f.severity == "high" for f in normalized.findings)
+
+
+def test_zap_always_available_builtin():
+    sc = ZapScanner()
+    ok, detail = sc.available()
+    assert ok is True
+    assert "built-in" in detail.lower()
 
 
 def test_zap_scope_blocks():

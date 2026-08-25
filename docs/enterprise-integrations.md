@@ -39,7 +39,7 @@ Each catalog item includes a `ui_action` so Mission Control can **Connect** to t
 | Secrets | Gitleaks | **import** |
 | Containers / SCA | Trivy + Grype | **import** |
 | IaC | Checkov | **import** |
-| DAST | OWASP ZAP + Nuclei | PATH + ZAP **import** |
+| DAST | SecuraIQ Web Scanner + Nuclei | built-in + engine |
 | Threat intel | MITRE + NVD + CISA KEV + built-in providers | Shipped (`/api/intel/*`) |
 | SIEM | Wazuh | Shipped (manager JWT + optional Indexer alert pull; SOC sync) |
 | CMDB / inventory | Network inventory | Shipped (cookie session API; Assets sync) |
@@ -68,7 +68,7 @@ Drop JSON into **Vulnerabilities → Import** (or lab fixtures):
 | Checkov | `checkov -o json` |
 | Bandit | `bandit -f json` |
 | SonarQube | Issues API / export JSON |
-| OWASP ZAP | Traditional JSON report |
+| SecuraIQ Web Scanner | Built-in JSON / ZAP-format report |
 
 AI interprets findings and drafts remediations — it does **not** invent scan results.
 

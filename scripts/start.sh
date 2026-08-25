@@ -11,14 +11,17 @@ for arg in "$@"; do
 done
 
 find_python() {
-  if command -v python3 >/dev/null 2>&1; then
-    echo python3
-  elif command -v python >/dev/null 2>&1; then
-    echo python
-  else
-    echo "Python 3 not found. Install python3 and retry." >&2
-    exit 1
-  fi
+  local cand
+  for cand in python3 python; do
+    if command -v "$cand" >/dev/null 2>&1; then
+      if "$cand" -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)" 2>/dev/null; then
+        echo "$cand"
+        return 0
+      fi
+    fi
+  done
+  echo "Python 3.11+ not found. Install python3.11+ and retry." >&2
+  exit 1
 }
 
 PY="$(find_python)"
@@ -52,7 +55,12 @@ fi
 set_env() {
   local key="$1" val="$2"
   if grep -q "^${key}=" .env 2>/dev/null; then
-    sed -i.bak "s|^${key}=.*|${key}=${val}|" .env && rm -f .env.bak
+    # Portable in-place edit (GNU sed + BSD/macOS sed)
+    if sed --version >/dev/null 2>&1; then
+      sed -i "s|^${key}=.*|${key}=${val}|" .env
+    else
+      sed -i.bak "s|^${key}=.*|${key}=${val}|" .env && rm -f .env.bak
+    fi
   else
     echo "${key}=${val}" >> .env
   fi
@@ -62,14 +70,16 @@ if [ "$LAN" -eq 1 ]; then
   set_env HOST 0.0.0.0
   set_env CORS_ORIGINS "*"
   set_env WORKSPACE_ZERO_START false
+  set_env ALLOW_OPEN_LAN true
+  set_env LAN_AUTO_SCAN true
 else
   set_env HOST 127.0.0.1
   set_env CORS_ORIGINS "http://127.0.0.1:8080,http://localhost:8080"
+  set_env WORKSPACE_ZERO_START false
+  set_env ALLOW_OPEN_LAN false
+  set_env LAN_AUTO_SCAN false
 fi
 set_env AUTH_ALLOW_REGISTER false
-if ! grep -q "^WORKSPACE_ZERO_START=" .env 2>/dev/null; then
-  set_env WORKSPACE_ZERO_START false
-fi
 if command -v ollama >/dev/null 2>&1; then
   set_env MODEL_BACKEND ollama
 fi
@@ -78,14 +88,13 @@ echo ""
 if [ "$LAN" -eq 1 ]; then
   echo "Starting SecuraIQ (LAN mode — other devices on Wi‑Fi can open)"
   echo "  This PC:     http://127.0.0.1:8080"
-  if command -v hostname >/dev/null 2>&1; then
-    (hostname -I 2>/dev/null || true) | tr ' ' '\n' | while read -r ip; do
-      case "$ip" in
-        ""|127.*|169.254.*) ;;
-        *) echo "  Phone/other: http://${ip}:8080" ;;
-      esac
-    done
-  fi
+  # Portable LAN URL detection (Linux + macOS) via Python — avoid hostname -I (Linux-only)
+  .venv/bin/python -c "
+from app.platform_info import platform_info
+for u in platform_info().get('lan_urls') or []:
+    print('  Phone/other:', u)
+" 2>/dev/null || true
+  echo "  Live share:  same assets/scans on every device; this host auto-scans on start"
 else
   echo "Starting SecuraIQ (localhost)"
   echo "  Open:  http://127.0.0.1:8080"

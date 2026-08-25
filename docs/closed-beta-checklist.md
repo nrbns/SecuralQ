@@ -8,7 +8,7 @@
 - [x] Cross-tenant isolation tests — assets/vulns/risks/chats/engagements
 - [x] Engagement tool-scope enforcement tests
 - [x] TLS runbook — `docs/tls-deploy.md` (DNS/cert still operator-owned)
-- [x] Backup → restore drill doc — `docs/backup-restore.md`
+- [x] Backup → restore drill doc — `docs/backup-dr.md`
 - [x] `MFA_REQUIRED_FOR_ADMIN=true` default in Compose saas + `.env.example`
 
 ## Week 2 — AI security

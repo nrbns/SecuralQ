@@ -21,7 +21,7 @@ MVP_STACK: list[dict[str, str]] = [
     {"category": "Secrets", "tool": "Gitleaks", "status": "import"},
     {"category": "Containers / SCA", "tool": "Trivy + Grype", "status": "import"},
     {"category": "IaC", "tool": "Checkov", "status": "import"},
-    {"category": "DAST", "tool": "OWASP ZAP + Nuclei", "status": "path+import"},
+    {"category": "DAST", "tool": "SecuraIQ Web Scanner + Nuclei", "status": "builtin+engine"},
     {"category": "Threat intel", "tool": "MITRE + NVD + CISA KEV", "status": "shipped"},
     {"category": "SIEM", "tool": "SecuraIQ SIEM", "status": "shipped"},
     {"category": "CMDB / inventory", "tool": "Network inventory", "status": "shipped"},
@@ -55,6 +55,7 @@ CATALOG: list[dict[str, Any]] = [
     # SAST
     {"id": "sonarqube", "name": "SecuraIQ Code", "category": "sast", "status": "shipped", "hint": "Settings → SecuraIQ Code — sync engine issues or run SecuraIQ Code / code_scan tools"},
     {"id": "openvas", "name": "SecuraIQ Network Scanner", "category": "vuln_mgmt", "status": "shipped", "hint": "Built-in OpenVAS-class live scan — no GVM install"},
+    {"id": "greenbone", "name": "Greenbone / OpenVAS report", "category": "vuln_mgmt", "status": "import", "hint": "Import GVM/OpenVAS report XML — POST /api/vulnerabilities/import"},
     {"id": "semgrep", "name": "Semgrep", "category": "sast", "status": "shipped", "hint": "Import JSON"},
     {"id": "codeql", "name": "CodeQL", "category": "sast", "status": "planned"},
     {"id": "bandit", "name": "Bandit", "category": "sast", "status": "shipped", "hint": "Python SAST JSON"},
@@ -83,7 +84,7 @@ CATALOG: list[dict[str, Any]] = [
     {"id": "terrascan", "name": "Terrascan", "category": "iac", "status": "planned"},
     {"id": "tfsec", "name": "tfsec", "category": "iac", "status": "planned"},
     # DAST
-    {"id": "zap", "name": "OWASP ZAP", "category": "dast", "status": "shipped", "hint": "PATH tool + JSON report import"},
+    {"id": "zap", "name": "SecuraIQ Web Scanner", "category": "dast", "status": "shipped", "hint": "Built-in DAST — no ZAP install; optional ZAP_PREFER_API for daemon boost"},
     {"id": "burpsuite", "name": "Burp Suite", "category": "dast", "status": "shipped", "hint": "Import Scanner XML report (Pro/Enterprise 'Save issues' or Community) — POST /api/vulnerabilities/import"},
     {"id": "nuclei", "name": "Nuclei", "category": "dast", "status": "path"},
     {"id": "nikto", "name": "Nikto", "category": "dast", "status": "path"},
@@ -115,7 +116,7 @@ CATALOG: list[dict[str, Any]] = [
     {"id": "pulsedive", "name": "Pulsedive", "category": "intel", "status": "partial", "hint": "Set PULSEDIVE_API_KEY — GET /api/intel/lookup"},
     {"id": "malwarebazaar", "name": "MalwareBazaar", "category": "intel", "status": "partial", "hint": "Set MALWAREBAZAAR_API_KEY — GET /api/intel/lookup"},
     # SIEM / SOAR / IR / EDR
-    {"id": "wazuh", "name": "SecuraIQ SIEM", "category": "siem", "status": "shipped", "hint": "Settings → SecuraIQ SIEM — agents, alerts, SCA, FIM on the SOC console"},
+    {"id": "wazuh", "name": "SecuraIQ SIEM", "category": "siem", "status": "shipped", "hint": "Settings → SecuraIQ SIEM · Tools hub Sync SIEM / chat `run wazuh sync` · SOC workspace"},
     {"id": "openaudit", "name": "Network inventory", "category": "inventory", "status": "shipped", "hint": "Settings → Network inventory — sync discovered hosts into Assets"},
     {"id": "elastic", "name": "Elastic Stack", "category": "siem", "status": "planned"},
     {"id": "graylog", "name": "Graylog", "category": "siem", "status": "planned"},
@@ -241,6 +242,9 @@ IMPORT_SCANNER_IDS = frozenset(
         "gitleaks",
         "checkov",
         "zap",
+        "burp",
+        "greenbone",
+        "openvas",
     }
 )
 # PATH / runner tools — no JSON import adapter; open the Tools palette instead

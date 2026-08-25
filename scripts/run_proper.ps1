@@ -15,11 +15,21 @@ function Find-Python {
         if (-not $exe) { continue }
         try {
             if ($cmd -eq "py") {
-                $ver = & py -3 -c "import sys; print(sys.version_info[0])" 2>$null
-                if ($ver -eq "3") { return @{ Exe = "py"; Args = @("-3") } }
+                $ver = & py -3 -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>$null
+                if ($ver) {
+                    $parts = $ver.Split(".")
+                    if ([int]$parts[0] -gt 3 -or ([int]$parts[0] -eq 3 -and [int]$parts[1] -ge 11)) {
+                        return @{ Exe = "py"; Args = @("-3") }
+                    }
+                }
             } else {
-                $ver = & python -c "import sys; print(sys.version_info[0])" 2>$null
-                if ($ver -eq "3") { return @{ Exe = "python"; Args = @() } }
+                $ver = & python -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>$null
+                if ($ver) {
+                    $parts = $ver.Split(".")
+                    if ([int]$parts[0] -gt 3 -or ([int]$parts[0] -eq 3 -and [int]$parts[1] -ge 11)) {
+                        return @{ Exe = "python"; Args = @() }
+                    }
+                }
             }
         } catch { }
     }
@@ -76,8 +86,13 @@ if (-not (Test-Path ".env")) {
     Write-Host "Created .env from .env.example (no manual editing needed)"
 }
 
-Write-Host "Indexing RAG knowledge base..."
-& .\.venv\Scripts\python.exe scripts\ingest_rag.py
+Write-Host "Indexing RAG knowledge base (optional — skipped on failure)..."
+try {
+    & .\.venv\Scripts\python.exe scripts\ingest_rag.py
+    if ($LASTEXITCODE -ne 0) { Write-Host "RAG index skipped (you can Re-index in the UI later)." -ForegroundColor Yellow }
+} catch {
+    Write-Host "RAG index skipped (you can Re-index in the UI later)." -ForegroundColor Yellow
+}
 
 $ollama = Get-Command ollama -ErrorAction SilentlyContinue
 if ($ollama) {
@@ -89,6 +104,9 @@ if ($ollama) {
     } else {
         Write-Host "Pulling tinyllama model (one-time download)..."
         & ollama pull tinyllama
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "Ollama pull skipped — app still starts; pick a model in Settings." -ForegroundColor Yellow
+        }
     }
 } else {
     Write-Host "Ollama not found - using configured cloud/local HF backend from .env.example." -ForegroundColor Yellow
@@ -99,14 +117,16 @@ if ($Lan) {
     $envLines = Set-EnvLine $envLines "HOST" "0.0.0.0"
     $envLines = Set-EnvLine $envLines "CORS_ORIGINS" "*"
     $envLines = Set-EnvLine $envLines "WORKSPACE_ZERO_START" "false"
+    $envLines = Set-EnvLine $envLines "ALLOW_OPEN_LAN" "true"
+    $envLines = Set-EnvLine $envLines "LAN_AUTO_SCAN" "true"
 } else {
     $envLines = Set-EnvLine $envLines "HOST" "127.0.0.1"
     $envLines = Set-EnvLine $envLines "CORS_ORIGINS" "http://127.0.0.1:8080,http://localhost:8080"
+    $envLines = Set-EnvLine $envLines "WORKSPACE_ZERO_START" "false"
+    $envLines = Set-EnvLine $envLines "ALLOW_OPEN_LAN" "false"
+    $envLines = Set-EnvLine $envLines "LAN_AUTO_SCAN" "false"
 }
 $envLines = Set-EnvLine $envLines "AUTH_ALLOW_REGISTER" "false"
-if (-not ($envLines | Where-Object { $_ -match "^WORKSPACE_ZERO_START=" })) {
-    $envLines = Set-EnvLine $envLines "WORKSPACE_ZERO_START" "false"
-}
 $utf8Bom = New-Object System.Text.UTF8Encoding $true
 [System.IO.File]::WriteAllLines((Join-Path (Get-Location) ".env"), $envLines, $utf8Bom)
 

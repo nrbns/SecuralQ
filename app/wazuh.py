@@ -57,25 +57,33 @@ def ensure_schema() -> None:
 
 def _link_agent_asset(user_id: str, item: dict[str, Any]) -> str:
     """Create/update a SecuraIQ asset for a SIEM agent. Returns asset_id."""
-    from app.enterprise import create_asset, list_assets
+    from app.asset_categories import infer_asset_category
+    from app.asset_names import canonical_asset_name
+    from app.enterprise import ensure_asset_for_target, list_assets
 
     aid = str(item.get("agent_id") or "")
-    name = (item.get("name") or "").strip() or f"siem-agent-{aid}"
     ip = (item.get("ip") or "").strip()
-    display = f"{name} ({ip})" if ip and ip not in name else name
-    notes = (
-        f"siem_agent_id={aid}\n"
-        f"ip={ip}\n"
-        f"os={item.get('os') or ''}\n"
-        f"status={item.get('status') or ''}\n"
-        f"group={item.get('group') or ''}\n"
-        f"version={item.get('version') or ''}\n"
-        "source=securaiq-siem"
-    ).strip()
+    hostname = (item.get("name") or "").strip()
+    if hostname and ip and hostname == ip:
+        hostname = ""
+    display = canonical_asset_name(name=hostname or ip or f"siem-agent-{aid}", ip=ip, hostname=hostname)
+    notes = json.dumps(
+        {
+            "siem_agent_id": aid,
+            "ip": ip,
+            "hostname": hostname,
+            "host": hostname or ip,
+            "os": item.get("os") or "",
+            "status": item.get("status") or "",
+            "group": item.get("group") or "",
+            "version": item.get("version") or "",
+            "source": "securaiq-siem",
+        }
+    )[:2000]
     asset_id = ""
     for a in list_assets(user_id):
         n = a.get("notes") or ""
-        if f"siem_agent_id={aid}" in n:
+        if f'"siem_agent_id": "{aid}"' in n or f"siem_agent_id={aid}" in n:
             asset_id = a["id"]
             break
         if (a.get("name") or "").strip().lower() == display.strip().lower():
@@ -84,24 +92,22 @@ def _link_agent_asset(user_id: str, item: dict[str, Any]) -> str:
         if ip and ip in (a.get("name") or ""):
             asset_id = a["id"]
             break
-    if not asset_id:
-        created = create_asset(
-            user_id,
-            display,
+    asset = ensure_asset_for_target(
+        user_id,
+        display,
+        notes=notes,
+        asset_type=infer_asset_category(
             asset_type="endpoint",
-            criticality="high" if (item.get("status") or "").lower() == "active" else "medium",
-            owner="SIEM",
-            notes=notes,
-        )
-        asset_id = created.get("id") or ""
-    else:
-        from app.db import now as _now
-
-        get_conn().execute(
-            "UPDATE assets SET name=?, notes=?, updated_at=? WHERE id=? AND user_id=?",
-            (display, notes, _now(), asset_id, user_id),
-        )
-        get_conn().commit()
+            os=str(item.get("os") or ""),
+            hostname=hostname,
+            name=display,
+        ),
+        criticality="high" if (item.get("status") or "").lower() == "active" else "medium",
+        owner="SIEM",
+        resolve_ptr=bool(ip and not hostname),
+    )
+    if asset and asset.get("id"):
+        return str(asset["id"])
     return asset_id
 
 

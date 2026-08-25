@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,22 @@ from typing import Any
 from app.db import audit, get_conn, new_id, now, row_to_dict
 
 SEVERITY_RANK = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
+
+# Canonical finding lifecycle. Dashboard also treats aliases as closed/open buckets.
+VULN_STATUSES = frozenset(
+    {
+        "open",
+        "triaged",
+        "in_progress",
+        "accepted",
+        "false_positive",
+        "remediated",
+        "verified",
+        "resolved",
+        "closed",
+        "fixed",
+    }
+)
 
 
 def _score(impact: int, likelihood: int) -> int:
@@ -67,20 +84,132 @@ def ensure_asset_for_target(
     criticality: str = "medium",
     engagement_id: str | None = None,
     org_id: str | None = None,
+    resolve_ptr: bool = False,
 ) -> dict[str, Any] | None:
-    """Upsert an inventory asset from a live scan target (IP/hostname/path)."""
+    """Upsert an inventory asset from a live scan target (IP/hostname/path).
+
+    Correlates by exact name, then by IP/hostname stored in notes JSON so
+    hostname-first and IP-first scans merge onto one asset.
+    """
+    from app.asset_names import (
+        canonical_asset_name,
+        is_better_asset_name,
+        is_ipv4,
+        parse_notes_meta,
+        resolve_ptr_if_ip,
+    )
+    from app.asset_categories import infer_asset_category, is_better_category, ports_from_meta
+
     name = (name or "").strip()[:200]
-    if not name or name.lower() in {"unknown", "none", "null"}:
+    if not name or name.lower() in {"unknown", "none", "null", "device"}:
         return None
+
+    def _notes_dict(raw: str) -> dict[str, Any]:
+        return parse_notes_meta(raw)
+
+    def _merge_notes(existing: str, incoming: str) -> str:
+        if not incoming:
+            return (existing or "")[:2000]
+        old = _notes_dict(existing)
+        new = _notes_dict(incoming)
+        if old or new:
+            return json.dumps({**old, **new})[:2000]
+        return (incoming or existing or "")[:2000]
+
+    incoming = _notes_dict(notes)
+    incoming_ip = str(incoming.get("ip") or "").strip().lower()
+    incoming_host = str(incoming.get("host") or incoming.get("hostname") or "").strip().lower()
+    if resolve_ptr and not incoming_host:
+        probe_ip = incoming_ip or (name if is_ipv4(name) else "")
+        if probe_ip:
+            ptr = resolve_ptr_if_ip(probe_ip)
+            if ptr:
+                incoming["hostname"] = ptr
+                incoming["host"] = ptr
+                incoming_host = ptr.lower()
+                notes = json.dumps(incoming)[:2000]
+    name = canonical_asset_name(
+        name=name,
+        ip=str(incoming.get("ip") or ""),
+        hostname=str(incoming.get("hostname") or incoming.get("host") or ""),
+    )
+    name_l = name.lower()
+    if not incoming_ip and is_ipv4(name.split("(")[-1].rstrip(")") if "(" in name else name):
+        ip_guess = name.split("(")[-1].rstrip(")") if "(" in name else name
+        incoming_ip = ip_guess.strip().lower()
+
+    def _asset_keys(a: dict[str, Any]) -> set[str]:
+        keys: set[str] = set()
+        an = (a.get("name") or "").strip().lower()
+        if an:
+            keys.add(an)
+        nd = _notes_dict(a.get("notes") or "")
+        for k in ("ip", "host", "hostname"):
+            v = str(nd.get(k) or "").strip().lower()
+            if v:
+                keys.add(v)
+        return keys
+
     for a in list_assets(user_id, engagement_id, org_id=org_id):
-        if (a.get("name") or "").strip().lower() == name.lower():
-            return a
-    # Heuristic type from target shape
-    at = asset_type
-    if "/" in name or "\\" in name or name.endswith((".py", ".js", ".ts", ".go")):
-        at = "code"
-    elif name.replace(".", "").isdigit() or ":" in name:
-        at = "server"
+        keys = _asset_keys(a)
+        matched = name_l in keys
+        if not matched and incoming_ip and incoming_ip in keys:
+            matched = True
+        if not matched and incoming_host and incoming_host in keys:
+            matched = True
+        if not matched:
+            continue
+        aid = a.get("id")
+        merged_meta = _notes_dict(_merge_notes(a.get("notes") or "", notes) if notes else (a.get("notes") or ""))
+        inferred = infer_asset_category(
+            asset_type=asset_type,
+            os=str(merged_meta.get("os") or ""),
+            hostname=str(merged_meta.get("hostname") or merged_meta.get("host") or ""),
+            oa_type=str(merged_meta.get("oa_type") or ""),
+            ports=ports_from_meta(merged_meta),
+            name=name,
+        )
+        if aid and notes:
+            merged = _merge_notes(a.get("notes") or "", notes)
+            patch: dict[str, Any] = {}
+            if merged != (a.get("notes") or ""):
+                patch["notes"] = merged
+            merged_meta = _notes_dict(merged)
+            new_name = canonical_asset_name(
+                name=name,
+                ip=str(merged_meta.get("ip") or ""),
+                hostname=str(merged_meta.get("hostname") or merged_meta.get("host") or ""),
+            )
+            cur_name = (a.get("name") or "").strip()
+            if new_name and is_better_asset_name(new_name, cur_name):
+                patch["name"] = new_name[:200]
+            cur_type = str(a.get("asset_type") or "")
+            if is_better_category(inferred, cur_type):
+                patch["asset_type"] = inferred
+            if patch:
+                return update_asset(user_id, str(aid), patch) or a
+        elif aid and is_better_category(inferred, str(a.get("asset_type") or "")):
+            updated = update_asset(user_id, str(aid), {"asset_type": inferred})
+            if updated:
+                return updated
+        try:
+            from app.realtime_bus import publish
+
+            if aid:
+                publish(type="asset", id=aid, user_id=user_id, org_id=org_id, action="scan_seen")
+        except Exception:
+            pass
+        return a
+    # Heuristic type from target shape + scan metadata
+    merged_meta = _notes_dict(notes)
+    at = infer_asset_category(
+        asset_type=asset_type,
+        os=str(merged_meta.get("os") or ""),
+        hostname=str(merged_meta.get("hostname") or merged_meta.get("host") or ""),
+        oa_type=str(merged_meta.get("oa_type") or ""),
+        ports=ports_from_meta(merged_meta),
+        name=name,
+    )
     return create_asset(
         user_id,
         name,
@@ -124,6 +253,103 @@ def list_assets(
     return [row_to_dict(r) for r in c.execute(q, args).fetchall()]  # type: ignore[misc]
 
 
+_IPV4 = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}$")
+
+
+def enrich_assets_with_scans(
+    user_id: str, assets: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Attach live scan facts (IP, ports, last scan) so inventory is not a name-only list."""
+    from app.scan_engine.models import list_scans
+
+    try:
+        scans = list_scans(user_id, limit=80)
+    except Exception:
+        scans = []
+    by_target: dict[str, dict[str, Any]] = {}
+    live: list[dict[str, Any]] = []
+    for s in scans:
+        tgt = (s.get("target") or "").strip()
+        st = (s.get("status") or "").lower()
+        if tgt and tgt not in by_target:
+            by_target[tgt] = s
+        if st in {"queued", "scope_check", "running", "collecting", "parsing", "normalizing"}:
+            live.append(
+                {
+                    "id": s.get("id"),
+                    "target": tgt,
+                    "status": st,
+                    "scanner": s.get("scanner"),
+                    "created_at": s.get("created_at"),
+                }
+            )
+    out: list[dict[str, Any]] = []
+    for a in assets:
+        from app.asset_names import display_asset_label, enrich_asset_row, parse_notes_meta
+        from app.asset_categories import enrich_asset_category
+
+        row = enrich_asset_category(enrich_asset_row(a))
+        meta = parse_notes_meta((a.get("notes") or ""))
+        name = (a.get("name") or "").strip()
+        ip = str(row.get("ip") or meta.get("ip") or meta.get("host") or "")
+        hostname = str(row.get("hostname") or meta.get("hostname") or meta.get("host") or "")
+        if not ip and _IPV4.match(name):
+            ip = name
+        services = meta.get("services") if isinstance(meta.get("services"), list) else []
+        ports: list[str] = []
+        for svc in services:
+            if not isinstance(svc, dict):
+                continue
+            port = svc.get("port")
+            if port is None:
+                continue
+            proto = svc.get("protocol") or "tcp"
+            sname = (svc.get("service") or "").strip()
+            ports.append(f"{port}/{proto}" + (f" {sname}" if sname else ""))
+        scan = by_target.get(name) or by_target.get(ip) or (
+            by_target.get(hostname) if hostname else None
+        )
+        row["ip"] = ip
+        row["hostname"] = hostname
+        row["display_name"] = display_asset_label(
+            name=name,
+            ip=ip,
+            hostname=hostname,
+            os=str(meta.get("os") or ""),
+        )
+        row["mac"] = str(meta.get("mac") or "")
+        row["open_ports"] = ports
+        row["source"] = str(meta.get("source") or meta.get("scanner") or "")
+        if scan:
+            summary = scan.get("summary") if isinstance(scan.get("summary"), dict) else {}
+            row["last_scan_id"] = scan.get("id")
+            row["last_scan_status"] = scan.get("status")
+            row["last_scan_at"] = scan.get("completed_at") or scan.get("created_at")
+            row["findings"] = summary.get("findings_created")
+        out.append(row)
+    return out, live
+
+
+def enrich_vulnerabilities_display(
+    user_id: str, vulns: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Attach display_asset_name for UI tables."""
+    from app.asset_names import canonical_vuln_asset_name, display_name_for_asset
+
+    assets = {str(a.get("id")): a for a in list_assets(user_id) if a.get("id")}
+    out: list[dict[str, Any]] = []
+    for v in vulns:
+        row = dict(v)
+        aid = str(v.get("asset_id") or "")
+        asset = assets.get(aid) if aid else None
+        if asset:
+            row["display_asset_name"] = display_name_for_asset(asset).split(" · ")[0]
+        else:
+            row["display_asset_name"] = canonical_vuln_asset_name(str(v.get("asset_name") or ""))
+        out.append(row)
+    return out
+
+
 def update_asset(user_id: str, asset_id: str, patch: dict[str, Any]) -> dict[str, Any] | None:
     row = get_asset(user_id, asset_id)
     if not row:
@@ -140,6 +366,12 @@ def update_asset(user_id: str, asset_id: str, patch: dict[str, Any]) -> dict[str
     )
     get_conn().commit()
     audit("asset_update", user_id, {"id": asset_id, **data})
+    try:
+        from app.realtime_bus import publish
+
+        publish(type="asset", id=asset_id, user_id=user_id, action="update")
+    except Exception:
+        pass
     return get_asset(user_id, asset_id)
 
 
@@ -375,7 +607,17 @@ def get_vulnerability(user_id: str, vuln_id: str) -> dict[str, Any] | None:
         (vuln_id, *args),
     ).fetchone()
     data = row_to_dict(row)
-    return data if row_visible_to_user(user_id, data) else None
+    if not data or not row_visible_to_user(user_id, data):
+        return None
+    raw_s = data.get("raw_json")
+    if isinstance(raw_s, str) and raw_s.strip().startswith("{"):
+        try:
+            data["raw"] = json.loads(raw_s)
+        except Exception:
+            data["raw"] = {}
+    elif isinstance(raw_s, dict):
+        data["raw"] = raw_s
+    return data
 
 
 def list_vulnerabilities(
@@ -400,17 +642,155 @@ def list_vulnerabilities(
     q += " ORDER BY created_at DESC LIMIT 1000"
     rows = [row_to_dict(r) for r in c.execute(q, args).fetchall()]
     rows.sort(key=lambda r: SEVERITY_RANK.get((r or {}).get("severity", "medium"), 2), reverse=True)
+    for r in rows:
+        if not r:
+            continue
+        raw_s = r.get("raw_json")
+        if isinstance(r.get("raw"), dict):
+            continue
+        if isinstance(raw_s, str) and raw_s.strip().startswith("{"):
+            try:
+                r["raw"] = json.loads(raw_s)
+            except Exception:
+                r["raw"] = {}
+        elif isinstance(raw_s, dict):
+            r["raw"] = raw_s
+        else:
+            r["raw"] = r.get("raw") if isinstance(r.get("raw"), dict) else {}
     return rows  # type: ignore[return-value]
+
+
+def _vuln_raw(row: dict[str, Any] | None) -> dict[str, Any]:
+    if not row:
+        return {}
+    raw = row.get("raw")
+    if isinstance(raw, dict):
+        return raw
+    raw_s = row.get("raw_json")
+    if isinstance(raw_s, dict):
+        return raw_s
+    if isinstance(raw_s, str) and raw_s.strip().startswith("{"):
+        try:
+            parsed = json.loads(raw_s)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def finding_identity(item: dict[str, Any]) -> tuple[Any, ...]:
+    """Stable key so live rescans update one row instead of stacking demo copies."""
+    from app.asset_names import host_correlation_key
+    from app.exposure import extract_port
+
+    raw = item.get("raw") if isinstance(item.get("raw"), dict) else _vuln_raw(item)
+    asset = host_correlation_key(
+        str(item.get("asset_name") or raw.get("ip") or raw.get("host") or raw.get("hostname") or "")
+    )
+    port = raw.get("port")
+    if port is None:
+        port = extract_port(item.get("title") or "")
+    try:
+        if port is not None:
+            return ("port", asset, int(port))
+    except (TypeError, ValueError):
+        pass
+    src = (item.get("source") or "").strip().lower()
+    title = (item.get("title") or "").strip().lower()
+    cve = (item.get("cve") or "").strip().upper()
+    if cve.startswith("CVE-"):
+        return ("cve", asset, cve)
+    return ("src", asset, src, title)
+
+
+def upsert_vulnerability(user_id: str, item: dict[str, Any], *, emit_realtime: bool = True) -> dict[str, Any]:
+    """Create or refresh a live finding. Same host+port/title is one row."""
+    key = finding_identity(item)
+    for existing in list_vulnerabilities(user_id):
+        if finding_identity(existing) != key:
+            continue
+        vid = str(existing.get("id") or "")
+        if not vid:
+            continue
+        raw = {**_vuln_raw(existing), **(item.get("raw") or {})}
+        asset_row = None
+        aid = item.get("asset_id") or existing.get("asset_id")
+        if aid:
+            asset_row = get_asset(user_id, str(aid))
+        from app.asset_names import canonical_vuln_asset_name, is_better_asset_name
+
+        new_asset_name = canonical_vuln_asset_name(
+            str(item.get("asset_name") or existing.get("asset_name") or ""),
+            asset=asset_row,
+        )
+        old_asset_name = str(existing.get("asset_name") or "")
+        if not is_better_asset_name(new_asset_name, old_asset_name):
+            new_asset_name = old_asset_name or new_asset_name
+        patch = {
+            "title": item.get("title") or existing.get("title"),
+            "severity": (item.get("severity") or existing.get("severity") or "medium").lower(),
+            "asset_name": new_asset_name,
+            "cve": (item.get("cve") or existing.get("cve") or "").upper(),
+            "raw_json": json.dumps(raw)[:8000],
+        }
+        if item.get("asset_id"):
+            patch["asset_id"] = item.get("asset_id")
+        updated = update_vulnerability(user_id, vid, patch) or existing
+        updated["_upsert"] = "updated"
+        return updated
+    created = create_vulnerability(user_id, item, emit_realtime=emit_realtime)
+    if created:
+        created["_upsert"] = "created"
+    return created
+
+
+def collapse_duplicate_findings(user_id: str) -> dict[str, int]:
+    """Keep the newest live scan finding per host+port; drop stacked copies."""
+    rows = list_vulnerabilities(user_id)
+    rows_by_time = sorted(rows, key=lambda r: float(r.get("updated_at") or r.get("created_at") or 0), reverse=True)
+    keep: set[tuple[Any, ...]] = set()
+    to_delete: list[str] = []
+    for v in rows_by_time:
+        src = (v.get("source") or "").lower()
+        title = (v.get("title") or "").lower()
+        is_scan = src.startswith(("securaiq", "nmap", "nuclei", "zap", "scan:")) or "open ports discovered" in title
+        if not is_scan and not _vuln_raw(v).get("dedupe") == "risky_port":
+            continue
+        key = finding_identity(v)
+        if key in keep:
+            vid = str(v.get("id") or "")
+            if vid:
+                to_delete.append(vid)
+        else:
+            keep.add(key)
+    if not to_delete:
+        return {"removed": 0}
+    c = get_conn()
+    placeholders = ",".join("?" * len(to_delete))
+    c.execute(
+        f"DELETE FROM vulnerabilities WHERE user_id = ? AND id IN ({placeholders})",
+        (user_id, *to_delete),
+    )
+    c.commit()
+    return {"removed": len(to_delete)}
 
 
 def update_vulnerability(user_id: str, vuln_id: str, patch: dict[str, Any]) -> dict[str, Any] | None:
     cur = get_vulnerability(user_id, vuln_id)
     if not cur:
         return None
-    fields = {"status", "owner", "sla_due", "severity", "title", "asset_name", "cve"}
+    fields = {"status", "owner", "sla_due", "severity", "title", "asset_name", "cve", "raw_json", "asset_id"}
     data = {k: patch[k] for k in fields if k in patch}
     if not data:
         return cur
+    if "status" in data:
+        st = str(data["status"] or "").strip().lower()
+        if st not in VULN_STATUSES:
+            raise ValueError(
+                f"Invalid vulnerability status '{data['status']}'. "
+                f"Allowed: {', '.join(sorted(VULN_STATUSES))}"
+            )
+        data["status"] = st
     data["updated_at"] = now()
     sets = ", ".join(f"{k} = ?" for k in data)
     get_conn().execute(
@@ -442,7 +822,7 @@ def triage_vulnerability(
     owner: str = "SecOps",
     create_ticket_hint: bool = False,
 ) -> dict[str, Any]:
-    """Golden-path writeback: finding → risk + remediation + in_progress status."""
+    """Golden-path writeback: finding → risk + remediation + triaged status."""
     v = get_vulnerability(user_id, vuln_id)
     if not v:
         raise ValueError("Vulnerability not found")
@@ -485,7 +865,7 @@ def triage_vulnerability(
     updated = update_vulnerability(
         user_id,
         vuln_id,
-        {"status": "in_progress", "owner": own, "sla_due": sla},
+        {"status": "triaged", "owner": own, "sla_due": sla},
     )
     audit(
         "vuln_triage",
@@ -497,6 +877,7 @@ def triage_vulnerability(
         "vulnerability": updated,
         "risk": risk,
         "remediation": rem,
+        "lifecycle": "open→triaged→in_progress→remediated→verified→resolved",
         "create_ticket_hint": create_ticket_hint,
         "workflow_step": "triaged",
     }
@@ -539,17 +920,25 @@ def import_vulnerabilities(
             for row in reader:
                 items.append(_normalize_vuln_row(dict(row), engagement_id, source=f"csv:{filename}"))
     elif name.endswith(".xml") or text.strip().startswith("<"):
-        from app.scanner_adapters import is_burp_xml, parse_burp_xml
+        from app.scanner_adapters import (
+            is_burp_xml,
+            is_greenbone_xml,
+            parse_burp_xml,
+            parse_greenbone_xml,
+        )
 
         if is_burp_xml(text):
             adapter = "burp"
             items.extend(parse_burp_xml(text, engagement_id=engagement_id, filename=filename))
+        elif is_greenbone_xml(text):
+            adapter = "greenbone"
+            items.extend(parse_greenbone_xml(text, engagement_id=engagement_id, filename=filename))
         else:
             items.extend(_parse_xml_vulns(text, engagement_id, filename))
     else:
         raise ValueError(
             "Unsupported format — use CSV, JSON, XML, HardeningKitty report CSV, or scanner JSON "
-            "(Trivy/Semgrep/Gitleaks/Grype/Checkov/Bandit/SonarQube/ZAP)"
+            "(Trivy/Semgrep/Gitleaks/Grype/Checkov/Bandit/SonarQube/ZAP) / Burp / Greenbone XML"
         )
 
     created = []
@@ -1043,6 +1432,62 @@ def enterprise_dashboard(user_id: str) -> dict[str, Any]:
         if s in severity_counts:
             severity_counts[s] += 1
 
+    recent_assets = [
+        {
+            "id": a.get("id"),
+            "name": a.get("name") or "",
+            "asset_type": a.get("asset_type") or "other",
+            "criticality": a.get("criticality") or "medium",
+            "owner": a.get("owner") or "",
+        }
+        for a in assets[:20]
+    ]
+    hardening = _hardening_dashboard()
+    software_posture: dict[str, Any] = {}
+    try:
+        from app.software_inventory import posture_summary
+
+        software_posture = posture_summary(user_id, rebuild_if_empty=False)
+    except Exception:
+        pass
+
+    siem_summary: dict[str, Any] = {
+        "configured": False,
+        "agents_total": 0,
+        "active": 0,
+        "disconnected": 0,
+        "pending": 0,
+        "agents": [],
+    }
+    try:
+        from app.connectors import wazuh as wz_conn
+        from app.wazuh import list_agents
+
+        siem_summary["configured"] = bool(wz_conn.is_configured())
+        agents = list_agents(limit=100)
+        siem_summary["agents"] = [
+            {
+                "id": a.get("agent_id") or a.get("id"),
+                "name": a.get("name") or "",
+                "ip": a.get("ip") or "",
+                "status": a.get("status") or "unknown",
+                "os": a.get("os") or "",
+                "version": a.get("version") or "",
+            }
+            for a in agents[:25]
+        ]
+        for a in agents:
+            siem_summary["agents_total"] += 1
+            st = (a.get("status") or "").lower()
+            if st in {"active", "connected", "online", "enabled"}:
+                siem_summary["active"] += 1
+            elif st in {"disconnected", "never_connected", "inactive", "disabled"}:
+                siem_summary["disconnected"] += 1
+            else:
+                siem_summary["pending"] += 1
+    except Exception:
+        pass
+
     return {
         **gap,
         "is_empty": is_empty,
@@ -1127,6 +1572,10 @@ def enterprise_dashboard(user_id: str) -> dict[str, Any]:
             else "Empty workspace"
         ),
         "asset_breakdown": asset_breakdown,
+        "recent_assets": recent_assets,
+        "hardening": hardening,
+        "software_posture": software_posture,
+        "siem_summary": siem_summary,
         "timeline": timeline,
         "mitre_coverage": mitre,
         "framework_control_stats": control_stats,
@@ -1354,21 +1803,56 @@ def _work_queue(
     return uniq[:8]
 
 
+def _hardening_dashboard() -> dict[str, Any]:
+    """Windows HardeningKitty posture for Mission Control (no secrets)."""
+    out: dict[str, Any] = {
+        "installed": False,
+        "powershell": False,
+        "audit_done": False,
+        "last_score": None,
+        "last_failed": 0,
+        "last_imported": 0,
+        "last_run_at": None,
+        "last_mode": "",
+        "setup_script": ".\\scripts\\use_hardeningkitty.cmd",
+        "setup_script_download": ".\\scripts\\use_hardeningkitty.cmd -Download",
+        "platform_ok": __import__("platform").system().lower() == "windows",
+    }
+    try:
+        from app import hardeningkitty as hk
+
+        st = hk.status()
+        runs = hk.recent_runs(8)
+        audit_runs = [
+            r
+            for r in runs
+            if (r.get("mode") or "").strip() in {"Audit", "Import", "Config"}
+            and (r.get("status") or "done") == "done"
+        ]
+        last = audit_runs[0] if audit_runs else (runs[0] if runs else None)
+        out.update(
+            {
+                "installed": bool(st.get("installed")),
+                "powershell": bool(st.get("powershell")),
+                "finding_lists": int(st.get("finding_lists") or 0),
+                "cis_lists": int(st.get("cis_lists") or 0),
+                "audit_done": bool(audit_runs),
+                "last_score": last.get("score") if last else None,
+                "last_failed": int(last.get("failed") or 0) if last else 0,
+                "last_imported": int(last.get("imported") or 0) if last else 0,
+                "last_run_at": last.get("created_at") if last else None,
+                "last_mode": (last.get("mode") or "") if last else "",
+            }
+        )
+    except Exception:
+        pass
+    return out
+
+
 def _asset_breakdown(assets: list[dict[str, Any]]) -> dict[str, int]:
-    buckets = {"server": 0, "endpoint": 0, "cloud": 0, "container": 0, "other": 0}
-    for a in assets:
-        t = (a.get("asset_type") or "other").lower()
-        if t in {"server", "servers", "vm"}:
-            buckets["server"] += 1
-        elif t in {"endpoint", "laptop", "workstation", "desktop"}:
-            buckets["endpoint"] += 1
-        elif t in {"cloud", "saas", "aws", "azure", "gcp"}:
-            buckets["cloud"] += 1
-        elif t in {"container", "k8s", "kubernetes", "pod"}:
-            buckets["container"] += 1
-        else:
-            buckets["other"] += 1
-    return buckets
+    from app.asset_categories import inventory_breakdown
+
+    return inventory_breakdown(assets)
 
 
 def _organization_timeline(
@@ -1735,6 +2219,7 @@ def apply_workspace_zero_start() -> dict[str, Any] | None:
         "assets",
         "risks",
         "vulnerabilities",
+        "scans",
         "engagements",
         "gap_assessments",
         "incidents",
@@ -1751,11 +2236,12 @@ def apply_workspace_zero_start() -> dict[str, Any] | None:
         except Exception:
             continue
 
-    result: dict[str, Any] = {"users": [], "deleted": {}}
+    result: dict[str, Any] = {"users": [], "deleted": {}, "archived_count": 0}
     for uid in sorted(user_ids):
         wiped = reset_workspace(uid, clear_rag=False)
         result["users"].append(uid)
         result["deleted"][uid] = wiped.get("deleted") or {}
+        result["archived_count"] += int(wiped.get("archived_count") or 0)
 
     # Clear KPI snap files
     try:
@@ -1767,8 +2253,9 @@ def apply_workspace_zero_start() -> dict[str, Any] | None:
         pass
 
     print(
-        "Workspace: zero-start applied (nil UI). "
-        "Set WORKSPACE_ZERO_START=false to keep data across restarts."
+        "Workspace: zero-start — Mission Control loads empty. "
+        f"Archived {result['archived_count']} scan(s) under data/archive. "
+        "Set WORKSPACE_ZERO_START=false to keep live data across restarts."
     )
     return result
 

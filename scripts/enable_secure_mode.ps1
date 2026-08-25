@@ -44,6 +44,8 @@ $lines = Set-EnvLine $lines "BOOTSTRAP_ADMIN_PASSWORD" $Password
 $lines = Set-EnvLine $lines "HOST" "127.0.0.1"
 $lines = Set-EnvLine $lines "CORS_ORIGINS" "http://127.0.0.1:8080,http://localhost:8080"
 $lines = Set-EnvLine $lines "WORKSPACE_ZERO_START" "false"
+$lines = Set-EnvLine $lines "ALLOW_OPEN_LAN" "false"
+$lines = Set-EnvLine $lines "LAN_AUTO_SCAN" "false"
 $lines = Set-EnvLine $lines "HERMES_SESSION_KEY" ""
 
 $utf8Bom = New-Object System.Text.UTF8Encoding $true

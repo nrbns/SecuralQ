@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import json
 import re
-from pathlib import Path
 from typing import Any, Literal
 
 from app.db import audit, get_conn, new_id, now, row_to_dict
+from app.paths import resource_root
 
 Status = Literal["implemented", "partial", "missing", "not_applicable"]
 
-_FRAMEWORKS_DIR = Path(__file__).resolve().parent.parent / "data" / "frameworks"
+_FRAMEWORKS_DIR = resource_root() / "data" / "frameworks"
 
 # Legacy UI / catalog aliases → current JSON ids
 _FRAMEWORK_ALIASES = {

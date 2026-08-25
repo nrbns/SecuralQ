@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 .env
+.pytest_cache/
 data/chroma/
 data/*.db
 data/*.db-*
@@ -19,3 +20,6 @@ chat_test_output.txt
 Thumbs.db
 .idea/
 .vscode/*.local.json
+dist/
+build/
+*.pyo

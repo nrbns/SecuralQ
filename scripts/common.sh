@@ -7,14 +7,17 @@ project_root() {
 }
 
 python_cmd() {
-  if command -v python3 >/dev/null 2>&1; then
-    echo python3
-  elif command -v python >/dev/null 2>&1; then
-    echo python
-  else
-    echo "Python 3 is required." >&2
-    exit 1
-  fi
+  local cand
+  for cand in python3 python; do
+    if command -v "$cand" >/dev/null 2>&1; then
+      if "$cand" -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)" 2>/dev/null; then
+        echo "$cand"
+        return 0
+      fi
+    fi
+  done
+  echo "Python 3.11+ is required." >&2
+  exit 1
 }
 
 ensure_venv() {

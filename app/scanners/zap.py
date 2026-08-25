@@ -1,7 +1,7 @@
-"""OWASP ZAP scanner adapter — baseline / quick web assessment.
+"""SecuraIQ Web Scanner — built-in DAST (no install required).
 
-Requires `zap-baseline.py` or `zap`/`zaproxy` on PATH. Writes JSON evidence when
-baseline `-J` is available; otherwise parses text output into findings.
+Primary engine: pure-Python HTTP assessment (``app.scanners.web_builtin``).
+Optional enhancement when ``ZAP_PREFER_API=true`` and a ZAP daemon is reachable.
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ def _sev_from_zap_risk(riskcode: str | int | None, riskdesc: str = "") -> str:
 
 
 def parse_zap_json(data: dict[str, Any]) -> list[dict[str, Any]]:
-    """Parse ZAP JSON report (site[].alerts[]) into intermediate rows."""
+    """Parse ZAP / SecuraIQ web JSON report (site[].alerts[]) into intermediate rows."""
     items: list[dict[str, Any]] = []
     for site in data.get("site") or []:
         if not isinstance(site, dict):
@@ -56,7 +56,7 @@ def parse_zap_json(data: dict[str, Any]) -> list[dict[str, Any]]:
         for alert in site.get("alerts") or []:
             if not isinstance(alert, dict):
                 continue
-            name = alert.get("name") or alert.get("alert") or "ZAP alert"
+            name = alert.get("name") or alert.get("alert") or "Web finding"
             plugin = alert.get("pluginid") or alert.get("pluginId") or ""
             items.append(
                 {
@@ -108,16 +108,22 @@ def _resolve_zap_binary() -> tuple[str | None, str]:
     return None, ""
 
 
+async def _probe_zap_api_sync() -> tuple[bool, str]:
+    try:
+        from app.scanners.zap_api import probe_zap_api
+
+        return await probe_zap_api()
+    except Exception as exc:
+        return False, str(exc)
+
+
 class ZapScanner(Scanner):
     id = "zap"
-    name = "OWASP ZAP"
+    name = "SecuraIQ Web Scanner"
     profiles = ("discovery", "web", "vulnerability", "full")
 
     def available(self) -> tuple[bool, str]:
-        path, kind = _resolve_zap_binary()
-        if path:
-            return True, f"{path} ({kind})"
-        return False, "ZAP not on PATH — install OWASP ZAP or set INSTALL_ZAP=true in Docker build"
+        return True, "built-in SecuraIQ Web Scanner — no ZAP daemon or install required"
 
     def validate_target(self, target: str) -> tuple[bool, str]:
         t = (target or "").strip()
@@ -138,61 +144,80 @@ class ZapScanner(Scanner):
         return False, f"target out of engagement scope ({reason})"
 
     def build_command(self, ctx: ScanContext) -> list[str]:
-        path, kind = _resolve_zap_binary()
-        if not path:
-            raise RuntimeError(self.available()[1])
         ok_t, url = self.validate_target(ctx.target)
         if not ok_t:
             raise ValueError(url)
-        json_path = ctx.evidence_dir / "zap.json"
-        if kind == "baseline":
-            # -J writes JSON report; -I ignores WARN exit codes
-            return [path, "-t", url, "-J", str(json_path), "-I"]
-        return [path, "-cmd", "-quickurl", url, "-quickprogress"]
+        profile = (ctx.profile or "web").lower()
+        return [
+            "securaiq-web-scanner",
+            "--target",
+            url,
+            "--profile",
+            profile,
+            "--builtin",
+        ]
 
     async def execute(self, ctx: ScanContext) -> RawScanResult:
         ctx.evidence_dir.mkdir(parents=True, exist_ok=True)
-        argv = self.build_command(ctx)
+        ok_t, url = self.validate_target(ctx.target)
+        if not ok_t:
+            raise ValueError(url)
         profile = (ctx.profile or "web").lower()
         timeout = _TIMEOUT.get(profile, 180.0)
-        json_path = ctx.evidence_dir / "zap.json"
 
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        from app.config import settings
+        from app.scanners.web_builtin import run_builtin_web_scan
+
+        out = await run_builtin_web_scan(
+            target_url=url,
+            profile=profile,
+            evidence_dir=ctx.evidence_dir,
+            scan_id=ctx.scan_id,
+            timeout_sec=timeout,
         )
-        try:
-            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-            code = int(proc.returncode or 0)
-        except asyncio.TimeoutError:
-            try:
-                proc.kill()
-            except Exception:
-                pass
-            stdout_b, stderr_b = b"", b"zap timed out"
-            code = -1
+        mode = "securaiq_web_builtin"
+        cmd = f"SecuraIQ Web Scanner (built-in) profile={profile} target={url}"
 
-        stdout = (stdout_b or b"").decode("utf-8", errors="replace")
-        stderr = (stderr_b or b"").decode("utf-8", errors="replace")
-        (ctx.evidence_dir / "stdout.log").write_text(stdout, encoding="utf-8")
-        (ctx.evidence_dir / "stderr.log").write_text(stderr, encoding="utf-8")
-        (ctx.evidence_dir / "command.txt").write_text(" ".join(argv), encoding="utf-8")
+        # Optional deep scan when external ZAP daemon is configured and reachable.
+        if bool(getattr(settings, "zap_prefer_api", False)):
+            api_ok, api_detail = await _probe_zap_api_sync()
+            if api_ok:
+                from app.scanners.zap_api import resolve_zap_api_settings, run_zap_api_assessment
 
-        artifacts = [
-            str(ctx.evidence_dir / "command.txt"),
-            str(ctx.evidence_dir / "stdout.log"),
-            str(ctx.evidence_dir / "stderr.log"),
-        ]
-        if json_path.exists() and json_path.stat().st_size > 0:
-            artifacts.insert(0, str(json_path))
+                base, key = resolve_zap_api_settings()
+                try:
+                    ext = await run_zap_api_assessment(
+                        target_url=url,
+                        profile=profile,
+                        evidence_dir=ctx.evidence_dir,
+                        base_url=base,
+                        api_key=key,
+                        timeout_sec=timeout,
+                        scan_id=ctx.scan_id,
+                    )
+                    mode = "securaiq_web_builtin+zap_api"
+                    cmd = f"{cmd} + ZAP REST {base}"
+                    out = {**out, "zap_api": ext, "zap_api_detail": api_detail}
+                except Exception as exc:
+                    (ctx.evidence_dir / "zap_api.stderr").write_text(str(exc), encoding="utf-8")
 
+        (ctx.evidence_dir / "command.txt").write_text(cmd, encoding="utf-8")
+        (ctx.evidence_dir / "stdout.log").write_text(json.dumps(out, indent=2), encoding="utf-8")
+        (ctx.evidence_dir / "stderr.log").write_text("", encoding="utf-8")
+        artifacts = list(out.get("artifacts") or [])
+        artifacts.extend(
+            [
+                str(ctx.evidence_dir / "command.txt"),
+                str(ctx.evidence_dir / "stdout.log"),
+                str(ctx.evidence_dir / "stderr.log"),
+            ]
+        )
         return RawScanResult(
-            exit_code=code,
-            stdout=stdout,
-            stderr=stderr,
+            exit_code=0,
+            stdout=(ctx.evidence_dir / "stdout.log").read_text(encoding="utf-8"),
+            stderr="",
             artifact_paths=artifacts,
-            meta={"argv": argv, "timeout": timeout},
+            meta={"mode": mode, "timeout": timeout, "builtin": True},
         )
 
     def parse(self, raw: RawScanResult, ctx: ScanContext) -> list[dict[str, Any]]:
@@ -204,7 +229,6 @@ class ZapScanner(Scanner):
                     return parse_zap_json(data)
             except Exception:
                 pass
-        # Some baseline versions print JSON to stdout
         text = (raw.stdout or "").strip()
         if text.startswith("{"):
             try:
@@ -229,10 +253,10 @@ class ZapScanner(Scanner):
             asset = _hostname_from_target(str(row.get("asset_name") or "")) or host
             findings.append(
                 NormalizedFinding(
-                    title=str(row.get("title") or "ZAP finding")[:300],
+                    title=str(row.get("title") or "Web finding")[:300],
                     severity=str(row.get("severity") or "info"),
                     asset_name=asset[:200],
-                    source=f"zap:{row.get('plugin') or 'scan'}",
+                    source=f"securaiq_web:{row.get('plugin') or 'scan'}",
                     evidence=str(row.get("asset_name") or url if ok_t else ctx.target)[:500],
                     raw=row.get("raw") if isinstance(row.get("raw"), dict) else row,
                 )
@@ -242,10 +266,10 @@ class ZapScanner(Scanner):
             findings.insert(
                 0,
                 NormalizedFinding(
-                    title=f"ZAP reported {len(rows)} alert(s) on {host}",
+                    title=f"SecuraIQ Web Scanner found {len(rows)} issue(s) on {host}",
                     severity="info",
                     asset_name=host,
-                    source="zap:summary",
+                    source="securaiq_web:summary",
                     evidence=f"profile={ctx.profile}",
                     raw={"count": len(rows)},
                 ),
@@ -267,7 +291,7 @@ class ZapScanner(Scanner):
                 "open_ports": len(services),
                 "findings": len(findings),
                 "alerts": len(rows),
-                "scanner": "zap",
+                "scanner": "securaiq_web",
                 "profile": ctx.profile,
                 "url": url if ok_t else ctx.target,
             },

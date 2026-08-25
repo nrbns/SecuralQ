@@ -7,7 +7,7 @@ For closed-beta design partners (5–10). Keep scope tight.
 1. Follow [beta-deploy.md](./beta-deploy.md) + [production-hardening.md](./production-hardening.md)
 2. TLS via [tls-deploy.md](./tls-deploy.md) (`deploy/Caddyfile` or nginx)
 3. `AUTH_ENABLED=true`, `MFA_REQUIRED_FOR_ADMIN=true`, strong `BOOTSTRAP_ADMIN_PASSWORD`
-4. Run backup drill once: [backup-restore.md](./backup-restore.md)
+4. Run backup drill once: [backup-dr.md](./backup-dr.md)
 
 ## 2. Create their workspace
 

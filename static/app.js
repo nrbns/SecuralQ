@@ -125,17 +125,8 @@ window.setSelectedTools = (ids) => {
   updateToolsChipState();
 };
 
-/** Builtin PT pack — always available without nmap/nuclei install. */
-const LIVE_SCAN_DEFAULT_TOOLS = [
-  "securaiq",
-  "ports",
-  "http",
-  "tls",
-  "dns",
-  "headers_security",
-  "hardening_baseline",
-  "openvas",
-];
+/** Integrated VA — one tool replaces the old multi-scanner PT pack. */
+const LIVE_SCAN_DEFAULT_TOOLS = ["combo_assessment"];
 
 async function openNewScanModal() {
   const modal = document.getElementById("newScanModal");
@@ -148,9 +139,36 @@ async function openNewScanModal() {
   const form = document.getElementById("newScanForm");
   if (form) form.classList.remove("hidden");
   const target = document.getElementById("newScanTarget");
+  const scopeEl = document.getElementById("newScanScope");
+  const authEl = document.getElementById("newScanAuthorized");
+  if (authEl) authEl.checked = true;
   const existing = typeof getScanTarget === "function" ? getScanTarget() : "";
   if (target && existing) target.value = existing;
+  if (target && !target.value) {
+    try {
+      const plat = await fetch("/api/platform", { headers: authHeaders() });
+      if (plat.ok) {
+        const p = await plat.json();
+        const urls = p.lan_urls || [];
+        const share = String(p.share_url || urls[0] || "");
+        let host = "";
+        try {
+          host = new URL(share).hostname;
+        } catch {
+          host = share.replace(/^https?:\/\//i, "").split(":")[0];
+        }
+        if (host && !host.startsWith("127.")) target.value = host;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  // Seed scope from Target so Start scan does not fail on empty scope.
+  if (scopeEl && target?.value?.trim() && !String(scopeEl.value || "").trim()) {
+    scopeEl.value = target.value.trim();
+  }
   target?.focus();
+  wireNewScanTargetScopeOnce();
   try {
     const res = await fetch("/api/scans/scanners", { headers: authHeaders() });
     if (res.ok) {
@@ -159,16 +177,65 @@ async function openNewScanModal() {
       if (sel && Array.isArray(data.scanners)) {
         const enabled = data.scanners.filter((s) => s.engine_enabled);
         const opts = [
+          '<option value="combo">Combo workflow (scan → evidence → AI → triage)</option>',
           '<option value="all">All available scanners</option>',
           ...enabled.map((s) => {
-            const label = s.available ? s.name : `${s.name} (not installed)`;
-            const dis = s.available ? "" : " disabled";
+            const builtIn = s.origin === "securaiq" || s.id === "zap" || s.id === "securaiq";
+            const label = s.available
+              ? s.name
+              : builtIn
+                ? `${s.name} (built-in)`
+                : `${s.name} (not installed)`;
+            const dis = s.available || builtIn ? "" : " disabled";
             return `<option value="${s.id}"${dis}>${label}</option>`;
           }),
         ];
         sel.innerHTML = opts.join("");
-        const firstAvail = enabled.find((s) => s.available);
-        sel.value = firstAvail ? firstAvail.id : "all";
+        // Prefer combo workflow; fall back to nmap / securaiq.
+        const preferCombo = true;
+        if (preferCombo) {
+          sel.value = "combo";
+          const vulnProf = document.querySelector('input[name="scanProfile"][value="vulnerability"]');
+          if (vulnProf) vulnProf.checked = true;
+        } else {
+          const prefer =
+            enabled.find((s) => s.id === "nmap" && s.available) ||
+            enabled.find((s) => s.id === "securaiq" && s.available) ||
+            enabled.find((s) => s.available);
+          sel.value = prefer ? prefer.id : "all";
+        }
+        const hint = document.getElementById("newScanScannerHint");
+        const prof =
+          document.querySelector('input[name="scanProfile"]:checked')?.value || "vulnerability";
+        if (hint) {
+          if (sel.value === "combo") {
+            refreshComboScannerHint(prof);
+          } else {
+            const nmap = enabled.find((s) => s.id === "nmap");
+            if (nmap && !nmap.available && /npcap/i.test(String(nmap.detail || ""))) {
+              hint.textContent =
+                "Nmap is installed but needs Npcap (https://npcap.com) before live scans work. Use SecuraIQ builtin until then.";
+            } else if (nmap && !nmap.available) {
+              hint.textContent = String(nmap.detail || "Nmap not available — using SecuraIQ builtin.");
+            } else {
+              hint.textContent = "";
+            }
+          }
+        }
+        if (!window.__securaiqComboHintBound) {
+          window.__securaiqComboHintBound = true;
+          sel?.addEventListener("change", () => {
+            const p = document.querySelector('input[name="scanProfile"]:checked')?.value || "discovery";
+            refreshComboScannerHint(p);
+          });
+          document.querySelectorAll('input[name="scanProfile"]').forEach((el) => {
+            el.addEventListener("change", () => {
+              if (document.getElementById("newScanScanner")?.value === "combo") {
+                refreshComboScannerHint(el.value);
+              }
+            });
+          });
+        }
       }
     }
   } catch (_) {
@@ -176,6 +243,27 @@ async function openNewScanModal() {
   }
 }
 window.openNewScanModal = openNewScanModal;
+
+function wireNewScanTargetScopeOnce() {
+  if (window.__securaiqNewScanScopeWired) return;
+  window.__securaiqNewScanScopeWired = true;
+  const target = document.getElementById("newScanTarget");
+  const scopeEl = document.getElementById("newScanScope");
+  if (!target || !scopeEl) return;
+  const syncScopeFromTarget = () => {
+    const t = (target.value || "").trim();
+    if (!t) return;
+    const scopeEmpty = !String(scopeEl.value || "").trim();
+    // Keep scope in sync when it was empty or still equal to the previous target seed.
+    if (scopeEmpty || scopeEl.dataset.seededFrom === scopeEl.dataset.lastTarget) {
+      scopeEl.value = t;
+      scopeEl.dataset.seededFrom = t;
+    }
+    scopeEl.dataset.lastTarget = t;
+  };
+  target.addEventListener("change", syncScopeFromTarget);
+  target.addEventListener("blur", syncScopeFromTarget);
+}
 
 async function startLiveScan() {
   showView("chat");
@@ -185,7 +273,7 @@ async function startLiveScan() {
   if (localToolsEl) localToolsEl.checked = true;
   selectedTools = LIVE_SCAN_DEFAULT_TOOLS.slice();
   const engineSel = document.getElementById("toolsEngineScanner");
-  if (engineSel && engineSel.value === "none") engineSel.value = "securaiq";
+  if (engineSel) engineSel.value = "combo";
   openToolsPalette(true);
   syncScanTargetFields(false);
   await renderToolsPalette();
@@ -208,26 +296,46 @@ function toolsHubTargetAuth() {
 async function queueEngineScanFromTools(opts = {}) {
   const { target, authorized } = toolsHubTargetAuth();
   const scanner =
-    opts.scanner || document.getElementById("toolsEngineScanner")?.value || "securaiq";
+    opts.scanner || document.getElementById("toolsEngineScanner")?.value || "combo";
   const profile =
     opts.profile || document.getElementById("toolsEngineProfile")?.value || "discovery";
   if (scanner === "none") {
     return { skipped: true, reason: "engine_off" };
   }
   if (!target) {
-    throw new Error("Set a Target (owned IP/host or local path) before queuing an engine scan.");
+    throw new Error("Set a Target (owned IP/host or local path) before running Integrated VA.");
   }
   if (!authorized) {
-    throw new Error("Check Auth before queuing an engine scan on this target.");
+    throw new Error("Check Auth before running Integrated VA on this target.");
   }
   if (authorizedTargetEl) authorizedTargetEl.checked = true;
   if (targetIpEl) targetIpEl.value = target;
+  const scopeRaw = document.getElementById("newScanScope")?.value || "";
+  let scope = scopeRaw
+    .split(/[\n,;]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (!scope.length) scope = [target];
+  if (scanner === "combo") {
+    const pack = await submitComboAssessment({
+      target,
+      authorized,
+      profile,
+      scopeRaw: scope.join("\n"),
+      openModal: false,
+    });
+    if (toolsPaletteOutEl) {
+      toolsPaletteOutEl.classList.remove("hidden");
+      toolsPaletteOutEl.textContent = `Integrated VA complete · findings=${pack.findings_count ?? "—"}`;
+    }
+    return { ok: true, combo: pack, scan_ids: pack.scan_ids || [] };
+  }
   const body = {
     target,
     scanner,
     profile,
     authorized: true,
-    scope: [],
+    scope,
     engagement_id: engagementSelectEl?.value || null,
   };
   const res = await fetch("/api/scans", {
@@ -259,11 +367,169 @@ async function queueEngineScanFromTools(opts = {}) {
     );
   }
   if (opts.poll !== false && typeof pollScansUntilDone === "function") {
+    scanIds.forEach((id) => watchScanRealtime(id));
     await pollScansUntilDone(scanIds);
   }
   return { ok: true, scan_ids: scanIds, data };
 }
 window.queueEngineScanFromTools = queueEngineScanFromTools;
+
+async function syncXdrFromTools() {
+  const res = await fetch("/api/xdr/sync", { method: "POST", headers: authHeaders() });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    let detail = data.detail || `HTTP ${res.status}`;
+    if (typeof detail !== "string") detail = JSON.stringify(detail);
+    throw new Error(detail);
+  }
+  const job = data.job || data;
+  const msg = `XDR sync queued${job.id ? ` · job ${job.id}` : ""}`;
+  if (toolsPaletteOutEl) {
+    toolsPaletteOutEl.classList.remove("hidden");
+    toolsPaletteOutEl.textContent = msg;
+  }
+  if (typeof notifyUser === "function") notifyUser(`**${msg}**`);
+  return data;
+}
+window.syncXdrFromTools = syncXdrFromTools;
+
+async function syncTheHiveFromTools() {
+  const res = await fetch("/api/thehive/sync", { method: "POST", headers: authHeaders() });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    let detail = data.detail || `HTTP ${res.status}`;
+    if (typeof detail !== "string") detail = JSON.stringify(detail);
+    throw new Error(detail);
+  }
+  const job = data.job || data;
+  const msg = `TheHive sync queued${job.id ? ` · job ${job.id}` : ""}`;
+  if (toolsPaletteOutEl) {
+    toolsPaletteOutEl.classList.remove("hidden");
+    toolsPaletteOutEl.textContent = msg;
+  }
+  if (typeof notifyUser === "function") notifyUser(`**${msg}**`);
+  return data;
+}
+window.syncTheHiveFromTools = syncTheHiveFromTools;
+
+async function runSocPackFromTools() {
+  const notes = [];
+  try {
+    const [siemRes, xdrRes, thRes] = await Promise.all([
+      fetch("/api/siem/status", { headers: authHeaders() }).catch(() => null),
+      fetch("/api/xdr/status", { headers: authHeaders() }).catch(() => null),
+      fetch("/api/thehive/status", { headers: authHeaders() }).catch(() => null),
+    ]);
+    const siem = siemRes?.ok ? await siemRes.json().catch(() => ({})) : {};
+    const xdr = xdrRes?.ok ? await xdrRes.json().catch(() => ({})) : {};
+    const th = thRes?.ok ? await thRes.json().catch(() => ({})) : {};
+    if (siem.configured) {
+      await syncSiemFromTools();
+      notes.push("SIEM");
+    }
+    const vendors = xdr.vendors || {};
+    if (Object.values(vendors).some((v) => v && v.configured)) {
+      await syncXdrFromTools();
+      notes.push("XDR");
+    }
+    if (th.configured) {
+      await syncTheHiveFromTools();
+      notes.push("TheHive");
+    }
+  } catch (err) {
+    if (typeof notifyUser === "function") notifyUser(`**SOC sync error:** ${err.message || err}`);
+  }
+  try {
+    await syncInventoryFromTools();
+    notes.push("inventory");
+  } catch (err) {
+    if (typeof notifyUser === "function") notifyUser(`**Inventory sync error:** ${err.message || err}`);
+  }
+  return notes;
+}
+window.runSocPackFromTools = runSocPackFromTools;
+
+async function syncAllAndRebuildSoftware(opts) {
+  opts = opts || {};
+  const statusEl = opts.statusEl || document.getElementById("softwarePageBody");
+  const setStatus = (msg) => {
+    if (statusEl && !opts.quiet) statusEl.innerHTML = `<p class="hint" aria-live="polite">${escapeHtml(msg)}</p>`;
+  };
+  window.__securaiqSoftwareSyncBusy = true;
+  if (typeof window.setSoftwareSyncLive === "function") {
+    window.setSoftwareSyncLive("Syncing all sources and rebuilding software inventory…", true);
+  }
+  setStatus("Syncing all sources (SIEM, XDR, inventory) and rebuilding software inventory…");
+  try {
+    const res = await fetch("/api/software/sync-all", { method: "POST", headers: authHeaders() });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    const jobs = data.jobs_queued || [];
+    if (jobs.length) {
+      setStatus(`Waiting for ${jobs.length} background sync job(s)…`);
+      if (typeof window.setSoftwareSyncLive === "function") {
+        window.setSoftwareSyncLive(`Waiting for ${jobs.length} background sync job(s)…`, true);
+      }
+      for (const j of jobs) {
+        if (j.id && typeof waitForJob === "function") {
+          await waitForJob(j.id, { timeoutMs: 180000, intervalMs: 1500 });
+        }
+      }
+      setStatus("Final rebuild after sync jobs…");
+      if (typeof window.setSoftwareSyncLive === "function") {
+        window.setSoftwareSyncLive("Final rebuild after sync jobs…", true);
+      }
+      const res2 = await fetch("/api/software/rebuild", { method: "POST", headers: authHeaders() });
+      const data2 = await res2.json().catch(() => ({}));
+      if (!res2.ok) throw new Error(data2.detail || `HTTP ${res2.status}`);
+    }
+    const probe = data.local_os_patches?.probe || {};
+    const pending = Number(probe.pending_count || 0);
+    const parts = [
+      jobs.length ? `${jobs.length} sync job(s)` : null,
+      pending ? `${pending} local OS update(s) pending` : "local OS patch check done",
+    ].filter(Boolean);
+    if (typeof notifyUser === "function") {
+      notifyUser(`**Software inventory synced** — ${parts.join(" · ")}`);
+    }
+    if (typeof window.renderSoftwarePage === "function") window.renderSoftwarePage({ quiet: !!opts.quiet });
+    if (typeof refreshMcSoftwareFromPush === "function") {
+      refreshMcSoftwareFromPush(data.posture || {});
+    } else if (typeof loadCommandCenter === "function") loadCommandCenter();
+    if (typeof window.renderAssetsPage === "function") window.renderAssetsPage({ quiet: true });
+    if (typeof window.pulseSoftwareFromPush === "function") {
+      const p = data.posture || {};
+      window.pulseSoftwareFromPush({
+        type: "software_inventory",
+        action: "sync",
+        message: `Sync complete · ${parts.join(" · ")}`,
+        ts: Date.now() / 1000,
+        issues: p.issues,
+        health_score: p.health_score,
+        needs_update: (p.server_summary || {}).needs_update,
+        up_to_date: (p.server_summary || {}).up_to_date,
+        total_products: p.total_products,
+      });
+    }
+    return data;
+  } catch (err) {
+    const msg = err.message || String(err);
+    if (statusEl && !opts.quiet) {
+      statusEl.innerHTML = `<div class="sw-empty-state"><p class="hint">Sync failed: ${escapeHtml(msg)}</p>
+        <button type="button" class="btn-secondary" id="softwareSyncRetry">Retry</button></div>`;
+      document.getElementById("softwareSyncRetry")?.addEventListener("click", () => syncAllAndRebuildSoftware(opts));
+    }
+    if (typeof notifyUser === "function") notifyUser(`**Sync all failed:** ${msg}`);
+    throw err;
+  } finally {
+    window.__securaiqSoftwareSyncBusy = false;
+    if (typeof window.setSoftwareSyncLive === "function") {
+      window.setSoftwareSyncLive("", false);
+    }
+  }
+}
+window.syncAllAndRebuildSoftware = syncAllAndRebuildSoftware;
+window.runSoftwareSyncAll = syncAllAndRebuildSoftware;
 
 async function syncSiemFromTools() {
   const res = await fetch("/api/siem/sync", { method: "POST", headers: authHeaders() });
@@ -285,20 +551,35 @@ async function syncSiemFromTools() {
 window.syncSiemFromTools = syncSiemFromTools;
 
 async function syncInventoryFromTools() {
-  const res = await fetch("/api/openaudit/sync", { method: "POST", headers: authHeaders() });
+  const out = (msg) => {
+    if (toolsPaletteOutEl) {
+      toolsPaletteOutEl.classList.remove("hidden");
+      toolsPaletteOutEl.textContent = msg;
+    }
+    if (typeof notifyUser === "function") notifyUser(`**${msg}**`);
+  };
+  const res = await fetch("/api/assets/lan-refresh?scans=false", { method: "POST", headers: authHeaders() });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     let detail = data.detail || `HTTP ${res.status}`;
     if (typeof detail !== "string") detail = JSON.stringify(detail);
     throw new Error(detail);
   }
-  const job = data.job || data;
-  const msg = `Inventory sync queued${job.id ? ` · job ${job.id}` : ""}`;
-  if (toolsPaletteOutEl) {
-    toolsPaletteOutEl.classList.remove("hidden");
-    toolsPaletteOutEl.textContent = msg;
+  const invJob = data.inventory_job || {};
+  const n = 1 + (data.neighbors || []).length;
+  out(`Live inventory queued · ${n} host(s) · subnet ${data.subnet || "local /24"}${invJob.id ? ` · job ${invJob.id}` : ""}`);
+  if (invJob.id && typeof window.waitForJob === "function") {
+    const job = await window.waitForJob(invJob.id, { timeoutMs: 180000 });
+    const r = job?.result || {};
+    const st = (job?.status || "").toLowerCase();
+    if (st === "done") {
+      out(`Inventory done · ${r.audited || n} host(s) audited`);
+    } else if (st === "error") {
+      throw new Error(job.error || "inventory failed");
+    }
   }
-  if (typeof notifyUser === "function") notifyUser(`**${msg}**`);
+  if (typeof window.renderAssetsPage === "function") window.renderAssetsPage({ quiet: true });
+  if (typeof loadCommandCenter === "function") loadCommandCenter();
   return data;
 }
 window.syncInventoryFromTools = syncInventoryFromTools;
@@ -308,9 +589,12 @@ async function ensurePtPackSelected() {
   try {
     const res = await fetch("/api/tools", { headers: authHeaders() });
     const data = await res.json().catch(() => ({}));
+    const soc = (Array.isArray(data.soc_pack) ? data.soc_pack : []).filter((id) =>
+      (data.tools || []).some((t) => t.id === id && t.available)
+    );
     selectedTools =
       Array.isArray(data.pt_pack) && data.pt_pack.length
-        ? data.pt_pack.slice()
+        ? [...data.pt_pack, ...soc]
         : LIVE_SCAN_DEFAULT_TOOLS.slice();
   } catch {
     selectedTools = LIVE_SCAN_DEFAULT_TOOLS.slice();
@@ -321,8 +605,19 @@ async function ensurePtPackSelected() {
 }
 
 async function runAllFromTools() {
-  const engine = document.getElementById("toolsEngineScanner")?.value || "securaiq";
+  const engine = document.getElementById("toolsEngineScanner")?.value || "combo";
   await ensurePtPackSelected();
+  if (engine === "combo") {
+    showView("chat");
+    openAiTab("chat");
+    try {
+      await submitComboAssessment({ openModal: false });
+      await runSocPackFromTools();
+    } catch (err) {
+      appendMessage("assistant", renderMarkdown(`**Integrated VA failed:** ${err.message || err}`), true);
+    }
+    return;
+  }
   const notes = [];
   const jobs = [];
   if (engine !== "none") {
@@ -341,6 +636,7 @@ async function runAllFromTools() {
     );
   }
   jobs.push(runSelectedTools());
+  jobs.push(runSocPackFromTools().catch(() => []));
   await Promise.all(jobs);
   if (notes.length && toolsPaletteOutEl) {
     toolsPaletteOutEl.classList.remove("hidden");
@@ -349,6 +645,53 @@ async function runAllFromTools() {
   }
 }
 window.runAllFromTools = runAllFromTools;
+
+function displayAssetLabel(item) {
+  if (!item) return "—";
+  const dn = item.display_name || item.displayName;
+  if (dn) return String(dn).split(" · ")[0];
+  const name = String(item.name || item.asset_name || "").trim();
+  const ip = String(item.ip || "").trim();
+  const host = String(item.hostname || "").trim();
+  if (host && ip && host !== ip) return `${host} (${ip})`;
+  if (name && /^\d+\.\d+\.\d+\.\d+$/.test(name) && host) return `${host} (${name})`;
+  if (name && !/^\d+\.\d+\.\d+\.\d+$/.test(name)) return name;
+  return ip || host || name || "device";
+}
+window.displayAssetLabel = displayAssetLabel;
+
+const ASSET_CATEGORY_LABELS = window.ASSET_CATEGORY_LABELS || {
+  server: "Server",
+  computer: "Computer",
+  endpoint: "Endpoint",
+  mobile: "Mobile",
+  network: "Network",
+  printer: "Printer",
+  iot: "IoT",
+  database: "Database",
+  web: "Web app",
+  cloud: "Cloud",
+  container: "Container",
+  code: "Code",
+  other: "Other",
+};
+window.ASSET_CATEGORY_LABELS = ASSET_CATEGORY_LABELS;
+
+function assetCategoryId(item) {
+  return String(item?.asset_category || item?.asset_type || item?.type || "other").toLowerCase();
+}
+
+function displayCategoryLabel(item) {
+  const id = assetCategoryId(item);
+  return item?.category_label || ASSET_CATEGORY_LABELS[id] || id.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function categoryChipHtml(item) {
+  const id = assetCategoryId(item);
+  const label = displayCategoryLabel(item);
+  return `<span class="category-chip category-${escapeHtml(id)}">${escapeHtml(label)}</span>`;
+}
+window.displayCategoryLabel = displayCategoryLabel;
 
 function renderScanSteps(progress) {
   const ul = document.getElementById("newScanSteps");
@@ -363,7 +706,207 @@ function renderScanSteps(progress) {
     .join("");
 }
 
+const COMBO_DEFAULT_STEPS = [
+  { id: "authorize", label: "Authorized", status: "done" },
+  { id: "scope", label: "Scope verified", status: "done" },
+  { id: "scan", label: "Scanners running", status: "active" },
+  { id: "evidence", label: "Evidence pack", status: "pending" },
+  { id: "investigate", label: "Investigation pack", status: "pending" },
+  { id: "triage", label: "Auto-triage", status: "pending" },
+];
+
+async function refreshComboScannerHint(profile) {
+  const hint = document.getElementById("newScanScannerHint");
+  const sel = document.getElementById("newScanScanner");
+  if (!hint || !sel || sel.value !== "combo") return;
+  try {
+    const res = await fetch("/api/scans/combo/scanners", { headers: authHeaders() });
+    if (!res.ok) return;
+    const data = await res.json();
+    const includeWeb = profile === "web" || profile === "full" || profile === "vulnerability";
+    const engines = includeWeb ? data.with_web || data.core : data.core || [];
+    const names = (engines || []).map((id) => {
+      if (id === "zap") return "SecuraIQ Web Scanner";
+      if (id === "securaiq") return "SecuraIQ";
+      if (id === "nmap") return "Nmap";
+      if (id === "nuclei") return "Nuclei";
+      return id;
+    });
+    hint.textContent = names.length
+      ? `Built-in live: ${names.join(" → ")} → evidence → AI investigate → triage`
+      : "Built-in SecuraIQ engines — always available, no external install.";
+  } catch (_) {
+    /* ignore */
+  }
+}
+
+async function pulseComboFromPush(push) {
+  if (!push) return null;
+  const watching = window.__securaiqWatchingComboJob;
+  if (watching && push.job_id && String(push.job_id) !== String(watching)) return null;
+  const statusLabel = document.getElementById("newScanStatusLabel");
+  const summaryEl = document.getElementById("newScanSummary");
+  const idLabel = document.getElementById("newScanIdLabel");
+  if (push.steps && Array.isArray(push.steps)) renderScanSteps(push.steps);
+  if (statusLabel && push.status) {
+    const step = push.step ? ` · ${push.step}` : "";
+    statusLabel.textContent = `COMBO ${String(push.status).toUpperCase()}${step}`;
+  }
+  if (push.scan_id) {
+    watchScanRealtime(push.scan_id);
+    if (idLabel) idLabel.textContent = push.scan_id;
+    if (typeof pulseActiveScanFromPush === "function") {
+      pulseActiveScanFromPush({ type: "scan", id: push.scan_id, step: push.step, status: push.scan_status || push.status });
+    }
+  }
+  if (summaryEl) {
+    if (push.scan_detail) summaryEl.textContent = push.scan_detail;
+    else if (push.scanner) summaryEl.textContent = `Running ${push.scanner}…`;
+    else if (push.step === "investigate") summaryEl.textContent = "Building investigation pack from evidence…";
+    else if (push.step === "triage") summaryEl.textContent = "Auto-triaging high/critical findings…";
+    else if (push.step === "evidence") summaryEl.textContent = "Collecting evidence from completed scans…";
+  }
+  if (push.status === "completed") {
+    window.__securaiqComboCompleted = true;
+    if (watching) {
+      try {
+        const res = await fetch(`/api/jobs/${encodeURIComponent(watching)}`, { headers: authHeaders() });
+        const job = await res.json().catch(() => ({}));
+        const pack = job.result || job.result_json || {};
+        if (pack.ok) {
+          window.__securaiqComboLastPack = pack;
+          renderComboResult(pack);
+          window.__securaiqWatchingComboJob = null;
+          if (typeof setLiveState === "function") setLiveState("live-ok", "Combo complete", pack.primary_scan_id);
+          if (typeof syncLiveWorkspace === "function") syncLiveWorkspace({ pushType: "combo" });
+          return pack;
+        }
+      } catch (_) {
+        /* poll fallback will finish */
+      }
+    }
+  }
+  return null;
+}
+window.pulseComboFromPush = pulseComboFromPush;
+
+function watchScanRealtime(scanId) {
+  if (!scanId) return;
+  window.__securaiqWatchingScans = window.__securaiqWatchingScans || new Set();
+  window.__securaiqWatchingScans.add(String(scanId));
+}
+
+function unwatchScanRealtime(scanId) {
+  window.__securaiqWatchingScans?.delete(String(scanId));
+}
+
+async function applyScanRecordToUi(scan) {
+  if (!scan || !scan.id) return scan;
+  const statusLabel = document.getElementById("newScanStatusLabel");
+  const idLabel = document.getElementById("newScanIdLabel");
+  const summaryEl = document.getElementById("newScanSummary");
+  const progressEl = document.getElementById("newScanProgress");
+  const form = document.getElementById("newScanForm");
+  if (form) form.classList.add("hidden");
+  if (progressEl) progressEl.classList.remove("hidden");
+  if (idLabel) idLabel.textContent = scan.id;
+  if (statusLabel) statusLabel.textContent = (scan.status || "").toUpperCase();
+  renderScanSteps(scan.progress);
+  const terminal = ["completed", "failed", "blocked"].includes(scan.status);
+  if (terminal && summaryEl) {
+    const sum = scan.summary || {};
+    if (scan.status === "completed") {
+      const reportUrl = sum.report_url || `/api/scans/${encodeURIComponent(scan.id)}/report`;
+      const pdfUrl = sum.report_pdf_url || `/api/scans/${encodeURIComponent(scan.id)}/report.pdf`;
+      summaryEl.innerHTML = `Open ports: ${sum.open_ports ?? "—"} · Findings: ${sum.findings_created ?? sum.findings ?? "—"} · Risk: ${
+        sum.risk?.score != null ? `${sum.risk.score} (${sum.risk.band || "—"})` : "—"
+      } · Asset linked<br/>
+        <button type="button" class="cc-action" id="newScanOpenReport" data-href="${reportUrl}">Download MD report</button>
+        <button type="button" class="cc-action" id="newScanOpenPdf" data-href="${pdfUrl}">Download PDF report</button>
+        <button type="button" class="cc-action" data-workspace="reports" id="newScanGotoReports">Open Reports</button>
+        <button type="button" class="cc-action" data-workspace="vulns" id="newScanGotoVulns">View findings</button>
+        <button type="button" class="cc-action" data-workspace="assets" id="newScanGotoAssets">View assets</button>
+        <button type="button" class="cc-action" id="newScanAskAi">Ask AI (from evidence)</button>`;
+      document.getElementById("newScanGotoAssets")?.addEventListener("click", () => {
+        document.getElementById("newScanModal")?.classList.add("hidden");
+        if (typeof window.showWorkspace === "function") window.showWorkspace("assets");
+      });
+      document.getElementById("newScanGotoReports")?.addEventListener("click", () => {
+        document.getElementById("newScanModal")?.classList.add("hidden");
+        if (typeof window.showWorkspace === "function") window.showWorkspace("reports");
+      });
+      document.getElementById("newScanGotoVulns")?.addEventListener("click", () => {
+        document.getElementById("newScanModal")?.classList.add("hidden");
+        if (typeof window.showWorkspace === "function") window.showWorkspace("vulns");
+      });
+      document.getElementById("newScanAskAi")?.addEventListener("click", () => {
+        document.getElementById("newScanModal")?.classList.add("hidden");
+        if (typeof window.askAboutScan === "function") {
+          window.askAboutScan(scan.id, sum);
+        }
+      });
+      const dl = document.getElementById("newScanOpenReport");
+      dl?.addEventListener("click", async () => {
+        try {
+          if (typeof downloadMd === "function") {
+            await downloadMd(reportUrl, `securaiq-scan-${String(scan.id).slice(0, 8)}.md`);
+          } else {
+            const r = await fetch(reportUrl, { headers: authHeaders() });
+            const md = await r.text();
+            const a = document.createElement("a");
+            a.href = URL.createObjectURL(new Blob([md], { type: "text/markdown" }));
+            a.download = `securaiq-scan-${String(scan.id).slice(0, 8)}.md`;
+            a.click();
+          }
+        } catch (err) {
+          alert(err.message || "Report download failed");
+        }
+      });
+      document.getElementById("newScanOpenPdf")?.addEventListener("click", async () => {
+        try {
+          if (typeof window.downloadBinary === "function") {
+            await window.downloadBinary(pdfUrl, `securaiq-va-${String(scan.id).slice(0, 8)}.pdf`, "application/pdf");
+          } else {
+            const r = await fetch(pdfUrl, { headers: authHeaders() });
+            const buf = await r.arrayBuffer();
+            const a = document.createElement("a");
+            a.href = URL.createObjectURL(new Blob([buf], { type: "application/pdf" }));
+            a.download = `securaiq-va-${String(scan.id).slice(0, 8)}.pdf`;
+            a.click();
+          }
+        } catch (err) {
+          alert(err.message || "PDF download failed");
+        }
+      });
+    } else {
+      summaryEl.textContent = scan.error || scan.status;
+    }
+  }
+  if (terminal) {
+    unwatchScanRealtime(scan.id);
+    if (typeof syncLiveWorkspace === "function") {
+      syncLiveWorkspace({ pushType: "scan" });
+    }
+  }
+  return scan;
+}
+
+async function pulseActiveScanFromPush(push) {
+  const scanId = push && push.id ? String(push.id) : "";
+  if (!scanId || !window.__securaiqWatchingScans?.has(scanId)) return null;
+  try {
+    const res = await fetch(`/api/scans/${encodeURIComponent(scanId)}`, { headers: authHeaders() });
+    if (!res.ok) return null;
+    const scan = await res.json();
+    return applyScanRecordToUi(scan);
+  } catch {
+    return null;
+  }
+}
+window.pulseActiveScanFromPush = pulseActiveScanFromPush;
+
 async function pollScanUntilDone(scanId) {
+  watchScanRealtime(scanId);
   const progressEl = document.getElementById("newScanProgress");
   const form = document.getElementById("newScanForm");
   const statusLabel = document.getElementById("newScanStatusLabel");
@@ -376,81 +919,14 @@ async function pollScanUntilDone(scanId) {
     const res = await fetch(`/api/scans/${encodeURIComponent(scanId)}`, { headers: authHeaders() });
     if (!res.ok) break;
     const scan = await res.json();
-    if (statusLabel) statusLabel.textContent = (scan.status || "").toUpperCase();
-    renderScanSteps(scan.progress);
+    await applyScanRecordToUi(scan);
     const terminal = ["completed", "failed", "blocked"].includes(scan.status);
     if (terminal) {
-      const sum = scan.summary || {};
-      if (summaryEl) {
-        if (scan.status === "completed") {
-          const reportUrl = sum.report_url || `/api/scans/${encodeURIComponent(scanId)}/report`;
-          const pdfUrl = sum.report_pdf_url || `/api/scans/${encodeURIComponent(scanId)}/report.pdf`;
-          summaryEl.innerHTML = `Open ports: ${sum.open_ports ?? "—"} · Findings: ${sum.findings_created ?? sum.findings ?? "—"} · Evidence: saved<br/>
-            <button type="button" class="cc-action" id="newScanOpenReport" data-href="${reportUrl}">Download MD report</button>
-            <button type="button" class="cc-action" id="newScanOpenPdf" data-href="${pdfUrl}">Download PDF report</button>
-            <button type="button" class="cc-action" data-workspace="reports" id="newScanGotoReports">Open Reports</button>
-            <button type="button" class="cc-action" data-workspace="vulns" id="newScanGotoVulns">View findings</button>`;
-          const dl = document.getElementById("newScanOpenReport");
-          dl?.addEventListener("click", async () => {
-            try {
-              if (typeof downloadMd === "function") {
-                await downloadMd(reportUrl, `securaiq-scan-${String(scanId).slice(0, 8)}.md`);
-              } else {
-                const r = await fetch(reportUrl, { headers: authHeaders() });
-                const md = await r.text();
-                const a = document.createElement("a");
-                a.href = URL.createObjectURL(new Blob([md], { type: "text/markdown" }));
-                a.download = `securaiq-scan-${String(scanId).slice(0, 8)}.md`;
-                a.click();
-              }
-            } catch (err) {
-              alert(err.message || "Report download failed");
-            }
-          });
-          document.getElementById("newScanOpenPdf")?.addEventListener("click", async () => {
-            try {
-              if (typeof window.downloadBinary === "function") {
-                await window.downloadBinary(pdfUrl, `securaiq-va-${String(scanId).slice(0, 8)}.pdf`, "application/pdf");
-              } else {
-                const r = await fetch(pdfUrl, { headers: authHeaders() });
-                const buf = await r.arrayBuffer();
-                const a = document.createElement("a");
-                a.href = URL.createObjectURL(new Blob([buf], { type: "application/pdf" }));
-                a.download = `securaiq-va-${String(scanId).slice(0, 8)}.pdf`;
-                a.click();
-              }
-            } catch (err) {
-              alert(err.message || "PDF download failed");
-            }
-          });
-          document.getElementById("newScanGotoReports")?.addEventListener("click", () => {
-            document.getElementById("newScanModal")?.classList.add("hidden");
-            if (typeof showView === "function") showView("reports");
-            else if (typeof window.showView === "function") window.showView("reports");
-          });
-          document.getElementById("newScanGotoVulns")?.addEventListener("click", () => {
-            document.getElementById("newScanModal")?.classList.add("hidden");
-            if (typeof showView === "function") showView("vulns");
-            else if (typeof window.showView === "function") window.showView("vulns");
-          });
-        } else {
-          summaryEl.textContent = scan.error || scan.status;
-        }
-      }
-      if (scan.status === "completed" && typeof loadVulns === "function") {
-        try {
-          await loadVulns();
-        } catch (_) {}
-      }
-      if (scan.status === "completed" && typeof refreshMissionControl === "function") {
-        try {
-          await refreshMissionControl();
-        } catch (_) {}
-      }
       return scan;
     }
-    await new Promise((r) => setTimeout(r, 1500));
+    await new Promise((r) => setTimeout(r, 800));
   }
+  unwatchScanRealtime(scanId);
   if (summaryEl) summaryEl.textContent = "Still running — check Jobs or refresh later.";
   return null;
 }
@@ -486,28 +962,270 @@ async function pollScansUntilDone(scanIds) {
   return results;
 }
 
+async function pollJobUntilDone(jobId, { timeoutMs = 300000, intervalMs = 1200, onTick, shouldStop } = {}) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    if (typeof shouldStop === "function" && shouldStop()) {
+      return window.__securaiqComboLastPack
+        ? { status: "done", result: window.__securaiqComboLastPack, result_json: window.__securaiqComboLastPack }
+        : { status: "done" };
+    }
+    const res = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`, { headers: authHeaders() });
+    const job = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(job.detail || `Job HTTP ${res.status}`);
+    const st = String(job.status || "").toLowerCase();
+    if (typeof onTick === "function") onTick(job);
+    if (st === "done" || st === "completed") return job;
+    if (st === "error" || st === "failed") {
+      throw new Error(job.error || "Combo job failed");
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  throw new Error("Combo workflow timed out — check Jobs for status.");
+}
+
+function renderComboResult(pack) {
+  const summaryEl = document.getElementById("newScanSummary");
+  const statusLabel = document.getElementById("newScanStatusLabel");
+  const idLabel = document.getElementById("newScanIdLabel");
+  const progressEl = document.getElementById("newScanProgress");
+  const form = document.getElementById("newScanForm");
+  if (form) form.classList.add("hidden");
+  if (progressEl) progressEl.classList.remove("hidden");
+  if (pack.steps) renderScanSteps(pack.steps);
+  if (statusLabel) statusLabel.textContent = "COMBO COMPLETE";
+  if (idLabel) idLabel.textContent = pack.primary_scan_id || (pack.scan_ids || [])[0] || "combo";
+  if (!summaryEl) return;
+  const steps = Array.isArray(pack.steps)
+    ? pack.steps.map((s) => `${s.label}: ${s.status}`).join(" · ")
+    : "";
+  const reportUrl = pack.report_url || `/api/scans/${encodeURIComponent(pack.primary_scan_id || "")}/report`;
+  const pdfUrl = pack.report_pdf_url || `/api/scans/${encodeURIComponent(pack.primary_scan_id || "")}/report.pdf`;
+  summaryEl.innerHTML = `Combo: ${pack.summary?.scanners_ok ?? "—"} scanners · Findings: ${
+    pack.findings_count ?? "—"
+  } · High/Crit: ${pack.summary?.high_critical ?? "—"} · Triaged: ${pack.summary?.triaged ?? 0}<br/>
+    <span class="hint">${steps}</span><br/>
+    <button type="button" class="cc-action" id="comboOpenReport" data-href="${reportUrl}">Download MD report</button>
+    <button type="button" class="cc-action" id="comboOpenPdf" data-href="${pdfUrl}">Download PDF</button>
+    <button type="button" class="cc-action" data-workspace="vulns" id="comboGotoVulns">View findings</button>
+    <button type="button" class="cc-action" id="comboAskAi">Ask AI (from evidence)</button>`;
+  document.getElementById("comboGotoVulns")?.addEventListener("click", () => {
+    document.getElementById("newScanModal")?.classList.add("hidden");
+    if (typeof window.showWorkspace === "function") window.showWorkspace("vulns");
+  });
+  document.getElementById("comboAskAi")?.addEventListener("click", () => {
+    document.getElementById("newScanModal")?.classList.add("hidden");
+    if (pack.prompt && typeof window.runNavPrompt === "function") {
+      window.runNavPrompt("assess", pack.prompt, { stay: true });
+    } else if (pack.primary_scan_id && typeof window.askAboutScan === "function") {
+      window.askAboutScan(pack.primary_scan_id, pack.summary);
+    }
+  });
+  document.getElementById("comboOpenReport")?.addEventListener("click", async () => {
+    try {
+      if (typeof downloadMd === "function") {
+        await downloadMd(reportUrl, `securaiq-combo-${String(pack.primary_scan_id || "run").slice(0, 8)}.md`);
+      }
+    } catch (_) {
+      /* ignore */
+    }
+  });
+  document.getElementById("comboOpenPdf")?.addEventListener("click", () => {
+    window.open(pdfUrl, "_blank");
+  });
+}
+
+async function submitComboAssessment(opts = {}) {
+  const target =
+    opts.target ||
+    document.getElementById("newScanTarget")?.value?.trim() ||
+    (typeof getScanTarget === "function" ? getScanTarget() : "");
+  const authorized =
+    opts.authorized != null
+      ? !!opts.authorized
+      : !!document.getElementById("newScanAuthorized")?.checked;
+  const profile =
+    opts.profile ||
+    document.querySelector('input[name="scanProfile"]:checked')?.value ||
+    "discovery";
+  const scopeRaw = opts.scopeRaw != null ? opts.scopeRaw : document.getElementById("newScanScope")?.value || "";
+  let scope = String(scopeRaw)
+    .split(/[\n,;]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (!scope.length && target) {
+    scope = [target];
+    const scopeEl = document.getElementById("newScanScope");
+    if (scopeEl && !String(scopeEl.value || "").trim()) scopeEl.value = target;
+  }
+  const autoTriage =
+    opts.auto_triage_high != null
+      ? !!opts.auto_triage_high
+      : document.getElementById("newScanAutoTriage")?.checked !== false;
+  if (!target) {
+    alert("Enter a target hostname or IP you are authorized to assess.");
+    return;
+  }
+  if (!authorized) {
+    alert("Confirm authorization before starting the combo workflow.");
+    return;
+  }
+  if (!scope.length) {
+    alert("Combo requires structured scope (host, IP, or CIDR).");
+    return;
+  }
+  const modal = document.getElementById("newScanModal");
+  if (modal && opts.openModal !== false) {
+    modal.classList.remove("hidden");
+    const form = document.getElementById("newScanForm");
+    const progressEl = document.getElementById("newScanProgress");
+    if (form) form.classList.add("hidden");
+    if (progressEl) progressEl.classList.remove("hidden");
+  }
+  const statusLabel = document.getElementById("newScanStatusLabel");
+  const summaryEl = document.getElementById("newScanSummary");
+  if (statusLabel) statusLabel.textContent = "COMBO QUEUED";
+  if (summaryEl) summaryEl.textContent = "Running combo: scan → evidence → investigate → triage…";
+  const btn = document.getElementById("newScanStart");
+  if (btn) btn.disabled = true;
+  try {
+    const body = {
+      target,
+      profile,
+      authorized: true,
+      scope,
+      engagement_id: typeof engagementSelectEl !== "undefined" ? engagementSelectEl?.value || null : null,
+      include_web: profile === "web" || profile === "full" || profile === "vulnerability",
+      auto_triage_high: autoTriage,
+      async_mode: true,
+    };
+    const res = await fetch("/api/scans/combo", {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      let detail = data.detail || `HTTP ${res.status}`;
+      if (typeof detail !== "string") detail = JSON.stringify(detail);
+      throw new Error(detail);
+    }
+    if (data.ok && data.workflow === "combo_assessment") {
+      renderComboResult(data);
+      return data;
+    }
+    const jobId = data.job_id;
+    if (!jobId) throw new Error("No combo job_id returned");
+    window.__securaiqWatchingComboJob = jobId;
+    window.__securaiqComboCompleted = false;
+    window.__securaiqComboLastPack = null;
+    renderScanSteps(COMBO_DEFAULT_STEPS);
+    if (Array.isArray(data.scanners) && data.scanners.length && summaryEl) {
+      summaryEl.textContent = `Queued · live engines: ${data.scanners.join(" → ")}`;
+    }
+    if (typeof setLiveState === "function") setLiveState("live-busy", "Combo workflow", jobId);
+    const pollMs = window.__securaiqEsConnected ? 4000 : 1500;
+    const job = await pollJobUntilDone(jobId, {
+      intervalMs: pollMs,
+      onTick: (j) => {
+        if (statusLabel) statusLabel.textContent = `COMBO ${(j.status || "").toUpperCase()}`;
+        if (j.status === "running" && summaryEl && !window.__securaiqComboCompleted) {
+          summaryEl.textContent = "Combo running — live step updates via SSE…";
+        }
+      },
+      shouldStop: () => window.__securaiqComboCompleted,
+    });
+    if (window.__securaiqComboLastPack?.ok) {
+      window.__securaiqWatchingComboJob = null;
+      return window.__securaiqComboLastPack;
+    }
+    const pack = job.result || job.result_json || {};
+    if (!pack.ok) throw new Error(pack.error || "Combo finished without a pack");
+    renderComboResult(pack);
+    window.__securaiqWatchingComboJob = null;
+    if (typeof setLiveState === "function") setLiveState("live-ok", "Combo complete", pack.primary_scan_id);
+    if (typeof syncLiveWorkspace === "function") syncLiveWorkspace({ pushType: "combo" });
+    return pack;
+  } catch (err) {
+    if (summaryEl) summaryEl.textContent = String(err.message || err);
+    if (statusLabel) statusLabel.textContent = "COMBO FAILED";
+    alert(String(err.message || err));
+    throw err;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+window.submitComboAssessment = submitComboAssessment;
+
 async function submitNewScan(ev) {
   ev?.preventDefault?.();
-  const target = document.getElementById("newScanTarget")?.value?.trim();
-  const authorized = !!document.getElementById("newScanAuthorized")?.checked;
+  const targetEl = document.getElementById("newScanTarget");
+  const scopeEl = document.getElementById("newScanScope");
+  const authEl = document.getElementById("newScanAuthorized");
+  let target = targetEl?.value?.trim() || "";
+  let scopeRaw = scopeEl?.value || "";
+  // If user only filled Target (common), use it as structured scope.
+  if (target && !String(scopeRaw).trim()) {
+    scopeRaw = target;
+    if (scopeEl) scopeEl.value = target;
+  }
+  // If only Scope filled, use first line as Target.
+  if (!target && String(scopeRaw).trim()) {
+    target = String(scopeRaw)
+      .split(/[\n,;]+/)
+      .map((s) => s.trim())
+      .filter(Boolean)[0] || "";
+    if (targetEl && target) targetEl.value = target;
+  }
+  const authorized = !!authEl?.checked;
   const scanner = document.getElementById("newScanScanner")?.value || "securaiq";
   const profile =
     document.querySelector('input[name="scanProfile"]:checked')?.value || "discovery";
-  const scopeRaw = document.getElementById("newScanScope")?.value || "";
   const scope = scopeRaw
     .split(/[\n,;]+/)
     .map((s) => s.trim())
     .filter(Boolean);
   if (!target) {
     alert("Enter a target hostname or IP you are authorized to scan.");
+    targetEl?.focus();
     return;
   }
   if (!authorized) {
     alert("Confirm authorization before starting a scan.");
+    authEl?.focus();
+    return;
+  }
+  const needsScope =
+    scanner === "combo" ||
+    scanner === "nmap" ||
+    scanner === "nuclei" ||
+    scanner === "zap" ||
+    scanner === "all" ||
+    profile === "vulnerability" ||
+    profile === "full";
+  if (needsScope && !scope.length) {
+    alert("Add at least one host/IP/CIDR in Scope (or put it in Target).");
+    scopeEl?.focus();
+    return;
+  }
+  if (scanner === "combo") {
+    const form = document.getElementById("newScanForm");
+    const progressEl = document.getElementById("newScanProgress");
+    if (form) form.classList.add("hidden");
+    if (progressEl) progressEl.classList.remove("hidden");
+    await submitComboAssessment({ target, authorized, profile, scopeRaw, openModal: false });
     return;
   }
   const btn = document.getElementById("newScanStart");
   if (btn) btn.disabled = true;
+  const form = document.getElementById("newScanForm");
+  const progressEl = document.getElementById("newScanProgress");
+  const statusLabel = document.getElementById("newScanStatusLabel");
+  const summaryEl = document.getElementById("newScanSummary");
+  if (form) form.classList.add("hidden");
+  if (progressEl) progressEl.classList.remove("hidden");
+  if (statusLabel) statusLabel.textContent = "QUEUED";
+  if (summaryEl) summaryEl.textContent = `Starting ${scanner} · ${profile} on ${target}…`;
   try {
     const body = {
       target,
@@ -545,12 +1263,17 @@ async function submitNewScan(ev) {
           : "Scan queued";
       setLiveState("live-busy", label, scanIds[0]);
     }
+    if (summaryEl) {
+      summaryEl.textContent =
+        data.scanner === "all"
+          ? `Queued ${scanIds.length} scanner(s) for ${target}`
+          : `Queued ${scanner} for ${target}`;
+    }
     await pollScansUntilDone(scanIds);
   } catch (err) {
-    const summaryEl = document.getElementById("newScanSummary");
-    const progressEl = document.getElementById("newScanProgress");
     if (progressEl) progressEl.classList.remove("hidden");
     if (summaryEl) summaryEl.textContent = String(err.message || err);
+    if (statusLabel) statusLabel.textContent = "FAILED";
     alert(String(err.message || err));
   } finally {
     if (btn) btn.disabled = false;
@@ -1348,7 +2071,7 @@ async function loadAssets() {
   const rows = (data.assets || [])
     .map(
       (a) =>
-        `<li><strong>${escapeHtml(a.name)}</strong> · ${escapeHtml(a.asset_type)} · ${escapeHtml(
+        `<li><strong>${escapeHtml(displayAssetLabel(a))}</strong> · ${categoryChipHtml(a)} · ${escapeHtml(
           a.criticality
         )} · ${escapeHtml(a.owner || "—")}
          <button type="button" class="btn-secondary asset-del" data-id="${escapeHtml(a.id)}">Delete</button></li>`
@@ -1622,15 +2345,15 @@ function paintLiveDeck(state, phaseText, activity, data) {
   const rt = data || window.__securaiqRealtime || {};
   const jobsBusy = Number(rt.jobs_running || 0) + Number(rt.jobs_pending || 0);
   const jobsEl = document.getElementById("tickerJobs");
-  if (jobsEl) jobsEl.textContent = `jobs ${jobsBusy}`;
-  const kpiEl = document.getElementById("tickerKpi");
-  if (kpiEl) {
+  if (jobsEl) jobsEl.textContent = `${jobsBusy} jobs`;
+  const findingsEl = document.getElementById("tickerFindings");
+  if (findingsEl) {
     const vulns = rt.kpis && rt.kpis.vulns_open != null ? rt.kpis.vulns_open : null;
-    const inc = rt.kpis && rt.kpis.incidents_open != null ? rt.kpis.incidents_open : null;
-    if (vulns != null || inc != null) {
-      kpiEl.textContent = `${vulns ?? "—"} findings · ${inc ?? "—"} incidents`;
-    }
+    findingsEl.textContent = vulns != null ? `${vulns} vulns` : "— vulns";
+    findingsEl.title = vulns != null ? `${vulns} open findings` : "Open findings";
   }
+  const legacyKpi = document.getElementById("tickerKpi");
+  if (legacyKpi) legacyKpi.hidden = true;
 }
 
 function setLiveState(state, phaseText, activity) {
@@ -1736,9 +2459,17 @@ function startRealtimeFeed() {
     return;
   }
   try {
+    if (window.__securaiqRealtimeEs) {
+      try {
+        window.__securaiqRealtimeEs.close();
+      } catch {
+        /* ignore */
+      }
+    }
     const es = new EventSource("/api/realtime");
     window.__securaiqRealtimeEs = es;
     es.onopen = () => {
+      window.__securaiqEsConnected = true;
       if (!streaming) setLiveState("live-on", "Ready", "");
     };
     es.onmessage = (ev) => {
@@ -1791,7 +2522,7 @@ function startRealtimeFeed() {
           const hk = data.hardeningkitty || {};
           if (hk.installed) bits.push(`HK ${hk.lists || 0}`);
           const inv = data.inventory || {};
-          if (inv.configured) bits.push(`inv ${inv.devices_cached || 0}`);
+          if (inv.devices_cached != null) bits.push(`inv ${inv.devices_cached || 0}`);
           if (pushType) bits.push(`push ${pushType}`);
           liveMetaEl.textContent = bits.join(" · ");
         }
@@ -1814,16 +2545,38 @@ function startRealtimeFeed() {
           badge.hidden = n <= 0;
           badge.textContent = n > 99 ? "99+" : String(n);
         }
-        if (pushType === "tool_progress" && (streaming || window.__securaiqStreaming)) {
-          const p = push || {};
-          const scanned = Number(p.scanned || 0);
-          const total = Number(p.total || 0);
-          const findings = Number(p.findings || 0);
-          setLiveState(
-            "live-busy",
-            `Code scan ${scanned}/${total || "?"}`,
-            `${findings} findings${p.file ? ` · ${p.file}` : ""}`
-          );
+        if (pushType === "tool_progress") {
+          pulseToolProgress(push);
+        }
+        if (pushType === "tool" && typeof pulseToolFromPush === "function") {
+          pulseToolFromPush(push);
+        }
+        if (pushType === "scan") {
+          pulseVaScanFromPush(push);
+        }
+        if (pushType === "combo" && typeof pulseComboFromPush === "function") {
+          pulseComboFromPush(push);
+        }
+        if (pushType === "inventory") {
+          pulseInventoryFromPush(push);
+        }
+        if (pushType === "software_inventory") {
+          pulseSoftwareFromPush(push);
+          const swIssuesEl = document.getElementById("ccSoftwareIssues");
+          const swBarEl = document.getElementById("ccSoftwareHealthBar");
+          if (push && push.issues != null && swIssuesEl) {
+            swIssuesEl.textContent = String(Number(push.issues) || 0);
+          }
+          if (push && push.health_score != null && swBarEl) {
+            swBarEl.style.width = `${Math.min(100, Math.max(0, Number(push.health_score) || 0))}%`;
+          }
+          const wzPatchEl = document.getElementById("wzPatchHealthPct");
+          if (push && push.health_score != null && wzPatchEl) {
+            wzPatchEl.textContent = `${Math.round(Number(push.health_score) || 0)}%`;
+          }
+        }
+        if (pushType === "intel" || pushType === "intel_watch") {
+          refreshIntelStrip();
         }
         // Detect job completions → notify workspace to refresh
         const prevJobs = JSON.stringify((prev.jobs_recent || []).map((j) => `${j.id}:${j.status}`));
@@ -1870,8 +2623,13 @@ function startRealtimeFeed() {
       }
     };
     es.onerror = () => {
+      window.__securaiqEsConnected = false;
       if (!streaming && !window.__securaiqStreaming) {
         setLiveState("live-off", "Reconnecting…", "");
+      }
+      if (es.readyState === EventSource.CLOSED) {
+        clearTimeout(window.__securaiqEsRetry);
+        window.__securaiqEsRetry = setTimeout(startRealtimeFeed, 2500);
       }
     };
   } catch {
@@ -1879,21 +2637,90 @@ function startRealtimeFeed() {
   }
 }
 
+const REALTIME_LIVE_TYPES = new Set([
+  "scan",
+  "job",
+  "combo",
+  "asset",
+  "vuln",
+  "vuln_batch",
+  "inventory",
+  "software_inventory",
+  "software.inventory.updated",
+  "software.inventory.updated",
+  "software.vulnerability.changed",
+  "software.vulnerability.changed",
+  "scan_clear",
+  "archive",
+  "intel",
+  "intel_watch",
+  "tool_progress",
+  "tool",
+  "xdr",
+  "xdr_batch",
+  "siem",
+  "cloud",
+  "thehive",
+  "incident",
+  "remediation",
+  "risk",
+  "playbook",
+  "campaign",
+  "gap",
+  "hardening",
+  "notification",
+  "hunt",
+]);
+window.REALTIME_LIVE_TYPES = REALTIME_LIVE_TYPES;
+
 function applyRealtimeWorkspaceRefresh(data, flags) {
   const view =
     window.__securaiqWorkspaceView ||
     (typeof currentView !== "undefined" ? currentView : "") ||
     "";
+  const pt = flags.pushType || "";
+  if (REALTIME_LIVE_TYPES.has(pt) || flags.jobsChanged) {
+    clearTimeout(window.__securaiqInvRtTimer);
+    window.__securaiqInvRtTimer = setTimeout(() => {
+      if (typeof syncLiveWorkspace === "function") syncLiveWorkspace({ pushType: pt, push: data.push });
+    }, 180);
+  }
+  if (pt === "scan") {
+    if (typeof pulseVaScanFromPush === "function") pulseVaScanFromPush(data.push);
+    if (typeof pulseActiveScanFromPush === "function" && data.push) pulseActiveScanFromPush(data.push);
+  } else if (pt === "combo" && typeof pulseComboFromPush === "function") {
+    pulseComboFromPush(data.push);
+  } else if (pt === "inventory" && typeof pulseInventoryFromPush === "function") {
+    pulseInventoryFromPush(data.push);
+  } else if (isSoftwarePushType(pt)) {
+    pulseSoftwareFromPush(data.push);
+    if (typeof window.refreshSoftwareFromPush === "function") {
+      window.refreshSoftwareFromPush(data.push, { partial: true, skipPulse: true });
+    }
+  } else if (pt === "tool_progress" && typeof pulseToolProgress === "function") {
+    pulseToolProgress(data.push);
+    pulseToolFromPush(data.push);
+  } else if (pt === "tool" && typeof pulseToolFromPush === "function") {
+    pulseToolFromPush(data.push);
+  } else if ((pt === "intel" || pt === "intel_watch") && typeof refreshIntelStrip === "function") {
+    refreshIntelStrip();
+  }
+  const incremental = isSoftwarePushType(pt) || isToolPushType(pt);
+  if (flags.pushRefresh && !incremental && typeof loadCommandCenter === "function") {
+    clearTimeout(window.__securaiqCcAnyTimer);
+    window.__securaiqCcAnyTimer = setTimeout(() => loadCommandCenter(), 320);
+  }
   if (flags.jobsChanged && typeof window.refreshAutomationPage === "function" && view === "automation") {
     window.refreshAutomationPage();
   }
   if (
     (flags.kpisChanged || flags.pushRefresh || flags.heartbeat) &&
     view === "command" &&
+    !incremental &&
     typeof loadCommandCenter === "function"
   ) {
     clearTimeout(window.__securaiqCcRtTimer);
-    window.__securaiqCcRtTimer = setTimeout(() => loadCommandCenter(), flags.pushRefresh ? 500 : 1800);
+    window.__securaiqCcRtTimer = setTimeout(() => loadCommandCenter(), flags.pushRefresh ? 400 : 1200);
   }
   if (flags.jobsChanged && typeof window.__securaiqOnJobPulse === "function") {
     window.__securaiqOnJobPulse(data);
@@ -1901,7 +2728,6 @@ function applyRealtimeWorkspaceRefresh(data, flags) {
   if ((flags.pushRefresh || flags.heartbeat) && typeof window.__securaiqOnPushPulse === "function") {
     window.__securaiqOnPushPulse(data, flags);
   }
-  // Universal: keep whatever panel is open in sync with the live bus
   if (typeof window.__securaiqRefreshActiveView === "function") {
     window.__securaiqRefreshActiveView(data, flags);
   }
@@ -2609,7 +3435,8 @@ async function renderToolsPalette() {
         const cur = engineSel.value || "securaiq";
         const enabled = scanners.filter((s) => s.engine_enabled);
         const opts = [
-          '<option value="securaiq">Engine: SecuraIQ</option>',
+          '<option value="combo">Engine: Integrated VA (all scanners)</option>',
+          '<option value="securaiq">Engine: SecuraIQ only</option>',
           '<option value="all">Engine: all available</option>',
           ...enabled
             .filter((s) => s.id !== "securaiq")
@@ -2620,7 +3447,9 @@ async function renderToolsPalette() {
           '<option value="none">Engine: off (tools only)</option>',
         ];
         engineSel.innerHTML = opts.join("");
-        if ([...engineSel.options].some((o) => o.value === cur)) engineSel.value = cur;
+        const prefer = "combo";
+        if ([...engineSel.options].some((o) => o.value === prefer)) engineSel.value = prefer;
+        else if ([...engineSel.options].some((o) => o.value === cur)) engineSel.value = cur;
       }
     }
     const originMeta = {
@@ -2776,6 +3605,13 @@ function wireToolsPalette() {
       await syncSiemFromTools();
     } catch (err) {
       appendMessage("assistant", renderMarkdown(`**SIEM sync failed:** ${err.message || err}`), true);
+    }
+  });
+  on(document.getElementById("toolsPaletteSyncXdr"), "click", async () => {
+    try {
+      await syncXdrFromTools();
+    } catch (err) {
+      appendMessage("assistant", renderMarkdown(`**XDR sync failed:** ${err.message || err}`), true);
     }
   });
   on(document.getElementById("toolsPaletteSyncInv"), "click", async () => {
@@ -3017,6 +3853,43 @@ Rules:
 }
 window.askAboutEntity = askAboutEntity;
 
+/** Ask AI using real scan evidence (report.md via /api/ai/investigate-scan). */
+async function askAboutScan(scanId, summary) {
+  const sid = String(scanId || "").trim();
+  if (!sid) return;
+  let prompt = "";
+  try {
+    const res = await fetch("/api/ai/investigate-scan", {
+      method: "POST",
+      headers: { ...authHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify({ scan_id: sid }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      prompt = data.prompt || (data.ai_prompts && data.ai_prompts[0] && data.ai_prompts[0].prompt) || "";
+    }
+  } catch (_) {
+    /* fall through */
+  }
+  if (!prompt) {
+    const sum = summary || {};
+    try {
+      const r = await fetch(`/api/scans/${encodeURIComponent(sid)}/report`, { headers: authHeaders() });
+      const md = r.ok ? (await r.text()).slice(0, 12000) : "";
+      prompt =
+        `Investigate SecuraIQ scan \`${sid}\` using only stored evidence.\n` +
+        `Risk: ${sum.risk?.score ?? "n/a"} (${sum.risk?.band || "n/a"}).\n` +
+        `Do not invent scan results.\n\n--- report.md excerpt ---\n${md || "(report unavailable)"}\n`;
+    } catch (_) {
+      prompt =
+        `Investigate scan ${sid} using only stored evidence and findings. ` +
+        `Do not invent scan results.`;
+    }
+  }
+  runNavPrompt("assess", prompt, { stay: true });
+}
+window.askAboutScan = askAboutScan;
+
 let currentView = "command";
 window.__setSecuraIQView = function (v) {
   currentView = v === "chat" ? "chat" : v === "command" ? "command" : "page";
@@ -3063,7 +3936,7 @@ function showView(view, opts = {}) {
   }
   setNavActive(currentView);
   if (topbarChatTitleEl) {
-    topbarChatTitleEl.textContent = currentView === "command" ? "Control Board" : (getCurrentChat()?.title || "Assistant");
+    topbarChatTitleEl.textContent = currentView === "command" ? "Security dashboard" : (getCurrentChat()?.title || "Assistant");
   }
   if (currentView === "command") {
     loadCommandCenter();
@@ -3075,8 +3948,22 @@ function showView(view, opts = {}) {
 }
 
 async function loadCommandCenter() {
-  if (window.__securaiqCcLoading) return;
+  if (window.__securaiqCcLoading) {
+    window.__securaiqCcReloadQueued = true;
+    return;
+  }
   window.__securaiqCcLoading = true;
+  window.__securaiqCcReloadQueued = false;
+  clearTimeout(window.__securaiqCcLockTimer);
+  window.__securaiqCcLockTimer = setTimeout(() => {
+    if (window.__securaiqCcLoading) {
+      window.__securaiqCcLoading = false;
+      if (window.__securaiqCcReloadQueued) {
+        window.__securaiqCcReloadQueued = false;
+        loadCommandCenter();
+      }
+    }
+  }, 20000);
   const scoreEl = document.getElementById("ccScore");
   const compEl = document.getElementById("ccCompliance");
   const barEl = document.getElementById("ccComplianceBar");
@@ -3088,13 +3975,30 @@ async function loadCommandCenter() {
   const riskListEl = document.getElementById("ccTopRisks");
   const vulnListEl = document.getElementById("ccTopVulns");
   try {
-    const [res, briefRes] = await Promise.all([
+    const [res, briefRes, scansRes] = await Promise.all([
       fetch("/api/dashboard", { headers: authHeaders() }),
       fetch("/api/dashboard/brief", { headers: authHeaders() }).catch(() => null),
+      fetch("/api/scans?limit=6", { headers: authHeaders() }).catch(() => null),
     ]);
     const data = await res.json();
     const briefData = briefRes && briefRes.ok ? await briefRes.json().catch(() => ({})) : {};
+    const scansData = scansRes && scansRes.ok ? await scansRes.json().catch(() => ({})) : {};
+    const recentScans = scansData.scans || [];
+    window.__securaiqRecentScans = recentScans;
     if (!res.ok) throw new Error(formatApiDetail(data.detail, `HTTP ${res.status}`));
+
+    // Render software posture immediately — do not wait on later Mission Control sections.
+    try {
+      renderMcSoftwarePosturePanel(data.software_posture || {});
+      window.__securaiqLastSoftwarePosture = data.software_posture || {};
+      wireMcSoftwarePanelOnce();
+    } catch (swErr) {
+      const swEl = document.getElementById("mcSoftwarePostureBody");
+      if (swEl) {
+        swEl.innerHTML = `<p class="hint">Software posture unavailable: ${escapeHtml(swErr.message || String(swErr))}</p>`;
+      }
+    }
+
     const mc = data.mission_control || {};
     const compliance = Number(data.compliance_score || 0);
     const openRisks = Number(data.risks_open || 0);
@@ -3111,7 +4015,10 @@ async function loadCommandCenter() {
         !(data.assessment_count || 0) &&
         !(data.intel?.watch_count || 0) &&
         !(data.playbooks_total || 0) &&
-        !(data.campaigns_total || 0));
+        !(data.campaigns_total || 0) &&
+        !(data.software_posture?.total_products || 0) &&
+        !(data.software_posture?.windows_host?.installed_apps || 0) &&
+        !(data.software_posture?.coverage?.control_panel || 0));
 
     // KPI trends: prefer server snapshot deltas when available
     const trends = data.kpi_trends || {};
@@ -3182,16 +4089,18 @@ async function loadCommandCenter() {
           assets: data.assets_total || 0,
           incidents: data.incidents_open || 0,
           findings: data.vulnerabilities_total || 0,
+          swIssues: data.software_posture?.issues || 0,
           at: Date.now(),
         })
       );
     }
 
     const complianceRounded = Math.round(emptyWorkspace ? 0 : compliance);
+    const sevCounts = data.severity_counts || {};
     if (scoreEl) scoreEl.textContent = String(emptyWorkspace ? 0 : index);
     if (compEl) compEl.textContent = emptyWorkspace ? "0%" : `${complianceRounded}%`;
     if (barEl) barEl.style.width = `${Math.min(100, complianceRounded)}%`;
-    if (critEl) critEl.textContent = String(emptyWorkspace ? 0 : crit);
+    if (critEl) critEl.textContent = String(emptyWorkspace ? 0 : Number(sevCounts.critical ?? crit));
     if (risksEl) risksEl.textContent = String(emptyWorkspace ? 0 : openRisks);
     if (remsEl) remsEl.textContent = String(emptyWorkspace ? 0 : openRems);
     if (assetsEl) assetsEl.textContent = String(emptyWorkspace ? 0 : data.assets_total || 0);
@@ -3199,38 +4108,68 @@ async function loadCommandCenter() {
     if (findingsTotalEl) {
       findingsTotalEl.textContent = String(emptyWorkspace ? 0 : data.vulnerabilities_total || 0);
     }
+    const sp = data.software_posture || {};
+    const swIssuesEl = document.getElementById("ccSoftwareIssues");
+    const swBarEl = document.getElementById("ccSoftwareHealthBar");
+    const swTrendEl = document.getElementById("ccSoftwareTrend");
+    const swIssues = emptyWorkspace ? 0 : Number(sp.issues || 0) + Number((sp.windows_host || {}).pending_updates || 0);
+    const swHealth = emptyWorkspace ? 100 : Number(sp.health_score ?? 100);
+    if (swIssuesEl) swIssuesEl.textContent = String(swIssues);
+    if (swBarEl) swBarEl.style.width = `${Math.min(100, Math.max(0, swHealth))}%`;
+    const swHealthPct = document.getElementById("ccSoftwareHealthPct");
+    if (swHealthPct) swHealthPct.textContent = emptyWorkspace ? "—" : `${Math.round(swHealth)}%`;
+    const wzPatchEl = document.getElementById("wzPatchHealthPct");
+    if (wzPatchEl) wzPatchEl.textContent = emptyWorkspace ? "—" : `${Math.round(swHealth)}%`;
+    if (swTrendEl && !emptyWorkspace) {
+      const prevSnap = JSON.parse(localStorage.getItem(snapKey) || "{}");
+      const d = swIssues - Number(prevSnap.swIssues || 0);
+      if (d === 0) swTrendEl.textContent = "";
+      else swTrendEl.textContent = d > 0 ? `↑ ${d}` : `↓ ${Math.abs(d)}`;
+    }
     const gauge = document.getElementById("ccScoreGauge");
     if (gauge) gauge.style.setProperty("--p", String(Math.min(100, Math.max(0, emptyWorkspace ? 0 : index))));
     const levelEl = document.getElementById("ccScoreLevel");
     if (levelEl) {
       if (emptyWorkspace) {
-        levelEl.textContent = "Empty — run New scan";
+        levelEl.textContent = "EMPTY";
         levelEl.dataset.level = "ok";
       } else {
-        levelEl.textContent =
-          index >= 80 ? "Strong" : index >= 60 ? "Stable" : index >= 40 ? "Watch" : "Critical";
+        const band =
+          index >= 80 ? "STRONG" : index >= 60 ? "STABLE" : index >= 40 ? "MEDIUM" : "CRITICAL";
+        levelEl.textContent = band;
         levelEl.dataset.level = index >= 60 ? "ok" : index >= 40 ? "warn" : "bad";
         levelEl.title = mc.security_score_note || data.security_index_note || "Live workspace score";
       }
     }
+    const highCountEl = document.getElementById("sqHighCount");
+    if (highCountEl) highCountEl.textContent = String(Number(sevCounts.high || 0));
     const incEl = document.getElementById("ccIncidents");
     if (incEl) incEl.textContent = String(emptyWorkspace ? 0 : data.incidents_open || 0);
     // notifBadge is now driven by the real GET /api/notifications unread_count
     // (see refreshNotifBadge()) instead of a client-side guess from crit+incidents.
+    const orgFull = mc.organization || "Local workspace";
     const topOrg = document.getElementById("topOrgName");
-    if (topOrg) topOrg.textContent = (mc.organization || "Local").split(/\s+/)[0] || "Local";
+    const topOrgBtn = document.getElementById("topOrgBtn");
+    if (topOrg) {
+      topOrg.textContent = shortScopeLabel(orgFull, 12);
+      topOrg.title = orgFull;
+    }
+    if (topOrgBtn) topOrgBtn.title = `Organization: ${orgFull}`;
     const topEnv = document.getElementById("topEnvName");
     if (topEnv) {
       const env = emptyWorkspace ? "Empty" : mc.environment || "Live";
       const short = env.split(/[·/]/)[0].trim() || "Live";
-      topEnv.title = short;
-      // Keep topbar compact — full phrase belongs in title tooltip
+      topEnv.title = env;
       topEnv.textContent = short.replace(/\s+workspace$/i, "").trim() || "Live";
     }
     const topProj = document.getElementById("topProjectName");
-    if (topProj) topProj.textContent = engagementSelectEl?.selectedOptions?.[0]?.textContent || "Workspace";
-    const syncEl = document.getElementById("topLastSync");
-    if (syncEl) syncEl.textContent = `pulse ${new Date().toLocaleTimeString()}`;
+    const topProjBtn = document.getElementById("topProjectsBtn");
+    const projFull = engagementSelectEl?.selectedOptions?.[0]?.textContent || "Local";
+    if (topProj) {
+      topProj.textContent = shortScopeLabel(projFull, 14);
+      topProj.title = projFull;
+    }
+    if (topProjBtn) topProjBtn.title = `Project: ${projFull}`;
 
     // Mission context header
     const setTxt = (id, v) => {
@@ -3243,19 +4182,22 @@ async function loadCommandCenter() {
     const greetEl = document.getElementById("mcGreeting");
     if (greetEl) {
       const uname = (window.__securaiqUser || "").trim();
+      const hour = new Date().getHours();
+      const fallback =
+        hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
       greetEl.textContent = brief.greeting
         ? `${brief.greeting}${uname ? `, ${uname}` : ""}`
-        : "Mission Control";
+        : `${fallback}${uname ? `, ${uname}` : ""}`;
     }
     const aiSum = document.getElementById("mcAiSummary");
     if (aiSum) {
       if (emptyWorkspace) {
-        aiSum.textContent = "Your workspace is empty — pick a path below when you’re ready.";
+        aiSum.textContent = "Your workspace is empty — pick a path below when you're ready.";
       } else {
-        const fw = (mc.framework || "compliance").toString();
         aiSum.textContent =
+          brief.attention ||
           brief.summary ||
-          `Score ${index} · ${complianceRounded}% ${fw} · ${crit} critical/high need attention · ${openRems} open actions.`;
+          `${crit} critical/high findings and ${openRems} open actions need review.`;
       }
     }
     const lastScan = mc.last_scan;
@@ -3282,6 +4224,19 @@ async function loadCommandCenter() {
       syncChecklistProgress(data);
     }
 
+    // Software panel already rendered at the top of loadCommandCenter.
+    try {
+      const whEarly = (data.software_posture || {}).windows_host || {};
+      if (
+        String(whEarly.platform || "").toLowerCase() === "windows" &&
+        (whEarly.needs_refresh || !Number(whEarly.installed_apps || 0))
+      ) {
+        refreshLocalWindowsHost(false);
+      }
+    } catch {
+      /* ignore */
+    }
+
     if (emptyWorkspace) {
       const emptyLists = [
         "ccTopRisks",
@@ -3300,7 +4255,10 @@ async function loadCommandCenter() {
         if (el) el.textContent = "0";
       });
       if (fwEl) fwEl.textContent = "0";
-      window.__securaiqCcLoading = false;
+      renderMcAssetInventory(0, {});
+      renderMcHardeningPanel(data.hardening || {});
+      wireMcToolUpdatesOnce();
+      refreshMcToolUpdates();
       return;
     }
 
@@ -3328,7 +4286,9 @@ async function loadCommandCenter() {
     renderWorkQueue(data.work_queue || []);
     renderMcDecisionPanel(data);
     renderMcCharts(data);
+    renderAttentionDashboard(data, recentScans);
     refreshMcIntegrations();
+    renderSqPostureBars(data, index, complianceRounded);
 
     const recEl = document.getElementById("ccRecommendedToday");
     if (recEl) {
@@ -3346,6 +4306,7 @@ async function loadCommandCenter() {
         : `<p class="hint">Empty queue — add risks, vulns, or a gap assessment to prioritize work.</p>`;
     }
 
+    const today = mc.today || {};
     const todayListEl = document.getElementById("ccTodayList");
     if (todayListEl) {
       todayListEl.innerHTML = `
@@ -3358,26 +4319,8 @@ async function loadCommandCenter() {
         )}</strong></li>`;
     }
 
-    // Pending approvals
-    const apEl = document.getElementById("ccApprovals");
-    if (apEl) {
-      const rows = data.pending_approvals || [];
-      apEl.innerHTML = rows.length
-        ? rows
-            .map((a) => {
-              const ws = a.kind === "incident" ? "soc" : "remediations";
-              return `<li class="cc-clickable" data-workspace="${ws}">
-                <span class="wq-badge pri-medium">${escapeHtml(a.kind || "item")}</span>
-                <strong>${escapeHtml(a.title || "")}</strong>
-                <span class="hint">${escapeHtml(a.owner || "")} · ${escapeHtml(a.status || "")}</span>
-              </li>`;
-            })
-            .join("")
-        : `<li class="hint">No pending approvals — remediations and incidents needing human review appear here.</li>`;
-      apEl.querySelectorAll("[data-workspace]").forEach((li) =>
-        li.addEventListener("click", () => window.showWorkspace?.(li.getAttribute("data-workspace")))
-      );
-    }
+    // Needs attention (aggregated)
+    renderSqNeedsAttention(data);
 
     // Correlation hotspots — VAPT + XDR + incident + control on same asset
     const corrEl = document.getElementById("ccCorrelation");
@@ -3442,58 +4385,51 @@ async function loadCommandCenter() {
       const fws = stats.length ? stats : data.frameworks || [];
       fwEl.innerHTML = fws.length
         ? fws
+            .slice(0, 4)
             .map((f) => {
               const pct = Number(f.compliance_percent || 0);
-              const c = f.counts || {};
-              const total = f.controls_total || (c.implemented || 0) + (c.partial || 0) + (c.missing || 0);
-              const id = f.framework_id || f.id;
-              return `<li class="cc-maturity">
-                <div class="fw-line"><span>${escapeHtml(id)}</span><strong>${pct}%</strong></div>
-                <div class="cc-bar"><i style="width:${pct}%"></i></div>
-                ${
-                  total
-                    ? `<span class="hint">${total} controls · ${c.implemented || 0} in · ${c.partial || 0} partial · ${
-                        c.missing || 0
-                      } missing</span>`
-                    : ""
-                }
+              const id = f.framework_id || f.id || f.title || "Framework";
+              return `<li>
+                <div class="sq-fw-line"><span>${escapeHtml(id)}</span><strong>${pct}%</strong></div>
+                <div class="sq-fw-bar"><i style="width:${pct}%"></i></div>
               </li>`;
             })
             .join("")
         : `<li class="hint">No gap assessments yet — run Gap analysis</li>`;
     }
 
-    // Asset breakdown
-    const abEl = document.getElementById("ccAssetBreakdown");
-    if (abEl) {
-      const ab = data.asset_breakdown || {};
-      abEl.innerHTML = `
-        <div class="asset-breakdown-grid">
-          <button type="button" class="ab-tile" data-workspace="assets"><span>Servers</span><strong>${ab.server || 0}</strong></button>
-          <button type="button" class="ab-tile" data-workspace="assets"><span>Endpoints</span><strong>${ab.endpoint || 0}</strong></button>
-          <button type="button" class="ab-tile" data-workspace="assets"><span>Cloud</span><strong>${ab.cloud || 0}</strong></button>
-          <button type="button" class="ab-tile" data-workspace="assets"><span>Containers</span><strong>${ab.container || 0}</strong></button>
-        </div>`;
-      abEl.querySelectorAll("[data-workspace]").forEach((b) =>
-        b.addEventListener("click", () => window.showWorkspace?.(b.getAttribute("data-workspace")))
-      );
+    // Asset breakdown + named inventory (so Mission Control shows *which* assets, not just counts)
+    renderMcAssetInventory(
+      Number(data.assets_total || 0),
+      data.asset_breakdown || {},
+      data.recent_assets || null
+    );
+    renderMcHardeningPanel(data.hardening || {});
+    wireMcToolUpdatesOnce();
+    refreshMcToolUpdates();
+    // software panel already rendered above
+
+    if (Number(data.assets_total || 0) > 0 && typeof window.renderAssetsPage === "function") {
+      window.renderAssetsPage();
     }
 
-    // Timeline
+    // Timeline (Wazuh-style security events)
     const tlEl = document.getElementById("ccTimeline");
     if (tlEl) {
       const events = data.timeline || [];
       tlEl.innerHTML = events.length
         ? events
+            .slice(0, 12)
             .map((e) => {
               const ts = e.ts ? new Date(Number(e.ts) * (Number(e.ts) < 1e12 ? 1000 : 1)) : null;
               const when = ts && !Number.isNaN(ts.getTime()) ? ts.toLocaleString() : "—";
-              return `<li><span class="tl-when">${escapeHtml(when)}</span>
-                <strong>${escapeHtml(e.label || "")}</strong>
-                <span class="hint">${escapeHtml(e.detail || "")}</span></li>`;
+              return `<li class="wz-event-row">
+                <span class="wz-event-time">${escapeHtml(when)}</span>
+                <span class="wz-event-body"><strong>${escapeHtml(e.label || "")}</strong>
+                <span class="hint">${escapeHtml(e.detail || "")}</span></span></li>`;
             })
             .join("")
-        : `<li class="hint">No activity yet</li>`;
+        : `<li class="hint">No security events yet — run a scan or sync SIEM.</li>`;
     }
 
     // MITRE — keyword signals from live findings (not certified coverage %)
@@ -3555,7 +4491,12 @@ async function loadCommandCenter() {
     if (scoreEl) scoreEl.textContent = "--";
     if (fwEl) fwEl.innerHTML = `<li class="hint">Dashboard unavailable: ${escapeHtml(err.message)}</li>`;
   } finally {
+    clearTimeout(window.__securaiqCcLockTimer);
     window.__securaiqCcLoading = false;
+    if (window.__securaiqCcReloadQueued) {
+      window.__securaiqCcReloadQueued = false;
+      setTimeout(() => loadCommandCenter(), 50);
+    }
   }
 }
 
@@ -3572,6 +4513,7 @@ function syncChecklistProgress(data) {
     org: (mc.organization || "") !== "Local workspace" && (mc.organization || "") !== "—",
     assets: Number(data.assets_total || 0) > 0,
     scan: Number(today.critical_findings || 0) + Number(data.vulnerabilities_open || 0) > 0,
+    hardening: Boolean((data.hardening || {}).audit_done),
     gap: Number(data.assessment_count || 0) > 0,
     report: Number(data.assessment_count || 0) > 0 || Number(data.assets_total || 0) > 0,
     integrations: integVisited,
@@ -3587,11 +4529,29 @@ function wireLiveScanActions(root) {
   (root || document).querySelectorAll("[data-action='live-scan'], [data-action='new-scan']").forEach((btn) => {
     if (btn.dataset.liveScanWired) return;
     btn.dataset.liveScanWired = "1";
-    btn.addEventListener("click", (e) => {
+    btn.addEventListener("click", async (e) => {
       e.preventDefault();
       const action = btn.getAttribute("data-action");
       if (action === "new-scan" && typeof window.openNewScanModal === "function") {
         window.openNewScanModal();
+      }
+      if (action === "combo-assess") {
+        if (typeof window.openNewScanModal === "function") {
+          await window.openNewScanModal();
+          const sel = document.getElementById("newScanScanner");
+          if (sel) sel.value = "combo";
+          const hint = document.getElementById("newScanScannerHint");
+          if (hint) {
+            hint.textContent =
+              "Combo runs SecuraIQ (+ Nmap when ready) → evidence → investigation pack → optional auto-triage.";
+          }
+          const scope = document.getElementById("newScanScope");
+          if (scope && !scope.value.trim()) scope.value = "127.0.0.1\n127.0.0.0/8";
+          const target = document.getElementById("newScanTarget");
+          if (target && !target.value.trim()) target.value = "127.0.0.1";
+          const auth = document.getElementById("newScanAuthorized");
+          if (auth) auth.checked = true;
+        }
       } else if (typeof window.startLiveScan === "function") {
         window.startLiveScan();
       }
@@ -3761,6 +4721,899 @@ function renderMcDecisionPanel(data) {
   }
 }
 
+function wireMcAssetNav(root) {
+  root?.querySelectorAll("[data-workspace]").forEach((el) =>
+    el.addEventListener("click", () => window.showWorkspace?.(el.getAttribute("data-workspace")))
+  );
+}
+
+function inventoryKindFromAsset(a) {
+  const blob = `${a.source || ""} ${a.notes || ""}`.toLowerCase();
+  if (a._oa || /openaudit|open.?audit|securaiq_audit/.test(blob)) return "audit";
+  return "scan";
+}
+
+function mcPortChips(ports) {
+  const list = (ports || [])
+    .map((p) => String(p == null ? "" : p).trim())
+    .filter(Boolean)
+    .slice(0, 8);
+  if (!list.length) return `<span class="hint">—</span>`;
+  return `<span class="port-chips">${list
+    .map((p) => `<code class="port-chip">${escapeHtml(p)}</code>`)
+    .join("")}</span>`;
+}
+
+function renderMcAssetTable(scanRows, auditRows) {
+  const tableEl = document.getElementById("mcAssetsTable");
+  const panelEl = document.getElementById("mcAssetsPanel");
+  if (!tableEl) return;
+  const scan = scanRows || [];
+  const audit = auditRows || [];
+  if (!scan.length && !audit.length) {
+    if (panelEl) panelEl.classList.add("is-empty");
+    tableEl.innerHTML = `<p class="hint">No live hosts yet — <strong>Refresh LAN</strong> or <strong>Queue engine scan</strong>.</p>`;
+    return;
+  }
+  if (panelEl) panelEl.classList.remove("is-empty");
+  const block = (title, list) => {
+    const rows = list
+      .map((a) => {
+        const ip = a.ip || "";
+        const scanSt = (a.last_scan_status || "").toLowerCase();
+        const chip = scanSt
+          ? `<span class="auto-job-status ${
+              scanSt === "completed" ? "status-done" : /fail|block/.test(scanSt) ? "status-error" : "status-running"
+            }">${escapeHtml(scanSt)}</span>`
+          : `<span class="hint">idle</span>`;
+        const target = ip || displayAssetLabel(a) || a.name || "";
+        const src = /openaudit/i.test(`${a.source || ""} ${a.notes || ""}`) && !a._oa
+          ? "Open-AudIT"
+          : "securaiq live";
+        const extra = [a.os, (a.shares || []).length ? `shares ${(a.shares || []).slice(0, 2).join(", ")}` : ""]
+          .filter(Boolean)
+          .join(" · ");
+        const hostLabel = displayAssetLabel(a);
+        return `<tr>
+          <td><strong>${escapeHtml(hostLabel || "—")}</strong>${
+            extra ? `<div class="hint">${escapeHtml(extra)}</div>` : ""
+          }</td>
+          <td>${ip ? `<code>${escapeHtml(ip)}</code>` : "—"}</td>
+          <td>${categoryChipHtml(a)}</td>
+          <td><span class="inventory-source">${escapeHtml(src)}</span></td>
+          <td>${mcPortChips(a.open_ports)}</td>
+          <td>${chip}</td>
+          <td class="ws-actions">
+            <button type="button" class="btn-primary-cc mc-scan-asset" data-target="${escapeHtml(target)}">Scan</button>
+          </td>
+        </tr>`;
+      })
+      .join("");
+    return `<section class="inventory-block">
+      <header class="inventory-block-head"><h2>${escapeHtml(title)}</h2><span class="hint">${list.length} live</span></header>
+      ${
+        rows
+          ? `<div class="data-table-wrap mc-assets-wrap"><table class="data-table">
+              <thead><tr><th>Host</th><th>IP</th><th>Category</th><th>Source</th><th>Open ports</th><th>Last scan</th><th></th></tr></thead>
+              <tbody>${rows}</tbody></table></div>`
+          : `<p class="hint">No ${escapeHtml(title)} hosts yet — Refresh LAN.</p>`
+      }
+    </section>`;
+  };
+  tableEl.innerHTML = `${block("Open Scan", scan)}${block("Open Audit", audit)}`;
+  tableEl.querySelectorAll(".mc-scan-asset").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (typeof window.queueAssetScan === "function") window.queueAssetScan(btn.getAttribute("data-target"));
+      else window.showWorkspace?.("assets");
+    });
+  });
+}
+
+function renderMcAssetInventory(assetsTotal, breakdown, recentAssets) {
+  const abEl = document.getElementById("ccAssetBreakdown");
+  const stripEl = document.getElementById("mcAssetStrip");
+  const liveTiles = (assets) => {
+    const n = assets.length;
+    const withPorts = assets.filter((a) => (a.open_ports || []).length).length;
+    return `<div class="asset-breakdown-grid">
+      <button type="button" class="ab-tile" data-workspace="assets"><span>Hosts</span><strong>${n}</strong></button>
+      <button type="button" class="ab-tile" data-workspace="assets"><span>With ports</span><strong>${withPorts}</strong></button>
+    </div>`;
+  };
+
+  const paintAssets = (scanRows, auditRows) => {
+    const seen = new Set();
+    const assets = [];
+    for (const a of [...(scanRows || []), ...(auditRows || [])]) {
+      const key = a.id || a.ip || a.name;
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      assets.push(a);
+    }
+    renderMcAssetTable(scanRows, auditRows);
+    const list = document.getElementById("ccAssetNames");
+    if (list) {
+      list.innerHTML = assets.length
+        ? assets
+            .slice(0, 12)
+            .map(
+              (a) =>
+                `<li class="cc-clickable" data-workspace="assets">
+                  <strong>${escapeHtml(displayAssetLabel(a))}</strong>
+                  <span class="hint">${escapeHtml(a.ip || a.asset_type || "host")}${
+                    a.os ? ` · ${escapeHtml(a.os)}` : ""
+                  }</span>
+                </li>`
+            )
+            .join("")
+        : `<li class="hint">No hosts yet — Refresh LAN.</li>`;
+      wireMcAssetNav(list);
+    }
+    if (stripEl) {
+      if (!assets.length) {
+        stripEl.classList.add("hidden");
+        stripEl.innerHTML = "";
+        return;
+      }
+      stripEl.classList.remove("hidden");
+      const chips = assets
+        .slice(0, 8)
+        .map(
+          (a) =>
+            `<button type="button" class="mc-asset-chip" data-workspace="assets" title="Open asset inventory">
+              <strong>${escapeHtml(displayAssetLabel(a))}</strong>
+              <span class="hint">${escapeHtml(a.ip || a.asset_type || "host")}</span>
+            </button>`
+        )
+        .join("");
+      stripEl.innerHTML = `<span class="mc-kicker">Live inventory</span>${chips}
+        <button type="button" class="btn-secondary" data-workspace="assets">View all (${assets.length})</button>`;
+      wireMcAssetNav(stripEl);
+    }
+  };
+
+  const applyFromAssets = (rawAssets, devices) => {
+    const byAsset = {};
+    (devices || []).forEach((d) => {
+      if (d.asset_id) byAsset[d.asset_id] = d;
+    });
+    const merged = (rawAssets || []).map((a) => {
+      const d = byAsset[a.id] || {};
+      const ip = a.ip || d.ip || "";
+      const hostname = a.hostname || d.hostname || "";
+      const os = a.os || d.os || "";
+      return {
+        ...a,
+        ip,
+        hostname,
+        os,
+        open_ports: (a.open_ports && a.open_ports.length ? a.open_ports : d.open_ports) || [],
+        shares: d.shares || a.shares || [],
+        display_name:
+          a.display_name ||
+          displayAssetLabel({ name: a.name, ip, hostname, os, asset_name: a.name }),
+        _oa: !!d.asset_id || /openaudit/i.test(a.notes || ""),
+      };
+    });
+    const seen = new Set(merged.filter((a) => a._oa).map((a) => a.id));
+    const oaOnly = (devices || [])
+      .filter((d) => !d.asset_id || !seen.has(d.asset_id))
+      .map((d) => ({
+        id: d.asset_id || d.id,
+        name: displayAssetLabel({ name: d.name, ip: d.ip, hostname: d.hostname, os: d.os }),
+        display_name: displayAssetLabel({ name: d.name, ip: d.ip, hostname: d.hostname, os: d.os }),
+        hostname: d.hostname || "",
+        ip: d.ip || "",
+        asset_type: d.type || "endpoint",
+        os: d.os || "",
+        source: "openaudit",
+        notes: "openaudit",
+        _oa: true,
+        open_ports: d.open_ports || [],
+        shares: d.shares || [],
+      }));
+    return { scan: merged, audit: [...merged.filter((a) => a._oa), ...oaOnly] };
+  };
+
+  fetch("/api/assets", { headers: authHeaders() })
+    .then(async (res) => {
+      const data = res.ok ? await res.json().catch(() => ({})) : {};
+      const invRes = await fetch("/api/openaudit/devices?limit=200", { headers: authHeaders() }).catch(() => null);
+      const inv = invRes && invRes.ok ? await invRes.json().catch(() => ({})) : {};
+      const lists = applyFromAssets(data.assets || recentAssets || [], inv.devices || []);
+      if (abEl) {
+        abEl.innerHTML = `${liveTiles([...(lists.scan || []), ...(lists.audit || [])])}<ul id="ccAssetNames" class="cc-list mc-asset-names"></ul>`;
+        wireMcAssetNav(abEl);
+      }
+      paintAssets(lists.scan, lists.audit);
+    })
+    .catch(() => {
+      if (abEl) {
+        abEl.innerHTML = `<p class="hint">Inventory unavailable.</p>`;
+      }
+      renderMcAssetTable([], []);
+    });
+  if (abEl && !abEl.innerHTML) {
+    abEl.innerHTML = `<ul id="ccAssetNames" class="cc-list mc-asset-names"><li class="hint">Loading live inventory…</li></ul>`;
+  }
+}
+
+function renderMcHardeningPanel(hk) {
+  const el = document.getElementById("mcHardeningBody");
+  if (!el) return;
+  hk = hk || {};
+  const installed = Boolean(hk.installed);
+  const auditDone = Boolean(hk.audit_done);
+  const platformOk = hk.platform_ok !== false;
+  let statusChip = `<span class="auto-job-status status-planned">Not installed</span>`;
+  let statusText = "HardeningKitty is not configured on this host.";
+  if (!platformOk) {
+    statusChip = `<span class="auto-job-status status-planned">Windows only</span>`;
+    statusText = "HardeningKitty audits run on Windows lab hosts or VMs you own.";
+  } else if (auditDone) {
+    statusChip = `<span class="auto-job-status status-done">Audit done</span>`;
+    statusText = `Last ${escapeHtml(hk.last_mode || "audit")} · score ${hk.last_score != null ? escapeHtml(String(hk.last_score)) : "—"} · failed ${hk.last_failed || 0} · imported ${hk.last_imported || 0}`;
+  } else if (installed) {
+    statusChip = `<span class="auto-job-status status-running">Ready — not audited</span>`;
+    statusText = `${hk.finding_lists || 0} finding lists (${hk.cis_lists || 0} CIS). Run an audit to baseline this host.`;
+  }
+  const setupCmd = hk.setup_script_download || hk.setup_script || ".\\scripts\\use_hardeningkitty.cmd -Download";
+  const when =
+    hk.last_run_at != null
+      ? new Date(Number(hk.last_run_at) * (Number(hk.last_run_at) < 1e12 ? 1000 : 1)).toLocaleString()
+      : "";
+  el.innerHTML = `
+    <div class="hk-status mc-hk-status">
+      ${statusChip}
+      <p class="hint">${statusText}${when ? ` · ${escapeHtml(when)}` : ""}</p>
+    </div>
+    ${
+      !installed && platformOk
+        ? `<div class="hk-setup-block">
+            <p class="hint">Install module (from repo root in PowerShell):</p>
+            <code class="hk-setup-code" id="mcHkSetupCmd">${escapeHtml(setupCmd)}</code>
+            <div class="cc-action-row">
+              <button type="button" class="btn-secondary" id="mcHkCopySetup">Copy script</button>
+              <button type="button" class="btn-secondary" data-workspace="integrations">Settings</button>
+            </div>
+            <p class="hint">Then restart SecuraIQ and run the audit below.</p>
+          </div>`
+        : ""
+    }
+    <div class="cc-action-row hk-actions">
+      ${
+        installed && platformOk
+          ? `<button type="button" class="btn-primary-cc" id="mcHkAuditBtn">Run HardeningKitty audit</button>`
+          : ""
+      }
+      <button type="button" class="btn-secondary" data-workspace="frameworks">Open hardening panel</button>
+    </div>`;
+  wireMcAssetNav(el);
+  el.querySelector("#mcHkCopySetup")?.addEventListener("click", async () => {
+    const cmd = el.querySelector("#mcHkSetupCmd")?.textContent || setupCmd;
+    try {
+      await navigator.clipboard.writeText(cmd);
+      notifyUser("**Copied** setup command to clipboard.");
+    } catch {
+      notifyUser(`**Setup command:** \`${cmd}\``);
+    }
+  });
+  el.querySelector("#mcHkAuditBtn")?.addEventListener("click", () => {
+    if (typeof window.runHardeningKittyAudit === "function") window.runHardeningKittyAudit();
+    else window.showWorkspace?.("frameworks");
+  });
+}
+
+function softwareStatusChip(it) {
+  const st = (it?.status || "unknown").toLowerCase();
+  const cls = it?.status_class || (st === "current" || st === "up_to_date" ? "done" : st === "unknown" ? "planned" : "error");
+  const label = it?.status_label || st.replace(/_/g, " ");
+  return `<span class="sw-status-chip status-${escapeHtml(cls)}">${escapeHtml(label)}</span>`;
+}
+window.softwareStatusChip = softwareStatusChip;
+
+function setMcSoftwareTab(tab) {
+  const t = tab === "tools" ? "tools" : "hosts";
+  document.querySelectorAll("#mcSoftwarePanel .sw-tab").forEach((btn) => {
+    const on = btn.getAttribute("data-sw-tab") === t;
+    btn.classList.toggle("is-active", on);
+    btn.setAttribute("aria-selected", on ? "true" : "false");
+  });
+  document.querySelectorAll("#mcSoftwarePanel .sw-pane").forEach((pane) => {
+    pane.classList.toggle("hidden", pane.getAttribute("data-sw-pane") !== t);
+  });
+  const rebuildBtn = document.getElementById("mcSoftwareRebuild");
+  const toolsBtn = document.getElementById("mcToolUpdatesRefresh");
+  if (rebuildBtn) rebuildBtn.classList.toggle("hidden", t === "tools");
+  if (toolsBtn) toolsBtn.classList.toggle("hidden", t !== "tools");
+}
+
+function wireMcSoftwarePanelOnce() {
+  if (window.__mcSoftwarePanelWired) return;
+  window.__mcSoftwarePanelWired = true;
+  document.querySelectorAll("#mcSoftwarePanel .sw-tab").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      setMcSoftwareTab(btn.getAttribute("data-sw-tab"));
+      if (btn.getAttribute("data-sw-tab") === "tools") refreshMcToolUpdates(true);
+    });
+  });
+  document.getElementById("mcSoftwareRebuild")?.addEventListener("click", async () => {
+    const el = document.getElementById("mcSoftwarePostureBody");
+    if (el) el.innerHTML = `<p class="hint">Rebuilding software inventory…</p>`;
+    try {
+      const res = await fetch("/api/software/rebuild", { method: "POST", headers: authHeaders() });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+      renderMcSoftwarePosturePanel(data.posture || {});
+      if (typeof notifyUser === "function") notifyUser("**Software inventory refreshed** from scans and XDR.");
+      if (typeof window.renderSoftwarePage === "function") window.renderSoftwarePage({ quiet: true });
+    } catch (err) {
+      if (el) el.innerHTML = `<p class="hint">Rebuild failed: ${escapeHtml(err.message || err)}</p>`;
+    }
+  });
+  document.getElementById("mcToolUpdatesRefresh")?.addEventListener("click", () => refreshMcToolUpdates(true));
+  document.getElementById("mcSoftwareSyncAll")?.addEventListener("click", async () => {
+    const el = document.getElementById("mcSoftwarePostureBody");
+    if (el) el.innerHTML = `<p class="hint">Syncing all sources…</p>`;
+    try {
+      if (typeof window.syncAllAndRebuildSoftware === "function") {
+        await window.syncAllAndRebuildSoftware({ quiet: true });
+      }
+      if (typeof loadCommandCenter === "function") loadCommandCenter();
+    } catch (err) {
+      if (el) el.innerHTML = `<p class="hint">Sync failed: ${escapeHtml(err.message || err)}</p>`;
+    }
+  });
+}
+
+function wireMcSoftwarePostureOnce() {
+  wireMcSoftwarePanelOnce();
+}
+
+async function refreshLocalWindowsHost(force) {
+  if (window.__securaiqLocalWinBusy) return;
+  const sp = window.__securaiqLastSoftwarePosture || {};
+  const win = sp.windows_host || {};
+  const cov = sp.coverage || {};
+  const plat = String(win.platform || "").toLowerCase();
+  const knownApps = Number(win.installed_apps || 0) || Number(cov.control_panel || 0);
+  if (!force && plat && plat !== "windows") return;
+  if (!force && knownApps > 0 && !win.needs_refresh) return;
+  window.__securaiqLocalWinBusy = true;
+  if (typeof pulseMcLiveLine === "function") {
+    pulseMcLiveLine("Reading Control Panel registry…");
+  }
+  if (typeof window.setSoftwareSyncLive === "function") {
+    window.setSoftwareSyncLive("● Reading Control Panel registry…", true);
+  }
+  try {
+    const res = await fetch("/api/software/local-refresh", { method: "POST", headers: authHeaders() });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    if (data.posture && typeof renderMcSoftwarePosturePanel === "function") {
+      window.__securaiqLastSoftwarePosture = data.posture;
+      renderMcSoftwarePosturePanel(data.posture);
+    }
+    const p = data.windows_host || (data.posture || {}).windows_host || {};
+    if (typeof pulseSoftwareFromPush === "function") {
+      pulseSoftwareFromPush({
+        message: `This PC · ${p.installed_apps || 0} Control Panel apps · ${p.pending_updates || 0} update(s) pending`,
+        issues: (data.posture || {}).issues,
+        health_score: (data.posture || {}).health_score,
+        total_products: (data.posture || {}).total_products,
+        ts: Date.now() / 1000,
+      });
+    }
+    if (typeof window.refreshSoftwareFromPush === "function") {
+      window.refreshSoftwareFromPush({}, { partial: true, skipPulse: true });
+    } else if (typeof window.renderSoftwarePage === "function") {
+      window.renderSoftwarePage({ quiet: true });
+    }
+  } catch (err) {
+    if (typeof pulseMcLiveLine === "function") {
+      pulseMcLiveLine(`Local inventory failed: ${err.message || err}`);
+    }
+    if (typeof window.setSoftwareSyncLive === "function") {
+      window.setSoftwareSyncLive(`Local inventory failed: ${err.message || err}`, true);
+    }
+  } finally {
+    window.__securaiqLocalWinBusy = false;
+  }
+}
+window.refreshLocalWindowsHost = refreshLocalWindowsHost;
+
+function wireMcToolUpdatesOnce() {
+  wireMcSoftwarePanelOnce();
+}
+
+function renderMcSoftwarePosturePanel(sp) {
+  const el = document.getElementById("mcSoftwarePostureBody");
+  if (!el) return;
+  sp = sp || {};
+  const counts = sp.counts || {};
+  const patch = sp.patch_compliance || {};
+  const total = Number(sp.total_products || 0);
+  const issues = Number(sp.issues || 0);
+  const hosts = Number(sp.hosts_with_issues || 0);
+  const missingXdr = Number(patch.total_missing_patches || 0);
+  const health = Number(sp.health_score ?? (total ? Math.round(((sp.healthy || 0) / total) * 100) : 100));
+  const win = sp.windows_host || {};
+  const cov = sp.coverage || {};
+  const installedApps = Math.max(Number(win.installed_apps || 0), Number(cov.control_panel || 0));
+  const pendingUpd = Number(win.pending_updates || 0);
+
+  const top = (sp.top_issues || [])
+    .map(
+      (it) =>
+        `<li class="sw-issue-row">${softwareStatusChip(it)}
+          <div class="sw-issue-main">
+            <strong>${escapeHtml(it.product || "?")}</strong>
+            <span class="hint">${escapeHtml(it.version || "—")} · ${escapeHtml(it.asset_name || "—")}${
+              it.cve ? ` · ${escapeHtml(it.cve)}` : ""
+            }${it.port ? ` · :${it.port}` : ""}</span>
+          </div></li>`
+    )
+    .join("");
+
+  const pendingList = (win.pending_preview || [])
+    .map(
+      (p) =>
+        `<li class="sw-issue-row"><span class="sw-status-chip status-error">Update</span>
+          <div class="sw-issue-main"><strong>${escapeHtml(p.title || "Windows Update")}</strong>
+          <span class="hint">${escapeHtml(p.kb || "pending")}${p.severity ? ` · ${escapeHtml(p.severity)}` : ""}</span></div></li>`
+    )
+    .join("");
+  const programList = (win.programs_preview || [])
+    .slice(0, 6)
+    .map(
+      (p) =>
+        `<li class="sw-issue-row"><span class="sw-status-chip status-done">Installed</span>
+          <div class="sw-issue-main"><strong>${escapeHtml(p.name || "?")}</strong>
+          <span class="hint">${escapeHtml(p.version || "—")}${p.publisher ? ` · ${escapeHtml(p.publisher)}` : ""}</span></div></li>`
+    )
+    .join("");
+
+  const sources = Object.entries(sp.by_source_label || sp.by_source || {})
+    .map(([k, v]) => `${escapeHtml(k)} ${v}`)
+    .join(" · ");
+  const covLine = [
+    ["scan", cov.scans],
+    ["xdr", cov.xdr],
+    ["siem", cov.siem],
+    ["inv", cov.inventory],
+    ["code", cov.code],
+    ["tools", cov.local_tools],
+    ["control panel", cov.control_panel],
+    ["os", cov.os_patches],
+  ]
+    .filter(([, n]) => Number(n) > 0)
+    .map(([k, n]) => `${k} ${n}`)
+    .join(" · ");
+
+  const winLine =
+    win.platform === "windows" || installedApps || pendingUpd
+      ? `<p class="hint sw-server-line"><strong>${installedApps}</strong> Control Panel apps · <strong>${pendingUpd}</strong> Windows Update(s) pending${
+          win.last_patch ? ` · last hotfix ${escapeHtml(win.last_patch)}` : ""
+        }${win.host ? ` · ${escapeHtml(win.host)}` : ""}</p>`
+      : "";
+
+  el.innerHTML = `
+    <div class="sw-health-row">
+      <div class="sw-health-gauge" style="--p:${health}"><span>${health}%</span></div>
+      <div class="sw-health-copy">
+            <strong>${issues ? `${issues} issue(s) on ${hosts} host(s)` : "No patch or EOL gaps detected"}</strong>
+            <p class="hint">${total ? `${total} products from registry, scans, and connected sources` : "Sync this PC to load Control Panel software and Windows Updates."}${
+          covLine ? ` · ${escapeHtml(covLine)}` : sources ? ` · ${sources}` : ""
+        }</p>
+            ${winLine}
+            ${
+              (sp.server_summary || {}).total
+                ? `<p class="hint sw-server-line"><strong>${Number(sp.server_summary.up_to_date || 0)}</strong> systems up to date · <strong>${Number(sp.server_summary.needs_update || 0)}</strong> need update · <strong>${Number(sp.server_summary.unknown || 0)}</strong> unknown</p>`
+                : ""
+            }
+      </div>
+    </div>
+    <div class="vuln-summary-metrics mc-sw-metrics">
+      <article class="cc-kpi"><span>Products</span><strong>${total}</strong></article>
+      <article class="cc-kpi"><span>Control Panel</span><strong>${installedApps}</strong></article>
+      <article class="cc-kpi"><span>Pending updates</span><strong>${pendingUpd}</strong></article>
+      <article class="cc-kpi"><span>Outdated / patch</span><strong>${issues}</strong></article>
+    </div>
+    ${
+      total
+        ? `<p class="hint sw-counts-line">${counts.current || 0} current · ${counts.installed || 0} installed · ${counts.outdated || 0} outdated · ${counts.eol || 0} EOL · ${counts.missing_patch || 0} missing patch · ${counts.unknown || 0} unknown</p>`
+        : ""
+    }
+    ${pendingList ? `<p class="hint"><strong>Pending Windows Updates</strong></p><ul class="cc-list mc-sw-list">${pendingList}</ul>` : ""}
+    ${programList ? `<p class="hint"><strong>Installed from Control Panel</strong></p><ul class="cc-list mc-sw-list">${programList}</ul>` : ""}
+    <ul class="cc-list mc-sw-list">${top || `<li class="hint">No outdated software detected yet.</li>`}</ul>
+    <div class="cc-action-row">
+      <button type="button" class="btn-secondary" id="mcSoftwareLocalRefresh">Refresh this PC</button>
+      <button type="button" class="btn-secondary" data-workspace="software">Open full inventory</button>
+      <button type="button" class="btn-secondary" data-workspace="vulns">Vulnerabilities</button>
+    </div>`;
+  wireMcAssetNav(el);
+  el.querySelector("#mcSoftwareLocalRefresh")?.addEventListener("click", () => refreshLocalWindowsHost(true));
+}
+
+let __mcToolUpdatesLoading = false;
+
+async function refreshMcToolUpdates(force) {
+  const el = document.getElementById("mcToolUpdatesBody");
+  if (!el || __mcToolUpdatesLoading) return;
+  __mcToolUpdatesLoading = true;
+  try {
+    const res = await fetch(`/api/tools/versions${force ? "?refresh=true" : ""}`, { headers: authHeaders() });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    renderMcToolUpdatesPanel(data);
+  } catch {
+    el.innerHTML = `<p class="hint">Couldn't check tool versions right now.</p>`;
+  } finally {
+    __mcToolUpdatesLoading = false;
+  }
+}
+
+function renderMcToolUpdatesPanel(data) {
+  const el = document.getElementById("mcToolUpdatesBody");
+  if (!el) return;
+  data = data || {};
+  const product = data.product || {};
+  const tools = data.tools || [];
+  const counts = data.counts || {};
+  const outdated = tools.filter((t) => t.status === "outdated");
+
+  const chipFor = (status) => {
+    if (status === "outdated") return `<span class="auto-job-status status-error">Outdated</span>`;
+    if (status === "up_to_date") return `<span class="auto-job-status status-done">Up to date</span>`;
+    if (status === "installed") return `<span class="auto-job-status status-running">Installed</span>`;
+    if (status === "not_installed") return `<span class="auto-job-status status-planned">Not installed</span>`;
+    return `<span class="auto-job-status status-planned">Unknown</span>`;
+  };
+
+  const productWhen = product.commit_date ? new Date(product.commit_date).toLocaleString() : "";
+  const rows = tools
+    .filter((t) => t.status !== "not_installed")
+    .map(
+      (t) => `
+      <li data-tool-id="${escapeHtml(t.id || t.name || "")}" class="mc-tool-row">
+        ${chipFor(t.status)}
+        <strong>${escapeHtml(t.name || t.id)}</strong>
+        <span class="hint">${escapeHtml(t.installed_version || "?")}${
+          t.latest_version ? ` &rarr; latest ${escapeHtml(t.latest_version)}` : ""
+        }</span>
+      </li>`
+    )
+    .join("");
+  const notInstalledCount = counts.not_installed || 0;
+
+  el.innerHTML = `
+    <div class="sw-tools-note">
+      <span class="sw-status-chip status-done">Local tools</span>
+      <p class="hint">Versions of nmap, nuclei, and other scanners on <em>this</em> SecuraIQ machine — not remote host inventory.</p>
+    </div>
+    <div class="hk-status mc-hk-status">
+      <span class="auto-job-status status-done">SecuraIQ v${escapeHtml(product.version || "?")}</span>
+      <p class="hint">${
+        product.commit ? `build ${escapeHtml(product.commit)}` : ""
+      }${
+        productWhen ? ` · updated ${escapeHtml(productWhen)}` : ""
+      }${product.uncommitted_changes ? " · local changes not committed" : ""}</p>
+    </div>
+    ${
+      outdated.length
+        ? `<p class="hint"><strong>${outdated.length}</strong> tool(s) have a newer version available.</p>`
+        : `<p class="hint">No installed tool is known to be outdated.</p>`
+    }
+    <ul class="cc-list mc-tool-updates">
+      ${rows || `<li class="hint">No third-party tools detected on PATH yet — SecuraIQ's builtins need no install.</li>`}
+    </ul>
+    <p class="hint">${notInstalledCount} third-party tool(s) not installed — SecuraIQ's builtin scanners cover the same ground with zero install.</p>
+    <div class="cc-action-row">
+      <button type="button" class="btn-secondary" data-workspace="integrations">Manage tools</button>
+    </div>`;
+  wireMcAssetNav(el);
+}
+
+function renderSqPostureBars(data, index, compliance) {
+  const assets = Number(data.assets_total || 0);
+  const vulnOpen = Number(data.vulnerabilities_open || 0);
+  const vulnScore = Math.max(0, 100 - Math.min(100, vulnOpen * 3));
+  const expScore = Math.max(0, 100 - Number(data.vulnerabilities_critical_high || 0) * 8);
+  const setBar = (barId, valId, pct, label) => {
+    const bar = document.getElementById(barId);
+    const val = document.getElementById(valId);
+    if (bar) bar.style.width = `${Math.min(100, Math.max(0, pct))}%`;
+    if (val) val.textContent = String(label ?? Math.round(pct));
+  };
+  setBar("sqBarAssets", "sqBarAssetsVal", Math.min(100, assets * 2), assets);
+  setBar("sqBarVulns", "sqBarVulnsVal", vulnScore, vulnScore);
+  setBar("sqBarExposure", "sqBarExposureVal", expScore, expScore);
+  setBar("sqBarCompliance", "sqBarComplianceVal", compliance, `${compliance}%`);
+}
+
+function vulnRiskScore(v) {
+  const s = (v.severity || "medium").toLowerCase();
+  if (s === "critical") return 94;
+  if (s === "high") return 84;
+  if (s === "medium") return 61;
+  if (s === "low") return 40;
+  return 50;
+}
+
+function renderSqTopRisksTable(data) {
+  const el = document.getElementById("sqTopRisksTable");
+  if (!el) return;
+  const risks = (data.findings?.top_risks || []).map((r) => ({
+    sev: Number(r.risk_score || 0) >= 20 ? "critical" : Number(r.risk_score || 0) >= 15 ? "high" : "medium",
+    title: r.threat || r.vulnerability || "Risk",
+    asset: r.asset_name || r.asset_id || "—",
+    score: Math.min(99, Math.round(Number(r.risk_score || 0) * 4)),
+    action: "Investigate",
+    ws: "risks",
+  }));
+  const vulns = (data.findings?.top_vulns || []).map((v) => ({
+    sev: (v.severity || "medium").toLowerCase(),
+    title: v.title || v.cve || "Finding",
+    asset: v.asset_name || "—",
+    score: vulnRiskScore(v),
+    action: /critical|high/i.test(v.severity || "") ? "Investigate" : "Remediate",
+    ws: "vulns",
+  }));
+  const rows = [...vulns, ...risks].sort((a, b) => b.score - a.score).slice(0, 8);
+  if (!rows.length) {
+    el.innerHTML = `<p class="hint">No open risks — run a scan or import findings to populate this table.</p>`;
+    return;
+  }
+  el.innerHTML = `<table class="sq-risks-table"><thead><tr>
+    <th>Severity</th><th>Finding</th><th class="sq-hide-sm">Asset</th><th>Risk</th><th>Action</th>
+  </tr></thead><tbody>${rows
+    .map(
+      (r) => `<tr data-workspace="${escapeHtml(r.ws)}">
+        <td><span class="sq-sev-pill sq-sev-${escapeHtml(r.sev)}">${escapeHtml(r.sev)}</span></td>
+        <td><strong>${escapeHtml(r.title)}</strong></td>
+        <td class="hint sq-hide-sm">${escapeHtml(r.asset)}</td>
+        <td class="sq-risk-num">${r.score}</td>
+        <td><button type="button" class="sq-action" data-workspace="${escapeHtml(r.ws)}">${escapeHtml(r.action)}</button></td>
+      </tr>`
+    )
+    .join("")}</tbody></table>`;
+  el.querySelectorAll("[data-workspace]").forEach((node) => {
+    node.addEventListener("click", (ev) => {
+      if (ev.target.closest(".sq-action")) ev.stopPropagation();
+      window.showWorkspace?.(node.getAttribute("data-workspace"));
+    });
+  });
+}
+
+function scanProgressPct(scan) {
+  const steps = scan.progress || [];
+  if (!steps.length) {
+    const st = (scan.status || "").toLowerCase();
+    if (st === "completed") return 100;
+    if (st === "running" || st === "queued") return 35;
+    return 0;
+  }
+  const done = steps.filter((s) => s.status === "done").length;
+  const active = steps.some((s) => s.status === "running" || s.status === "active");
+  return Math.round(((done + (active ? 0.5 : 0)) / steps.length) * 100);
+}
+
+function renderSqRecentScans(scans) {
+  const el = document.getElementById("sqScansBody");
+  if (!el) return;
+  const list = (scans || []).slice(0, 4);
+  if (!list.length) {
+    el.innerHTML = `<p class="hint">No scans yet — use <strong>+ New Scan</strong> on authorized targets.</p>`;
+    return;
+  }
+  el.innerHTML = list
+    .map((s) => {
+      const pct = scanProgressPct(s);
+      const running = /running|queued|active/i.test(s.status || "");
+      const steps = (s.progress || [])
+        .slice(0, 6)
+        .map((st) => {
+          const status = st.status || "pending";
+          const cls =
+            status === "done" ? "sq-scan-step-done" : status === "running" || status === "active" ? "sq-scan-step-active" : "";
+          const mark = status === "done" ? "✓" : status === "running" || status === "active" ? "●" : "○";
+          return `<li class="${cls}">${mark} ${escapeHtml(st.label || st.id || "")}</li>`;
+        })
+        .join("");
+      const summary = s.summary || {};
+      const findings = summary.findings_count ?? summary.findings ?? "—";
+      const assets = summary.assets_count ?? summary.assets ?? "—";
+      const scanner = (s.scanner || "scan").toUpperCase();
+      const label = s.target || s.id || "Scan";
+      return `<article class="sq-scan-card${running ? " is-running" : ""}" data-scan-id="${escapeHtml(s.id || "")}">
+        <div class="sq-scan-head"><div><strong>${escapeHtml(label)}</strong>
+        <div class="sq-scan-meta">${escapeHtml(scanner)} · ${escapeHtml(s.profile || "discovery")}</div></div>
+        <span class="hint">${running ? "Running" : escapeHtml(s.status || "done")}</span></div>
+        <div class="sq-scan-bar"><i style="width:${pct}%"></i></div>
+        ${running && steps ? `<ul class="sq-scan-steps">${steps}</ul>` : `<p class="hint sq-scan-meta">${pct}% · ${assets} assets · ${findings} findings</p>`}
+        <button type="button" class="sq-action" data-scan-view="${escapeHtml(s.id || "")}">${running ? "View scan" : "View results"}</button>
+      </article>`;
+    })
+    .join("");
+  el.querySelectorAll("[data-scan-view]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const id = btn.getAttribute("data-scan-view");
+      if (id && typeof watchScanRealtime === "function") watchScanRealtime(id);
+      window.showWorkspace?.("vulns");
+    });
+  });
+}
+
+function renderSqAiAnalyst(data, brief) {
+  const el = document.getElementById("sqAiAnalystBody");
+  if (!el) return;
+  const vulns = (data.findings?.top_vulns || []).slice(0, 3);
+  const wq = (data.work_queue || []).slice(0, 2);
+  const items = [
+    ...vulns.map((v) => ({
+      dot: /critical/i.test(v.severity || "") ? "🔴" : "🟠",
+      title: v.asset_name || v.title || "Finding",
+      sub: v.title || v.cve || v.severity || "",
+      ws: "vulns",
+    })),
+    ...wq.map((w) => ({
+      dot: /critical|high/i.test(w.priority || "") ? "🟠" : "🟡",
+      title: w.title || "Work item",
+      sub: w.owner || w.kind || "",
+      ws: w.kind === "incident" ? "soc" : "remediations",
+    })),
+  ].slice(0, 4);
+  const n = items.length || Number(data.vulnerabilities_critical_high || 0);
+  const lead =
+    brief?.attention ||
+    (n
+      ? `I found ${n} thing${n === 1 ? "" : "s"} that need attention today.`
+      : "Posture is quiet — run a scan to discover new risks.");
+  el.innerHTML = `<p class="sq-ai-lead">${escapeHtml(lead)}</p>${
+    items.length
+      ? items
+          .map(
+            (it) => `<div class="sq-ai-item" data-workspace="${escapeHtml(it.ws)}">
+              <span class="sq-ai-dot">${it.dot}</span>
+              <div><strong>${escapeHtml(it.title)}</strong><span>${escapeHtml(it.sub)}</span></div>
+            </div>`
+          )
+          .join("")
+      : `<p class="hint">Run <strong>+ New Scan</strong> on authorized targets to populate analyst insights.</p>`
+  }`;
+  el.querySelectorAll("[data-workspace]").forEach((node) => {
+    node.addEventListener("click", () => window.showWorkspace?.(node.getAttribute("data-workspace")));
+  });
+}
+
+function renderSqExposureMap(data) {
+  const el = document.getElementById("sqExposureMap");
+  if (!el) return;
+  const vulns = (data.findings?.top_vulns || []).slice(0, 4);
+  const assets = (data.recent_assets || []).slice(0, 4);
+  const nodes = vulns.length
+    ? vulns.map((v) => ({
+        name: v.asset_name || (v.title || "").slice(0, 20) || "asset",
+        score: vulnRiskScore(v),
+      }))
+    : assets.map((a) => ({ name: a.name || "host", score: 55 }));
+  if (!nodes.length) {
+    el.innerHTML = `<p class="hint">Run a scan to map internet-facing assets.</p>`;
+    return;
+  }
+  el.innerHTML = `<div class="sq-exposure-hub">Internet</div>
+    <div class="sq-exposure-row">${nodes
+      .map(
+        (n) => `<div class="sq-exposure-node" data-workspace="assets">
+          <strong>${escapeHtml(n.name)}</strong>
+          <span class="sq-exposure-score" style="color:${n.score >= 90 ? "var(--sq-crit)" : n.score >= 75 ? "var(--sq-high)" : "var(--sq-med)"}">${n.score}</span>
+        </div>`
+      )
+      .join("")}</div>`;
+  el.querySelectorAll("[data-workspace]").forEach((node) => {
+    node.addEventListener("click", () => window.showWorkspace?.(node.getAttribute("data-workspace")));
+  });
+}
+
+function renderSqNeedsAttention(data) {
+  const list = document.getElementById("ccApprovals");
+  if (!list) return;
+  const crit = Number(data.vulnerabilities_critical_high || 0);
+  const sev = data.severity_counts || {};
+  const inc = Number(data.incidents_open || 0);
+  const rems = Number(data.remediations_open || 0);
+  const stats = data.framework_control_stats || [];
+  const missingEvidence = stats.reduce((n, f) => n + Number(f.counts?.missing || 0), 0);
+  const items = [];
+  if (crit) items.push({ dot: "🔴", text: `${crit} critical vulnerabilities`, ws: "vulns" });
+  if (Number(sev.high || 0)) items.push({ dot: "🟠", text: `${sev.high} high-severity findings`, ws: "vulns" });
+  if (inc) items.push({ dot: "🟠", text: `${inc} open incidents`, ws: "soc" });
+  if (rems) items.push({ dot: "🟠", text: `${rems} open remediation actions`, ws: "remediations" });
+  if (missingEvidence) items.push({ dot: "🟡", text: `${missingEvidence} controls missing evidence`, ws: "evidence" });
+  (data.pending_approvals || []).slice(0, 3).forEach((a) => {
+    items.push({ dot: "🟡", text: a.title || a.kind || "Approval needed", ws: "remediations" });
+  });
+  list.innerHTML = items.length
+    ? items
+        .map(
+          (it) => `<li class="cc-clickable" data-workspace="${escapeHtml(it.ws)}">${it.dot} ${escapeHtml(it.text)}</li>`
+        )
+        .join("")
+    : `<li class="hint">Nothing flagged — posture looks clear.</li>`;
+  list.querySelectorAll("[data-workspace]").forEach((li) =>
+    li.addEventListener("click", () => window.showWorkspace?.(li.getAttribute("data-workspace")))
+  );
+  const evEl = document.getElementById("sqComplianceEvidence");
+  if (evEl) {
+    evEl.textContent = missingEvidence
+      ? `${missingEvidence} control${missingEvidence === 1 ? "" : "s"} need evidence`
+      : "Evidence collection on track";
+  }
+}
+
+function renderSqRiskTrend(data, index) {
+  const el = document.getElementById("sqRiskTrendChart");
+  if (!el) return;
+  const trends = data.kpi_trends || {};
+  let history = [];
+  try {
+    history = JSON.parse(localStorage.getItem("securaiq.risk.history") || "[]");
+  } catch {
+    history = [];
+  }
+  history.push({ ts: Date.now(), score: index });
+  if (history.length > 14) history = history.slice(-14);
+  try {
+    localStorage.setItem("securaiq.risk.history", JSON.stringify(history));
+  } catch {
+    /* ignore */
+  }
+  const scores = history.map((h) => h.score);
+  const max = Math.max(100, ...scores, 1);
+  const min = Math.min(...scores, 0);
+  const range = Math.max(1, max - min);
+  el.innerHTML = scores
+    .map((s) => {
+      const h = Math.round(((s - min) / range) * 100);
+      return `<div class="sq-trend-bar" style="height:${Math.max(8, h)}%" title="Score ${s}"></div>`;
+    })
+    .join("");
+  if (trends.has_baseline && trends.security_index_delta) {
+    const d = Number(trends.security_index_delta);
+    const note = document.createElement("p");
+    note.className = "hint";
+    note.style.marginTop = "0.35rem";
+    note.textContent =
+      d > 0 ? `▲ ${d} points from baseline` : d < 0 ? `▼ ${Math.abs(d)} points from baseline` : "Stable vs baseline";
+    el.appendChild(note);
+  }
+}
+
+function renderAttentionDashboard(data, scans) {
+  const brief = data.morning_brief || {};
+  renderSqTopRisksTable(data);
+  renderSqRecentScans(scans || []);
+  renderSqAiAnalyst(data, brief);
+  renderSqExposureMap(data);
+  renderSqNeedsAttention(data);
+  const index = Number(data.security_index != null ? data.security_index : data.mission_control?.security_score) || 0;
+  renderSqRiskTrend(data, index);
+  const total = Number(data.assets_total || 0);
+  const lu = document.getElementById("wzLastUpdate");
+  if (lu) lu.textContent = `Updated ${new Date().toLocaleTimeString()} · ${total} asset(s) · live SSE`;
+  document.getElementById("viewCommand")?.classList.remove("wz-dashboard");
+  document.getElementById("viewCommand")?.classList.add("sq-dashboard");
+}
+window.renderAttentionDashboard = renderAttentionDashboard;
+
+function renderWazuhDashboard(data, scans) {
+  renderAttentionDashboard(data, scans || window.__securaiqRecentScans || []);
+}
+window.renderWazuhDashboard = renderWazuhDashboard;
+
 function renderMcCharts(data) {
   const sev = document.getElementById("ccSevBars");
   if (sev) {
@@ -3787,16 +5640,27 @@ function renderMcCharts(data) {
   }
   const assetChart = document.getElementById("ccAssetChart");
   const ab = data.asset_breakdown || {};
-  if (assetChart && Object.keys(ab).length) {
-    assetChart.innerHTML = Object.entries(ab)
-      .map(
-        ([k, v]) =>
-          `<button type="button" class="ab-tile" data-workspace="assets"><span>${escapeHtml(k)}</span><strong>${v}</strong></button>`
-      )
-      .join("");
-    assetChart.querySelectorAll("[data-workspace]").forEach((b) =>
-      b.addEventListener("click", () => window.showWorkspace?.("assets"))
-    );
+  if (assetChart) {
+    const entries = Object.entries(ab).filter(([, v]) => Number(v) > 0);
+    if (!entries.length) {
+      assetChart.innerHTML = `<p class="hint">No live hosts yet — Refresh LAN or Queue engine scan.</p>`;
+    } else {
+      assetChart.innerHTML = entries
+        .map(
+          ([k, v]) =>
+            `<button type="button" class="ab-tile category-tile" data-workspace="assets" data-category="${escapeHtml(
+              k
+            )}"><span>${escapeHtml(ASSET_CATEGORY_LABELS[k] || k)}</span><strong>${v}</strong></button>`
+        )
+        .join("");
+      assetChart.querySelectorAll("[data-workspace]").forEach((b) =>
+        b.addEventListener("click", () => {
+          const cat = b.getAttribute("data-category");
+          if (cat) window.__inventoryCategoryFilter = cat;
+          window.showWorkspace?.("assets");
+        })
+      );
+    }
   }
 }
 
@@ -3831,7 +5695,7 @@ async function refreshMcIntegrations() {
       ["Jira", Boolean(settings.jira_base_url && settings.jira_api_token_set)],
       [
         "Inventory",
-        Boolean(invLive.configured || (settings.openaudit_base_url && settings.openaudit_password_set)),
+        true,
       ],
       [
         "HardeningKitty",
@@ -3845,18 +5709,16 @@ async function refreshMcIntegrations() {
       ["AI backend", Boolean(settings.model_backend)],
     ];
     list.innerHTML = rows
+      .slice(0, 6)
       .map(
         ([name, ok]) =>
-          `<li class="${ok ? "ok" : ""}"><span>${escapeHtml(name)}</span><strong>${ok ? "connected" : "not set"}</strong></li>`
+          `<li><span class="sq-integ-dot${ok ? "" : " off"}"></span><span>${escapeHtml(name)}</span></li>`
       )
       .join("");
     if (sync) {
-      const extra = [];
-      if (hkLive.installed) extra.push(`HK ${hkLive.lists || 0} lists`);
-      if (invLive.configured) extra.push(`inv ${invLive.devices_cached || 0}`);
-      sync.textContent = `Last sync ${new Date().toLocaleTimeString()} · ${rows.filter((r) => r[1]).length} ready${
-        extra.length ? ` · ${extra.join(" · ")}` : ""
-      }`;
+      const healthy = rows.filter((r) => r[1]).length;
+      const needs = rows.length - healthy;
+      sync.textContent = `${healthy} healthy${needs ? ` · ${needs} need attention` : ""}`;
     }
   } catch {
     list.innerHTML = `<li class="hint">Status unavailable</li>`;
@@ -4066,8 +5928,14 @@ function handleGlobalSearch(q) {
 
 function syncEmptyState() {
   if (!emptyStateEl) return;
-  const hasMessages = chatEl && chatEl.children.length > 0;
-  emptyStateEl.classList.toggle("hidden", hasMessages || currentView !== "chat");
+  const hasMessages = !!(chatEl && chatEl.children.length > 0);
+  const onChat = currentView === "chat";
+  emptyStateEl.classList.toggle("hidden", hasMessages || !onChat);
+  document.getElementById("aiTab-chat")?.classList.toggle("is-empty", onChat && !hasMessages);
+  document.getElementById("viewChat")?.classList.toggle("is-empty", onChat && !hasMessages);
+  if (onChat) {
+    document.getElementById("aiAssistThread")?.classList.add("hidden");
+  }
 }
 
 function appendMessage(role, content, isHtml = false) {
@@ -4350,20 +6218,476 @@ function toggleMenu() {
   else openSidebar();
 }
 
+function shortScopeLabel(text, maxLen = 16) {
+  const t = String(text || "")
+    .trim()
+    .replace(/\s*\(no engagement\)/i, "")
+    .replace(/\s+workspace$/i, "")
+    .trim();
+  if (!t) return "—";
+  if (t.length <= maxLen) return t;
+  return `${t.slice(0, Math.max(1, maxLen - 1))}…`;
+}
+
+function shortLanHost(url) {
+  const raw = String(url || "").trim();
+  if (!raw) return "";
+  try {
+    const u = new URL(raw);
+    return u.hostname || u.host;
+  } catch {
+    return raw.replace(/^https?:\/\//i, "").split(/[/?#]/)[0] || raw.slice(0, 20);
+  }
+}
+
+function isLocalHostClient() {
+  const h = (location.hostname || "").toLowerCase();
+  return h === "localhost" || h === "127.0.0.1" || h === "[::1]" || h === "::1";
+}
+
+function paintLanShareBar(platform) {
+  const bar = document.getElementById("lanShareBar");
+  const urlEl = document.getElementById("lanShareUrl");
+  const copyBtn = document.getElementById("lanShareCopy");
+  if (!bar || !urlEl) return;
+  const urls = (platform && platform.lan_urls) || [];
+  const lanMode = !!(platform && platform.lan_mode);
+  const share = (platform && platform.share_url) || urls[0] || "";
+  const show = lanMode && isLocalHostClient() && !!share;
+  bar.hidden = !show;
+  if (!show) return;
+  urlEl.textContent = shortLanHost(share);
+  urlEl.title = share;
+  bar.title = `Share on LAN: ${share}`;
+  if (copyBtn && !copyBtn.dataset.wired) {
+    copyBtn.dataset.wired = "1";
+    copyBtn.addEventListener("click", async () => {
+      const text = bar.title.replace(/^Share on LAN:\s*/i, "") || urlEl.title || share;
+      try {
+        await navigator.clipboard.writeText(text);
+        copyBtn.textContent = "Copied";
+        setTimeout(() => {
+          copyBtn.textContent = "Copy";
+        }, 1600);
+      } catch {
+        copyBtn.textContent = "Select URL";
+      }
+    });
+  }
+}
+
+function setVaScanLive(text, show) {
+  const el = document.getElementById("vaScanLive");
+  if (el) {
+    el.hidden = !show;
+    el.textContent = text || "";
+  }
+  const assetsLive = document.getElementById("assetsScanLive");
+  if (assetsLive) {
+    assetsLive.hidden = !show;
+    if (show) assetsLive.textContent = text || "";
+  }
+}
+
+function pulseVaScanFromPush(push) {
+  if (!push) return;
+  const st = String(push.status || "").toLowerCase();
+  const step = push.step || "";
+  const findings = push.findings ?? push.summary?.findings_created ?? push.summary?.findings;
+  if (["completed", "failed", "blocked"].includes(st)) {
+    setVaScanLive("", false);
+    if (typeof setLiveState === "function" && !streaming && !window.__securaiqStreaming) {
+      setLiveState("live-on", "Ready", st === "completed" ? "Scan done" : st);
+    }
+    return;
+  }
+  const bits = [];
+  if (st) bits.push(st.toUpperCase());
+  if (step) bits.push(String(step).replace(/_/g, " "));
+  if (findings != null) bits.push(`${findings} finding(s)`);
+  const label = bits.length ? `VA scan · ${bits.join(" · ")}` : "VA scan running…";
+  setVaScanLive(label, true);
+  if (typeof setLiveState === "function") {
+    setLiveState("live-busy", "VA scan", bits.slice(-2).join(" · ") || "");
+  }
+}
+
+function isSoftwarePushType(t) {
+  return (
+    t === "software_inventory" ||
+    t === "software.inventory.updated" ||
+    t === "software.inventory.updated" ||
+    t === "software.vulnerability.changed" ||
+    t === "software.vulnerability.changed"
+  );
+}
+window.isSoftwarePushType = isSoftwarePushType;
+
+function isToolPushType(t) {
+  return t === "tool" || t === "tool_progress";
+}
+window.isToolPushType = isToolPushType;
+
+function toolActivityMessage(push) {
+  push = push || {};
+  if (push.message) return String(push.message);
+  const kind = push.kind || push.tool || "tool";
+  const st = String(push.status || "running").toLowerCase();
+  const findings = push.findings != null && Number(push.findings) > 0 ? ` · ${push.findings} finding(s)` : "";
+  const target = push.target ? ` on ${String(push.target).slice(0, 48)}` : "";
+  const tools = Array.isArray(push.tools) && push.tools.length ? push.tools.slice(0, 4).join(", ") : kind;
+  if (st === "done") return `${tools} finished${target}${findings}`;
+  if (st === "error") return `${tools} failed${target}`;
+  if (push.file) return `Code scan · ${push.file}`;
+  return `${tools} ${st}${target}`;
+}
+
+function pulseMcLiveLine(text) {
+  const liveLine = document.getElementById("mcSoftwareLiveLine");
+  const liveDot = document.getElementById("mcSoftwareLiveDot");
+  if (liveLine && text) {
+    liveLine.hidden = false;
+    liveLine.textContent = text;
+    clearTimeout(window.__securaiqMcSwLiveTimer);
+    window.__securaiqMcSwLiveTimer = setTimeout(() => {
+      if (!window.__securaiqSoftwareSyncBusy) {
+        liveLine.hidden = true;
+        liveLine.textContent = "";
+      }
+    }, 14000);
+  }
+  if (liveDot) {
+    liveDot.classList.add("is-live");
+    clearTimeout(window.__securaiqMcSwDotTimer);
+    window.__securaiqMcSwDotTimer = setTimeout(() => liveDot.classList.remove("is-live"), 4000);
+  }
+}
+
+function pulseToolFromPush(push) {
+  if (!push) return;
+  const kind = push.kind || push.tool || "tool";
+  const st = String(push.status || "done").toLowerCase();
+  const label = toolActivityMessage(push);
+  if (typeof setLiveState === "function") {
+    setLiveState(st === "done" ? "live-on" : st === "error" ? "live-off" : "live-busy", kind, st);
+  }
+  pulseMcLiveLine(label);
+  const vaLive = document.getElementById("vaScanLive");
+  if (vaLive) {
+    vaLive.hidden = false;
+    vaLive.textContent = label;
+  }
+  const swLive = document.getElementById("softwareScanLive");
+  if (swLive) {
+    swLive.hidden = false;
+    swLive.textContent = label;
+    clearTimeout(window.__securaiqSwLiveTimer);
+    window.__securaiqSwLiveTimer = setTimeout(() => {
+      if (!window.__securaiqSoftwareSyncBusy) {
+        swLive.hidden = true;
+        swLive.textContent = "";
+      }
+    }, 12000);
+  }
+  const assetsLive = document.getElementById("assetsScanLive");
+  if (assetsLive && /sync|inventory|lan|audit|scan|wazuh|xdr|openaudit|software|tool/.test(String(kind))) {
+    assetsLive.hidden = false;
+    assetsLive.textContent = label;
+  }
+  if (typeof window.pushSoftwareActivity === "function") {
+    window.pushSoftwareActivity({
+      ...push,
+      message: label,
+      ts: push.ts || Date.now() / 1000,
+      action: st === "error" ? "vuln" : "tool",
+    });
+  }
+  const toolsPane = document.getElementById("mcToolUpdatesBody");
+  if (toolsPane && !toolsPane.classList.contains("hidden")) {
+    toolsPane.querySelectorAll("[data-tool-id]").forEach((row) => {
+      const id = row.getAttribute("data-tool-id") || "";
+      if (id && String(kind).toLowerCase().includes(id.toLowerCase())) {
+        row.classList.add("sw-row-updated");
+        setTimeout(() => row.classList.remove("sw-row-updated"), 2200);
+      }
+    });
+  }
+  if (st === "done" || st === "error") {
+    clearTimeout(window.__securaiqMcToolRtTimer);
+    window.__securaiqMcToolRtTimer = setTimeout(() => {
+      if (typeof refreshMcToolUpdates === "function") refreshMcToolUpdates(false);
+    }, 400);
+  }
+}
+window.pulseToolFromPush = pulseToolFromPush;
+
+const SOFTWARE_RT_TYPES = new Set([
+  "software_inventory",
+  "software.inventory.updated",
+  "software.inventory.updated",
+  "software.vulnerability.changed",
+  "software.vulnerability.changed",
+]);
+window.SOFTWARE_RT_TYPES = SOFTWARE_RT_TYPES;
+
+function patchSoftwareMcKpis(push) {
+  if (!push) return;
+  const issues = push.issues != null ? Number(push.issues) || 0 : null;
+  const health = push.health_score != null ? Number(push.health_score) || 0 : null;
+  const swIssuesEl = document.getElementById("ccSoftwareIssues");
+  const swBarEl = document.getElementById("ccSoftwareHealthBar");
+  const swTrendEl = document.getElementById("ccSoftwareTrend");
+  const swHealthPct = document.getElementById("ccSoftwareHealthPct");
+  const wzPatchEl = document.getElementById("wzPatchHealthPct");
+  if (issues != null && swIssuesEl) {
+    const prev = Number(swIssuesEl.textContent || 0);
+    swIssuesEl.textContent = String(issues);
+    if (swTrendEl && prev !== issues) {
+      const d = issues - prev;
+      swTrendEl.textContent = d === 0 ? "" : d > 0 ? `↑ ${d}` : `↓ ${Math.abs(d)}`;
+      swTrendEl.classList.toggle("up-bad", d > 0);
+      swTrendEl.classList.toggle("down-good", d < 0);
+    }
+  }
+  if (health != null) {
+    const pct = Math.min(100, Math.max(0, health));
+    if (swBarEl) swBarEl.style.width = `${pct}%`;
+    const label = `${Math.round(pct)}%`;
+    if (swHealthPct) swHealthPct.textContent = label;
+    if (wzPatchEl) wzPatchEl.textContent = label;
+  }
+}
+window.patchSoftwareMcKpis = patchSoftwareMcKpis;
+
+async function refreshMcSoftwareFromPush(push) {
+  patchSoftwareMcKpis(push || {});
+  const liveLine = document.getElementById("mcSoftwareLiveLine");
+  const liveDot = document.getElementById("mcSoftwareLiveDot");
+  const msg = (push && push.message) || "";
+  if (liveLine && msg) {
+    pulseMcLiveLine(msg);
+  } else if (liveDot) {
+    liveDot.classList.add("is-live");
+    clearTimeout(window.__securaiqMcSwDotTimer);
+    window.__securaiqMcSwDotTimer = setTimeout(() => liveDot.classList.remove("is-live"), 4000);
+  }
+  const panel = document.getElementById("mcSoftwarePostureBody");
+  if (!panel) return;
+  clearTimeout(window.__securaiqMcSwPanelTimer);
+  window.__securaiqMcSwPanelTimer = setTimeout(async () => {
+    try {
+      const res = await fetch("/api/software/summary", { headers: authHeaders() });
+      if (!res.ok) return;
+      const data = await res.json().catch(() => ({}));
+      if (typeof renderMcSoftwarePosturePanel === "function") {
+        renderMcSoftwarePosturePanel(data.posture || {});
+      }
+    } catch {
+      /* ignore */
+    }
+  }, 350);
+}
+window.refreshMcSoftwareFromPush = refreshMcSoftwareFromPush;
+
+function pulseSoftwareFromPush(push) {
+  if (!push) return;
+  patchSoftwareMcKpis(push);
+  refreshMcSoftwareFromPush(push);
+  if (typeof window.pushSoftwareActivity === "function") {
+    window.pushSoftwareActivity(push);
+  }
+  const bits = ["Software inventory"];
+  if (push.needs_update != null) bits.push(`${push.needs_update} need update`);
+  if (push.up_to_date != null) bits.push(`${push.up_to_date} up to date`);
+  if (push.total_products != null) bits.push(`${push.total_products} products`);
+  if (push.issues != null) bits.push(`${push.issues} issue(s)`);
+  if (push.health_score != null) bits.push(`${push.health_score}% health`);
+  const label = push.message || bits.join(" · ");
+  const swLive = document.getElementById("softwareScanLive");
+  if (swLive) {
+    swLive.hidden = false;
+    swLive.textContent = label;
+    clearTimeout(window.__securaiqSwLiveTimer);
+    window.__securaiqSwLiveTimer = setTimeout(() => {
+      if (!window.__securaiqSoftwareSyncBusy) {
+        swLive.hidden = true;
+        swLive.textContent = "";
+      }
+    }, 12000);
+  }
+  if (typeof setLiveState === "function") {
+    setLiveState("live-on", "Software", push.needs_update ? `${push.needs_update} patch gap(s)` : "updated");
+  }
+}
+window.pulseSoftwareFromPush = pulseSoftwareFromPush;
+
+function pulseInventoryFromPush(push) {
+  if (!push) return;
+  const action = String(push.action || "").toLowerCase();
+  const bits = ["Inventory"];
+  if (action === "queued") bits.push("queued");
+  if (action === "host" || action === "upsert") bits.push("live");
+  if (push.ip) bits.push(String(push.ip));
+  if (push.hostname) bits.push(String(push.hostname));
+  if (push.ports != null) bits.push(`${push.ports} port(s)`);
+  if (push.shares != null && Number(push.shares) > 0) bits.push(`${push.shares} share(s)`);
+  if (push.count != null) bits.push(`${push.count} host(s)`);
+  if (push.devices_total != null) bits.push(`${push.devices_total} cached`);
+  const label = bits.join(" · ");
+  const assetsLive = document.getElementById("assetsScanLive");
+  if (assetsLive) {
+    assetsLive.hidden = false;
+    assetsLive.textContent = label;
+  }
+  if (typeof setLiveState === "function") {
+    setLiveState("live-busy", "Inventory", push.ip || action || "live");
+  }
+}
+
+function pulseToolProgress(push) {
+  if (!push) return;
+  const scanned = Number(push.scanned || 0);
+  const total = Number(push.total || 0);
+  const findings = Number(push.findings || 0);
+  const label = `Code scan ${scanned}/${total || "?"} · ${findings} finding(s)${push.file ? ` · ${push.file}` : ""}`;
+  const live = document.getElementById("codeScanLive");
+  if (live) {
+    live.hidden = false;
+    live.textContent = label;
+  }
+  setVaScanLive(label, true);
+  if (typeof setLiveState === "function") {
+    setLiveState("live-busy", `Code scan ${scanned}/${total || "?"}`, `${findings} findings`);
+  }
+  if (findings > 0 && typeof syncLiveWorkspace === "function") {
+    clearTimeout(window.__securaiqToolProgTimer);
+    window.__securaiqToolProgTimer = setTimeout(() => syncLiveWorkspace({ pushType: "vuln" }), 350);
+  }
+}
+
+async function refreshIntelStrip() {
+  const intelEl = document.getElementById("ccIntel");
+  if (!intelEl) return;
+  try {
+    const res = await fetch("/api/intel/watch", { headers: authHeaders() });
+    if (!res.ok) return;
+    const data = await res.json();
+    const watch = data.watch || [];
+    if (watch.length) {
+      intelEl.innerHTML = watch
+        .slice(0, 6)
+        .map(
+          (w) =>
+            `<li class="cc-clickable" data-workspace="intel"><strong>${escapeHtml(
+              w.value || ""
+            )}</strong> <span class="hint">${escapeHtml(w.kind || "")} · ${escapeHtml(
+              (w.notes || "").slice(0, 60)
+            )}</span></li>`
+        )
+        .join("");
+    } else {
+      intelEl.innerHTML = `<li class="hint">No watchlist items — open Threat intel to add CVEs or sync CISA KEV.</li>
+        <li><button type="button" class="cc-action" data-workspace="intel">Open threat intel</button></li>`;
+    }
+    intelEl.querySelectorAll("[data-workspace]").forEach((el) =>
+      el.addEventListener("click", () => window.showWorkspace?.(el.getAttribute("data-workspace")))
+    );
+  } catch {
+    /* ignore */
+  }
+}
+window.refreshIntelStrip = refreshIntelStrip;
+window.pulseVaScanFromPush = pulseVaScanFromPush;
+window.pulseInventoryFromPush = pulseInventoryFromPush;
+window.pulseToolProgress = pulseToolProgress;
+
+function syncLiveWorkspace(opts) {
+  opts = opts || {};
+  const pushType = opts.pushType || "";
+  const isSwPush = typeof isSoftwarePushType === "function" ? isSoftwarePushType(pushType) : SOFTWARE_RT_TYPES.has(pushType);
+  const isToolPush = typeof isToolPushType === "function" ? isToolPushType(pushType) : pushType === "tool" || pushType === "tool_progress";
+  const isLivePush = REALTIME_LIVE_TYPES.has(pushType) || pushType === "job";
+  try {
+    if (isLivePush && !isSwPush && !isToolPush) {
+      if (typeof loadAssets === "function") loadAssets();
+      if (typeof loadVulns === "function") loadVulns();
+      if (typeof loadCommandCenter === "function") loadCommandCenter();
+    } else if (isSwPush) {
+      if (typeof refreshMcSoftwareFromPush === "function") refreshMcSoftwareFromPush(opts.push || {});
+      if (typeof window.refreshSoftwareFromPush === "function") {
+        window.refreshSoftwareFromPush(opts.push || {}, { partial: true });
+      }
+    } else if (isToolPush) {
+      /* Tool UI is pulsed in applyRealtimeWorkspaceRefresh — avoid duplicate activity rows. */
+    }
+  } catch {
+    /* ignore */
+  }
+  if (pushType === "intel" || pushType === "intel_watch") {
+    refreshIntelStrip();
+  }
+  const view = window.__securaiqWorkspaceView || "";
+  const rt = (fn) => {
+    if (typeof fn !== "function") return;
+    try {
+      fn({ quiet: true, pushType });
+    } catch {
+      /* ignore */
+    }
+  };
+  try {
+    if (isLivePush || view === "assets") rt(window.renderAssetsPage);
+    if ((isLivePush || view === "software") && !isSwPush) rt(window.renderSoftwarePage);
+    if (isLivePush || view === "vulns") rt(window.renderVulnsPage);
+    if (isLivePush || view === "soc") rt(window.renderSocPage);
+    if (isLivePush || view === "intel") rt(window.renderIntelPage);
+    if (isLivePush || view === "risks") rt(window.renderRisksPage);
+    if (isLivePush || view === "remediations") rt(window.renderRemsPage);
+    if (isLivePush || view === "playbooks") rt(window.renderPlaybooksPage);
+    if (isLivePush || view === "campaigns") rt(window.renderCampaignsPage);
+    if (isLivePush || view === "evidence") rt(window.renderEvidencePage);
+    if (isLivePush || view === "graph") rt(window.renderGraphPage);
+    if (isLivePush || view === "integrations") rt(window.renderIntegrationsPage);
+    if (isLivePush || view === "automation") rt(window.refreshAutomationPage);
+    if (isLivePush || view === "frameworks") {
+      rt(window.renderFrameworksPage);
+      if (typeof window.renderHardeningPanel === "function") window.renderHardeningPanel();
+    }
+    if (isLivePush || view === "reports") rt(window.renderReportsPage);
+    if (isLivePush || view === "command") rt(loadCommandCenter);
+    if (isLivePush && typeof window.renderWazuhDashboard === "function" && view === "command") {
+      /* loadCommandCenter calls renderWazuhDashboard */
+    }
+  } catch {
+    /* ignore */
+  }
+}
+window.syncLiveWorkspace = syncLiveWorkspace;
+window.refreshMissionControl = loadCommandCenter;
+
 async function loadPlatformTip() {
-  if (!lanTipEl) return;
+  let platform = null;
   try {
     const res = await fetch("/api/platform", { headers: authHeaders() });
-    const p = await res.json();
-    const urls = (p.lan_urls || []).map((u) => `<code>${u}</code>`).join(" · ");
-    lanTipEl.innerHTML =
-      `${p.client_note || ""}` +
-      (urls ? `<br/><strong>LAN:</strong> ${urls}` : "") +
-      (p.os ? `<br/><strong>Host OS:</strong> ${p.os} · Python ${p.python}` : "");
+    platform = await res.json();
+    paintLanShareBar(platform);
+    if (lanTipEl) {
+      const urls = (platform.lan_urls || []).map((u) => `<code>${u}</code>`).join(" · ");
+      lanTipEl.innerHTML =
+        `${platform.client_note || ""}` +
+        (urls ? `<br/><strong>LAN:</strong> ${urls}` : "") +
+        (platform.os ? `<br/><strong>Host OS:</strong> ${platform.os} · Python ${platform.python}` : "") +
+        (platform.lan_mode
+          ? `<br/><strong>Devices:</strong> same live workspace — scans and assets appear on every phone/PC.`
+          : "");
+    }
   } catch {
-    lanTipEl.textContent =
-      "Phones/tablets: open this app via your host LAN IP on port 8080 (same Wi‑Fi). Backends run on the host.";
+    if (lanTipEl) {
+      lanTipEl.textContent =
+        "Phones/tablets: open this app via your host LAN IP on port 8080 (same Wi‑Fi). Backends run on the host.";
+    }
   }
+  return platform;
 }
 
 function renderQuickPrompts() {
@@ -4606,6 +6930,12 @@ async function loadSettingsForm() {
     setVal("setOaPassword", "");
     setVal("setOaPrefix", s.openaudit_api_prefix || "/open-audit/index.php");
     setVal("setOaSyncInterval", s.openaudit_sync_interval_sec ?? 3600);
+    setChecked("setSoftwareSyncAuto", s.software_sync_auto_enabled !== false);
+    setVal("setSoftwareSyncInterval", s.software_sync_interval_sec ?? 3600);
+    setChecked("setSshPatchEnabled", !!s.ssh_patch_enabled);
+    setVal("setSshPatchUser", s.ssh_patch_user || "root");
+    setVal("setSshPatchKey", s.ssh_patch_key_path || "");
+    setVal("setSshPatchMaxHosts", s.ssh_patch_max_hosts ?? 15);
     setChecked("setOaVerifySsl", !!s.openaudit_verify_ssl);
     setHint("oaPasswordHint", s.openaudit_password_set);
     setVal("setHkPath", s.hardeningkitty_module_path || "");
@@ -4775,6 +7105,12 @@ async function saveSettings(event) {
     openaudit_api_prefix: document.getElementById("setOaPrefix")?.value.trim() || "/open-audit/index.php",
     openaudit_verify_ssl: document.getElementById("setOaVerifySsl")?.checked ?? false,
     openaudit_sync_interval_sec: Number(document.getElementById("setOaSyncInterval")?.value) || 3600,
+    software_sync_auto_enabled: document.getElementById("setSoftwareSyncAuto")?.checked ?? true,
+    software_sync_interval_sec: Number(document.getElementById("setSoftwareSyncInterval")?.value) || 3600,
+    ssh_patch_enabled: document.getElementById("setSshPatchEnabled")?.checked ?? false,
+    ssh_patch_user: document.getElementById("setSshPatchUser")?.value.trim() || "root",
+    ssh_patch_key_path: document.getElementById("setSshPatchKey")?.value.trim() || "",
+    ssh_patch_max_hosts: Number(document.getElementById("setSshPatchMaxHosts")?.value) || 15,
     hardeningkitty_module_path: document.getElementById("setHkPath")?.value.trim() || "",
     hardeningkitty_list: document.getElementById("setHkList")?.value.trim() || "",
     sonarqube_base_url: document.getElementById("setSonarUrl")?.value.trim() || "",
@@ -6035,7 +8371,11 @@ ensureActiveChat();
 refreshAuthStatus().then(loadEngagements);
 checkHealth().then(() => {
   showWelcome();
-  showView("chat", { skipFocus: true });
+  loadPlatformTip().then((p) => {
+    const lanClient = !!(p && p.lan_mode) && !isLocalHostClient();
+    showView(lanClient ? "command" : "chat", { skipFocus: true });
+    syncLiveWorkspace();
+  });
 });
 wireCommandCenterUi();
 setInterval(checkHealth, 90000);
@@ -6048,6 +8388,17 @@ setInterval(() => {
     window.__securaiqRefreshActiveView({}, { heartbeat: true });
   }
 }, 15000);
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) return;
+  syncLiveWorkspace();
+  const es = window.__securaiqRealtimeEs;
+  if (!es || es.readyState === EventSource.CLOSED) startRealtimeFeed();
+});
+window.addEventListener("pageshow", () => syncLiveWorkspace());
+window.addEventListener("online", () => {
+  startRealtimeFeed();
+  syncLiveWorkspace();
+});
 resizeInput();
 
 /* ---- Notifications panel (bell icon) -------------------------------- */

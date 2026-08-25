@@ -5,9 +5,12 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+from app.paths import project_root, resource_root
+
+ROOT = project_root()
 ENV_PATH = ROOT / ".env"
-ENV_EXAMPLE = ROOT / ".env.example"
+_bundled_example = resource_root() / ".env.example"
+ENV_EXAMPLE = (ROOT / ".env.example") if (ROOT / ".env.example").is_file() else _bundled_example
 
 
 def ensure_env_file() -> None:

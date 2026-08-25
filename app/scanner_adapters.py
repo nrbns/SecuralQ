@@ -1,7 +1,7 @@
 """Import adapters for mature open-source scanners.
 
 SecuraIQ orchestrates findings — it does not replace the scanners.
-Supported: Trivy, Semgrep, Gitleaks, Grype, Checkov, Bandit, SonarQube, OWASP ZAP,
+Supported: Trivy, Semgrep, Gitleaks, Grype, Checkov, Bandit, SonarQube, SecuraIQ Web Scanner (ZAP export),
 Burp Suite (Scanner XML export — Professional or Community "Save issues" report).
 """
 
@@ -426,6 +426,95 @@ def is_burp_xml(text: str) -> bool:
     return "<issues" in head and "<issue>" in text[:4000]
 
 
+def is_greenbone_xml(text: str) -> bool:
+    """Detect Greenbone/OpenVAS/GVM report XML (GMP get_reports style)."""
+    head = (text or "")[:4000].lower()
+    if "<issues" in head and "<issue>" in head:
+        return False  # Burp
+    markers = (
+        "<nvt",
+        "greenbone",
+        "openvas",
+        'extension="xml"',
+        "<get_reports",
+        "<report_format",
+    )
+    if any(m in head for m in markers):
+        return True
+    # Nested <report><results><result> is the classic OpenVAS export shape
+    return "<results" in head and "<result>" in head and ("<threat>" in head or "<severity>" in head)
+
+
+def parse_greenbone_xml(text: str, *, engagement_id: str | None, filename: str) -> list[dict[str, Any]]:
+    """Greenbone Vulnerability Manager / OpenVAS report XML → finding rows.
+
+    Accepts common export shapes: ``<report><results><result>…`` and GMP
+    ``get_reports`` wrappers. Maps NVT name, host, port, threat/severity, CVE.
+    """
+    root = ET.fromstring(text)
+    items: list[dict[str, Any]] = []
+    # Prefer explicit result nodes; fall back to ReportItem-style if needed
+    nodes = root.findall(".//result")
+    if not nodes:
+        nodes = root.findall(".//ReportItem")
+    for node in nodes[:500]:
+        nvt = node.find("nvt")
+        title = ""
+        cve = ""
+        cvss = None
+        oid = ""
+        if nvt is not None:
+            title = (nvt.findtext("name") or nvt.get("name") or "").strip()
+            oid = (nvt.get("oid") or "").strip()
+            cve_raw = (nvt.findtext("cve") or nvt.findtext("cves") or "").strip()
+            if cve_raw and cve_raw.upper() not in {"NOCVE", "N/A", ""}:
+                # First CVE token if comma/space separated
+                cve = cve_raw.replace(",", " ").split()[0][:40]
+            try:
+                cvss = float(nvt.findtext("cvss_base") or nvt.findtext("cvss") or "")
+            except (TypeError, ValueError):
+                cvss = None
+        if not title:
+            title = (node.findtext("name") or node.findtext("nvt") or "Greenbone finding").strip()
+        host = (node.findtext("host") or node.get("host") or "").strip()
+        # Sometimes host is nested: <host><asset>...</asset>ip</host>
+        if not host:
+            host_el = node.find("host")
+            if host_el is not None:
+                host = "".join(host_el.itertext()).strip().split()[0] if host_el.text or list(host_el) else ""
+        port = (node.findtext("port") or "").strip()
+        asset = host or "target"
+        if port and port not in {"general/tcp", "general/udp", ""}:
+            asset = f"{asset}:{port.split('/')[0]}" if "/" in port else f"{asset}:{port}"
+        threat = (node.findtext("threat") or node.findtext("severity") or "Medium").strip()
+        try:
+            if cvss is None:
+                cvss = float(node.findtext("severity") or node.findtext("cvss") or "")
+        except (TypeError, ValueError):
+            pass
+        desc = (node.findtext("description") or "")[:2000]
+        items.append(
+            {
+                "title": str(title)[:300],
+                "cve": (cve or "")[:40].upper(),
+                "severity": _sev_norm(threat, "medium"),
+                "asset_name": str(asset)[:200],
+                "cvss": cvss,
+                "engagement_id": engagement_id,
+                "source": f"greenbone:{filename}",
+                "raw": {
+                    "oid": oid,
+                    "host": host,
+                    "port": port,
+                    "threat": threat,
+                    "description": desc,
+                    "scanner": "greenbone",
+                },
+            }
+        )
+    return items
+
+
 def parse_burp_xml(text: str, *, engagement_id: str | None, filename: str) -> list[dict[str, Any]]:
     """Burp Suite Scanner XML export (Professional or Community 'Save issues',
     also what Burp Suite Enterprise's report download produces). Each <issue>
@@ -488,6 +577,8 @@ ADAPTERS: dict[str, Callable[..., list[dict[str, Any]]]] = {
 # for Nessus/other tools' XML exports.
 XML_ADAPTERS: dict[str, Callable[..., list[dict[str, Any]]]] = {
     "burp": parse_burp_xml,
+    "greenbone": parse_greenbone_xml,
+    "openvas": parse_greenbone_xml,
 }
 
 
@@ -510,4 +601,4 @@ def try_parse_scanner_json(
 
 
 def list_import_adapters() -> list[str]:
-    return sorted(ADAPTERS.keys())
+    return sorted(set(ADAPTERS.keys()) | set(XML_ADAPTERS.keys()))

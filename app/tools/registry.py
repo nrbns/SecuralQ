@@ -27,6 +27,18 @@ class ToolSpec:
 
 
 TOOL_CATALOG: dict[str, ToolSpec] = {
+    # --- Integrated VA (one tool: securaiq + nmap + nuclei + web scanner → evidence → AI → triage) ---
+    "combo_assessment": ToolSpec(
+        "combo_assessment",
+        "Integrated VA",
+        "builtin",
+        "One workflow: authorize → SecuraIQ + Nmap + Nuclei + SecuraIQ Web Scanner → evidence → "
+        "investigation pack → optional auto-triage. Replaces running scanners separately.",
+        category="vuln",
+        origin="securaiq",
+        provider="SecuraIQ",
+        heavy=True,
+    ),
     # --- SecuraIQ tools (always available; no third-party install) ---
     "ports": ToolSpec(
         "ports", "Port probe", "builtin",
@@ -222,6 +234,41 @@ TOOL_CATALOG: dict[str, ToolSpec] = {
         origin="third_party",
         provider="Microsoft Defender",
     ),
+    "siem_sync": ToolSpec(
+        "siem_sync", "SecuraIQ SIEM sync", "builtin",
+        "Pull Wazuh manager agents + alerts into Assets, XDR feed, and SOC console. "
+        "Configure WAZUH_* under Settings → SecuraIQ SIEM, then run sync from Tools or chat.",
+        needs_target=False,
+        category="siem",
+        origin="securaiq",
+        provider="SecuraIQ SIEM",
+    ),
+    "xdr_sync": ToolSpec(
+        "xdr_sync", "XDR / EDR sync", "builtin",
+        "Sync detections from configured vendors (Sophos, CrowdStrike, SentinelOne, "
+        "Microsoft Defender) into the unified XDR feed and optional incidents.",
+        needs_target=False,
+        category="siem",
+        origin="third_party",
+        provider="Multi-vendor XDR",
+    ),
+    "thehive_sync": ToolSpec(
+        "thehive_sync", "TheHive case sync", "builtin",
+        "Pull TheHive cases into SecuraIQ Incidents. Configure THEHIVE_* under Settings.",
+        needs_target=False,
+        category="ir",
+        origin="third_party",
+        provider="TheHive",
+    ),
+    "inventory_sync": ToolSpec(
+        "inventory_sync", "Network inventory sync", "builtin",
+        "Refresh local /24 LAN inventory (Open-AudIT-style) into Assets — same as "
+        "Refresh LAN / Sync inventory in the Tools hub.",
+        needs_target=False,
+        category="inventory",
+        origin="securaiq",
+        provider="SecuraIQ",
+    ),
     "hardeningkitty": ToolSpec(
         "hardeningkitty", "HardeningKitty (Windows)", "external",
         "Import CIS/baseline Audit reports or run local Audit via PowerShell module "
@@ -263,14 +310,16 @@ TOOL_CATALOG: dict[str, ToolSpec] = {
         provider="ProjectDiscovery",
     ),
     "zap": ToolSpec(
-        "zap", "OWASP ZAP", "external",
-        "ZAP via SecuraIQ scan engine (job scan_execute / Prefect when enabled); "
-        "falls back to PATH zap or builtin headers_security if missing.",
-        binaries=("zap.sh", "zap", "zaproxy"),
+        "zap", "SecuraIQ Web Scanner", "builtin",
+        "Install-free web vulnerability assessment (built-in DAST): security headers, "
+        "cookies, sensitive paths, CORS, TLS, reflection probes, and technology "
+        "disclosure. No ZAP daemon or external binary required. "
+        "Set ZAP_PREFER_API=true only if you want optional ZAP daemon deep-scan on top. "
+        "Authorized / owned targets only.",
         heavy=True,
         category="web",
-        origin="third_party",
-        provider="OWASP ZAP",
+        origin="securaiq",
+        provider="SecuraIQ",
     ),
     "sqlmap": ToolSpec(
         "sqlmap", "sqlmap", "external",
@@ -442,20 +491,23 @@ EXTERNAL_FALLBACKS: dict[str, str] = {
     "openssl": "tls",
 }
 
-# Always-on PT pack — SecuraIQ engine + builtins (nmap/nuclei/zap use engine or fallback)
+# Always-on PT pack — single integrated VA tool (replaces multi-scanner PT pack)
 PT_PACK_TOOLS: tuple[str, ...] = (
-    "securaiq",
-    "ports",
-    "http",
-    "tls",
-    "dns",
-    "headers_security",
-    "hardening_baseline",
-    "openvas",
+    "combo_assessment",
+)
+
+# SOC / inventory connectors — runnable from Tools hub and chat (no scan target)
+SOC_PACK_TOOLS: tuple[str, ...] = (
+    "siem_sync",
+    "xdr_sync",
+    "inventory_sync",
 )
 
 # Tools that queue the scan engine (scan_execute → Prefect when ready)
 ENGINE_TOOLS: dict[str, str] = {
+    "combo_assessment": "combo_assessment",
+    "combo": "combo_assessment",
+    "integrated_va": "combo_assessment",
     "securaiq": "securaiq",
     "nmap": "nmap",
     "nuclei": "nuclei",
@@ -486,6 +538,29 @@ def is_available(tool_id: str) -> bool:
             return is_configured()
         except Exception:
             return False
+    if tool_id == "siem_sync":
+        try:
+            from app.connectors import wazuh as wz
+
+            return wz.is_configured()
+        except Exception:
+            return False
+    if tool_id == "xdr_sync":
+        try:
+            from app.xdr import status as xdr_st
+
+            return any(v.get("configured") for v in xdr_st().values())
+        except Exception:
+            return False
+    if tool_id == "thehive_sync":
+        try:
+            from app.connectors import thehive as th
+
+            return th.is_configured()
+        except Exception:
+            return False
+    if tool_id == "inventory_sync":
+        return True
     if tool_id == "hardeningkitty":
         try:
             from app.hardeningkitty import is_installed
@@ -553,6 +628,7 @@ def list_tools_status() -> dict:
         "auto_light": list(AUTO_LIGHT_TOOLS),
         "auto_awareness": list(AWARENESS_AUTO_TOOLS),
         "pt_pack": list(PT_PACK_TOOLS),
+        "soc_pack": list(SOC_PACK_TOOLS),
         "engine_tools": dict(ENGINE_TOOLS),
     }
     list_tools_status._cache = {"ts": now, "payload": payload}

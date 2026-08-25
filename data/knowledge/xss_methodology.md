@@ -26,5 +26,5 @@ javascript:alert(1)
 
 ## Tools
 - Burp Suite Repeater/Intruder
-- OWASP ZAP active scanner (scoped)
+- SecuraIQ Web Scanner (built-in DAST, scoped)
 - Browser DevTools for DOM inspection

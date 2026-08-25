@@ -15,7 +15,7 @@ See the full tool catalog and MVP matrix: [enterprise-integrations.md](./enterpr
 ## Design principles
 
 1. **Local-first AI** — Ollama / LM Studio / Hermes; cloud models optional via the [AI Router](./ai-router.md).
-2. **Import, don’t reinvent** — Trivy, Semgrep, Gitleaks, Grype, Checkov, SonarQube, ZAP, etc. feed the register.
+2. **Import, don’t reinvent** — Trivy, Semgrep, Gitleaks, Grype, Checkov, SonarQube, SecuraIQ Web Scanner (ZAP export), etc. feed the register.
 3. **Evidence-grounded answers** — RAG + structured modules; humans approve. Prefer trusted frameworks over “uncensored” models.
 4. **SQLite → Postgres** — Community/on-prem stays SQLite; SaaS multi-tenant uses Postgres + Redis.
 5. **Compose profiles** — core app alone; add Qdrant / Redis when needed.
@@ -36,7 +36,7 @@ See the full tool catalog and MVP matrix: [enterprise-integrations.md](./enterpr
 | Auth | Built-in; Keycloak / Authentik for SSO | Built-in; SSO Month 3 |
 | Frontend | FastAPI static Mission Control | Shipped |
 | Intel | CISA KEV + NVD (ToS-aware) | Shipped sync |
-| Scanners | Trivy · Semgrep · Gitleaks · Grype · Checkov · Bandit · SonarQube · ZAP | Shipped adapters |
+| Scanners | Trivy · Semgrep · Gitleaks · Grype · Checkov · Bandit · SonarQube · SecuraIQ Web Scanner | Shipped adapters |
 | Compliance | ISO 27001:2022/27701:2025, NIST CSF 2.0, 800-53/171, CMMC L2, CIS v8.1, SOC 2, PCI 4.0.1, HIPAA, GDPR, NIS2, ASVS 5.0, Top 10:2025 | Shipped catalogs |
 | Reports | PDF + Markdown + **DOCX/XLSX** | Shipped |
 | Automation | Webhooks + Jira; n8n/Temporal | Webhooks + Jira shipped |

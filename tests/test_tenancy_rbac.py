@@ -74,6 +74,22 @@ def test_assert_safe_deployment_blocks_open_bind_without_auth(tmp_path, monkeypa
         auth_mod.assert_safe_deployment_auth()
 
 
+def test_assert_safe_deployment_allows_open_lan_flag(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    monkeypatch.setenv("DATA_DIR", str(data_dir))
+    monkeypatch.setenv("AUTH_ENABLED", "false")
+    monkeypatch.setenv("DEPLOYMENT_MODE", "lab")
+    monkeypatch.setenv("HOST", "0.0.0.0")
+    monkeypatch.setenv("ALLOW_OPEN_LAN", "true")
+    import app.config as config_mod
+    import app.auth as auth_mod
+
+    importlib.reload(config_mod)
+    importlib.reload(auth_mod)
+    auth_mod.assert_safe_deployment_auth()
+
+
 def test_rbac_viewer_cannot_write(tmp_path, monkeypatch):
     data_dir = tmp_path / "d"
     data_dir.mkdir()

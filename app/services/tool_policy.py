@@ -46,6 +46,40 @@ def normalize_scope_json(raw: Any) -> list[str]:
     return out
 
 
+# External engine scanners always need structured scope. Builtin discovery/web may
+# keep legacy empty-scope auth; vulnerability/full profiles require scope too.
+_SCOPE_REQUIRED_SCANNERS = frozenset({"nmap", "nuclei", "zap"})
+_SCOPE_REQUIRED_PROFILES = frozenset({"vulnerability", "full"})
+
+
+def requires_structured_scope(scanner_id: str, profile: str = "discovery") -> bool:
+    sid = (scanner_id or "").strip().lower()
+    prof = (profile or "discovery").strip().lower()
+    if sid in _SCOPE_REQUIRED_SCANNERS:
+        return True
+    if prof in _SCOPE_REQUIRED_PROFILES:
+        return True
+    return False
+
+
+def assert_structured_scope(
+    *,
+    scanner_id: str,
+    profile: str,
+    scope: list[str],
+) -> tuple[bool, str]:
+    """Return (ok, reason). Fail closed when scope is required but empty."""
+    if not requires_structured_scope(scanner_id, profile):
+        return True, "legacy_empty_scope_ok"
+    if scope:
+        return True, "structured_scope_present"
+    return (
+        False,
+        "Structured engagement scope required for this scanner/profile "
+        "(CIDR, IP, or hostname list). Empty scope is not allowed.",
+    )
+
+
 def scope_to_storage(raw: Any) -> str:
     return json.dumps(normalize_scope_json(raw))
 

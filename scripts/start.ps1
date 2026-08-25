@@ -14,11 +14,21 @@ function Find-Python {
         if (-not $exe) { continue }
         try {
             if ($cmd -eq "py") {
-                $ver = & py -3 -c "import sys; print(sys.version_info[0])" 2>$null
-                if ($ver -eq "3") { return @{ Exe = "py"; Args = @("-3") } }
+                $ver = & py -3 -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>$null
+                if ($ver) {
+                    $parts = $ver.Split(".")
+                    if ([int]$parts[0] -gt 3 -or ([int]$parts[0] -eq 3 -and [int]$parts[1] -ge 11)) {
+                        return @{ Exe = "py"; Args = @("-3") }
+                    }
+                }
             } else {
-                $ver = & python -c "import sys; print(sys.version_info[0])" 2>$null
-                if ($ver -eq "3") { return @{ Exe = "python"; Args = @() } }
+                $ver = & python -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>$null
+                if ($ver) {
+                    $parts = $ver.Split(".")
+                    if ([int]$parts[0] -gt 3 -or ([int]$parts[0] -eq 3 -and [int]$parts[1] -ge 11)) {
+                        return @{ Exe = "python"; Args = @() }
+                    }
+                }
             }
         } catch { }
     }
@@ -98,24 +108,22 @@ Ensure-EnvFile
 $lines = @(Get-Content ".env" -Encoding UTF8)
 if ($Lan) {
     $lines = Set-EnvLine $lines "HOST" "0.0.0.0"
-    # SPA is same-origin on the phone, but allow * so preflighted tools / PWA
-    # edge cases on LAN IPs do not fail closed after a prior localhost start.
     $lines = Set-EnvLine $lines "CORS_ORIGINS" "*"
-    # Keep data across restarts when sharing with other devices on Wi-Fi
     $lines = Set-EnvLine $lines "WORKSPACE_ZERO_START" "false"
+    $lines = Set-EnvLine $lines "ALLOW_OPEN_LAN" "true"
+    $lines = Set-EnvLine $lines "LAN_AUTO_SCAN" "true"
 } else {
     $lines = Set-EnvLine $lines "HOST" "127.0.0.1"
     $lines = Set-EnvLine $lines "CORS_ORIGINS" "http://127.0.0.1:8080,http://localhost:8080"
+    $lines = Set-EnvLine $lines "WORKSPACE_ZERO_START" "false"
+    $lines = Set-EnvLine $lines "ALLOW_OPEN_LAN" "false"
+    $lines = Set-EnvLine $lines "LAN_AUTO_SCAN" "false"
 }
 if (Get-Command ollama -ErrorAction SilentlyContinue) {
     $lines = Set-EnvLine $lines "MODEL_BACKEND" "ollama"
 }
 # Sensible zero-config defaults if missing from an old .env
 $lines = Set-EnvLine $lines "AUTH_ALLOW_REGISTER" "false"
-# Only force wipe-on-start for first-run localhost labs when unset
-if (-not ($lines | Where-Object { $_ -match "^WORKSPACE_ZERO_START=" })) {
-    $lines = Set-EnvLine $lines "WORKSPACE_ZERO_START" "false"
-}
 $utf8Bom = New-Object System.Text.UTF8Encoding $true
 [System.IO.File]::WriteAllLines((Join-Path (Get-Location) ".env"), $lines, $utf8Bom)
 
@@ -146,13 +154,15 @@ if ($Lan) {
     } catch {
         Write-Host "  Firewall:    if phones cannot connect, allow TCP $port in Windows Defender Firewall" -ForegroundColor DarkYellow
     }
+    Write-Host "  Live share:  same assets/scans on every device; this host auto-scans on start" -ForegroundColor DarkGray
 } else {
     Write-Host "Starting SecuraIQ (localhost)" -ForegroundColor Green
     Write-Host "  LAN / phone: .\start_lan.cmd   or   .\start.cmd -Lan"
 }
 Write-Host "No .env editing required. Optional keys: Settings in the UI."
 
-$proc = Start-Process -FilePath ".\.venv\Scripts\python.exe" -ArgumentList "-u", "run.py" -WorkingDirectory (Get-Location) -PassThru -NoNewWindow
+$rootAbs = (Resolve-Path ".").Path
+$proc = Start-Process -FilePath (Join-Path $rootAbs ".venv\Scripts\python.exe") -ArgumentList "-u", "run.py" -WorkingDirectory $rootAbs -PassThru -NoNewWindow
 $ready = $false
 for ($i = 0; $i -lt 45; $i++) {
     try {

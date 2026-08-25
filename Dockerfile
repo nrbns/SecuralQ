@@ -56,10 +56,12 @@ RUN pip install --no-cache-dir -r requirements.txt \
 COPY app ./app
 COPY static ./static
 COPY data/knowledge ./data/knowledge
+COPY data/frameworks ./data/frameworks
 COPY alembic ./alembic
 COPY alembic.ini .
 COPY scripts ./scripts
 COPY run.py .
+COPY .env.example .
 
 ENV HOST=0.0.0.0
 ENV PORT=8080
@@ -67,6 +69,8 @@ ENV AUTH_ENABLED=true
 ENV DATA_DIR=/data
 ENV CHROMA_PERSIST_DIR=/data/chroma
 ENV HOME=/root
+ENV UVICORN_RELOAD=0
+ENV DEPLOYMENT_MODE=production
 # ZAP needs a writable home for its DB when running as non-root later
 ENV ZAP_PATH=/opt/zaproxy
 

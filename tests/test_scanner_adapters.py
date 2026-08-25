@@ -311,3 +311,54 @@ def test_parse_burp_xml_extracts_both_issues_with_correct_severity():
 def test_parse_burp_xml_empty_root_returns_empty_list():
     empty = '<?xml version="1.0"?><issues></issues>'
     assert parse_burp_xml(empty, engagement_id=None, filename="empty.xml") == []
+
+
+GREENBONE_XML = """<?xml version="1.0"?>
+<report id="r1">
+  <results>
+    <result id="1">
+      <host>192.168.56.101</host>
+      <port>443/tcp</port>
+      <nvt oid="1.3.6.1.4.1.25623.1.0.103674">
+        <name>SSL/TLS: Report Vulnerable Cipher Suites</name>
+        <cve>CVE-2016-2183</cve>
+        <cvss_base>5.0</cvss_base>
+      </nvt>
+      <threat>Medium</threat>
+      <severity>5.0</severity>
+      <description>The remote service supports weak ciphers.</description>
+    </result>
+    <result id="2">
+      <host>192.168.56.101</host>
+      <port>22/tcp</port>
+      <nvt oid="1.3.6.1.4.1.25623.1.0.105497">
+        <name>OpenSSH Denial of Service Vulnerability</name>
+        <cve>CVE-2016-6515</cve>
+        <cvss_base>7.8</cvss_base>
+      </nvt>
+      <threat>High</threat>
+      <severity>7.8</severity>
+      <description>OpenSSH is prone to a DoS.</description>
+    </result>
+  </results>
+</report>
+"""
+
+
+def test_is_greenbone_xml_detects_report():
+    from app.scanner_adapters import is_greenbone_xml
+
+    assert is_greenbone_xml(GREENBONE_XML) is True
+    assert is_greenbone_xml(BURP_XML) is False
+
+
+def test_parse_greenbone_xml_extracts_cve_and_severity():
+    from app.scanner_adapters import parse_greenbone_xml
+
+    items = parse_greenbone_xml(GREENBONE_XML, engagement_id="eng-g", filename="gvm.xml")
+    assert len(items) == 2
+    high = [i for i in items if i["severity"] == "high"][0]
+    assert high["cve"] == "CVE-2016-6515"
+    assert "192.168.56.101" in high["asset_name"]
+    assert high["source"] == "greenbone:gvm.xml"
+    assert high["cvss"] == 7.8

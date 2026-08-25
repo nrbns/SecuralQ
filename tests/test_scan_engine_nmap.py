@@ -135,3 +135,115 @@ def test_scan_create_and_normalize_persist(tmp_path, monkeypatch):
     vulns = list_vulnerabilities(user.id)
     assert any(a["name"] in {"lab.local", "192.168.56.101"} for a in assets)
     assert len(vulns) >= 2
+
+
+@pytest.mark.asyncio
+async def test_execute_scan_nmap_fixture_e2e(tmp_path, monkeypatch):
+    """Full executor path with fixture XML — no nmap binary required."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("WORKSPACE_ZERO_START", "false")
+    monkeypatch.setenv("AUTH_ENABLED", "true")
+    monkeypatch.setenv("DEPLOYMENT_MODE", "lab")
+    monkeypatch.setenv("DATABASE_URL", "")
+    import app.config as config_mod
+    import app.db as db_mod
+
+    importlib.reload(config_mod)
+    db_mod.reset_conn_for_tests()
+    importlib.reload(db_mod)
+
+    from app.auth import register_user
+    from app.enterprise import list_assets, list_risks, list_vulnerabilities
+    from app.scan_engine.executor import execute_scan
+    from app.scan_engine.models import create_scan, evidence_root, get_scan
+    from app.scanners.base import RawScanResult
+    from app.scanners import nmap as nmap_mod
+    from app.tenancy import ensure_tenant_schema
+
+    ensure_tenant_schema()
+    user = register_user("nmap_e2e", "password123", role="user")
+    scan = create_scan(
+        user_id=user.id,
+        target="192.168.56.101",
+        scanner="nmap",
+        profile="discovery",
+        scope=["192.168.56.0/24"],
+        authorized=True,
+    )
+    sid = scan["id"]
+    ev = evidence_root(sid)
+
+    async def _fake_execute(self, ctx):
+        ctx.evidence_dir.mkdir(parents=True, exist_ok=True)
+        xml_path = ctx.evidence_dir / "nmap.xml"
+        xml_path.write_text(SAMPLE_NMAP_XML, encoding="utf-8")
+        (ctx.evidence_dir / "stdout.log").write_text("fixture nmap", encoding="utf-8")
+        (ctx.evidence_dir / "stderr.log").write_text("", encoding="utf-8")
+        (ctx.evidence_dir / "command.txt").write_text("nmap -fixture 192.168.56.101", encoding="utf-8")
+        return RawScanResult(
+            exit_code=0,
+            stdout="fixture nmap",
+            stderr="",
+            artifact_paths=[
+                str(xml_path),
+                str(ctx.evidence_dir / "stdout.log"),
+                str(ctx.evidence_dir / "stderr.log"),
+                str(ctx.evidence_dir / "command.txt"),
+            ],
+        )
+
+    monkeypatch.setattr(nmap_mod.NmapScanner, "available", lambda self: (True, "nmap"))
+    monkeypatch.setattr(nmap_mod.NmapScanner, "execute", _fake_execute)
+
+    result = await execute_scan(sid)
+    assert result["ok"] is True
+    done = get_scan(sid)
+    assert done["status"] == "completed"
+    summary = done.get("summary") or {}
+    assert summary.get("findings", 0) >= 1
+    assert summary.get("risk", {}).get("score") is not None
+    assert (ev / "config.json").is_file()
+    assert (ev / "metadata.json").is_file()
+    assert (ev / "nmap.xml").is_file()
+    assert (ev / "report.md").is_file()
+    assets = list_assets(user.id)
+    vulns = list_vulnerabilities(user.id)
+    assert any(a["name"] in {"lab.local", "192.168.56.101"} for a in assets)
+    assert len(vulns) >= 1
+    # SMB/445 should open at least one high risk register row
+    risks = list_risks(user.id)
+    assert isinstance(risks, list)
+
+
+@pytest.mark.asyncio
+async def test_execute_scan_nmap_blocks_empty_scope(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("WORKSPACE_ZERO_START", "false")
+    monkeypatch.setenv("AUTH_ENABLED", "true")
+    monkeypatch.setenv("DEPLOYMENT_MODE", "lab")
+    monkeypatch.setenv("DATABASE_URL", "")
+    import app.config as config_mod
+    import app.db as db_mod
+
+    importlib.reload(config_mod)
+    db_mod.reset_conn_for_tests()
+    importlib.reload(db_mod)
+
+    from app.auth import register_user
+    from app.scan_engine.executor import execute_scan
+    from app.scan_engine.models import create_scan, get_scan
+    from app.tenancy import ensure_tenant_schema
+
+    ensure_tenant_schema()
+    user = register_user("nmap_scope", "password123", role="user")
+    scan = create_scan(
+        user_id=user.id,
+        target="192.168.56.101",
+        scanner="nmap",
+        profile="discovery",
+        scope=[],
+        authorized=True,
+    )
+    result = await execute_scan(scan["id"])
+    assert result.get("blocked") is True
+    assert get_scan(scan["id"])["status"] == "blocked"

@@ -43,6 +43,7 @@ _last_openaudit_sync = 0.0
 _last_thehive_sync = 0.0
 _last_cloud_posture_sync = 0.0
 _last_sonarqube_sync = 0.0
+_last_software_sync = 0.0
 
 
 def register_job(kind: str):
@@ -135,6 +136,32 @@ def _has_pending_or_running(kind: str) -> bool:
     return bool(row and int(row["n"]) > 0)
 
 
+async def wait_for_jobs(
+    job_ids: list[str],
+    *,
+    timeout_sec: float = 180,
+    poll_sec: float = 1.5,
+) -> dict[str, str]:
+    """Poll until queued jobs finish or timeout. Returns job_id -> terminal status."""
+    import time
+
+    pending = {jid for jid in job_ids if jid}
+    results: dict[str, str] = {}
+    deadline = time.time() + max(5.0, timeout_sec)
+    while pending and time.time() < deadline:
+        for jid in list(pending):
+            job = get_job(jid)
+            st = (job or {}).get("status") or ""
+            if st in ("done", "error"):
+                results[jid] = st
+                pending.discard(jid)
+        if pending:
+            await asyncio.sleep(max(0.5, poll_sec))
+    for jid in pending:
+        results[jid] = "timeout"
+    return results
+
+
 async def _run_one(job_id: str) -> None:
     job = get_job(job_id)
     if not job or job.get("status") not in ("pending",):
@@ -142,11 +169,18 @@ async def _run_one(job_id: str) -> None:
     c = get_conn()
     c.execute("UPDATE jobs SET status='running', started_at=? WHERE id=?", (now(), job_id))
     c.commit()
+    try:
+        from app.realtime_bus import publish
+
+        publish(type="job", id=job_id, kind=job.get("kind"), status="running")
+    except Exception:
+        pass
     handler = JOB_HANDLERS.get(job["kind"])
     try:
         if not handler:
             raise ValueError(f"No handler registered for kind '{job['kind']}'")
         payload = json.loads(job.get("payload_json") or "{}")
+        payload["_job_id"] = job_id
         engine = (payload.pop("_engine", None) or "local").lower()
         if engine == "prefect":
             from app.prefect_bridge import run_kind_via_prefect
@@ -163,8 +197,15 @@ async def _run_one(job_id: str) -> None:
         c.commit()
         try:
             from app.realtime_bus import publish
+            from app.realtime_events import publish_job_completion
 
             publish(type="job", id=job_id, kind=job.get("kind"), status="done")
+            publish_job_completion(
+                str(job.get("kind") or ""),
+                result if isinstance(result, dict) else {},
+                job_id=job_id,
+                status="done",
+            )
         except Exception:
             pass
     except Exception as exc:  # noqa: BLE001 — job errors must never crash the worker
@@ -175,8 +216,15 @@ async def _run_one(job_id: str) -> None:
         c.commit()
         try:
             from app.realtime_bus import publish
+            from app.realtime_events import publish_job_completion
 
             publish(type="job", id=job_id, kind=job.get("kind"), status="error")
+            publish_job_completion(
+                str(job.get("kind") or ""),
+                {"error": str(exc)[:500]},
+                job_id=job_id,
+                status="error",
+            )
         except Exception:
             pass
 
@@ -195,7 +243,7 @@ async def _scheduler_loop() -> None:
     # Stagger first run slightly so it doesn't compete with app startup.
     await asyncio.sleep(15)
     global _last_kev_sync, _last_xdr_sync, _last_wazuh_sync, _last_openaudit_sync
-    global _last_thehive_sync, _last_cloud_posture_sync, _last_sonarqube_sync
+    global _last_thehive_sync, _last_cloud_posture_sync, _last_sonarqube_sync, _last_software_sync
     while True:
         now_t = time.time()
         try:
@@ -304,6 +352,20 @@ async def _scheduler_loop() -> None:
                 enqueue_job("sonarqube_sync", {"scheduled": True, "user_id": "local"})
         except Exception:
             pass
+        try:
+            from app.config import settings
+
+            sw_interval = max(300, int(getattr(settings, "software_sync_interval_sec", 3600) or 3600))
+            if (
+                "software_sync_all" in JOB_HANDLERS
+                and getattr(settings, "software_sync_auto_enabled", True)
+                and now_t - _last_software_sync >= sw_interval
+                and not _has_pending_or_running("software_sync_all")
+            ):
+                _last_software_sync = now_t
+                enqueue_job("software_sync_all", {"scheduled": True, "user_id": "local"})
+        except Exception:
+            pass
         await asyncio.sleep(_SCHEDULER_TICK_SEC)
 
 
@@ -372,13 +434,24 @@ async def _job_kev_sync(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _refresh_software(user_id: str, *sources: str) -> dict[str, int]:
+    try:
+        from app.software_inventory import refresh_after_sync
+
+        return refresh_after_sync(user_id or "local", *sources)
+    except Exception:
+        return {}
+
+
 @register_job("xdr_sync")
 async def _job_xdr_sync(payload: dict[str, Any]) -> dict[str, Any]:
     """Poll all configured XDR/EDR vendors and ingest new detections/patch gaps."""
     from app.xdr import sync_all
 
     t0 = time.time()
-    result = await sync_all(payload.get("user_id", "local"))
+    uid = payload.get("user_id", "local")
+    result = await sync_all(uid)
+    result["software_ingested"] = _refresh_software(uid, "xdr")
     result["duration_sec"] = round(time.time() - t0, 2)
     return result
 
@@ -389,7 +462,17 @@ async def _job_wazuh_sync(payload: dict[str, Any]) -> dict[str, Any]:
     from app.wazuh import sync as wazuh_sync
 
     t0 = time.time()
-    result = await wazuh_sync(payload.get("user_id", "local"))
+    uid = payload.get("user_id", "local")
+    result = await wazuh_sync(uid)
+    syscol = 0
+    try:
+        from app.software.service import refresh_wazuh_syscollector
+
+        syscol = await refresh_wazuh_syscollector(limit_agents=50)
+    except Exception:
+        pass
+    result["syscollector_agents"] = syscol
+    result["software_ingested"] = _refresh_software(uid, "wazuh", "xdr")
     result["duration_sec"] = round(time.time() - t0, 2)
     return result
 
@@ -400,9 +483,64 @@ async def _job_openaudit_sync(payload: dict[str, Any]) -> dict[str, Any]:
     from app.openaudit import sync as openaudit_sync
 
     t0 = time.time()
-    result = await openaudit_sync(payload.get("user_id", "local"))
+    uid = payload.get("user_id", "local")
+    result = await openaudit_sync(uid)
+    result["software_ingested"] = _refresh_software(uid, "openaudit")
     result["duration_sec"] = round(time.time() - t0, 2)
     return result
+
+
+@register_job("lan_inventory_audit")
+async def _job_lan_inventory_audit(payload: dict[str, Any]) -> dict[str, Any]:
+    """Warm ARP (optional), expand hosts, then Open-AudIT-style live inventory."""
+    import asyncio
+
+    from app.connectors import openaudit as oa_conn
+    from app.enterprise import ensure_asset_for_target
+    from app.lan_inventory import audit_hosts
+    from app.lan_sync import host_scan_target, list_lan_neighbors, queue_target_scan, warm_lan_subnet
+    from app.openaudit import sync as openaudit_sync
+
+    user_id = payload.get("user_id") or "local"
+    hosts = list(payload.get("hosts") or [])
+    subnet = payload.get("subnet") or ""
+    t0 = time.time()
+    warm_info: dict[str, Any] = {"ok": False, "skipped": "not_requested"}
+    if payload.get("warm", True):
+        warm_info = await asyncio.to_thread(warm_lan_subnet)
+        subnet = warm_info.get("subnet") or subnet
+        this_ip = host_scan_target()
+        seen = {str(h.get("ip") or "").strip() for h in hosts}
+        for row in list_lan_neighbors():
+            ip = (row.get("ip") or "").strip()
+            if not ip or ip in seen:
+                continue
+            seen.add(ip)
+            hosts.append({"ip": ip, "mac": row.get("mac") or ""})
+            notes = json.dumps({"source": "lan_arp", "ip": ip, "mac": row.get("mac") or ""})
+            try:
+                ensure_asset_for_target(user_id, ip, notes=notes, asset_type="endpoint")
+            except Exception:
+                pass
+            if payload.get("queue_scan") and ip != this_ip:
+                try:
+                    queue_target_scan(ip, force=True, user_id=user_id, profile="vulnerability")
+                except Exception:
+                    pass
+    discovery: dict[str, Any] = {"ok": False, "skipped": "not_requested"}
+    if oa_conn.is_configured() and subnet:
+        discovery = await oa_conn.trigger_subnet_discovery(subnet, name=f"SecuraIQ {subnet}")
+        try:
+            await openaudit_sync(user_id)
+        except Exception:
+            pass
+    live = await audit_hosts(hosts, user_id=user_id)
+    live["discovery"] = discovery
+    live["warm"] = warm_info
+    live["hosts"] = len(hosts)
+    live["software_ingested"] = _refresh_software(user_id, "openaudit", "lan")
+    live["duration_sec"] = round(time.time() - t0, 2)
+    return live
 
 
 @register_job("thehive_sync")
@@ -422,7 +560,9 @@ async def _job_cloud_posture_sync(payload: dict[str, Any]) -> dict[str, Any]:
     from app.cloud_posture import sync_all
 
     t0 = time.time()
-    result = await sync_all(payload.get("user_id", "local"))
+    uid = payload.get("user_id", "local")
+    result = await sync_all(uid)
+    result["software_ingested"] = _refresh_software(uid, "vulns")
     result["duration_sec"] = round(time.time() - t0, 2)
     return result
 
@@ -433,7 +573,9 @@ async def _job_sonarqube_sync(payload: dict[str, Any]) -> dict[str, Any]:
     from app.sonarqube import sync as sonar_sync
 
     t0 = time.time()
-    result = await sonar_sync(payload.get("user_id", "local"))
+    uid = payload.get("user_id", "local")
+    result = await sonar_sync(uid)
+    result["software_ingested"] = _refresh_software(uid, "vulns")
     result["duration_sec"] = round(time.time() - t0, 2)
     return result
 
@@ -444,14 +586,110 @@ async def _job_hardeningkitty_audit(payload: dict[str, Any]) -> dict[str, Any]:
     from app.hardeningkitty import run_audit
 
     t0 = time.time()
+    uid = payload.get("user_id", "local")
     result = await run_audit(
         mode=payload.get("mode") or "Audit",
         finding_list=payload.get("finding_list") or None,
         import_findings=bool(payload.get("import_findings", True)),
-        user_id=payload.get("user_id", "local"),
+        user_id=uid,
     )
+    result["software_ingested"] = _refresh_software(uid, "vulns")
     result["duration_sec"] = round(time.time() - t0, 2)
     return result
+
+
+@register_job("software_sync_all")
+async def _job_software_sync_all(payload: dict[str, Any]) -> dict[str, Any]:
+    """Scheduled full software sync: SIEM/XDR/inventory jobs, wait, rebuild, notify."""
+    from app.os_patches import probe_local_os_patches
+    from app.software_inventory import (
+        posture_summary,
+        queue_software_sync_jobs,
+        rebuild_for_user,
+    )
+
+    t0 = time.time()
+    uid = payload.get("user_id") or "local"
+    queued = queue_software_sync_jobs(uid)
+    job_ids = [j["id"] for j in queued if j.get("id")]
+    wait_results: dict[str, str] = {}
+    if job_ids:
+        wait_results = await wait_for_jobs(job_ids, timeout_sec=180)
+
+    local_os: dict[str, Any] = {"ingested": 0, "probe": {}}
+    try:
+        local_os["probe"] = probe_local_os_patches()
+    except Exception:
+        pass
+
+    rebuilt = rebuild_for_user(uid)
+    local_os["ingested"] = int(rebuilt.get("local_os") or 0)
+    posture = posture_summary(uid, rebuild_if_empty=False)
+    server_summary = posture.get("server_summary") or {}
+    needs_update = int(server_summary.get("needs_update") or 0)
+
+    if payload.get("scheduled") and needs_update > 0 and uid and uid != "local":
+        try:
+            from app.notifications import notify
+
+            notify(
+                uid,
+                "patch_posture",
+                f"{needs_update} server(s) need updates",
+                (
+                    f"Scheduled software sync found {needs_update} system(s) with patch gaps. "
+                    f"Open Software & patch inventory to review."
+                ),
+                link="/#software",
+            )
+        except Exception:
+            pass
+
+    return {
+        "jobs_queued": queued,
+        "jobs_wait": wait_results,
+        "local_os_patches": local_os,
+        "rebuilt": rebuilt,
+        "posture": posture,
+        "duration_sec": round(time.time() - t0, 2),
+    }
+
+
+@register_job("software_version_refresh")
+async def _job_software_version_refresh(payload: dict[str, Any]) -> dict[str, Any]:
+    """Background batch: resolve latest versions from vendor/registry feeds."""
+    from app.software.service import sync_inventory
+    from app.software.versions import refresh_versions_for_user
+
+    t0 = time.time()
+    uid = payload.get("user_id") or "local"
+    refresh = refresh_versions_for_user(uid)
+    sync = sync_inventory(uid, publish=True)
+    return {
+        "refresh": refresh,
+        "sync_installations": int(sync.get("installations") or 0),
+        "duration_sec": round(time.time() - t0, 2),
+    }
+
+
+@register_job("software_advisory_refresh")
+async def _job_software_advisory_refresh(payload: dict[str, Any]) -> dict[str, Any]:
+    """Refresh CVE/KEV advisory matches and recalculate patch priority."""
+    from app.software.advisories import publish_vulnerability_events, refresh_advisories_for_user
+    from app.software.service import sync_inventory
+
+    t0 = time.time()
+    uid = payload.get("user_id") or "local"
+    try:
+        from app.intel_feeds import fetch_cisa_kev
+
+        await fetch_cisa_kev(limit=500)
+    except Exception:
+        pass
+    refresh = refresh_advisories_for_user(uid, limit=int(payload.get("limit") or 80))
+    publish_vulnerability_events(uid, refresh)
+    sync_inventory(uid, publish=True)
+    return {"advisory_refresh": refresh, "duration_sec": round(time.time() - t0, 2)}
 
 
 @register_job("report_export")

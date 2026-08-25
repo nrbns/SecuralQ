@@ -41,9 +41,41 @@ class NmapScanner(Scanner):
 
     def available(self) -> tuple[bool, str]:
         path = shutil.which("nmap")
-        if path:
-            return True, path
-        return False, "nmap not found on PATH — install Nmap to run live scans"
+        if not path:
+            # Windows installer often lands here even when PATH is stale in the service process.
+            for candidate in (
+                r"C:\Program Files (x86)\Nmap\nmap.exe",
+                r"C:\Program Files\Nmap\nmap.exe",
+                "/usr/bin/nmap",
+                "/usr/local/bin/nmap",
+            ):
+                if Path(candidate).is_file():
+                    path = candidate
+                    break
+        if not path:
+            return False, "nmap not found on PATH — install Nmap to run live scans"
+        # Probe startup: missing Npcap on Windows yields STATUS_DLL_NOT_FOUND (0xC0000135).
+        try:
+            import subprocess
+
+            probe = subprocess.run(
+                [path, "--version"],
+                capture_output=True,
+                timeout=10,
+                text=True,
+                errors="replace",
+            )
+            code = int(probe.returncode or 0)
+            if code in (0xC0000135, 3221225781, -1073741515):
+                return (
+                    False,
+                    "nmap installed but cannot start — install Npcap (https://npcap.com) then restart SecuraIQ",
+                )
+            if code != 0 and not (probe.stdout or "").strip():
+                return False, f"nmap probe failed (exit {code}) — check Npcap / permissions"
+        except Exception as exc:
+            return False, f"nmap probe failed: {exc}"
+        return True, path
 
     def validate_target(self, target: str) -> tuple[bool, str]:
         t = (target or "").strip()
@@ -106,6 +138,12 @@ class NmapScanner(Scanner):
 
         stdout = (stdout_b or b"").decode("utf-8", errors="replace")
         stderr = (stderr_b or b"").decode("utf-8", errors="replace")
+        if code in (0xC0000135, 3221225781, -1073741515):
+            stderr = (
+                (stderr + "\n" if stderr else "")
+                + "nmap failed to start (STATUS_DLL_NOT_FOUND). Install Npcap from https://npcap.com "
+                "and restart SecuraIQ."
+            ).strip()
         (ctx.evidence_dir / "stdout.log").write_text(stdout, encoding="utf-8")
         (ctx.evidence_dir / "stderr.log").write_text(stderr, encoding="utf-8")
         (ctx.evidence_dir / "command.txt").write_text(" ".join(argv), encoding="utf-8")

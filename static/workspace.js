@@ -80,6 +80,7 @@
     wrap.classList.toggle("is-floating", !isChat);
     if (isChat) {
       wrap.classList.remove("is-open");
+      document.getElementById("aiAssistThread")?.classList.add("hidden");
       fab?.classList.add("hidden");
       fab?.setAttribute("aria-expanded", "false");
     } else {
@@ -112,6 +113,7 @@
     if (!input || !wrap) return;
     const hints = {
       assets: "Ask AI about an asset, or type a hardening question…",
+      software: "Ask about outdated software, patch gaps, or EOL services on scanned hosts…",
       risks: "Ask AI to prioritize risks or draft mitigations…",
       vulns: "Ask AI to triage a CVE, or paste scan findings…",
       remediations: "Ask AI for control implementation guidance…",
@@ -142,6 +144,7 @@
       command: "viewCommand",
       chat: "viewChat",
       assets: "viewAssets",
+      software: "viewSoftware",
       risks: "viewRisks",
       vulns: "viewVulns",
       remediations: "viewRemediations",
@@ -179,6 +182,7 @@
         command: "Command Center",
         chat: "AI Assistant",
         assets: "Assets",
+        software: "Software inventory",
         risks: "Risk Register",
         vulns: "Vulnerabilities",
         remediations: "Remediations",
@@ -201,6 +205,7 @@
     if (view === "command" && typeof loadCommandCenter === "function") loadCommandCenter();
     if (view === "chat" && typeof syncEmptyState === "function") syncEmptyState();
     if (view === "assets") renderAssetsPage();
+    if (view === "software") renderSoftwarePage();
     if (view === "risks") renderRisksPage();
     if (view === "vulns") renderVulnsPage();
     if (view === "remediations") renderRemsPage();
@@ -249,24 +254,27 @@
       btn.textContent = "Syncing…";
     }
     try {
-      const res = await fetch("/api/openaudit/sync", { method: "POST", headers: authHeaders() });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        if (typeof notifyUser === "function") notifyUser(`**Inventory sync failed:** ${data.detail || res.status}`);
-      } else {
-        const jobId = data.job && data.job.id;
-        if (typeof notifyUser === "function") {
-          notifyUser(`**Inventory sync queued** · job \`${jobId || "?"}\``);
-        }
-        if (jobId && typeof window.waitForJob === "function") {
-          const job = await window.waitForJob(jobId, { timeoutMs: 120000 });
-          const r = job?.result || {};
-          if ((job?.status || "") === "done" && typeof notifyUser === "function") {
-            notifyUser(
-              `**Inventory sync done** · ${r.devices_total || 0} devices · ${r.devices_new || 0} new · ${r.assets_linked || 0} assets`
-            );
-          } else if ((job?.status || "") === "error" && typeof notifyUser === "function") {
-            notifyUser(`**Inventory sync error:** ${job.error || "failed"}`);
+      await refreshLanAssets({ scans: false, silentBtn: true });
+      const stRes = await fetch("/api/openaudit/status", { headers: authHeaders() }).catch(() => null);
+      const st = stRes ? await stRes.json().catch(() => ({})) : {};
+      if (st.configured) {
+        const res = await fetch("/api/openaudit/sync", { method: "POST", headers: authHeaders() });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          if (typeof notifyUser === "function") notifyUser(`**Open-AudIT sync failed:** ${data.detail || res.status}`);
+        } else {
+          const jobId = data.job && data.job.id;
+          if (typeof notifyUser === "function") {
+            notifyUser(`**Open-AudIT appliance sync queued** · job \`${jobId || "?"}\``);
+          }
+          if (jobId && typeof window.waitForJob === "function") {
+            const job = await window.waitForJob(jobId, { timeoutMs: 120000 });
+            const r = job?.result || {};
+            if ((job?.status || "") === "done" && typeof notifyUser === "function") {
+              notifyUser(
+                `**Open-AudIT sync done** · ${r.devices_total || 0} devices · ${r.devices_new || 0} new`
+              );
+            }
           }
         }
       }
@@ -281,125 +289,1341 @@
     }
   }
 
-  async function renderAssetsPage() {
+  function setAssetsScanLive(text, show) {
+    const live = qs("assetsScanLive");
+    if (!live) return;
+    live.hidden = !show;
+    live.textContent = text || "";
+  }
+
+  function inventorySourceKind(item) {
+    const blob = `${item.source || ""} ${item.notes || ""} ${item.os || ""}`.toLowerCase();
+    if (item._oa || /openaudit|open.?audit|securaiq_audit/.test(blob)) return "audit";
+    return "scan";
+  }
+
+  function displayAssetLabel(item) {
+    if (!item) return "—";
+    const dn = item.display_name || item.displayName;
+    if (dn) return String(dn).split(" · ")[0];
+    const name = String(item.name || item.asset_name || "").trim();
+    const ip = String(item.ip || "").trim();
+    const host = String(item.hostname || "").trim();
+    if (host && ip && host !== ip) return `${host} (${ip})`;
+    if (name && /^\d+\.\d+\.\d+\.\d+$/.test(name) && host) return `${host} (${name})`;
+    if (name && !/^\d+\.\d+\.\d+\.\d+$/.test(name)) return name;
+    return ip || host || name || "device";
+  }
+
+  window.displayAssetLabel = displayAssetLabel;
+
+  const ASSET_CATEGORY_LABELS = {
+    server: "Server",
+    computer: "Computer",
+    endpoint: "Endpoint",
+    mobile: "Mobile",
+    network: "Network",
+    printer: "Printer",
+    iot: "IoT",
+    database: "Database",
+    web: "Web app",
+    cloud: "Cloud",
+    container: "Container",
+    code: "Code",
+    other: "Other",
+  };
+  window.ASSET_CATEGORY_LABELS = ASSET_CATEGORY_LABELS;
+  window.__inventoryCategoryFilter = window.__inventoryCategoryFilter || "";
+
+  function assetCategoryId(item) {
+    return String(item?.asset_category || item?.asset_type || item?.type || "other").toLowerCase();
+  }
+
+  function displayCategoryLabel(item) {
+    const id = assetCategoryId(item);
+    return item?.category_label || ASSET_CATEGORY_LABELS[id] || id.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+
+  function categoryChipHtml(item, { clickable = false, active = false } = {}) {
+    const id = assetCategoryId(item);
+    const label = displayCategoryLabel(item);
+    const cls = `category-chip category-${escapeHtml(id)}${active ? " is-active" : ""}${clickable ? " category-chip-btn" : ""}`;
+    if (clickable) {
+      return `<button type="button" class="${cls}" data-category="${escapeHtml(id)}">${escapeHtml(label)}</button>`;
+    }
+    return `<span class="${cls}">${escapeHtml(label)}</span>`;
+  }
+
+  window.displayCategoryLabel = displayCategoryLabel;
+  window.categoryChipHtml = categoryChipHtml;
+
+  function inventoryLiveLabel(item) {
+    const blob = `${item.source || ""} ${item.notes || ""}`.toLowerCase();
+    if (/openaudit/.test(blob) && !/securaiq_audit|lan_arp|live:/.test(blob) && !item._oaOnly) {
+      if (item.source && /openaudit/i.test(item.source)) return "Open-AudIT";
+    }
+    const src = (item.source || "").split(":")[0] || "";
+    if (/^zap$/i.test(src)) return "SecuraIQ Web Scanner live";
+    if (/^nmap|nuclei|zap$/i.test(src)) return `${src} live`;
+    return "securaiq live";
+  }
+
+  function fmtInventoryWhen(ts) {
+    if (ts == null || ts === "") return "—";
+    const d = new Date(typeof ts === "number" && ts < 1e12 ? ts * 1000 : ts);
+    return Number.isNaN(d.getTime()) ? String(ts) : d.toLocaleString();
+  }
+
+  function portChipsHtml(ports) {
+    const list = (ports || [])
+      .map((p) => String(p == null ? "" : p).trim())
+      .filter(Boolean)
+      .slice(0, 10);
+    if (!list.length) return `<span class="hint">—</span>`;
+    return `<span class="port-chips">${list
+      .map((p) => `<code class="port-chip">${escapeHtml(p)}</code>`)
+      .join("")}</span>`;
+  }
+
+  function inventoryRowHtml(a) {
+    const ip = a.ip || "";
+    const title = displayAssetLabel(a);
+    const scanSt = (a.last_scan_status || "").toLowerCase();
+    const scanChip = scanSt
+      ? `<span class="auto-job-status ${
+          scanSt === "completed" ? "status-done" : /fail|block/.test(scanSt) ? "status-error" : "status-running"
+        }">${escapeHtml(scanSt)}</span>`
+      : `<span class="hint">idle</span>`;
+    const scanTarget = ip || a.name;
+    const metaBits = [a.os, a.mac].filter(Boolean);
+    const extra = metaBits.length
+      ? `<div class="hint">${escapeHtml(metaBits.join(" · "))}</div>`
+      : "";
+    const shareHint = (a.shares || []).length
+      ? `<div class="hint">shares ${escapeHtml((a.shares || []).slice(0, 4).join(", "))}</div>`
+      : "";
+    const patch = a._patch;
+    const patchSt = patch ? (patch.patch_status || "unknown").toLowerCase() : "";
+    const patchCls = patchSt === "up_to_date" ? "done" : patchSt === "needs_update" ? "error" : "planned";
+    const patchCell = patch
+      ? `<button type="button" class="sw-status-chip status-${patchCls} ws-asset-patch" data-id="${escapeHtml(
+          a.id || ""
+        )}" data-name="${escapeHtml(title || a.name || "")}" title="Open software & patch details">${escapeHtml(
+          patch.patch_label || patchSt || "?"
+        )}</button>${
+          patch.issues_count ? `<div class="hint">${Number(patch.issues_count)} issue(s)</div>` : ""
+        }`
+      : `<span class="hint">—</span>`;
+    const canEdit = !!a.id && !a._oaOnly;
+    return `<tr>
+        <td><strong>${escapeHtml(title || "—")}</strong>${extra}${shareHint}</td>
+        <td>${ip ? `<code>${escapeHtml(ip)}</code>` : "—"}</td>
+        <td>${categoryChipHtml(a)}</td>
+        <td><span class="inventory-source inventory-source-${inventorySourceKind(a)}">${escapeHtml(
+          inventoryLiveLabel(a)
+        )}</span></td>
+        <td>${portChipsHtml(a.open_ports)}</td>
+        <td>${scanChip}<div class="hint">${escapeHtml(fmtInventoryWhen(a.last_scan_at))}</div></td>
+        <td>${a.findings != null ? escapeHtml(String(a.findings)) : "—"}</td>
+        <td>${patchCell}</td>
+        <td class="ws-actions">
+          <button type="button" class="btn-primary-cc ws-scan-asset" data-target="${escapeHtml(scanTarget)}">Scan</button>
+          <button type="button" class="btn-secondary ws-asset-software" data-id="${escapeHtml(a.id || "")}" data-name="${escapeHtml(
+            title || a.name || ""
+          )}">Software</button>
+          <button type="button" class="btn-secondary ws-ask-ai" data-kind="asset" data-json="${escapeHtml(
+            JSON.stringify({ id: a.id, name: a.name, asset_type: a.asset_type, criticality: a.criticality, ip })
+          )}">Ask AI</button>
+          ${
+            canEdit
+              ? `<button type="button" class="btn-secondary ws-edit-asset" data-id="${a.id}" data-name="${escapeHtml(
+                  a.name || ""
+                )}" data-owner="${escapeHtml(a.owner || "")}" data-crit="${escapeHtml(
+                  a.criticality || "medium"
+                )}" data-type="${escapeHtml(assetCategoryId(a))}">Edit</button>
+          <button type="button" class="btn-secondary ws-del-asset" data-id="${a.id}">Delete</button>`
+              : ""
+          }
+        </td>
+      </tr>`;
+  }
+
+  function inventoryBlockHtml(title, items, emptyHint) {
+    const rows = items.map(inventoryRowHtml).join("");
+    return `<section class="inventory-block">
+      <header class="inventory-block-head">
+        <h2>${escapeHtml(title)}</h2>
+        <span class="hint">${items.length} live</span>
+      </header>
+      ${
+        rows
+          ? `<div class="data-table-wrap"><table class="data-table"><thead><tr>
+              <th>Host</th><th>IP</th><th>Category</th><th>Source</th><th>Open ports</th><th>Last scan</th><th>Findings</th><th>Patch</th><th></th>
+            </tr></thead><tbody>${rows}</tbody></table></div>`
+          : `<div class="page-empty"><p class="page-empty-title">No ${escapeHtml(title)} hosts yet</p><p class="hint">${emptyHint}</p></div>`
+      }
+    </section>`;
+  }
+
+  async function queueAssetScan(target) {
+    const t = (target || "").trim();
+    if (!t) return;
+    window.__securaiqAssetsScanBusy = true;
+    setAssetsScanLive(`Scanning ${t}…`, true);
+    try {
+      const res = await fetch("/api/scans", {
+        method: "POST",
+        headers: authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({
+          target: t,
+          scanner: "securaiq",
+          profile: "discovery",
+          authorized: true,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+      if (typeof notifyUser === "function") {
+        notifyUser(`**Live scan queued** · \`${t}\` · job \`${data.job_id || "?"}\``);
+      }
+      setAssetsScanLive(`Scan queued · ${t}`, true);
+      if (data.job_id && typeof window.waitForJob === "function") {
+        const job = await window.waitForJob(data.job_id, { timeoutMs: 180000 });
+        const st = (job?.status || "").toLowerCase();
+        if (st === "done" && typeof notifyUser === "function") {
+          const r = job.result || {};
+          const sum = r.summary || r;
+          notifyUser(
+            `**Scan done** · ${t} · ${sum.findings_created ?? sum.findings ?? 0} findings`
+          );
+        } else if (st === "error" && typeof notifyUser === "function") {
+          notifyUser(`**Scan failed:** ${job.error || "error"}`);
+        }
+      }
+    } catch (err) {
+      if (typeof notifyUser === "function") notifyUser(`**Scan error:** ${err.message || err}`);
+      setAssetsScanLive(String(err.message || err), true);
+    } finally {
+      window.__securaiqAssetsScanBusy = false;
+      renderAssetsPage({ quiet: true });
+    }
+  }
+  window.queueAssetScan = queueAssetScan;
+
+  async function refreshLanAssets(opts) {
+    const scans = !opts || opts.scans !== false;
+    const silentBtn = !!(opts && opts.silentBtn);
+    const btn = qs("assetsLanRefresh");
+    if (btn && !silentBtn) {
+      btn.disabled = true;
+      btn.textContent = "Refreshing…";
+    }
+    window.__securaiqAssetsScanBusy = true;
+    setAssetsScanLive(
+      scans
+        ? "Live inventory + VA scans on local /24…"
+        : "Live Open-AudIT inventory on local /24…",
+      true
+    );
+    try {
+      const res = await fetch(`/api/assets/lan-refresh?scans=${scans ? "true" : "false"}`, {
+        method: "POST",
+        headers: authHeaders(),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+      const queuedScans = Array.isArray(data.queued_scans) ? data.queued_scans.filter((s) => s && s.ok) : [];
+      const invJob = data.inventory_job || {};
+      const nHosts = 1 + (data.neighbors || []).length;
+      if (typeof notifyUser === "function") {
+        notifyUser(
+          `**LAN ${scans ? "refresh" : "inventory"}** · subnet \`${data.subnet || "local /24"}\` · host \`${
+            data.this_host || "?"
+          }\` · ${data.assets_upserted || 0} assets · ${(data.neighbors || []).length} neighbors · ${
+            queuedScans.length
+          } VA scan(s) · inventory job \`${invJob.id || "—"}\``
+        );
+      }
+      if (invJob.id && typeof window.waitForJob === "function") {
+        setAssetsScanLive(`Live inventory · ${nHosts} host(s)…`, true);
+        const job = await window.waitForJob(invJob.id, { timeoutMs: 180000 });
+        const r = job?.result || {};
+        if ((job?.status || "") === "done" && typeof notifyUser === "function") {
+          notifyUser(
+            `**Inventory done** · ${r.audited || r.hosts || nHosts} host(s) audited`
+          );
+        }
+      }
+      if (queuedScans.length) {
+        setAssetsScanLive(`Queued ${queuedScans.length} LAN vulnerability scan(s)…`, true);
+      }
+    } catch (err) {
+      if (typeof notifyUser === "function") notifyUser(`**LAN refresh failed:** ${err.message || err}`);
+    } finally {
+      window.__securaiqAssetsScanBusy = false;
+      if (btn && !silentBtn) {
+        btn.disabled = false;
+        btn.textContent = "Refresh LAN";
+      }
+      renderAssetsPage({ quiet: true });
+      if (typeof loadCommandCenter === "function") loadCommandCenter();
+    }
+  }
+
+  function attachAssetPatchInfo(assets, servers) {
+    const byId = {};
+    const byName = {};
+    (servers || []).forEach((s) => {
+      const entry = {
+        patch_status: s.patch_status,
+        patch_label: s.patch_label,
+        issues_count: s.issues_count,
+      };
+      if (s.asset_id) byId[s.asset_id] = entry;
+      const nm = (s.asset_name || "").trim().toLowerCase();
+      if (nm) byName[nm] = entry;
+    });
+    return assets.map((a) => {
+      const label = (a.display_name || a.name || "").trim().toLowerCase();
+      const patch = (a.id && byId[a.id]) || (label && byName[label]) || null;
+      return patch ? { ...a, _patch: patch } : a;
+    });
+  }
+
+  async function renderAssetsPage(opts) {
     const el = qs("assetsPageBody");
     if (!el) return;
+    const quiet = !!(opts && opts.quiet) || !!window.__securaiqAssetsScanBusy;
+    if (!quiet) el.innerHTML = `<p class="hint" aria-live="polite">Loading live inventory…</p>`;
     let data = {};
     let inv = {};
     let st = {};
+    let jobsData = { jobs: [] };
+    let swPosture = {};
     try {
-      const [res, invRes, stRes] = await Promise.all([
+      const [res, invRes, stRes, jobsRes, swRes] = await Promise.all([
         fetch("/api/assets", { headers: authHeaders() }),
         fetch("/api/openaudit/devices?limit=500", { headers: authHeaders() }).catch(() => null),
         fetch("/api/openaudit/status", { headers: authHeaders() }).catch(() => null),
+        fetch("/api/jobs?limit=20", { headers: authHeaders() }).catch(() => null),
+        fetch("/api/software/posture", { headers: authHeaders() }).catch(() => null),
       ]);
       data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.detail || `Assets failed (${res.status})`);
       inv = invRes ? await invRes.json().catch(() => ({})) : {};
       st = stRes ? await stRes.json().catch(() => ({})) : {};
+      jobsData = jobsRes ? await jobsRes.json().catch(() => ({ jobs: [] })) : { jobs: [] };
+      swPosture = swRes && swRes.ok ? await swRes.json().catch(() => ({})) : {};
     } catch (err) {
       el.innerHTML = `<p class="hint">Could not load assets: ${escapeHtml(err.message || String(err))}</p>`;
       return;
     }
     const assets = data.assets || [];
+    const liveScans = data.live_scans || [];
+    if (liveScans.length) {
+      const s0 = liveScans[0];
+      setAssetsScanLive(
+        `Live scan · ${(s0.status || "running").toUpperCase()} · ${s0.target || ""}`,
+        true
+      );
+    } else if (!window.__securaiqAssetsScanBusy) {
+      setAssetsScanLive("", false);
+    }
     const byAsset = {};
     (inv.devices || []).forEach((d) => {
       if (d.asset_id) byAsset[d.asset_id] = d;
     });
-    const typeBuckets = {
-      server: 0,
-      endpoint: 0,
-      container: 0,
-      cloud: 0,
-      repository: 0,
-      database: 0,
-      application: 0,
-      domain: 0,
-      api: 0,
-      other: 0,
-    };
-    assets.forEach((a) => {
-      const t = String(a.asset_type || "other").toLowerCase();
-      if (t in typeBuckets) typeBuckets[t] += 1;
-      else if (/host|vm|server/.test(t)) typeBuckets.server += 1;
-      else if (/endpoint|laptop|workstation/.test(t)) typeBuckets.endpoint += 1;
-      else if (/container|k8s|pod/.test(t)) typeBuckets.container += 1;
-      else if (/aws|azure|gcp|cloud/.test(t)) typeBuckets.cloud += 1;
-      else if (/repo|git/.test(t)) typeBuckets.repository += 1;
-      else if (/db|sql|postgres|mongo/.test(t)) typeBuckets.database += 1;
-      else if (/app|service/.test(t)) typeBuckets.application += 1;
-      else if (/domain|dns/.test(t)) typeBuckets.domain += 1;
-      else if (/api/.test(t)) typeBuckets.api += 1;
-      else typeBuckets.other += 1;
+    const merged = assets.map((a) => {
+      const d = byAsset[a.id] || {};
+      const ip = a.ip || d.ip || "";
+      const hostname = a.hostname || d.hostname || "";
+      const os = a.os || d.os || "";
+      return {
+        ...a,
+        ip,
+        hostname,
+        os,
+        mac: a.mac || d.mac || "",
+        open_ports: (a.open_ports && a.open_ports.length ? a.open_ports : d.open_ports) || [],
+        shares: d.shares || a.shares || [],
+        display_name:
+          a.display_name ||
+          displayAssetLabel({ name: a.name, ip, hostname, os, asset_name: a.name }),
+        _oa: !!d.asset_id || /openaudit/i.test(a.notes || ""),
+      };
     });
-    const rows = assets
-      .map((a) => {
-        const d = byAsset[a.id] || {};
-        const ip = d.ip || "";
-        return `<tr>
-        <td><strong>${escapeHtml(a.name)}</strong></td>
-        <td>${ip ? `<code>${escapeHtml(ip)}</code>` : "—"}</td>
-        <td>${escapeHtml(a.asset_type)}</td>
-        <td>${escapeHtml(a.criticality)}</td>
-        <td>${escapeHtml(a.owner || "—")}</td>
-        <td class="ws-actions">
-          <button type="button" class="btn-secondary ws-ask-ai" data-kind="asset" data-json="${escapeHtml(
-            JSON.stringify({ id: a.id, name: a.name, asset_type: a.asset_type, criticality: a.criticality, ip })
-          )}">Ask AI</button>
-          <button type="button" class="btn-secondary ws-edit-asset" data-id="${a.id}" data-name="${escapeHtml(a.name)}" data-owner="${escapeHtml(a.owner || "")}" data-crit="${escapeHtml(a.criticality)}">Edit</button>
-          <button type="button" class="btn-secondary ws-del-asset" data-id="${a.id}">Delete</button>
-        </td>
-      </tr>`;
-      })
-      .join("");
-    const core = ["server", "endpoint", "container", "cloud", "repository", "database", "application", "domain", "api"];
-    const tileHtml = core
-      .map((k) => `<div class="asset-type-tile"><span>${escapeHtml(k)}</span><strong>${typeBuckets[k] || 0}</strong></div>`)
-      .join("");
+    const seenAuditIds = new Set(merged.filter((a) => a._oa).map((a) => a.id));
+    const oaOnly = (inv.devices || [])
+      .filter((d) => !d.asset_id || !seenAuditIds.has(d.asset_id))
+      .map((d) => ({
+        id: d.asset_id || d.id,
+        name: displayAssetLabel({ name: d.name, ip: d.ip, hostname: d.hostname, os: d.os }),
+        display_name: displayAssetLabel({ name: d.name, ip: d.ip, hostname: d.hostname, os: d.os }),
+        ip: d.ip || "",
+        hostname: d.hostname || "",
+        asset_type: d.type || "endpoint",
+        os: d.os || "",
+        mac: d.mac || "",
+        source: "openaudit",
+        notes: "openaudit",
+        _oa: true,
+        _oaOnly: !d.asset_id,
+        last_scan_status: "",
+        findings: null,
+        open_ports: d.open_ports || [],
+        shares: d.shares || [],
+      }));
+    const filterCat = String(window.__inventoryCategoryFilter || "").toLowerCase();
+    const filterRow = (a) => !filterCat || assetCategoryId(a) === filterCat;
+    const swServers = swPosture.servers || [];
+    const openScan = attachAssetPatchInfo(merged.filter(filterRow), swServers);
+    const openAudit = attachAssetPatchInfo(
+      [
+        ...merged.filter((a) => a._oa).filter(filterRow),
+        ...oaOnly.filter(filterRow),
+      ],
+      swServers
+    );
+    const typeCounts = {};
+    [...merged, ...oaOnly].forEach((a) => {
+      const t = assetCategoryId(a);
+      typeCounts[t] = (typeCounts[t] || 0) + 1;
+    });
+    const withPorts = [...merged, ...oaOnly].filter((a) => (a.open_ports || []).length).length;
+    const withShares = [...merged, ...oaOnly].filter((a) => (a.shares || []).length).length;
+    const jobs = jobsData.jobs || [];
+    const liveJobs = jobs.filter(
+      (j) =>
+        /lan_inventory|openaudit_sync|scan_execute/.test(j.kind || "") &&
+        /pending|running/.test((j.status || "").toLowerCase())
+    );
+    const liveChip = liveJobs.length
+      ? `<span class="auto-job-status status-running">${liveJobs.length} job(s) live</span>`
+      : `<span class="auto-job-status status-done">securaiq live</span>`;
     const ping = st.ping || {};
-    const invHint = st.configured
-      ? `<p class="hint">${ping.ok ? "Inventory connected" : ping.error || "Inventory unreachable"} · ${
-          Number(st.devices_cached) || 0
-        } discovered hosts</p>`
+    const oaChip = st.configured
+      ? ping.ok
+        ? `<span class="auto-job-status status-done">Open-AudIT connected</span>`
+        : `<span class="auto-job-status status-error">Open-AudIT unreachable</span>`
       : "";
+    const typeBits = Object.entries(typeCounts)
+      .filter(([, n]) => n > 0)
+      .sort((a, b) => b[1] - a[1])
+      .map(([k, n]) => `<span class="inventory-cat-stat">${categoryChipHtml({ asset_category: k }, { clickable: true, active: filterCat === k })}<em>${n}</em></span>`)
+      .join(" ");
+    const clearFilterBtn = filterCat
+      ? `<button type="button" class="btn-secondary inventory-clear-filter">Clear filter</button>`
+      : "";
+    const summary = `
+      <div class="inventory-summary-bar" aria-live="polite">
+        <div class="vuln-summary-metrics">
+          <strong>${merged.length + oaOnly.length}</strong> hosts ·
+          <strong>${openScan.length}</strong> Open Scan ·
+          <strong>${openAudit.length}</strong> Open Audit
+          ${withPorts ? ` · <strong>${withPorts}</strong> with ports` : ""}
+          ${withShares ? ` · <strong>${withShares}</strong> with shares` : ""}
+          ${st.devices_cached ? ` · <strong>${st.devices_cached}</strong> cached` : ""}
+        </div>
+        <div class="inventory-category-bar">${typeBits || `<span class="hint">No categories yet</span>`}${clearFilterBtn}</div>
+        <div class="vuln-summary-actions">${liveChip}${oaChip}</div>
+      </div>`;
     el.innerHTML = `
-      <div class="asset-type-grid" aria-label="Asset classes">${tileHtml}</div>
-      ${invHint}
-      ${
-        rows
-          ? `<div class="data-table-wrap"><table class="data-table"><thead><tr>
-              <th>Name</th><th>IP</th><th>Type</th><th>Criticality</th><th>Owner</th><th></th>
-            </tr></thead><tbody>${rows}</tbody></table></div>`
-          : `<div class="page-empty"><p class="page-empty-title">No assets yet</p>
-             <p class="hint">Add servers, repos, cloud accounts, and APIs — or sync network inventory.</p></div>`
-      }`;
+      ${summary}
+      ${inventoryBlockHtml("Open Scan", openScan, filterCat ? "No hosts in this category — clear filter or Refresh LAN." : "Refresh LAN or Queue engine scan on a host you own.")}
+      ${inventoryBlockHtml("Open Audit", openAudit, filterCat ? "No audit hosts in this category." : "Refresh LAN or Sync inventory — hosts stream here as they are audited.")}`;
+    el.querySelectorAll(".category-chip-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const cat = btn.getAttribute("data-category") || "";
+        window.__inventoryCategoryFilter = window.__inventoryCategoryFilter === cat ? "" : cat;
+        renderAssetsPage({ quiet: true });
+      });
+    });
+    el.querySelector(".inventory-clear-filter")?.addEventListener("click", () => {
+      window.__inventoryCategoryFilter = "";
+      renderAssetsPage({ quiet: true });
+    });
     wireAskAiButtons("assetsPageBody");
+    qs("assetsPageBody")?.querySelectorAll(".ws-scan-asset").forEach((btn) => {
+      btn.addEventListener("click", () => queueAssetScan(btn.getAttribute("data-target")));
+    });
+    qs("assetsPageBody")?.querySelectorAll(".ws-asset-software").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        window.__softwareAssetFilter = {
+          id: btn.getAttribute("data-id") || "",
+          name: btn.getAttribute("data-name") || "",
+        };
+        showWorkspace("software");
+      });
+    });
+    qs("assetsPageBody")?.querySelectorAll(".ws-asset-patch").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        window.__softwareAssetFilter = {
+          id: btn.getAttribute("data-id") || "",
+          name: btn.getAttribute("data-name") || "",
+        };
+        _softwareView = "products";
+        showWorkspace("software");
+      });
+    });
     qs("assetsPageBody")?.querySelectorAll(".ws-edit-asset").forEach((btn) => {
       btn.addEventListener("click", async () => {
         const name = prompt("Asset name:", btn.getAttribute("data-name") || "");
         if (!name?.trim()) return;
         const owner = prompt("Owner:", btn.getAttribute("data-owner") || "") ?? "";
         const criticality = prompt("Criticality (low/medium/high/critical):", btn.getAttribute("data-crit") || "medium") ?? "medium";
+        const assetType = prompt(
+          "Category (server/computer/endpoint/mobile/network/printer/iot/database/web/cloud/container/code/other):",
+          btn.getAttribute("data-type") || "server"
+        ) ?? (btn.getAttribute("data-type") || "server");
         await fetch(`/api/assets/${btn.getAttribute("data-id")}`, {
           method: "PATCH",
           headers: authHeaders({ "Content-Type": "application/json" }),
-          body: JSON.stringify({ name: name.trim(), owner, criticality }),
+          body: JSON.stringify({ name: name.trim(), owner, criticality, asset_type: assetType.trim() }),
         });
-        renderAssetsPage();
+        renderAssetsPage({ quiet: true });
       });
     });
     qs("assetsPageBody")?.querySelectorAll(".ws-del-asset").forEach((btn) => {
       btn.addEventListener("click", async () => {
         await fetch(`/api/assets/${btn.getAttribute("data-id")}`, { method: "DELETE", headers: authHeaders() });
-        renderAssetsPage();
+        renderAssetsPage({ quiet: true });
         if (typeof loadCommandCenter === "function") loadCommandCenter();
       });
     });
   }
+  window.renderAssetsPage = renderAssetsPage;
+
+  let _softwareFilters = { q: "", status: "", source: "" };
+  let _softwareView = "products";
+
+  async function readApiError(res) {
+    const ct = (res.headers && res.headers.get("content-type")) || "";
+    if (ct.includes("application/json")) {
+      const data = await res.json().catch(() => ({}));
+      if (typeof data.detail === "string") return data.detail;
+      if (Array.isArray(data.detail)) return data.detail.map((d) => d.msg || JSON.stringify(d)).join("; ");
+      return data.message || `HTTP ${res.status}`;
+    }
+    if (res.status === 405) {
+      return "Software API not loaded — restart SecuraIQ (python run.py) so /api/software routes register.";
+    }
+    if (res.status === 404) {
+      return "Software API not found — restart SecuraIQ to pick up the latest server code.";
+    }
+    return `HTTP ${res.status}`;
+  }
+
+  function setSoftwareSyncLive(text, show) {
+    const live = qs("softwareScanLive");
+    if (!live) return;
+    if (show && text) {
+      live.hidden = false;
+      live.textContent = text;
+    } else if (!window.__securaiqSoftwareSyncBusy) {
+      live.hidden = true;
+      live.textContent = "";
+    }
+  }
+  window.setSoftwareSyncLive = setSoftwareSyncLive;
+
+  function softwareLiveEnabled() {
+    try {
+      const v = localStorage.getItem("securaiq.software.live");
+      if (v === "0" || v === "false") return false;
+    } catch {
+      /* ignore */
+    }
+    return true;
+  }
+
+  function wireSoftwareLiveToggleOnce() {
+    if (window.__swLiveToggleWired) return;
+    window.__swLiveToggleWired = true;
+    const toggle = qs("softwareLiveToggle");
+    if (!toggle) return;
+    toggle.checked = softwareLiveEnabled();
+    toggle.addEventListener("change", () => {
+      try {
+        localStorage.setItem("securaiq.software.live", toggle.checked ? "1" : "0");
+      } catch {
+        /* ignore */
+      }
+      if (toggle.checked) {
+        setSoftwareSyncLive("● LIVE · updates resumed", true);
+        refreshSoftwareFromPush({}, { partial: true });
+      } else {
+        setSoftwareSyncLive("Live updates paused", true);
+      }
+    });
+  }
+
+  function formatActivityAgo(ts) {
+    if (!ts) return "now";
+    const sec = Math.max(0, Math.round(Date.now() / 1000 - Number(ts)));
+    if (sec < 5) return "just now";
+    if (sec < 60) return `${sec}s ago`;
+    if (sec < 3600) return `${Math.round(sec / 60)}m ago`;
+    return `${Math.round(sec / 3600)}h ago`;
+  }
+
+  function activityIconForPush(push) {
+    const action = String((push && push.action) || "").toLowerCase();
+    if (push && (push.kev || push.cve || action === "vuln")) return { cls: "is-crit", glyph: "!" };
+    if (push && (push.needs_update || action === "patch")) return { cls: "is-warn", glyph: "↑" };
+    return { cls: "", glyph: "✓" };
+  }
+
+  function pushSoftwareActivity(push) {
+    wireSoftwareLiveToggleOnce();
+    if (!softwareLiveEnabled()) return;
+    const feed = qs("softwareActivityFeed");
+    if (!feed) return;
+    push = push || {};
+    let text = push.message || "";
+    if (!text) {
+      const changes = push.changes || [];
+      if (changes.length) {
+        const c = changes[0];
+        text = `${c.product || "Software"}${c.version ? ` ${c.version}` : ""}${c.asset_name ? ` on ${c.asset_name}` : ""}`;
+        if (changes.length > 1) text += ` · +${changes.length - 1} more`;
+      } else if (push.total_products != null) {
+        text = `Inventory updated · ${push.total_products} product(s)`;
+      } else if (push.issues != null) {
+        text = `${push.issues} patch gap(s) · ${push.health_score != null ? push.health_score + "% health" : "live"}`;
+      } else {
+        return;
+      }
+    }
+    const icon = activityIconForPush(push);
+    const ts = push.ts || Date.now() / 1000;
+    const li = document.createElement("li");
+    li.innerHTML = `<span class="sw-act-icon ${icon.cls}">${icon.glyph}</span><span class="sw-act-body">${escapeHtml(text)}</span><span class="sw-act-ago">${escapeHtml(formatActivityAgo(ts))}</span>`;
+    feed.insertBefore(li, feed.firstChild);
+    while (feed.children.length > 8) feed.removeChild(feed.lastChild);
+    feed.hidden = false;
+  }
+  window.pushSoftwareActivity = pushSoftwareActivity;
+
+  function softwareRowKey(r) {
+    const id = r && r.id ? String(r.id) : "";
+    const asset = r && r.asset_id ? String(r.asset_id) : "";
+    const product = r && r.product ? String(r.product).toLowerCase() : "";
+    const port = r && r.port != null ? String(r.port) : "0";
+    return id || `${asset}|${product}|${port}`;
+  }
+
+  function softwareProductRowHtml(r, chipFn) {
+    const fn = chipFn || (typeof window.softwareStatusChip === "function" ? window.softwareStatusChip : (it) => escapeHtml(it.status || "?"));
+    const iid = escapeHtml(r.id || "");
+    const prodKey = escapeHtml(r.canonical_id || r.product || "");
+    const aid = escapeHtml(r.asset_id || "");
+    const aname = escapeHtml(r.asset_name || "");
+    const sourceText = (
+      r.source_label ||
+      (typeof r.source === "string" ? r.source.split(":")[0] : "") ||
+      "unknown"
+    )
+      .toString()
+      .trim() || "unknown";
+    return `<tr data-sw-key="${escapeHtml(softwareRowKey(r))}" data-sw-installation="${iid}" class="sw-product-row">
+        <td>${fn(r)}</td>
+        <td><button type="button" class="sw-row-link sw-open-product" data-key="${prodKey}" data-installation="${iid}">${escapeHtml(r.product || "?")}</button>${r.detail ? `<br><span class="hint">${escapeHtml(r.detail)}</span>` : ""}</td>
+        <td><span class="sw-source-pill" title="${escapeHtml(sourceText)}">${escapeHtml(sourceText)}</span></td>
+        <td>${escapeHtml(r.version || "—")}</td>
+        <td class="hint">${r.latest_version ? escapeHtml(r.latest_version) : "Unknown"}</td>
+        <td>${r.kev ? `<span class="sw-status-chip status-error" title="CISA KEV">KEV</span> ` : ""}${escapeHtml(r.cve || "—")}${Number(r.cve_count || 0) > 1 ? `<br><span class="hint">+${Number(r.cve_count) - 1} more</span>` : ""}</td>
+        <td>${aid ? `<button type="button" class="sw-row-link sw-open-asset" data-id="${aid}" data-name="${aname}">${aname || "—"}</button>` : escapeHtml(r.asset_name || "—")}</td>
+        <td>${r.port ? `:${r.port}` : "—"}</td>
+      </tr>`;
+  }
+
+  function closeSoftwareDetailDrawer() {
+    const drawer = qs("softwareDetailDrawer");
+    if (!drawer) return;
+    drawer.classList.add("hidden");
+    drawer.setAttribute("aria-hidden", "true");
+  }
+
+  function openSoftwareDetailDrawer(title, html) {
+    const drawer = qs("softwareDetailDrawer");
+    const body = qs("softwareDetailBody");
+    const head = qs("softwareDetailTitle");
+    if (!drawer || !body) return;
+    if (head) head.textContent = title || "Software detail";
+    body.innerHTML = html;
+    drawer.classList.remove("hidden");
+    drawer.setAttribute("aria-hidden", "false");
+    drawer.querySelectorAll("[data-sw-detail-close]").forEach((el) => {
+      el.onclick = closeSoftwareDetailDrawer;
+    });
+  }
+
+  async function openProductDetail(key, installationId) {
+    if (!key && installationId) {
+      const d = await fetch(`/api/patches/${encodeURIComponent(installationId)}`, { headers: authHeaders() }).then((r) => r.json()).catch(() => ({}));
+      if (d && d.patch) key = d.patch.canonical_id || d.patch.product;
+    }
+    if (!key) return;
+    openSoftwareDetailDrawer("Loading…", `<p class="hint">Loading product detail…</p>`);
+    const data = await fetch(`/api/software/product/${encodeURIComponent(key)}`, { headers: authHeaders() }).then((r) => r.json()).catch(() => ({}));
+    const p = data.product || {};
+    const adv = data.advisory_summary || {};
+    const vers = (data.version_counts || []).map((v) => `<li>${escapeHtml(v.version)} — <strong>${Number(v.assets)}</strong> asset(s)</li>`).join("");
+    const assets = (data.affected_assets || []).slice(0, 12).map((a) => `<li>${escapeHtml(a)}</li>`).join("");
+    const advRows = (data.advisories || []).slice(0, 8).map((a) => `<li>${a.kev ? "KEV " : ""}${escapeHtml(a.cve_id || "?")}${a.cvss != null ? ` · CVSS ${a.cvss}` : ""}${a.fixed_version ? ` · fix ${escapeHtml(a.fixed_version)}` : ""}</li>`).join("");
+    openSoftwareDetailDrawer(
+      p.name || key,
+      `<div class="sw-detail-section"><dl class="sw-detail-kv"><dt>Latest</dt><dd>${p.latest_version ? escapeHtml(p.latest_version) : "Unknown"}</dd><dt>Source</dt><dd>${escapeHtml(p.latest_source || "—")}</dd><dt>Advisories</dt><dd>${Number(adv.total || 0)} (${Number(adv.kev || 0)} KEV)</dd></dl></div>
+      <div class="sw-detail-section"><h3>Installed versions</h3><ul class="hint">${vers || "<li>None</li>"}</ul></div>
+      <div class="sw-detail-section"><h3>Affected assets</h3><ul class="hint">${assets || "<li>None</li>"}</ul></div>
+      <div class="sw-detail-section"><h3>Vulnerabilities</h3><ul class="hint">${advRows || "<li>No CVE data yet</li>"}</ul></div>
+      <div class="sw-detail-actions"><button type="button" class="btn-primary-cc sw-detail-remediate" data-installation="${escapeHtml(installationId || "")}">Create remediation</button></div>`
+    );
+    wireSoftwareDetailActions();
+  }
+
+  async function openAssetSoftwareDetail(assetId, assetName) {
+    openSoftwareDetailDrawer(assetName || "Asset software", `<p class="hint">Loading…</p>`);
+    const data = await fetch(`/api/assets/${encodeURIComponent(assetId)}/software`, { headers: authHeaders() }).then((r) => r.json()).catch(() => ({}));
+    const rows = (data.software || []).map((r) => `<tr><td>${escapeHtml(r.patch_label || r.status_label || r.status || "?")}</td><td>${escapeHtml(r.product || "?")}</td><td>${escapeHtml(r.version || "—")}</td><td class="hint">${r.latest_version ? escapeHtml(r.latest_version) : "Unknown"}</td></tr>`).join("");
+    const last = data.last_inventory ? new Date(Number(data.last_inventory) * (Number(data.last_inventory) < 1e12 ? 1000 : 1)).toLocaleString() : "Unknown";
+    openSoftwareDetailDrawer(
+      assetName || assetId,
+      `<div class="sw-detail-section"><dl class="sw-detail-kv"><dt>Software</dt><dd>${Number(data.total || 0)}</dd><dt>Issues</dt><dd>${Number(data.issues || 0)}</dd><dt>Last inventory</dt><dd>${escapeHtml(last)}</dd></dl></div>
+      <div class="sw-detail-section"><table class="ws-table sw-table"><thead><tr><th>Status</th><th>Product</th><th>Installed</th><th>Latest</th></tr></thead><tbody>${rows || `<tr><td colspan="4" class="hint">No software</td></tr>`}</tbody></table></div>
+      <div class="sw-detail-actions"><button type="button" class="btn-primary-cc sw-detail-remediate-asset" data-id="${escapeHtml(assetId)}" data-name="${escapeHtml(assetName || "")}">Create remediation</button><button type="button" class="btn-secondary sw-filter-asset" data-id="${escapeHtml(assetId)}" data-name="${escapeHtml(assetName || "")}">Filter table</button></div>`
+    );
+    wireSoftwareDetailActions();
+  }
+
+  async function openPatchDetail(installationId) {
+    if (!installationId) return;
+    openSoftwareDetailDrawer("Patch detail", `<p class="hint">Loading…</p>`);
+    const data = await fetch(`/api/patches/${encodeURIComponent(installationId)}`, { headers: authHeaders() }).then((r) => r.json()).catch(() => ({}));
+    const p = data.patch || {};
+    const adv = (data.advisories || []).slice(0, 6).map((a) => `<li>${a.kev ? "KEV " : ""}${escapeHtml(a.cve_id || "?")}${a.fixed_version ? ` → ${escapeHtml(a.fixed_version)}` : ""}</li>`).join("");
+    openSoftwareDetailDrawer(
+      `${p.product || "Patch"} on ${p.asset_name || "host"}`,
+      `<div class="sw-detail-section"><dl class="sw-detail-kv"><dt>Status</dt><dd>${escapeHtml(p.patch_label || p.patch_status || "?")}</dd><dt>Installed</dt><dd>${escapeHtml(p.installed_version || "—")}</dd><dt>Target</dt><dd>${p.target_version ? escapeHtml(p.target_version) : "Unknown"}</dd><dt>CVE</dt><dd>${escapeHtml(p.cve || "—")}</dd></dl><p class="hint">${escapeHtml(p.reason || p.detail || "")}</p></div>
+      <div class="sw-detail-section"><h3>Advisories</h3><ul class="hint">${adv || "<li>None on record</li>"}</ul></div>
+      <div class="sw-detail-actions"><button type="button" class="btn-primary-cc sw-detail-verify" data-installation="${escapeHtml(installationId)}">Verify patch</button><button type="button" class="btn-secondary sw-detail-remediate" data-installation="${escapeHtml(installationId)}">Create remediation</button></div>`
+    );
+    wireSoftwareDetailActions();
+  }
+
+  function wireSoftwareDetailActions() {
+    qs("softwareDetailBody")?.querySelector(".sw-detail-verify")?.addEventListener("click", async (ev) => {
+      const btn = ev.currentTarget;
+      const iid = btn.getAttribute("data-installation");
+      btn.disabled = true;
+      try {
+        const res = await fetch(`/api/patches/${encodeURIComponent(iid)}/verify`, { method: "POST", headers: authHeaders() });
+        const body = await res.json().catch(() => ({}));
+        if (typeof notifyUser === "function") notifyUser(body.verified ? `**Verified** · ${body.after_version || "?"}` : `**Not verified** · ${body.after_version || "?"}`);
+        if (typeof refreshSoftwareFromPush === "function") refreshSoftwareFromPush({}, { partial: true });
+        openPatchDetail(iid);
+      } catch (e) {
+        if (typeof notifyUser === "function") notifyUser(`Verify failed: ${e.message || e}`);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+    qs("softwareDetailBody")?.querySelector(".sw-detail-remediate")?.addEventListener("click", async (ev) => {
+      const btn = ev.currentTarget;
+      const iid = btn.getAttribute("data-installation");
+      btn.disabled = true;
+      try {
+        const res = await fetch(`/api/patches/${encodeURIComponent(iid)}/remediation`, { method: "POST", headers: authHeaders() });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body.detail || body.message || `HTTP ${res.status}`);
+        if (typeof notifyUser === "function") notifyUser(`**Remediation created** · ${body.title || "Patch task"}`);
+        if (typeof window.showWorkspace === "function") window.showWorkspace("remediations");
+      } catch (e) {
+        if (typeof notifyUser === "function") notifyUser(`Remediation failed: ${e.message || e}`);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+    qs("softwareDetailBody")?.querySelector(".sw-detail-remediate-asset")?.addEventListener("click", async (ev) => {
+      const btn = ev.currentTarget;
+      btn.disabled = true;
+      try {
+        const res = await fetch("/api/software/remediations", {
+          method: "POST",
+          headers: authHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify({ asset_id: btn.getAttribute("data-id") || "", asset_name: btn.getAttribute("data-name") || "" }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body.detail || `HTTP ${res.status}`);
+        if (typeof notifyUser === "function") notifyUser(`**Remediation created** · ${body.title || "Patch"}`);
+      } catch (e) {
+        if (typeof notifyUser === "function") notifyUser(`Remediation failed: ${e.message || e}`);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+    qs("softwareDetailBody")?.querySelector(".sw-filter-asset")?.addEventListener("click", (ev) => {
+      const btn = ev.currentTarget;
+      window.__softwareAssetFilter = { id: btn.getAttribute("data-id"), name: btn.getAttribute("data-name") };
+      closeSoftwareDetailDrawer();
+      _softwareView = "products";
+      renderSoftwarePage();
+    });
+  }
+
+  function wireSoftwareTableInteractions(root) {
+    (root || document).querySelectorAll(".sw-open-product").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openProductDetail(btn.getAttribute("data-key"), btn.getAttribute("data-installation"));
+      });
+    });
+    (root || document).querySelectorAll(".sw-open-asset").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openAssetSoftwareDetail(btn.getAttribute("data-id"), btn.getAttribute("data-name"));
+      });
+    });
+    (root || document).querySelectorAll(".sw-product-row").forEach((tr) => {
+      tr.addEventListener("dblclick", () => {
+        const iid = tr.getAttribute("data-sw-installation");
+        if (iid) openPatchDetail(iid);
+      });
+    });
+  }
+  window.openProductDetail = openProductDetail;
+  window.openPatchDetail = openPatchDetail;
+
+  function patchSoftwareKpis(metrics) {
+    const kpis = document.querySelector(".sw-server-kpis");
+    if (!kpis || !metrics) return;
+    const nums = kpis.querySelectorAll("strong");
+    if (nums[0] && metrics.totalProducts != null) nums[0].textContent = String(metrics.totalProducts);
+    if (nums[1] && metrics.outdatedCount != null) nums[1].textContent = String(metrics.outdatedCount);
+    if (nums[2] && metrics.criticalCount != null) nums[2].textContent = String(metrics.criticalCount);
+    if (nums[3] && metrics.upToDateCount != null) nums[3].textContent = String(metrics.upToDateCount);
+    const gauge = document.querySelector(".sw-health-gauge span");
+    if (gauge && metrics.health != null) {
+      gauge.textContent = `${metrics.health}%`;
+      const wrap = gauge.closest(".sw-health-gauge");
+      if (wrap) wrap.style.setProperty("--p", String(metrics.health));
+    }
+  }
+
+  async function fetchSoftwareSummaryMetrics() {
+    const res = await fetch("/api/software/summary", { headers: authHeaders() }).catch(() => null);
+    if (!res || !res.ok) return null;
+    const data = await res.json().catch(() => ({}));
+    const posture = data.posture || {};
+    const counts = posture.counts || {};
+    const engine = data.engine || {};
+    const outdated =
+      Number(counts.outdated || 0) + Number(counts.eol || 0) + Number(counts.missing_patch || 0);
+    const upToDate = Number(counts.current || 0) + Number(counts.up_to_date || 0);
+    const critical =
+      Number(engine.critical || 0) ||
+      Number((engine.patch_counts || {}).critical_security_update || 0) +
+        Number((engine.patch_counts || {}).exploited_kev || 0);
+    return {
+      totalProducts: Number(data.total ?? posture.total_products ?? engine.total_installations ?? 0),
+      outdatedCount: outdated,
+      upToDateCount: upToDate,
+      criticalCount: critical,
+      health: Number(posture.health_score ?? 100),
+    };
+  }
+
+  async function fetchSoftwareRows(params) {
+    const qs = new URLSearchParams(params || {});
+    if (!qs.has("limit")) qs.set("limit", "30");
+    const res = await fetch(`/api/software/rows?${qs}`, { headers: authHeaders() }).catch(() => null);
+    if (!res || !res.ok) return [];
+    const body = await res.json().catch(() => ({}));
+    return body.data || [];
+  }
+
+  function upsertSoftwareTableRows(rows) {
+    const tbody = document.querySelector("#softwarePageBody .sw-table tbody");
+    if (!tbody || !rows || !rows.length) return 0;
+    const chipFn = typeof window.softwareStatusChip === "function" ? window.softwareStatusChip : null;
+    let n = 0;
+    rows.forEach((r) => {
+      const key = softwareRowKey(r);
+      const html = softwareProductRowHtml(r, chipFn);
+      let existing = null;
+      tbody.querySelectorAll("tr[data-sw-key]").forEach((tr) => {
+        if (!existing && tr.getAttribute("data-sw-key") === key) existing = tr;
+      });
+      if (existing) {
+        existing.outerHTML = html;
+        tbody.querySelectorAll("tr[data-sw-key]").forEach((tr) => {
+          if (tr.getAttribute("data-sw-key") === key) {
+            tr.classList.add("sw-row-updated");
+            setTimeout(() => tr.classList.remove("sw-row-updated"), 2200);
+          }
+        });
+      } else {
+        tbody.insertAdjacentHTML("afterbegin", html);
+      }
+      n += 1;
+    });
+    window.__softwarePageCache = window.__softwarePageCache || { rows: {} };
+    rows.forEach((r) => {
+      window.__softwarePageCache.rows[softwareRowKey(r)] = r;
+    });
+    wireSoftwareTableInteractions(tbody.closest("#softwarePageBody") || tbody);
+    return n;
+  }
+
+  async function refreshSoftwareFromPush(push, opts) {
+    const options = opts || {};
+    const view = window.__securaiqWorkspaceView || "";
+    window.__securaiqRealtimeConnected = !!window.__securaiqEsConnected;
+    wireSoftwareLiveToggleOnce();
+
+    if (!options.skipPulse && typeof window.pulseSoftwareFromPush === "function") {
+      window.pulseSoftwareFromPush(push || {});
+    }
+
+    const liveOn = softwareLiveEnabled();
+    const liveState = window.__securaiqRealtimeConnected ? "● LIVE" : "○ Polling";
+    const agoSec = push && push.ts ? Math.max(0, Math.round(Date.now() / 1000 - Number(push.ts))) : null;
+    if (view === "software") {
+      setSoftwareSyncLive(
+        liveOn
+          ? `${liveState}${agoSec != null ? ` · Last event ${agoSec}s ago` : ""}${!window.__securaiqRealtimeConnected ? " · fallback poll" : ""}`
+          : "Live updates paused — toggle to resume",
+        true
+      );
+    }
+
+    if (!liveOn) return;
+
+    const onSoftwareView = view === "software";
+    if (onSoftwareView) {
+      const metrics = await fetchSoftwareSummaryMetrics();
+      if (metrics) patchSoftwareKpis(metrics);
+    }
+
+    if (!onSoftwareView) return;
+    const el = qs("softwarePageBody");
+    if (!el) return;
+
+    if (options.summaryOnly || _softwareView === "servers") return;
+
+    let rows = (push && push.changes) || [];
+    if (!rows.length && push) {
+      const params = {};
+      if (push.installation_id) params.installation_id = push.installation_id;
+      if (push.product) params.product = push.product;
+      if (push.canonical_id) params.canonical_id = push.canonical_id;
+      if (push.asset_id) params.asset_id = push.asset_id;
+      if (Array.isArray(push.asset_ids) && push.asset_ids.length === 1) params.asset_id = push.asset_ids[0];
+      if (Object.keys(params).length) rows = await fetchSoftwareRows(params);
+    }
+    if (!rows.length && !options.partial) {
+      if (typeof renderSoftwarePage === "function") renderSoftwarePage({ quiet: true });
+      return;
+    }
+    if (rows.length) upsertSoftwareTableRows(rows);
+  }
+  window.refreshSoftwareFromPush = refreshSoftwareFromPush;
+
+  function startSoftwarePollFallback() {
+    clearInterval(window.__securaiqSwPollTimer);
+    window.__securaiqSwPollTimer = setInterval(() => {
+      if (window.__securaiqWorkspaceView !== "software") return;
+      if (window.__securaiqEsConnected) return;
+      refreshSoftwareFromPush({}, { partial: true, summaryOnly: _softwareView === "servers" });
+    }, 60000);
+  }
+
+  async function renderSoftwarePage(opts) {
+    wireSoftwareLiveToggleOnce();
+    const el = qs("softwarePageBody");
+    if (!el) return;
+    const quiet = !!(opts && opts.quiet);
+    if (!quiet) el.innerHTML = `<p class="hint" aria-live="polite">Loading software inventory…</p>`;
+    let data = {};
+    let invStatus = null;
+    try {
+      const params = new URLSearchParams({ limit: "500" });
+      if (_softwareFilters.status) params.set("status", _softwareFilters.status);
+      if (_softwareFilters.source) params.set("source", _softwareFilters.source);
+      const assetFilter = window.__softwareAssetFilter || "";
+      if (assetFilter.id) params.set("asset_id", assetFilter.id);
+      const [res, statusRes] = await Promise.all([
+        fetch(`/api/software/inventory?${params}`, { headers: authHeaders() }),
+        fetch("/api/inventory/status", { headers: authHeaders() }).catch(() => null),
+      ]);
+      data = await res.json().catch(() => ({}));
+      if (statusRes && statusRes.ok) invStatus = await statusRes.json().catch(() => null);
+      if (!res.ok && data.status !== "ok") throw new Error(await readApiError(res));
+    } catch (err) {
+      const msg = err.message || String(err);
+      const staleHint =
+        /500|not found|404/i.test(msg)
+          ? " The server may be running old code — restart with python run.py and hard-refresh the browser (Ctrl+Shift+R)."
+          : "";
+      el.innerHTML = `<div class="sw-empty-state sw-empty-error">
+        <h2>Could not load inventory</h2>
+        <p class="hint">${escapeHtml(msg)}${escapeHtml(staleHint)}</p>
+        <div class="cc-action-row">
+          <button type="button" class="btn-secondary" id="softwareRetryLoad">Retry</button>
+          <button type="button" class="btn-primary-cc" id="softwareSyncEmpty">Sync now</button>
+          <button type="button" class="btn-secondary" data-workspace="integrations">Connect sources</button>
+        </div></div>`;
+      qs("softwareRetryLoad")?.addEventListener("click", () => renderSoftwarePage());
+      qs("softwareSyncEmpty")?.addEventListener("click", () => {
+        if (typeof window.runSoftwareSyncAll === "function") window.runSoftwareSyncAll();
+        else if (typeof window.syncAllAndRebuildSoftware === "function") window.syncAllAndRebuildSoftware({});
+      });
+      setSoftwareSyncLive("Reconnecting…", true);
+      return;
+    }
+    const posture = data.posture || {};
+    const rows = (data.inventory || data.data || []).filter((r) => {
+      const q = (_softwareFilters.q || "").trim().toLowerCase();
+      if (!q) return true;
+      const blob = [r.product, r.version, r.asset_name, r.cve, r.source, r.source_label].join(" ").toLowerCase();
+      return blob.includes(q);
+    });
+    const counts = posture.counts || {};
+    const coverage = posture.coverage || {};
+    const byLabel = posture.by_source_label || {};
+    const serverSummary = posture.server_summary || {};
+    const servers = posture.servers || [];
+    const health = Number(posture.health_score ?? 100);
+    let totalProducts = Number(data.total ?? posture.total_products ?? rows.length ?? 0);
+    const outdatedCount =
+      Number(counts.outdated || 0) + Number(counts.eol || 0) + Number(counts.missing_patch || 0);
+    const upToDateCount = Number(counts.current || 0) + Number(counts.up_to_date || 0);
+    const criticalCount = rows.filter((r) => {
+      const sev = (r.severity || "").toLowerCase();
+      const st = (r.status || "").toLowerCase();
+      const patch = (r.patch_status || "").toLowerCase();
+      return (
+        sev === "critical" ||
+        st === "eol" ||
+        st === "missing_patch" ||
+        patch === "exploited_kev" ||
+        patch === "critical_security_update" ||
+        r.kev
+      );
+    }).length;
+    const lastSync = data.last_sync ? new Date(Number(data.last_sync) * (Number(data.last_sync) < 1e12 ? 1000 : 1)) : null;
+    const lastSyncLabel =
+      lastSync && !Number.isNaN(lastSync.getTime()) ? lastSync.toLocaleString() : "Never";
+    window.__securaiqRealtimeConnected = !!window.__securaiqEsConnected;
+    const liveState = window.__securaiqRealtimeConnected ? "● LIVE" : "○ Polling";
+    const engine = data.engine || {};
+    const patchCounts = engine.patch_counts || {};
+    const engineTotal = Number(engine.total_installations || 0);
+    if (engineTotal > totalProducts) totalProducts = engineTotal;
+    let engineCritical = Number(engine.critical || 0);
+    if (!engineCritical && patchCounts) {
+      engineCritical =
+        Number(patchCounts.critical_security_update || 0) + Number(patchCounts.exploited_kev || 0);
+    }
+    let engineOutdated = Number(engine.outdated || 0);
+    if (!engineOutdated && patchCounts) {
+      engineOutdated =
+        Number(patchCounts.update_available || 0) +
+        Number(patchCounts.security_update || 0) +
+        Number(patchCounts.end_of_life || 0);
+    }
+    const engineUpToDate = Number(engine.up_to_date || patchCounts.up_to_date || 0);
+    const sourceRows = (invStatus && invStatus.sources) || [];
+    const sourceFreshness =
+      sourceRows.length > 0
+        ? sourceRows
+            .slice(0, 6)
+            .map((s) => {
+              const ok = s.healthy === 1 || s.healthy === true;
+              const ts = s.last_sync ? new Date(Number(s.last_sync) * (Number(s.last_sync) < 1e12 ? 1000 : 1)) : null;
+              const ago =
+                ts && !Number.isNaN(ts.getTime())
+                  ? `${Math.max(0, Math.round((Date.now() - ts.getTime()) / 60000))}m ago`
+                  : "never";
+              return `<span class="sw-source-fresh${ok ? " is-healthy" : ""}">${escapeHtml(s.label || s.source_key || "?")} ${ok ? "●" : "○"} ${ago}</span>`;
+            })
+            .join("")
+        : "";
+    setSoftwareSyncLive(
+      `${liveState} · Last sync ${lastSyncLabel}${data.message && totalProducts === 0 ? ` · ${data.message}` : ""}`,
+      true
+    );
+
+    if (totalProducts === 0 && servers.length === 0) {
+      el.innerHTML = `<div class="sw-empty-state sw-empty-hero">
+        <h2>No inventory yet</h2>
+        <p class="hint">${escapeHtml(data.message || "Connect an endpoint source or run a scan to begin collecting software inventory.")}</p>
+        <div class="cc-action-row">
+          <button type="button" class="btn-primary-cc" id="softwareEmptySync">Sync now</button>
+          <button type="button" class="btn-secondary" data-workspace="integrations">Connect Wazuh / Open-AudIT</button>
+          <button type="button" class="btn-secondary" data-action="new-scan">New scan</button>
+          <button type="button" class="btn-secondary" id="softwareEmptyRebuild">Rebuild inventory</button>
+        </div>
+        <p class="hint sw-empty-sources">Sources: Wazuh · Open-AudIT · LAN · Scans · XDR · OS patches · Control Panel</p>
+      </div>`;
+      qs("softwareEmptySync")?.addEventListener("click", () => {
+        if (typeof window.runSoftwareSyncAll === "function") window.runSoftwareSyncAll();
+        else if (typeof window.syncAllAndRebuildSoftware === "function") window.syncAllAndRebuildSoftware({});
+      });
+      qs("softwareEmptyRebuild")?.addEventListener("click", async () => {
+        try {
+          await fetch("/api/software/rebuild", { method: "POST", headers: authHeaders() });
+          renderSoftwarePage();
+        } catch (e) {
+          if (typeof notifyUser === "function") notifyUser(`Rebuild failed: ${e.message || e}`);
+        }
+      });
+      return;
+    }
+
+    const chipFn = typeof window.softwareStatusChip === "function" ? window.softwareStatusChip : (it) => escapeHtml(it.status || "?");
+
+    const patchChip = (st, label) => {
+      const s = (st || "unknown").toLowerCase();
+      const cls = s === "up_to_date" ? "done" : s === "needs_update" ? "error" : "planned";
+      return `<span class="sw-status-chip status-${cls}">${escapeHtml(label || st || "?")}</span>`;
+    };
+
+    const viewTabs = `
+      <div class="sw-view-tabs" role="tablist">
+        <button type="button" class="sw-view-tab${_softwareView === "servers" ? " is-active" : ""}" data-sw-view="servers">By server / system</button>
+        <button type="button" class="sw-view-tab${_softwareView === "products" ? " is-active" : ""}" data-sw-view="products">All products</button>
+      </div>`;
+
+    const serverKpis = `
+      <div class="vuln-summary-metrics mc-sw-metrics sw-server-kpis">
+        <article class="cc-kpi"><span>Software</span><strong>${totalProducts}</strong><em class="hint">installations tracked</em></article>
+        <article class="cc-kpi"><span>Outdated</span><strong>${engineOutdated || outdatedCount}</strong><em class="hint">${Number(serverSummary.needs_update || 0)} systems</em></article>
+        <article class="cc-kpi cc-kpi-warn"><span>Critical</span><strong>${engineCritical || criticalCount}</strong><em class="hint">KEV / critical CVE</em></article>
+        <article class="cc-kpi cc-kpi-ok"><span>Up to date</span><strong>${engineUpToDate || upToDateCount}</strong><em class="hint">${health}% health</em></article>
+      </div>`;
+
+    const serverRows = servers
+      .map((s) => {
+        const issues = (s.top_issues || [])
+          .slice(0, 2)
+          .map((it) => escapeHtml(it.product || "?"))
+          .join(", ");
+        return `<tr>
+          <td>${patchChip(s.patch_status, s.patch_label)}</td>
+          <td><strong>${escapeHtml(s.asset_name || "—")}</strong><br><span class="hint category-chip category-${escapeHtml(s.category || "other")}">${escapeHtml(s.category_label || s.category || "")}</span></td>
+          <td>${escapeHtml(s.os_product || "—")}${s.os_version ? `<br><span class="hint">${escapeHtml(s.os_version)}</span>` : ""}${s.os_status_label ? `<br>${chipFn({ status: s.os_status, status_label: s.os_status_label, status_class: s.os_status === "eol" || s.os_status === "outdated" ? "error" : s.os_status === "current" ? "done" : "planned" })}` : ""}</td>
+          <td><strong>${Number(s.issues_count || 0)}</strong>${s.xdr_missing_patches ? `<br><span class="hint">${s.xdr_missing_patches} XDR patch gap(s)</span>` : ""}</td>
+          <td>${Number(s.products_count || 0)}</td>
+          <td class="hint">${issues || "—"}</td>
+          <td class="ws-actions">${
+            s.patch_status === "needs_update"
+              ? `<button type="button" class="btn-secondary ws-server-remed" data-id="${escapeHtml(
+                  s.asset_id || ""
+                )}" data-name="${escapeHtml(s.asset_name || "")}">Remediate</button> `
+              : ""
+          }${s.asset_id ? `<button type="button" class="btn-secondary ws-server-drill" data-id="${escapeHtml(s.asset_id)}" data-name="${escapeHtml(s.asset_name || "")}">Details</button>` : ""}</td>
+        </tr>`;
+      })
+      .join("");
+
+    const serverPanel = `
+      ${serverKpis}
+      <div class="sw-table-wrap">
+        <table class="ws-table sw-table sw-server-table">
+          <thead><tr><th>Patch status</th><th>Server / system</th><th>OS</th><th>Issues</th><th>Products</th><th>Top gaps</th><th></th></tr></thead>
+          <tbody>${serverRows || `<tr><td colspan="7" class="hint">No servers tracked yet — scan assets, sync SIEM/XDR, or rebuild all sources.</td></tr>`}</tbody>
+        </table>
+      </div>`;
+
+    const sourceOpts = [
+      ["", "All sources"],
+      ["scan", "Network scan"],
+      ["vuln", "Vulnerabilities"],
+      ["xdr", "XDR / EDR"],
+      ["wazuh", "SIEM (Wazuh)"],
+      ["openaudit", "Open-AudIT"],
+      ["lan", "LAN inventory"],
+      ["asset", "Asset inventory"],
+      ["code", "Code / SBOM"],
+      ["hardening", "Hardening"],
+      ["cloud", "Cloud posture"],
+      ["local", "SecuraIQ tools"],
+      ["os", "OS patches"],
+      ["control_panel", "Control Panel (Windows)"],
+    ]
+      .map(
+        ([v, lab]) =>
+          `<option value="${v}"${_softwareFilters.source === v ? " selected" : ""}>${escapeHtml(lab)}</option>`
+      )
+      .join("");
+
+    const covChips = [
+      ["Control Panel", coverage.control_panel, "control_panel"],
+      ["OS patches", coverage.os_patches, "os"],
+      ["Scans", coverage.scans, "scan"],
+      ["Inventory", coverage.inventory, "openaudit"],
+      ["XDR", coverage.xdr, "xdr"],
+      ["SIEM", coverage.siem, "wazuh"],
+      ["Code", coverage.code, "code"],
+      ["Hardening", coverage.hardening, "hardening"],
+      ["Cloud", coverage.cloud, "cloud"],
+      ["Local tools", coverage.local_tools, "local"],
+      ["Remote SSH", coverage.remote_ssh, "os"],
+    ]
+      .map(([lab, n, src]) => {
+        const on = _softwareFilters.source === src;
+        return `<button type="button" class="sw-cov-chip${Number(n) > 0 ? " has-data" : ""}${on ? " is-active" : ""}" data-sw-source="${src}">${escapeHtml(lab)} <strong>${Number(n || 0)}</strong></button>`;
+      })
+      .join("");
+
+    const filterBar = `
+      <div class="filter-bar sw-filter-bar" aria-label="Software filters">
+        <input type="search" id="softwareSearch" placeholder="Search product, host, CVE…" value="${escapeHtml(_softwareFilters.q || "")}" />
+        <select id="softwareStatusFilter">
+          <option value="">All statuses</option>
+          <option value="missing_patch"${_softwareFilters.status === "missing_patch" ? " selected" : ""}>Missing patch</option>
+          <option value="eol"${_softwareFilters.status === "eol" ? " selected" : ""}>End of life</option>
+          <option value="outdated"${_softwareFilters.status === "outdated" ? " selected" : ""}>Outdated</option>
+          <option value="current"${_softwareFilters.status === "current" ? " selected" : ""}>Current</option>
+          <option value="up_to_date"${_softwareFilters.status === "up_to_date" ? " selected" : ""}>Up to date</option>
+          <option value="unknown"${_softwareFilters.status === "unknown" ? " selected" : ""}>Unknown</option>
+        </select>
+        <select id="softwareSourceFilter">${sourceOpts}</select>
+      </div>
+      <div class="sw-coverage" aria-label="Source coverage">${covChips}</div>`;
+
+    const summary = `
+      <div class="sw-page-summary">
+        ${
+          window.__softwareAssetFilter?.name
+            ? `<p class="hint sw-asset-filter">Filtered to host: <strong>${escapeHtml(window.__softwareAssetFilter.name)}</strong> <button type="button" class="btn-secondary" id="softwareClearAssetFilter">Show all hosts</button></p>`
+            : ""
+        }
+        ${sourceFreshness ? `<div class="sw-source-freshness" aria-label="Inventory source freshness">${sourceFreshness}</div>` : ""}
+        <div class="sw-health-row">
+          <div class="sw-health-gauge" style="--p:${health}"><span>${health}%</span></div>
+          <div class="sw-health-copy">
+            <strong>${Number(posture.issues || 0)} issue(s) across ${Number(posture.hosts_with_issues || 0)} host(s)</strong>
+            <p class="hint">${Number(posture.total_products || 0)} products from every tool — ${counts.current || 0} current · ${counts.outdated || 0} outdated · ${counts.eol || 0} EOL · ${counts.missing_patch || 0} patch gaps</p>
+            <p class="hint">${Object.entries(byLabel)
+              .map(([k, v]) => `${escapeHtml(k)} ${v}`)
+              .join(" · ") || "Rebuild inventory after scans / SIEM / XDR / LAN sync."}</p>
+          </div>
+        </div>
+      </div>`;
+
+    const tableRows = rows
+      .map((r) => softwareProductRowHtml(r, chipFn))
+      .join("");
+
+    window.__softwarePageCache = { rows: {}, view: _softwareView, at: Date.now() };
+    rows.forEach((r) => {
+      window.__softwarePageCache.rows[softwareRowKey(r)] = r;
+    });
+    startSoftwarePollFallback();
+
+    el.innerHTML = `
+      ${summary}
+      ${viewTabs}
+      ${_softwareView === "servers" ? serverPanel : `${filterBar}
+      <div class="sw-table-wrap">
+        <table class="ws-table sw-table">
+          <thead><tr><th>Status</th><th>Product</th><th>Source</th><th>Installed</th><th>Latest</th><th>CVE</th><th>Host</th><th>Port</th></tr></thead>
+          <tbody>${tableRows || `<tr><td colspan="8" class="hint">No software rows — click Sync all &amp; rebuild.</td></tr>`}</tbody>
+        </table>
+      </div>`}`;
+
+    el.querySelectorAll(".sw-view-tab").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        _softwareView = btn.getAttribute("data-sw-view") || "servers";
+        renderSoftwarePage({ quiet: true });
+      });
+    });
+    el.querySelectorAll(".ws-server-drill").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        window.__softwareAssetFilter = {
+          id: btn.getAttribute("data-id") || "",
+          name: btn.getAttribute("data-name") || "",
+        };
+        _softwareView = "products";
+        renderSoftwarePage();
+      });
+    });
+    el.querySelectorAll(".ws-server-remed").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const assetId = btn.getAttribute("data-id") || "";
+        const assetName = btn.getAttribute("data-name") || "";
+        btn.disabled = true;
+        try {
+          const res = await fetch("/api/software/remediations", {
+            method: "POST",
+            headers: authHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify({ asset_id: assetId, asset_name: assetName }),
+          });
+          const body = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(body.detail || `HTTP ${res.status}`);
+          if (typeof notifyUser === "function") {
+            notifyUser(`**Remediation created** · ${body.title || assetName}`);
+          }
+        } catch (err) {
+          if (typeof notifyUser === "function") {
+            notifyUser(`**Remediation failed:** ${err.message || String(err)}`);
+          }
+        } finally {
+          btn.disabled = false;
+        }
+      });
+    });
+
+    qs("softwareSearch")?.addEventListener("input", (e) => {
+      _softwareFilters.q = e.target.value || "";
+      renderSoftwarePage({ quiet: true });
+    });
+    qs("softwareStatusFilter")?.addEventListener("change", (e) => {
+      _softwareFilters.status = e.target.value || "";
+      renderSoftwarePage();
+    });
+    qs("softwareSourceFilter")?.addEventListener("change", (e) => {
+      _softwareFilters.source = e.target.value || "";
+      renderSoftwarePage();
+    });
+    qs("softwareClearAssetFilter")?.addEventListener("click", () => {
+      window.__softwareAssetFilter = null;
+      renderSoftwarePage();
+    });
+    el.querySelectorAll("[data-sw-source]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const src = btn.getAttribute("data-sw-source") || "";
+        _softwareFilters.source = _softwareFilters.source === src ? "" : src;
+        renderSoftwarePage({ quiet: true });
+      });
+    });
+    wireSoftwareTableInteractions(el);
+    const cpCount = Number((posture.coverage || {}).control_panel || 0);
+    const winApps = Number((posture.windows_host || {}).installed_apps || 0);
+    if (
+      Math.max(cpCount, winApps) === 0 &&
+      !window.__securaiqSwLocalTried &&
+      typeof window.refreshLocalWindowsHost === "function"
+    ) {
+      window.__securaiqSwLocalTried = true;
+      window.refreshLocalWindowsHost(true).then(() => renderSoftwarePage({ quiet: true })).catch(() => {});
+    }
+  }
+  window.renderSoftwarePage = renderSoftwarePage;
 
   async function renderRisksPage() {
-    const res = await fetch("/api/risks", { headers: authHeaders() });
-    const data = await res.json();
+    let data = {};
+    try {
+      const res = await fetch("/api/risks", { headers: authHeaders() });
+      data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    } catch (err) {
+      const el = qs("risksPageBody");
+      if (el) el.innerHTML = `<p class="hint">Could not load risks: ${escapeHtml(err.message || String(err))}</p>`;
+      return;
+    }
     const rows = (data.risks || [])
       .map(
         (r) => `<tr>
@@ -464,6 +1688,15 @@
     return Math.max(0, Math.floor((Date.now() - t) / 86400000));
   }
 
+  function fmtVulnTs(raw) {
+    if (raw == null || raw === "") return "—";
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return String(raw);
+    const ms = n < 1e12 ? n * 1000 : n;
+    const d = new Date(ms);
+    return Number.isNaN(d.getTime()) ? String(raw) : d.toLocaleString();
+  }
+
   function renderVulnDetail(v) {
     const panel = qs("vulnDetailPanel");
     if (!panel) return;
@@ -488,15 +1721,22 @@
       "";
     const scope = (raw && raw.scope) || "";
     const sev = (v.severity || "info").toLowerCase();
+    const isHk = /hardeningkitty|hardening_kitty|\[hk/i.test(`${v.source || ""} ${v.title || ""}`);
+    const assetBtn = v.display_asset_name || v.asset_name
+      ? `<button type="button" class="entity-asset-link" data-workspace="assets" title="Open asset inventory">${escapeHtml(
+          v.display_asset_name || displayAssetLabel({ name: v.asset_name, asset_name: v.asset_name })
+        )}</button>`
+      : "—";
     panel.innerHTML = `
       <header class="entity-detail-head">
         <p class="sev-badge sev-${escapeHtml(sev)}">${escapeHtml(sev)}</p>
+        ${isHk ? `<p class="vuln-hk-badge"><span class="auto-job-status status-${v.status === "closed" ? "done" : "running"}">${v.status === "closed" ? "Hardening fixed" : "Hardening open"}</span></p>` : ""}
         <h2 class="entity-detail-title">${escapeHtml(v.title || v.cve || "Finding")}</h2>
         ${v.cve ? `<p class="entity-detail-cve">${escapeHtml(v.cve)}</p>` : ""}
       </header>
       <dl class="entity-meta">
         <div><dt>CVSS</dt><dd>${escapeHtml(v.cvss != null ? v.cvss : "—")}</dd></div>
-        <div><dt>Asset</dt><dd>${escapeHtml(v.asset_name || "—")}</dd></div>
+        <div><dt>Asset</dt><dd>${assetBtn}</dd></div>
         <div><dt>Owner</dt><dd>${escapeHtml(v.owner || "Unassigned")}</dd></div>
         <div><dt>Status</dt><dd>${escapeHtml(v.status || "open")}</dd></div>
         <div><dt>SLA</dt><dd>${escapeHtml(v.sla_due || "—")}</dd></div>
@@ -542,7 +1782,9 @@
         <h3>Context</h3>
         <p class="hint">MITRE / evidence via Knowledge Graph · SLA ${escapeHtml(
           v.sla_due || "unset"
-        )} · updated ${escapeHtml(v.updated_at || v.created_at || "—")}</p>
+        )} · updated ${escapeHtml(fmtVulnTs(v.updated_at || v.created_at))}${
+          isHk ? " · CIS baseline via HardeningKitty" : ""
+        }</p>
       </section>
       <div class="cc-action-row entity-triage-actions">
         <button type="button" class="btn-primary-cc ws-triage-vuln" data-id="${escapeHtml(v.id)}" data-jira="0">Triage</button>
@@ -553,6 +1795,12 @@
       </div>`;
     wireAskAiButtons("vulnDetailPanel");
     wireVulnActionButtons(panel);
+    panel.querySelectorAll("[data-workspace]").forEach((el) => {
+      el.addEventListener("click", (e) => {
+        e.preventDefault();
+        if (typeof showWorkspace === "function") showWorkspace(el.getAttribute("data-workspace"));
+      });
+    });
     panel.querySelectorAll(".ws-vuln-ai").forEach((btn) => {
       btn.addEventListener("click", () => {
         const kind = btn.getAttribute("data-prompt");
@@ -667,7 +1915,7 @@
       }
       if (f.owner && !(v.owner || "").toLowerCase().includes(f.owner.toLowerCase())) return false;
       if (q) {
-        const blob = `${v.cve || ""} ${v.title || ""} ${v.asset_name || ""} ${v.owner || ""}`.toLowerCase();
+        const blob = `${v.cve || ""} ${v.title || ""} ${v.asset_name || ""} ${v.display_asset_name || ""} ${v.owner || ""}`.toLowerCase();
         if (!blob.includes(q)) return false;
       }
       return true;
@@ -678,19 +1926,36 @@
     const list = filteredVulns().slice(0, 200);
     const rows = list
       .map((v) => {
-        const age = vulnAgeDays(v);
         const src = (v.source || "").split(":")[0] || "—";
+        const srcLabel = /^zap$/i.test(src)
+          ? "SecuraIQ Web Scanner live"
+          : /^securaiq|nmap|nuclei|zap$/i.test(src)
+            ? `${src} live`
+            : src;
         const selected = v.id === _vulnSelectedId ? " is-selected" : "";
+        const assetCell = v.display_asset_name || v.asset_name
+          ? `<button type="button" class="vuln-asset-link" data-workspace="assets">${escapeHtml(
+              v.display_asset_name || displayAssetLabel({ name: v.asset_name, asset_name: v.asset_name })
+            )}</button>`
+          : "—";
+        let raw = v.raw;
+        if (typeof raw === "string") {
+          try {
+            raw = JSON.parse(raw);
+          } catch {
+            raw = null;
+          }
+        }
+        const ev = ((raw && (raw.evidence || raw.note)) || "").toString().slice(0, 80);
         return `<tr class="vuln-row${selected}" data-id="${escapeHtml(v.id)}" tabindex="0">
+        <td><strong>${escapeHtml(v.title || v.cve || "Finding")}</strong>${
+          ev ? `<div class="hint">${escapeHtml(ev)}</div>` : ""
+        }</td>
         <td>${escapeHtml(v.cve || "—")}</td>
         <td><span class="sev sev-${escapeHtml(v.severity)}">${escapeHtml(v.severity)}</span></td>
-        <td>${escapeHtml(v.cvss != null ? v.cvss : "—")}</td>
-        <td>${escapeHtml(v.asset_name || "—")}</td>
-        <td>${escapeHtml(v.owner || "—")}</td>
+        <td>${assetCell}</td>
         <td>${escapeHtml(v.status)}</td>
-        <td>${escapeHtml(v.sla_due || "—")}</td>
-        <td>${age == null ? "—" : age + "d"}</td>
-        <td>${escapeHtml(src)}</td>
+        <td>${escapeHtml(srcLabel)}</td>
       </tr>`;
       })
       .join("");
@@ -699,18 +1964,18 @@
     if (!rows) {
       el.innerHTML = `<div class="page-empty">
         <p class="page-empty-title">No matching vulnerabilities</p>
-        <p class="hint">Adjust filters or import a scanner export (Trivy, Semgrep, ZAP, …).</p>
+        <p class="hint">Run New scan on a host you own, or import a scanner export (Trivy, Semgrep, ZAP, …).</p>
       </div>`;
       renderVulnDetail(null);
       return;
     }
     el.innerHTML = `
-      <p class="hint"><strong>Golden path:</strong> Import → select finding → Triage → Jira → verify → Close. Showing ${list.length} of ${_vulnCache.length}.</p>
+      <p class="hint">Live findings from scans on hosts you own — duplicates from earlier auto-scans are merged. Showing ${list.length} of ${_vulnCache.length}.</p>
       <div class="data-table-wrap">
         <table class="data-table vuln-table">
           <thead><tr>
-            <th>CVE</th><th>Severity</th><th>CVSS</th><th>Asset</th><th>Owner</th>
-            <th>Status</th><th>SLA</th><th>Age</th><th>Scanner</th>
+            <th>Finding</th><th>CVE</th><th>Severity</th><th>Asset</th>
+            <th>Status</th><th>Source</th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>
@@ -722,7 +1987,10 @@
         el.querySelectorAll(".vuln-row").forEach((r) => r.classList.toggle("is-selected", r === row));
         renderVulnDetail(v || null);
       };
-      row.addEventListener("click", open);
+      row.addEventListener("click", (e) => {
+        if (e.target.closest?.("[data-workspace]")) return;
+        open();
+      });
       row.addEventListener("keydown", (e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
@@ -739,6 +2007,13 @@
       renderVulnDetail(list[0]);
       el.querySelector(`.vuln-row[data-id="${String(list[0].id).replace(/"/g, "")}"]`)?.classList.add("is-selected");
     }
+    el.querySelectorAll("[data-workspace]").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (typeof showWorkspace === "function") showWorkspace(btn.getAttribute("data-workspace"));
+      });
+    });
   }
 
   function paintVulnFilters() {
@@ -794,18 +2069,152 @@
     });
   }
 
-  async function renderVulnsPage() {
-    const res = await fetch("/api/vulnerabilities", { headers: authHeaders() });
-    const data = await res.json();
+  async function renderVulnSummaryBar() {
+    const el = qs("vulnSummaryBar");
+    if (!el) return;
+    const total = _vulnCache.length;
+    const assets = [
+      ...new Set(
+        _vulnCache.map((v) => v.display_asset_name || displayAssetLabel({ name: v.asset_name, asset_name: v.asset_name })).filter(Boolean)
+      ),
+    ];
+    const open = _vulnCache.filter((v) => (v.status || "open") === "open").length;
+    const hkOpen = _vulnCache.filter(
+      (v) => /hardeningkitty/i.test(v.source || "") && (v.status || "open") === "open"
+    ).length;
+    let hk = {};
+    try {
+      const dash = await fetch("/api/dashboard", { headers: authHeaders() });
+      if (dash.ok) {
+        const d = await dash.json();
+        hk = d.hardening || {};
+      }
+    } catch {
+      /* ignore */
+    }
+    let hkChip = `<span class="auto-job-status status-planned">Hardening: not installed</span>`;
+    if (hk.audit_done) {
+      hkChip = `<span class="auto-job-status status-done">Hardening audit done</span>`;
+    } else if (hk.installed) {
+      hkChip = `<span class="auto-job-status status-running">Hardening: run audit</span>`;
+    }
+    el.innerHTML = `
+      <div class="vuln-summary-metrics">
+        <strong>${total}</strong> findings · <strong>${open}</strong> open · <strong>${assets.length}</strong> assets
+        ${hkOpen ? ` · <strong>${hkOpen}</strong> hardening open` : ""}
+      </div>
+      <div class="vuln-summary-actions">
+        ${hkChip}
+        ${
+          assets.length
+            ? `<button type="button" class="btn-secondary" data-workspace="assets">View assets (${assets.length})</button>`
+            : `<button type="button" class="btn-secondary" data-action="new-scan">New scan</button>`
+        }
+        ${
+          hk.installed && !hk.audit_done
+            ? `<button type="button" class="btn-secondary" id="hkVulnSummaryAudit">Run hardening audit</button>`
+            : ""
+        }
+      </div>`;
+    el.querySelectorAll("[data-workspace]").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.preventDefault();
+        if (typeof showWorkspace === "function") showWorkspace(btn.getAttribute("data-workspace"));
+      });
+    });
+    el.querySelector("#hkVulnSummaryAudit")?.addEventListener("click", () => {
+      if (typeof window.runHardeningKittyAudit === "function") window.runHardeningKittyAudit();
+    });
+    const details = qs("vulnSourcesDetails");
+    if (details && total > 0) details.open = false;
+  }
+
+  async function renderHkVulnPanel() {
+    const el = qs("hkVulnPanelBody");
+    if (!el) return;
+    try {
+      const [stRes, dashRes] = await Promise.all([
+        fetch("/api/hardeningkitty/status", { headers: authHeaders() }),
+        fetch("/api/dashboard", { headers: authHeaders() }).catch(() => null),
+      ]);
+      const st = await stRes.json().catch(() => ({}));
+      const dash = dashRes && dashRes.ok ? await dashRes.json().catch(() => ({})) : {};
+      const hk = dash.hardening || {};
+      const runs = st.recent_runs || [];
+      const auditDone = Boolean(hk.audit_done);
+      const installed = Boolean(st.installed || hk.installed);
+      let chip = `<span class="auto-job-status status-planned">Not installed</span>`;
+      if (auditDone) chip = `<span class="auto-job-status status-done">Audit done</span>`;
+      else if (installed) chip = `<span class="auto-job-status status-running">Ready — not audited</span>`;
+      const hkFindings = _vulnCache.filter((v) => /hardeningkitty/i.test(v.source || ""));
+      const hkOpen = hkFindings.filter((v) => (v.status || "open") === "open").length;
+      el.innerHTML = `
+        <p class="vuln-source-status">${chip}
+          <span class="hint">${hkOpen} open / ${hkFindings.length} total HK findings</span>
+        </p>
+        ${
+          !installed
+            ? `<p class="hint">Install module, then audit this Windows lab host:</p>
+               <code class="hk-setup-code">.\\scripts\\use_hardeningkitty.cmd -Download</code>`
+            : auditDone
+              ? `<p class="hint">Last score ${hk.last_score != null ? escapeHtml(String(hk.last_score)) : "—"} · failed ${hk.last_failed || 0} · imported ${hk.last_imported || 0}</p>`
+              : `<p class="hint">${Number(st.finding_lists) || 0} CIS lists ready — run Audit to populate findings.</p>`
+        }
+        ${
+          runs.length
+            ? `<ul class="cc-list">${runs
+                .slice(0, 3)
+                .map(
+                  (r) =>
+                    `<li><strong>${escapeHtml(r.mode || "")}</strong> · score ${
+                      r.score != null ? escapeHtml(String(r.score)) : "—"
+                    } · failed ${r.failed || 0}</li>`
+                )
+                .join("")}</ul>`
+            : ""
+        }`;
+    } catch (err) {
+      el.innerHTML = `<p class="hint">Hardening panel unavailable: ${escapeHtml(err.message)}</p>`;
+    }
+  }
+
+  function wireHkVulnAuditBtn() {
+    const btn = qs("hkVulnAuditBtn");
+    if (!btn || btn.dataset.wired) return;
+    btn.dataset.wired = "1";
+    btn.addEventListener("click", () => {
+      if (typeof window.runHardeningKittyAudit === "function") window.runHardeningKittyAudit();
+      else if (typeof showWorkspace === "function") showWorkspace("frameworks");
+    });
+  }
+
+  async function renderVulnsPage(opts) {
+    const quiet = !!(opts && opts.quiet);
+    let data = {};
+    try {
+      const res = await fetch("/api/vulnerabilities", { headers: authHeaders() });
+      data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    } catch (err) {
+      if (!quiet) {
+        const el = qs("vulnsPageBody");
+        if (el) el.innerHTML = `<p class="hint">Could not load vulnerabilities: ${escapeHtml(err.message || String(err))}</p>`;
+      }
+      return;
+    }
     _vulnCache = data.vulnerabilities || [];
-    paintVulnFilters();
+    if (!quiet) paintVulnFilters();
+    await renderVulnSummaryBar();
     paintVulnTable();
+    if (quiet) return;
     renderCloudPosturePanel();
     renderSonarPanel();
+    renderHkVulnPanel();
     wireCloudSyncBtn();
     wireCloudImportBtn();
     wireSonarSyncBtns();
     wireCodeScanUi();
+    wireHkVulnAuditBtn();
   }
 
   async function renderSonarPanel() {
@@ -1160,6 +2569,7 @@
       }
     });
   }
+  window.renderVulnsPage = renderVulnsPage;
 
   async function renderRemsPage() {
     const res = await fetch("/api/gap/remediations", { headers: authHeaders() });
@@ -1386,6 +2796,7 @@
   async function renderIntelPage() {
     const body = qs("intelPageBody");
     if (!body) return;
+    if (window.__securaiqIntelLookupBusy) return;
     const [watchRes, vulnRes, kevRes, catalogRes] = await Promise.all([
       fetch("/api/intel/watch", { headers: authHeaders() }),
       fetch("/api/vulnerabilities", { headers: authHeaders() }),
@@ -1619,35 +3030,52 @@
       const q = qs("intelLookupQ")?.value?.trim();
       const out = qs("intelLookupOut");
       if (!q || !out) return;
+      window.__securaiqIntelLookupBusy = true;
       out.classList.remove("hidden");
       out.innerHTML = `<p class="hint">Looking up across integrated providers…</p>`;
-      const res = await fetch(`/api/intel/lookup?q=${encodeURIComponent(q)}`, { headers: authHeaders() });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        out.innerHTML = `<p class="hint">${escapeHtml(data.detail || `HTTP ${res.status}`)}</p>`;
-        return;
-      }
-      const cards = (data.results || [])
-        .map((r) => {
-          const src = escapeHtml(r.source || "?");
-          const payload = r.data != null ? r.data : r;
-          const preview = escapeHtml(JSON.stringify(payload, null, 2).slice(0, 1200));
-          return `<article class="intel-result-card">
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 45000);
+      try {
+        const res = await fetch(`/api/intel/lookup?q=${encodeURIComponent(q)}`, {
+          headers: authHeaders(),
+          signal: controller.signal,
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          out.innerHTML = `<p class="hint">${escapeHtml(data.detail || `HTTP ${res.status}`)}</p>`;
+          return;
+        }
+        const cards = (data.results || [])
+          .map((r) => {
+            const src = escapeHtml(r.source || "?");
+            const payload = r.data != null ? r.data : r;
+            const preview = escapeHtml(JSON.stringify(payload, null, 2).slice(0, 1200));
+            return `<article class="intel-result-card">
             <header><strong>${src}</strong>${r.cached ? ' <span class="hint">cached</span>' : ""}</header>
             <pre>${preview}</pre>
           </article>`;
-        })
-        .join("");
-      const errs = (data.errors || [])
-        .map((err) => `<li>${escapeHtml(err.provider || "?")}: ${escapeHtml(err.error || "")}</li>`)
-        .join("");
-      out.innerHTML = `
+          })
+          .join("");
+        const errs = (data.errors || [])
+          .map((err) => `<li>${escapeHtml(err.provider || "?")}: ${escapeHtml(err.error || "")}</li>`)
+          .join("");
+        out.innerHTML = `
         <div class="intel-lookup-meta">
           <strong>${escapeHtml(data.kind || "ioc")}</strong>
           <span class="hint">${escapeHtml(String(data.query || q))} · ok ${data.providers_ok ?? 0} · failed ${data.providers_failed ?? 0}</span>
         </div>
         <div class="intel-result-grid">${cards || `<p class="hint">No provider hits</p>`}</div>
         ${errs ? `<ul class="hint intel-lookup-errors"><li>Errors</li>${errs}</ul>` : ""}`;
+      } catch (err) {
+        const msg =
+          err && err.name === "AbortError"
+            ? "Lookup timed out after 45s — slow providers may still be running; try again."
+            : String((err && err.message) || err || "Lookup failed");
+        out.innerHTML = `<p class="hint">${escapeHtml(msg)}</p>`;
+      } finally {
+        clearTimeout(timer);
+        window.__securaiqIntelLookupBusy = false;
+      }
     });
     const stixOut = qs("stixOut");
     const stixHint = qs("stixStatusHint");
@@ -1795,88 +3223,214 @@
         : data.detail || `HTTP ${res.status}`;
     });
   }
+  window.renderIntelPage = renderIntelPage;
 
   async function renderReportsPage() {
     const body = qs("reportsPageBody");
     if (!body) return;
-    const res = await fetch("/api/reports", { headers: authHeaders() });
-    const data = await res.json();
-    const items = data.reports || [];
+    let items = [];
+    try {
+      const res = await fetch("/api/reports", { headers: authHeaders() });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+      items = data.reports || [];
+    } catch (err) {
+      body.innerHTML = `<p class="hint page-pad">Could not load reports: ${escapeHtml(err.message || String(err))}</p>`;
+      return;
+    }
+
+    const fmtWhen = (ts) => {
+      if (ts == null || ts === "") return "—";
+      const d = new Date(typeof ts === "number" && ts < 1e12 ? ts * 1000 : ts);
+      return Number.isNaN(d.getTime()) ? String(ts) : d.toLocaleString();
+    };
+    const parseScanTitle = (title) => {
+      const raw = String(title || "").replace(/\s*\(PDF\)\s*$/i, "");
+      const m = raw.match(/^(?:Scan|Archive)\s*-\s*(.+?)\s*\(([^)]+)\)(?:\s*-\s*(\d+)\s*findings)?/i);
+      if (!m) return { target: raw || "Scan", scanner: "", findings: "" };
+      return { target: m[1], scanner: m[2], findings: m[3] || "" };
+    };
+    const groupByScan = (rows) => {
+      const map = new Map();
+      rows.forEach((r) => {
+        const key = r.scan_id || r.id;
+        if (!key) return;
+        const cur = map.get(key) || {
+          id: key,
+          title: r.title,
+          created_at: r.created_at,
+          md: null,
+          pdf: null,
+        };
+        const href = r.href || "";
+        if (r.kind === "pdf" || href.endsWith(".pdf")) cur.pdf = r;
+        else cur.md = r;
+        cur.title = (r.title || cur.title || "").replace(/\s*\(PDF\)\s*$/i, "");
+        if (r.created_at) cur.created_at = r.created_at;
+        map.set(key, cur);
+      });
+      return [...map.values()];
+    };
+
+    const liveScans = groupByScan(items.filter((r) => r.kind === "scan" || (r.kind === "pdf" && r.scan_id && !String(r.id || "").startsWith("archive"))));
+    const liveIds = new Set(liveScans.map((s) => s.id));
+    const archives = groupByScan(items.filter((r) => r.kind === "archive" || String(r.id || "").startsWith("archive-"))).filter(
+      (s) => !liveIds.has(s.id)
+    );
+    const gaps = items.filter((r) => r.kind === "gap" || r.kind === "audit_pack");
+    const gapGroups = [];
+    const gapMap = new Map();
+    gaps.forEach((r) => {
+      const key = String(r.id || "").replace(/^audit-pack-/, "") || r.href;
+      const cur = gapMap.get(key) || { id: key, title: r.title, md: null, zip: null };
+      if (r.kind === "audit_pack") cur.zip = r;
+      else cur.md = r;
+      cur.title = (r.title || "").replace(/^Audit pack ZIP — /, "Gap — ");
+      gapMap.set(key, cur);
+    });
+    gapMap.forEach((v) => gapGroups.push(v));
+
+    const dlBtn = (href, kind, label) =>
+      href
+        ? `<button type="button" class="btn-secondary reports-dl" data-href="${escapeHtml(href)}" data-kind="${escapeHtml(
+            kind || ""
+          )}">${escapeHtml(label)}</button>`
+        : `<span class="hint">—</span>`;
+
+    const scanTable = (rows, empty) =>
+      rows.length
+        ? `<div class="data-table-wrap reports-table-wrap"><table class="data-table reports-table">
+            <thead><tr><th>Target</th><th>Engine</th><th>Findings</th><th>When</th><th>Download</th></tr></thead>
+            <tbody>${rows
+              .map((s) => {
+                const p = parseScanTitle(s.title);
+                return `<tr>
+                  <td><strong>${escapeHtml(p.target)}</strong></td>
+                  <td>${escapeHtml(p.scanner || "—")}</td>
+                  <td>${p.findings ? escapeHtml(p.findings) : "—"}</td>
+                  <td class="hint">${escapeHtml(fmtWhen(s.created_at))}</td>
+                  <td class="reports-dl-cell">${dlBtn(s.md?.href, s.md?.kind || "scan", "Markdown")}${dlBtn(
+                    s.pdf?.href,
+                    "pdf",
+                    "PDF"
+                  )}</td>
+                </tr>`;
+              })
+              .join("")}</tbody></table></div>`
+        : `<p class="hint page-pad">${empty}</p>`;
+
     body.innerHTML = `
-      <div class="reports-list">
+      <div class="reports-page">
+        <section class="cc-panel reports-toolbar">
+          <header class="reports-toolbar-head">
+            <div>
+              <h2>Workspace exports</h2>
+              <p class="hint">Always generated from current assets, vulns, and risks.</p>
+            </div>
+            <button type="button" class="btn-secondary" id="reportClearScans">Archive &amp; clear live scans</button>
+          </header>
+          <div class="reports-export-grid">
+            <button type="button" class="btn-secondary" id="reportExecPdf">Executive PDF</button>
+            <button type="button" class="btn-secondary" id="reportExecDocx">Executive DOCX</button>
+            <button type="button" class="btn-secondary" id="reportComplianceDocx">Compliance DOCX</button>
+            <button type="button" class="btn-secondary" id="reportRisksPdf">Risks PDF</button>
+            <button type="button" class="btn-secondary" id="reportRisksXlsx">Risks Excel</button>
+            <button type="button" class="btn-secondary" id="reportVulnsPdf">Vulns PDF</button>
+            <button type="button" class="btn-secondary" id="reportVulnsXlsx">Vulns Excel</button>
+          </div>
+          <div class="reports-ai-row">
+            <span class="hint">Ask AI</span>
+            <button type="button" class="btn-ghost" id="reportExecAi">Executive</button>
+            <button type="button" class="btn-ghost" id="reportBoardAi">Board</button>
+            <button type="button" class="btn-ghost" id="reportSecurityAi">Security</button>
+            <button type="button" class="btn-ghost" id="reportTechAi">Technical</button>
+          </div>
+        </section>
+        <section class="reports-section">
+          <header class="reports-section-head">
+            <h2>Scan reports</h2>
+            <span class="hint">${liveScans.length} completed</span>
+          </header>
+          ${scanTable(liveScans, "No completed scans yet — run New scan. Each scan appears once with Markdown + PDF.")}
+        </section>
         ${
-          items.length
-            ? items
-                .map(
-                  (r) => `<button type="button" class="report-card" data-href="${escapeHtml(r.href)}" data-kind="${escapeHtml(
-                    r.kind || ""
-                  )}">
-                    <span class="report-kind">${escapeHtml(r.kind)}</span>
-                    <strong>${escapeHtml(r.title)}</strong>
-                  </button>`
-                )
-                .join("")
-            : `<p class="hint">No reports yet — run <strong>New scan</strong> (Reports lists each completed scan) or add risks/vulns.</p>`
+          archives.length
+            ? `<section class="reports-section">
+                <header class="reports-section-head"><h2>Archived</h2><span class="hint">${archives.length}</span></header>
+                ${scanTable(archives, "")}
+              </section>`
+            : ""
         }
-      </div>
-      <div class="cc-action-row" style="margin-top:1rem">
-        <button type="button" class="cc-action" id="reportClearScans">Archive & clear live scans</button>
-        <button type="button" class="cc-action" id="reportExecPdf">Download executive PDF</button>
-        <button type="button" class="cc-action" id="reportExecDocx">Executive DOCX</button>
-        <button type="button" class="cc-action" id="reportRisksPdf">Risks PDF</button>
-        <button type="button" class="cc-action" id="reportVulnsPdf">Vulns PDF</button>
-        <button type="button" class="cc-action" id="reportComplianceDocx">Compliance DOCX</button>
-        <button type="button" class="cc-action" id="reportRisksXlsx">Risks Excel</button>
-        <button type="button" class="cc-action" id="reportVulnsXlsx">Vulns Excel</button>
-        <button type="button" class="cc-action" id="reportExecAi">Generate executive report (AI)</button>
-        <button type="button" class="cc-action" id="reportBoardAi">Board report (AI)</button>
-        <button type="button" class="cc-action" id="reportSecurityAi">Security report (AI)</button>
-        <button type="button" class="cc-action" id="reportTechAi">Generate technical report (AI)</button>
+        ${
+          gapGroups.length
+            ? `<section class="reports-section">
+                <header class="reports-section-head"><h2>Gap assessments</h2><span class="hint">${gapGroups.length}</span></header>
+                <div class="data-table-wrap reports-table-wrap"><table class="data-table reports-table">
+                  <thead><tr><th>Assessment</th><th>Download</th></tr></thead>
+                  <tbody>${gapGroups
+                    .map(
+                      (g) => `<tr>
+                        <td>${escapeHtml(g.title || "Gap")}</td>
+                        <td class="reports-dl-cell">${dlBtn(g.md?.href, "gap", "Markdown")}${dlBtn(
+                          g.zip?.href,
+                          "audit_pack",
+                          "Audit pack"
+                        )}</td>
+                      </tr>`
+                    )
+                    .join("")}</tbody>
+                </table></div>
+              </section>`
+            : ""
+        }
       </div>`;
-    body.querySelectorAll(".report-card").forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        const href = btn.getAttribute("data-href");
-        const kind = btn.getAttribute("data-kind") || "";
-        if (!href) return;
-        try {
-          if (kind === "pdf" || href.endsWith(".pdf")) {
-            const name = href.split("/").pop() || "securaiq-report.pdf";
-            if (typeof window.downloadBinary === "function") {
-              await window.downloadBinary(href, name, "application/pdf");
-            } else {
-              const r = await fetch(href, { headers: authHeaders() });
-              const buf = await r.arrayBuffer();
-              const a = document.createElement("a");
-              a.href = URL.createObjectURL(new Blob([buf], { type: "application/pdf" }));
-              a.download = name;
-              a.click();
-            }
-          } else if (kind === "docx" || href.endsWith(".docx") || kind === "xlsx" || href.endsWith(".xlsx")) {
-            const name = href.split("/").pop() || "securaiq-report.bin";
-            const mime = href.endsWith(".xlsx")
-              ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-              : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-            if (typeof window.downloadBinary === "function") {
-              await window.downloadBinary(href, name, mime);
-            }
-          } else if (typeof downloadMd === "function") {
-            const name =
-              kind === "scan"
-                ? `securaiq-scan-${(href.split("/")[3] || "report").slice(0, 8)}.md`
-                : "securaiq-report.md";
-            await downloadMd(href, name);
+
+    const downloadReport = async (href, kind) => {
+      if (!href) return;
+      try {
+        if (kind === "pdf" || href.endsWith(".pdf")) {
+          const name = href.split("/").pop() || "securaiq-report.pdf";
+          if (typeof window.downloadBinary === "function") {
+            await window.downloadBinary(href, name, "application/pdf");
           } else {
             const r = await fetch(href, { headers: authHeaders() });
-            const md = await r.text();
+            const buf = await r.arrayBuffer();
             const a = document.createElement("a");
-            a.href = URL.createObjectURL(new Blob([md], { type: "text/markdown" }));
-            a.download = kind === "scan" ? "securaiq-scan-report.md" : "securaiq-report.md";
+            a.href = URL.createObjectURL(new Blob([buf], { type: "application/pdf" }));
+            a.download = name;
             a.click();
           }
-        } catch (err) {
-          alert(err.message || "Download failed");
+        } else if (kind === "docx" || href.endsWith(".docx") || kind === "xlsx" || href.endsWith(".xlsx") || kind === "audit_pack") {
+          const name = href.split("/").pop() || "securaiq-report.bin";
+          const mime = href.endsWith(".xlsx")
+            ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            : href.endsWith(".zip") || kind === "audit_pack"
+              ? "application/zip"
+              : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+          if (typeof window.downloadBinary === "function") {
+            await window.downloadBinary(href, name, mime);
+          }
+        } else if (typeof downloadMd === "function") {
+          const name =
+            kind === "scan" || kind === "archive"
+              ? `securaiq-scan-${(href.split("/")[3] || "report").slice(0, 8)}.md`
+              : "securaiq-report.md";
+          await downloadMd(href, name);
+        } else {
+          const r = await fetch(href, { headers: authHeaders() });
+          const md = await r.text();
+          const a = document.createElement("a");
+          a.href = URL.createObjectURL(new Blob([md], { type: "text/markdown" }));
+          a.download = "securaiq-report.md";
+          a.click();
         }
-      });
+      } catch (err) {
+        alert(err.message || "Download failed");
+      }
+    };
+
+    body.querySelectorAll(".reports-dl").forEach((btn) => {
+      btn.addEventListener("click", () => downloadReport(btn.getAttribute("data-href"), btn.getAttribute("data-kind") || ""));
     });
     qs("reportExecPdf")?.addEventListener("click", () => {
       if (typeof window.downloadBinary === "function") {
@@ -2427,9 +3981,89 @@
     }
   }
 
-  async function renderSocPage() {
+  // Push types that actually affect the SOC page's SIEM/XDR/incident panels.
+  // Used to skip pointless sub-panel refetches when a live event (e.g. an
+  // unrelated scan/tool tick) fires while the user is sitting on SOC view.
+  const SOC_RELEVANT_PUSH_TYPES = new Set(["siem", "xdr", "xdr_batch", "incident", "hunt", "thehive"]);
+
+  async function renderSocPage(opts) {
+    opts = opts || {};
+    const quiet = !!opts.quiet;
     const body = qs("socPageBody");
     if (!body) return;
+    const alreadyRendered = body.dataset.socRendered === "1";
+    // Quiet realtime refresh on an already-painted page: update numbers/lists
+    // in place instead of wiping the whole page to "Loading…" and rebuilding
+    // — that flash/rebuild was firing on every SSE tick (scans, tools, jobs),
+    // not just SIEM/XDR-relevant ones, and re-fetched all three sub-panels
+    // every time regardless of relevance.
+    if (quiet && alreadyRendered) {
+      let data = {};
+      try {
+        const res = await fetch("/api/soc", { headers: authHeaders() });
+        data = await res.json().catch(() => ({}));
+        if (!res.ok) return; // keep last-good view rather than flashing an error
+      } catch {
+        return;
+      }
+      const incidents = data.incidents || [];
+      const alerts = data.alerts || [];
+      const kpiEls = body.querySelectorAll(".cc-kpi-grid .cc-kpi strong");
+      if (kpiEls[0]) kpiEls[0].textContent = String(data.incidents_open || 0);
+      if (kpiEls[1]) kpiEls[1].textContent = String(data.critical_vulns || 0);
+      if (kpiEls[2]) kpiEls[2].textContent = String(data.playbooks || 0);
+      const alertsList = qs("socAlertsList");
+      if (alertsList) {
+        alertsList.innerHTML = alerts.length
+          ? alerts.map((a) => `<li><strong>${escapeHtml(a.kind)}</strong> ${escapeHtml(a.title)}</li>`).join("")
+          : `<li class="hint">No alerts</li>`;
+      }
+      const incList = qs("socIncidentsList");
+      if (incList) {
+        incList.innerHTML = incidents.length
+          ? incidents
+              .map(
+                (i) =>
+                  `<li><strong>${escapeHtml(i.severity)}</strong> ${escapeHtml(i.title)}
+                  <button type="button" class="btn-secondary ws-ask-ai" data-kind="incident" data-json="${escapeHtml(
+                    JSON.stringify({ id: i.id, title: i.title, severity: i.severity })
+                  )}">Ask AI</button>
+                  <button type="button" class="btn-secondary ws-close-inc" data-id="${i.id}">Close</button>
+                  <button type="button" class="btn-secondary ws-del-inc" data-id="${i.id}">Delete</button></li>`
+              )
+              .join("")
+          : `<li class="hint">No open incidents</li>`;
+        wireAskAiButtons("socPageBody");
+        incList.querySelectorAll(".ws-close-inc").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            await fetch(`/api/incidents/${btn.getAttribute("data-id")}`, {
+              method: "PATCH",
+              headers: authHeaders({ "Content-Type": "application/json" }),
+              body: JSON.stringify({ status: "closed" }),
+            });
+            renderSocPage();
+          });
+        });
+        incList.querySelectorAll(".ws-del-inc").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            if (!confirm("Delete this incident?")) return;
+            await fetch(`/api/incidents/${btn.getAttribute("data-id")}`, { method: "DELETE", headers: authHeaders() });
+            renderSocPage();
+            if (typeof loadCommandCenter === "function") loadCommandCenter();
+          });
+        });
+      }
+      // Only refetch the SIEM/XDR/TheHive sub-panels when the push is
+      // actually relevant to them — a bare heartbeat or unrelated scan/tool
+      // event shouldn't re-hit /api/siem/overview, /api/xdr/status, etc.
+      if (!opts.pushType || SOC_RELEVANT_PUSH_TYPES.has(opts.pushType)) {
+        renderXdrPanel(true);
+        renderWazuhPanel(true);
+        renderTheHivePanel(true);
+      }
+      return;
+    }
+
     body.innerHTML = `<p class="hint">Loading…</p>`;
     let data = {};
     try {
@@ -2451,7 +4085,7 @@
       <div class="ws-grid-2" style="margin-top:1rem">
         <section class="cc-panel">
           <header><h2>Alerts</h2></header>
-          <ul class="cc-list">${
+          <ul class="cc-list" id="socAlertsList">${
             alerts.length
               ? alerts.map((a) => `<li><strong>${escapeHtml(a.kind)}</strong> ${escapeHtml(a.title)}</li>`).join("")
               : `<li class="hint">No alerts</li>`
@@ -2459,7 +4093,7 @@
         </section>
         <section class="cc-panel">
           <header><h2>Open incidents</h2></header>
-          <ul class="cc-list">${
+          <ul class="cc-list" id="socIncidentsList">${
             incidents.length
               ? incidents
                   .map(
@@ -2493,6 +4127,7 @@
         <header><h2>TheHive</h2><button type="button" class="btn-secondary" id="thehiveSyncBtn">Sync TheHive</button></header>
         <div id="thehivePanelBody"><p class="hint">Loading…</p></div>
       </section>`;
+    body.dataset.socRendered = "1";
     renderXdrPanel();
     renderWazuhPanel();
     renderTheHivePanel();
@@ -2562,7 +4197,15 @@
         }
         const jobId = data.job && data.job.id;
         if (jobId && typeof window.waitForJob === "function") {
-          await window.waitForJob(jobId, { timeoutMs: 120000 });
+          const job = await window.waitForJob(jobId, { timeoutMs: 120000 });
+          const r = job?.result || {};
+          if ((job?.status || "") === "done" && typeof notifyUser === "function") {
+            notifyUser(
+              `**TheHive sync done** · ${r.cases || 0} cases · ${r.new_or_updated || 0} new/updated · ${r.incidents_created || 0} incident(s) created`
+            );
+          } else if ((job?.status || "") === "error" && typeof notifyUser === "function") {
+            notifyUser(`**TheHive sync error:** ${job.error || "failed"}`);
+          }
         }
       } catch (err) {
         if (typeof notifyUser === "function") notifyUser(`**TheHive sync error:** ${err.message || err}`);
@@ -2606,12 +4249,18 @@
   async function renderEvidencePage() {
     const body = qs("evidencePageBody");
     if (!body) return;
-    const [filesRes, linksRes, remsRes, queueRes] = await Promise.all([
-      fetch("/api/files", { headers: authHeaders() }),
-      fetch("/api/evidence", { headers: authHeaders() }),
-      fetch("/api/gap/remediations", { headers: authHeaders() }),
-      fetch("/api/gap/evidence-queue?limit=40", { headers: authHeaders() }),
-    ]);
+    let filesRes, linksRes, remsRes, queueRes;
+    try {
+      [filesRes, linksRes, remsRes, queueRes] = await Promise.all([
+        fetch("/api/files", { headers: authHeaders() }),
+        fetch("/api/evidence", { headers: authHeaders() }),
+        fetch("/api/gap/remediations", { headers: authHeaders() }),
+        fetch("/api/gap/evidence-queue?limit=40", { headers: authHeaders() }),
+      ]);
+    } catch (err) {
+      body.innerHTML = `<p class="hint">Could not load evidence: ${escapeHtml(err.message || String(err))}</p>`;
+      return;
+    }
     const filesData = await filesRes.json().catch(() => ({}));
     const linksData = await linksRes.json().catch(() => ({}));
     const remsData = await remsRes.json().catch(() => ({}));
@@ -2621,9 +4270,16 @@
         ? queueData.detail
         : `Evidence queue unavailable (HTTP ${queueRes.status})`
       : null;
-    const files = filesData.files || filesData.items || [];
-    const links = linksData.evidence || [];
-    const rems = remsData.remediations || [];
+    // Real bug found in audit: files/links/remediations were parsed and
+    // rendered regardless of HTTP status, so a failed fetch looked exactly
+    // like a genuinely empty (healthy) evidence locker. Track and surface it.
+    const loadErrors = [];
+    if (!filesRes.ok) loadErrors.push(`files (HTTP ${filesRes.status})`);
+    if (!linksRes.ok) loadErrors.push(`evidence links (HTTP ${linksRes.status})`);
+    if (!remsRes.ok) loadErrors.push(`remediations (HTTP ${remsRes.status})`);
+    const files = filesRes.ok ? filesData.files || filesData.items || [] : [];
+    const links = linksRes.ok ? linksData.evidence || [] : [];
+    const rems = remsRes.ok ? remsData.remediations || [] : [];
     const queue = queueData.items || [];
     const remOpts = rems
       .map((r) => `<option value="${escapeHtml(r.id)}">${escapeHtml(r.control_id)} — ${escapeHtml(r.title)}</option>`)
@@ -2657,6 +4313,13 @@
       : `<tr><td colspan="4" class="hint">No open gaps without evidence — run a gap analysis or link artifacts</td></tr>`;
     body.innerHTML = `
       <p class="hint">Evidence Control Center — map artifacts to controls with owner, status, and expiry for audits.</p>
+      ${
+        loadErrors.length
+          ? `<p class="hint" style="color:#c0392b">Could not load ${escapeHtml(
+              loadErrors.join(", ")
+            )} — showing partial data, not a confirmed clean/empty state. Reload to retry.</p>`
+          : ""
+      }
       <section class="cc-panel">
         <header>
           <h2>Collect next</h2>
@@ -2975,6 +4638,15 @@
         ? `<span class="auto-job-status status-done">installed</span>`
         : `<span class="auto-job-status status-planned">not installed</span>`;
       const runs = st.recent_runs || [];
+      const auditRuns = runs.filter((r) => ["Audit", "Import", "Config"].includes(r.mode) && (r.status || "done") === "done");
+      const auditDone = auditRuns.length > 0;
+      const lastAudit = auditRuns[0] || runs[0];
+      let auditChip = `<span class="auto-job-status status-planned">Not audited</span>`;
+      if (auditDone) {
+        auditChip = `<span class="auto-job-status status-done">Audit done</span>`;
+      } else if (st.installed) {
+        auditChip = `<span class="auto-job-status status-running">Ready — run audit</span>`;
+      }
       const runsHtml = runs.length
         ? runs
             .map(
@@ -2995,9 +4667,23 @@
       el.innerHTML = `
         <div class="hk-status">
           ${chip}
+          ${auditChip}
           ${st.module_path ? `<code class="hk-path">${escapeHtml(st.module_path)}</code>` : ""}
-          <span class="hint">${Number(st.finding_lists) || 0} lists · ${Number(st.cis_lists) || 0} CIS</span>
+          <span class="hint">${Number(st.finding_lists) || 0} lists · ${Number(st.cis_lists) || 0} CIS${
+            lastAudit && lastAudit.score != null ? ` · last score ${escapeHtml(String(lastAudit.score))}` : ""
+          }</span>
         </div>
+        ${
+          !st.installed
+            ? `<div class="hk-setup-block">
+                <p class="hint">Install on this Windows lab host (repo root, PowerShell):</p>
+                <code class="hk-setup-code">.\\scripts\\use_hardeningkitty.cmd -Download</code>
+                <p class="hint">Restart SecuraIQ, then click <strong>HardeningKitty audit</strong> above.</p>
+              </div>`
+            : !auditDone
+              ? `<p class="hint">Module is installed — run <strong>Audit</strong> to baseline CIS checks on this host.</p>`
+              : `<p class="hint">Last audit imported ${lastAudit?.imported || 0} finding(s) · failed checks ${lastAudit?.failed || 0}.</p>`
+        }
         <div class="hk-columns">
           <div>
             <p class="hint">Finding lists</p>
@@ -3048,9 +4734,7 @@
             notifyUser(`**HardeningKitty import:** ${data.imported || 0} findings`);
           }
           renderHardeningPanel();
-          if (typeof showWorkspace === "function") {
-            /* stay on frameworks */
-          }
+          if (typeof loadCommandCenter === "function") loadCommandCenter();
         } catch (err) {
           if (typeof notifyUser === "function") notifyUser(`**Import failed:** ${err.message || err}`);
         }
@@ -3105,14 +4789,17 @@
       if (typeof notifyUser === "function") notifyUser(`**HardeningKitty error:** ${err.message || err}`);
     }
     renderHardeningPanel();
-    if (typeof showWorkspace === "function" && window.__securaiqWorkspaceView === "vulns") {
-      /* stay */
+    renderHkVulnPanel();
+    if (typeof loadCommandCenter === "function") loadCommandCenter();
+    if (typeof renderVulnsPage === "function" && window.__securaiqWorkspaceView === "vulns") {
+      renderVulnSummaryBar();
     }
     if (btn) {
       btn.disabled = false;
       btn.textContent = "Run HardeningKitty audit";
     }
   }
+  window.runHardeningKittyAudit = runHardeningKittyAudit;
 
   async function renderFrameworksPage() {
     const body = qs("frameworksPageBody");
@@ -3766,8 +5453,14 @@
           wireConnectButtons(quick);
         }
       } catch (err) {
-        const mvp = qs("integMvp");
-        if (mvp) mvp.innerHTML = `<p class="hint">Catalog unavailable: ${escapeHtml(err.message || String(err))}</p>`;
+        const msg = `<p class="hint">Catalog unavailable: ${escapeHtml(err.message || String(err))}</p>`;
+        // Real bug found in audit: only integMvp was updated on failure, so
+        // integCatalog/integAgents/integEnterprise stayed stuck on "Loading…"
+        // forever with no indication anything went wrong.
+        ["integMvp", "integCatalog", "integAgents", "integEnterprise"].forEach((id) => {
+          const el = qs(id);
+          if (el) el.innerHTML = msg;
+        });
       }
     }
     loadCatalog();
@@ -3885,16 +5578,23 @@
     body.innerHTML = `<p class="hint">Loading correlation graph…</p>`;
     const focusQ = (window.__securaiqGraphFocus || "").trim();
     window.__securaiqGraphFocus = "";
-    const [gRes, lRes] = await Promise.all([
-      focusQ
-        ? fetch(`/api/graph/correlate?q=${encodeURIComponent(focusQ)}`, { headers: authHeaders() })
-        : fetch("/api/graph", { headers: authHeaders() }),
-      fetch("/api/graph/links", { headers: authHeaders() }),
-    ]);
-    const data = await gRes.json().catch(() => ({}));
-    const linksData = await lRes.json().catch(() => ({}));
-    if (!gRes.ok) {
-      body.innerHTML = `<p class="hint">${escapeHtml(data.detail || "Graph unavailable")}</p>`;
+    let data = {};
+    let linksData = {};
+    try {
+      const [gRes, lRes] = await Promise.all([
+        focusQ
+          ? fetch(`/api/graph/correlate?q=${encodeURIComponent(focusQ)}`, { headers: authHeaders() })
+          : fetch("/api/graph", { headers: authHeaders() }),
+        fetch("/api/graph/links", { headers: authHeaders() }),
+      ]);
+      data = await gRes.json().catch(() => ({}));
+      linksData = await lRes.json().catch(() => ({}));
+      if (!gRes.ok) {
+        body.innerHTML = `<p class="hint">${escapeHtml(data.detail || "Graph unavailable")}</p>`;
+        return;
+      }
+    } catch (err) {
+      body.innerHTML = `<p class="hint">Could not load correlation graph: ${escapeHtml(err.message || String(err))}</p>`;
       return;
     }
     const counts = data.counts || {};
@@ -4056,6 +5756,11 @@
     let plat = {};
     let usage = {};
     let plans = [];
+    // Real bug found in audit: a failed /api/dashboard fetch was silently
+    // swallowed and the page rendered zeroed-out defaults (0 assets, 0 risks,
+    // "Community" plan) that look identical to a genuinely empty/local
+    // workspace. Track failure explicitly and say so instead.
+    let loadFailed = false;
     try {
       const [dRes, healthRes, platRes, usageRes, plansRes] = await Promise.all([
         fetch("/api/dashboard", { headers: authHeaders() }),
@@ -4064,6 +5769,7 @@
         fetch("/api/billing/usage", { headers: authHeaders() }).catch(() => null),
         fetch("/api/billing/plans").catch(() => null),
       ]);
+      if (!dRes.ok) loadFailed = true;
       dash = await dRes.json().catch(() => ({}));
       if (healthRes && healthRes.ok) plat = await healthRes.json().catch(() => ({}));
       const platStatus = platRes && platRes.ok ? await platRes.json().catch(() => ({})) : {};
@@ -4071,8 +5777,8 @@
       usage = usageRes && usageRes.ok ? await usageRes.json().catch(() => ({})) : {};
       const plansData = plansRes && plansRes.ok ? await plansRes.json().catch(() => ({})) : {};
       plans = Object.entries(plansData.plans || {}).map(([id, p]) => ({ id, ...p }));
-    } catch {
-      /* ignore */
+    } catch (err) {
+      loadFailed = true;
     }
     const limit = usage.messages_limit == null ? "unlimited" : usage.messages_limit;
     const planCards = plans.length
@@ -4094,6 +5800,11 @@
           .join("")
       : `<p class="hint">Community / local — self-hosted</p>`;
     body.innerHTML = `
+      ${
+        loadFailed
+          ? `<p class="hint" style="color:#c0392b">Could not load billing/usage data — showing partial or default values, not a confirmed state. Reload to retry.</p>`
+          : ""
+      }
       <div class="billing-grid">
         <section class="cc-panel">
           <header><h2>Subscription</h2></header>
@@ -4688,6 +6399,54 @@
     const openers = [
       ["hkAuditBtn", () => runHardeningKittyAudit()],
       ["oaSyncBtn", () => syncInventory()],
+      ["assetsLanRefresh", () => refreshLanAssets()],
+      [
+        "softwareLocalRefreshBtn",
+        async () => {
+          if (typeof window.refreshLocalWindowsHost === "function") {
+            await window.refreshLocalWindowsHost(true);
+            renderSoftwarePage({ quiet: true });
+          }
+        },
+      ],
+      [
+        "softwareSyncAllBtn",
+        async () => {
+          if (typeof window.syncAllAndRebuildSoftware === "function") {
+            await window.syncAllAndRebuildSoftware({});
+          }
+        },
+      ],
+      [
+        "softwareOpenExport",
+        () =>
+          typeof downloadMd === "function" &&
+          downloadMd("/api/software/export?format=md", "securaiq-software.md"),
+      ],
+      [
+        "softwareRebuildBtn",
+        async () => {
+          const el = qs("softwarePageBody");
+          if (el) el.innerHTML = `<p class="hint">Rebuilding inventory…</p>`;
+          try {
+            const res = await fetch("/api/software/rebuild", { method: "POST", headers: authHeaders() });
+            if (!res.ok) throw new Error(await readApiError(res));
+            const body = await res.json().catch(() => ({}));
+            renderSoftwarePage();
+            if (typeof loadCommandCenter === "function") loadCommandCenter();
+            if (typeof notifyUser === "function") notifyUser("**Software inventory rebuilt.**");
+          } catch (err) {
+            if (el) {
+              el.innerHTML = `<div class="sw-empty-state"><p class="hint">Rebuild failed: ${escapeHtml(err.message || String(err))}</p>
+                <div class="cc-action-row"><button type="button" class="btn-secondary" id="softwareRetryRebuild">Retry</button></div></div>`;
+              qs("softwareRetryRebuild")?.addEventListener("click", () => {
+                const btn = qs("softwareRebuildBtn");
+                if (btn) btn.click();
+              });
+            }
+          }
+        },
+      ],
       ["assetsOpenCreate", () => typeof openAsset === "function" && openAsset()],
       ["risksOpenCreate", () => typeof openRisk === "function" && openRisk()],
       ["vulnsOpenImport", () => typeof openVuln === "function" && openVuln()],
@@ -4738,7 +6497,7 @@
     const view = window.__securaiqWorkspaceView || "";
     if (!view || view === "chat") return;
     const force = !!(flags && (flags.pushRefresh || flags.jobsChanged || flags.kpisChanged));
-    const delay = force ? 450 : 8000;
+    const delay = force ? 220 : 4000;
     clearTimeout(window.__securaiqViewRtTimer);
     window.__securaiqViewRtTimer = setTimeout(() => {
       // Hunt live owns SOC table refresh — avoid full SOC rebuild every tick
@@ -4751,13 +6510,17 @@
       }
       const runners = {
         command: () => typeof loadCommandCenter === "function" && loadCommandCenter(),
-        assets: () => typeof renderAssetsPage === "function" && renderAssetsPage(),
+        assets: () => typeof renderAssetsPage === "function" && renderAssetsPage({ quiet: true }),
+        software: () => typeof renderSoftwarePage === "function" && renderSoftwarePage({ quiet: true }),
         risks: () => typeof renderRisksPage === "function" && renderRisksPage(),
-        vulns: () => typeof renderVulnsPage === "function" && renderVulnsPage(),
+        vulns: () => typeof renderVulnsPage === "function" && renderVulnsPage({ quiet: true }),
         remediations: () => typeof renderRemsPage === "function" && renderRemsPage(),
         playbooks: () => typeof renderPlaybooksPage === "function" && renderPlaybooksPage(),
         campaigns: () => typeof renderCampaignsPage === "function" && renderCampaignsPage(),
-        intel: () => typeof renderIntelPage === "function" && renderIntelPage(),
+        intel: () =>
+          !window.__securaiqIntelLookupBusy &&
+          typeof renderIntelPage === "function" &&
+          renderIntelPage(),
         reports: () => typeof renderReportsPage === "function" && renderReportsPage(),
         soc: () => typeof renderSocPage === "function" && renderSocPage(),
         evidence: () => typeof renderEvidencePage === "function" && renderEvidencePage(),
@@ -4780,8 +6543,51 @@
   window.__securaiqOnJobPulse = (data) => {
     const view = window.__securaiqWorkspaceView || "";
     const kinds = new Set((data.jobs_recent || []).map((j) => j.kind));
-    if (view === "assets" && (kinds.has("openaudit_sync") || data.inventory)) {
-      renderAssetsPage();
+    const ALL_TOOL_JOBS = new Set([
+      "software_sync_all",
+      "wazuh_sync",
+      "xdr_sync",
+      "openaudit_sync",
+      "lan_inventory_audit",
+      "cloud_posture_sync",
+      "sonarqube_sync",
+      "hardeningkitty_audit",
+      "scan_execute",
+      "combo_assessment",
+      "thehive_sync",
+      "kev_sync",
+      "report_export",
+    ]);
+    if ([...kinds].some((k) => ALL_TOOL_JOBS.has(k))) {
+      if (view === "software" && typeof renderSoftwarePage === "function") renderSoftwarePage({ quiet: true });
+      if (view === "assets" && typeof renderAssetsPage === "function") renderAssetsPage({ quiet: true });
+      if (view === "vulns" && typeof renderVulnsPage === "function") renderVulnsPage({ quiet: true });
+      if (view === "soc" && typeof renderSocPage === "function") renderSocPage();
+      if (view === "frameworks") {
+        if (typeof renderHardeningPanel === "function") renderHardeningPanel();
+        if (typeof renderFrameworksPage === "function") renderFrameworksPage();
+      }
+      if (view === "intel" && !window.__securaiqIntelLookupBusy && typeof renderIntelPage === "function") {
+        renderIntelPage();
+      }
+      if (typeof loadCommandCenter === "function") loadCommandCenter();
+      if (typeof syncLiveWorkspace === "function") syncLiveWorkspace({ pushType: "tool" });
+    }
+    if (view === "assets" && (kinds.has("openaudit_sync") || kinds.has("scan_execute") || data.inventory)) {
+      renderAssetsPage({ quiet: true });
+    }
+    if (view === "intel" && (kinds.has("kev_sync") || data.intel) && !window.__securaiqIntelLookupBusy) {
+      renderIntelPage();
+    }
+    if (kinds.has("kev_sync") && typeof refreshIntelStrip === "function") {
+      refreshIntelStrip();
+    }
+    if (kinds.has("scan_execute") || kinds.has("combo_assessment")) {
+      if (typeof loadAssets === "function") loadAssets();
+      if (typeof loadVulns === "function") loadVulns();
+      if (typeof loadCommandCenter === "function") loadCommandCenter();
+      if (view === "vulns" && typeof renderVulnsPage === "function") renderVulnsPage();
+      if (view === "reports" && typeof renderReportsPage === "function") renderReportsPage();
     }
     if (view === "frameworks" && (kinds.has("hardeningkitty_audit") || data.hardeningkitty)) {
       renderHardeningPanel();
@@ -4793,7 +6599,7 @@
       if (typeof renderVulnsPage === "function") renderVulnsPage();
       if (kinds.has("sonarqube_sync") && typeof renderSonarPanel === "function") renderSonarPanel();
     }
-    if (view === "intel" && kinds.has("kev_sync")) {
+    if (view === "intel" && kinds.has("kev_sync") && !window.__securaiqIntelLookupBusy) {
       if (typeof renderIntelPage === "function") renderIntelPage();
     }
     if (view === "automation") {
@@ -4803,26 +6609,99 @@
   window.__securaiqOnPushPulse = (data, flags) => {
     const view = window.__securaiqWorkspaceView || "";
     const t = (flags && flags.pushType) || (data.push && data.push.type) || "";
+    const live = window.REALTIME_LIVE_TYPES;
+    if (live && live.has(t) && typeof syncLiveWorkspace === "function") {
+      clearTimeout(window.__securaiqPushSyncTimer);
+      window.__securaiqPushSyncTimer = setTimeout(() => syncLiveWorkspace({ pushType: t, push: data.push }), 200);
+    }
     if (view === "soc" && t === "hunt" && typeof window.__securaiqRunLiveHunt === "function") {
       window.__securaiqRunLiveHunt();
       return;
     }
     // Broad push → let universal refresher handle; keep a fast path for SOC/vulns
-    if (view === "soc" && (t === "xdr" || t === "xdr_batch" || t === "incident" || t === "job" || t === "siem" || t === "thehive")) {
+    if (view === "soc" && (t === "xdr" || t === "xdr_batch" || t === "incident" || t === "job" || t === "siem" || t === "thehive" || t === "tool")) {
       clearTimeout(window.__securaiqSocRtTimer);
       window.__securaiqSocRtTimer = setTimeout(() => {
         if (typeof renderSocPage === "function") renderSocPage();
       }, 500);
     }
-    if (view === "vulns" && (t === "vuln" || t === "vuln_batch" || t === "xdr_batch" || t === "cloud")) {
+    if (view === "intel" && (t === "intel_watch" || t === "intel" || t === "job") && !window.__securaiqIntelLookupBusy) {
+      clearTimeout(window.__securaiqIntelRtTimer);
+      window.__securaiqIntelRtTimer = setTimeout(() => {
+        if (typeof renderIntelPage === "function") renderIntelPage();
+        if (typeof refreshIntelStrip === "function") refreshIntelStrip();
+      }, 200);
+    }
+    if ((t === "intel" || t === "intel_watch") && typeof refreshIntelStrip === "function") {
+      refreshIntelStrip();
+    }
+    if (view === "vulns" && (t === "vuln" || t === "vuln_batch" || t === "xdr_batch" || t === "cloud" || t === "scan" || t === "tool" || t === "hardening")) {
       clearTimeout(window.__securaiqVulnRtTimer);
       window.__securaiqVulnRtTimer = setTimeout(() => {
         if (typeof renderVulnsPage === "function") renderVulnsPage();
       }, 500);
     }
-    if (view === "assets" && (t === "asset" || t === "inventory")) {
+    if (t === "inventory") {
+      const p = data.push || data;
+      if (typeof pulseInventoryFromPush === "function") pulseInventoryFromPush(p);
+    }
+    if (view === "assets" && (t === "asset" || t === "inventory" || t === "scan" || t === "software_inventory")) {
       clearTimeout(window.__securaiqAssetRtTimer);
-      window.__securaiqAssetRtTimer = setTimeout(() => renderAssetsPage(), 500);
+      window.__securaiqAssetRtTimer = setTimeout(() => {
+        if (typeof loadAssets === "function") loadAssets();
+        renderAssetsPage({ quiet: true });
+      }, 200);
+    }
+    if (
+      view === "software" &&
+      typeof isSoftwarePushType === "function" &&
+      isSoftwarePushType(t)
+    ) {
+      clearTimeout(window.__securaiqSwRtTimer);
+      window.__securaiqSwRtTimer = setTimeout(() => {
+        if (typeof refreshSoftwareFromPush === "function") {
+          refreshSoftwareFromPush(data.push || data, { partial: true });
+        }
+      }, 180);
+      return;
+    }
+    if (
+      view === "software" &&
+      (t === "software_inventory" || t === "scan" || t === "job" || t === "xdr_batch" || t === "vuln_batch" || t === "tool")
+    ) {
+      clearTimeout(window.__securaiqSwRtTimer);
+      window.__securaiqSwRtTimer = setTimeout(() => {
+        if (typeof refreshSoftwareFromPush === "function") {
+          refreshSoftwareFromPush(data.push || data, { partial: true, summaryOnly: _softwareView === "servers" });
+        } else if (typeof renderSoftwarePage === "function") {
+          renderSoftwarePage({ quiet: true });
+        }
+      }, 300);
+    }
+    if (view === "assets" && t === "software_inventory") {
+      clearTimeout(window.__securaiqAssetSwTimer);
+      window.__securaiqAssetSwTimer = setTimeout(() => renderAssetsPage({ quiet: true }), 200);
+    }
+    if (
+      typeof isSoftwarePushType === "function" &&
+      isSoftwarePushType(t) &&
+      typeof window.refreshSoftwareFromPush === "function"
+    ) {
+      window.refreshSoftwareFromPush(data.push || data, { partial: true, skipPulse: true });
+      if (typeof setSoftwareSyncLive === "function") setSoftwareSyncLive("Live", true);
+    }
+    if (t === "scan" || t === "combo" || t === "asset" || t === "vuln" || t === "vuln_batch" || t === "tool") {
+      clearTimeout(window.__securaiqScanRtTimer);
+      window.__securaiqScanRtTimer = setTimeout(() => {
+        if (typeof syncLiveWorkspace === "function") syncLiveWorkspace({ pushType: t });
+        if (typeof pulseVaScanFromPush === "function") {
+          const p = data.push || {};
+          pulseVaScanFromPush({ type: t, status: p.status, step: p.step, findings: p.findings, summary: p.summary });
+        }
+      }, 200);
+    }
+    if (t === "tool_progress" && typeof pulseToolProgress === "function") {
+      pulseToolProgress(data.push);
     }
     if (view === "risks" && t === "risk") {
       clearTimeout(window.__securaiqRiskRtTimer);
@@ -4840,17 +6719,27 @@
       clearTimeout(window.__securaiqCampRtTimer);
       window.__securaiqCampRtTimer = setTimeout(() => renderCampaignsPage(), 500);
     }
-    if (view === "intel" && (t === "intel_watch" || t === "intel" || t === "job")) {
+    if (view === "intel" && (t === "intel_watch" || t === "intel" || t === "job") && !window.__securaiqIntelLookupBusy) {
       clearTimeout(window.__securaiqIntelRtTimer);
       window.__securaiqIntelRtTimer = setTimeout(() => {
         if (typeof renderIntelPage === "function") renderIntelPage();
       }, 500);
     }
-    if (view === "frameworks" && (t === "gap" || t === "remediation" || t === "evidence")) {
+    if (view === "frameworks" && (t === "gap" || t === "remediation" || t === "evidence" || t === "hardening" || t === "tool")) {
       clearTimeout(window.__securaiqFwRtTimer);
       window.__securaiqFwRtTimer = setTimeout(() => {
         if (typeof renderFrameworksPage === "function") renderFrameworksPage();
-      }, 500);
+        if (typeof renderHardeningPanel === "function") renderHardeningPanel();
+      }, 400);
+    }
+    if (view === "integrations" && (t === "tool" || t === "inventory" || t === "siem")) {
+      clearTimeout(window.__securaiqIntegRtTimer);
+      window.__securaiqIntegRtTimer = setTimeout(() => {
+        if (typeof renderIntegrationsPage === "function") renderIntegrationsPage();
+      }, 400);
+    }
+    if (t === "notification" && typeof refreshNotifBadge === "function") {
+      refreshNotifBadge();
     }
   };
   window.addEventListener("securaiq:realtime", (e) => {

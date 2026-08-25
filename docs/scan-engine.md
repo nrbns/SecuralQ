@@ -7,7 +7,7 @@
 | `securaiq` | nothing | Always-on discovery |
 | `nmap` | `nmap` on PATH / Docker image | Ports / services |
 | `nuclei` | `nuclei` on PATH / Docker image | Web / CVE templates |
-| `zap` | OWASP ZAP / `zap-baseline.py` | Web config, XSS, headers |
+| `zap` | nothing (built-in SecuraIQ Web Scanner) | Web DAST, headers, paths, CORS |
 
 ## Flow
 
@@ -28,7 +28,7 @@ POST /api/scans
 { "target": "192.168.56.101", "scanner": "all", "profile": "full", "authorized": true }
 ```
 
-Queues every scanner that is installed (`securaiq` always; plus nmap/nuclei/zap when on PATH). Response includes `scans[]` and `skipped[]`.
+Queues every scanner that is available (`securaiq` and `zap` always; plus nmap/nuclei when on PATH). Response includes `scans[]` and `skipped[]`.
 
 ## Docker build
 
@@ -42,6 +42,15 @@ docker compose build --build-arg INSTALL_ZAP=false   # smaller image
 
 Scan the **VM IP** (e.g. `192.168.56.101`), not the VirtualBox host gateway `.1`.
 Private Windows ports 135/139/445 are down-ranked to **info** and de-duped across tools.
+
+## Combo workflow (Integrated VA)
+
+```http
+POST /api/scans/combo
+{ "target": "192.168.56.101", "authorized": true, "auto_triage": true }
+```
+
+Runs authorize → SecuraIQ + Nmap + Nuclei + SecuraIQ Web Scanner → evidence → investigate → optional auto-triage. Realtime progress via SSE (`type=combo`) and job events.
 
 ## Reports
 

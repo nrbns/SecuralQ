@@ -194,22 +194,37 @@ def _reload_db(monkeypatch, data_dir):
 
 
 def test_scanner_all_queues_available_only(tmp_path, monkeypatch):
-    """scanner=all must queue securaiq and skip unavailable PATH tools."""
+    """scanner=all must queue securaiq and skip unavailable PATH tools.
+
+    Uses a minimal FastAPI app wrapping only app.scans_api.router, rather
+    than importing/reloading the full app.main. Real bug found via full-
+    suite verification: reloading app.main mid test-session (it builds a
+    brand-new FastAPI() instance and re-runs all its module-level wiring)
+    left 10+ unrelated tests in other files failing with a NameError deep in
+    app/enterprise.py — a cross-test pollution bug, not a real product bug.
+    app.db/app.auth/app.scans_api all still see the fresh _reload_db() state
+    correctly here because importlib.reload() mutates a module's __dict__ in
+    place, so already-bound `get_conn` references in other modules keep
+    resolving against the reloaded app.db globals — no need to reload them,
+    and definitely no need to reload the heavy, side-effecting app.main.
+    """
     _reload_db(monkeypatch, tmp_path / "data")
+    from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    import app.main as main_mod
     from app.auth import login, register_user
     from app.scan_engine.models import ensure_scans_schema
+    from app.scans_api import router as scans_router
     from app.tenancy import ensure_tenant_schema
 
-    importlib.reload(main_mod)
     ensure_tenant_schema()
     ensure_scans_schema()
     register_user("batch_u", "password123", role="user")
     _u, token = login("batch_u", "password123")
 
-    client = TestClient(main_mod.app)
+    test_app = FastAPI()
+    test_app.include_router(scans_router)
+    client = TestClient(test_app)
     res = client.post(
         "/api/scans",
         headers={"Authorization": f"Bearer {token}"},

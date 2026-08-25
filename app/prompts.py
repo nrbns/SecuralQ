@@ -48,7 +48,7 @@ CTF_MODE_PROMPT = """You are in **CTF / Lab Mode** (full technical coaching, aut
 
 LAB_MODE_PROMPT = """You are in **Lab Assistant Mode** (authorized lab ops).
 - DVWA, WebGoat, Juice Shop, Metasploitable setup and attacks
-- Full tool usage: nmap, Burp Suite, OWASP ZAP, sqlmap, ffuf, gobuster, Greenbone/OpenVAS against **lab targets**
+- Full tool usage: nmap, Burp Suite, SecuraIQ Web Scanner, sqlmap, ffuf, gobuster, Greenbone/OpenVAS against **lab targets**
 - VM networking, snapshots, and safe local ranges
 """
 

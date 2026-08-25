@@ -16,7 +16,7 @@ from app.scan_engine.models import create_scan, ensure_scans_schema, get_scan, l
 from app.scan_engine.report import build_scan_report_md, findings_for_scan, write_scan_report
 from app.scanners.registry import ENGINE_ENABLED, get_scanner, list_scanners
 from app.services.tenancy import resolve_request_org
-from app.services.tool_policy import normalize_scope_json
+from app.services.tool_policy import assert_structured_scope, normalize_scope_json
 from app.workspace import get_engagement
 
 router = APIRouter(prefix="/api/scans", tags=["scans"])
@@ -61,12 +61,18 @@ def _queue_one(
     except KeyError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    ok_scope_req, scope_req_reason = assert_structured_scope(
+        scanner_id=scanner_id, profile=profile, scope=scope
+    )
+    if not ok_scope_req:
+        raise HTTPException(status_code=400, detail=f"{scanner_id}: {scope_req_reason}")
+
     ok_t, target_or_err = scanner.validate_target(target)
     if not ok_t:
         raise HTTPException(status_code=400, detail=f"{scanner_id}: {target_or_err}")
 
     ok_s, s_reason = scanner.validate_scope(target_or_err, scope)
-    if scope and not ok_s:
+    if not ok_s:
         raise HTTPException(status_code=403, detail=f"BLOCKED ({scanner_id}): {s_reason}")
 
     avail, avail_detail = scanner.available()
@@ -91,6 +97,8 @@ def _queue_one(
         "scanner": scanner_id,
         "profile": profile,
         "target": target_or_err,
+        "scope": scope,
+        "auth_decision": scope_req_reason,
     }
 
 
@@ -141,6 +149,105 @@ async def scans_clear_old(
     result = clear_user_scan_data(user.id, archive=True)
     reclass = reclassify_stored_risky_ports(user.id)
     return {"ok": True, **result, "reclassified": reclass.get("updated", 0)}
+
+
+class ComboAssessmentCreate(BaseModel):
+    target: str = Field(min_length=1, max_length=500)
+    profile: str = Field(default="discovery", pattern="^(discovery|web|vulnerability|full)$")
+    scope: list[str] | str | None = None
+    engagement_id: str | None = None
+    org_id: str | None = None
+    authorized: bool = False
+    include_web: bool = False
+    auto_triage_high: bool = True
+    async_mode: bool = True  # queue job; false = run inline (tests / short lab)
+
+
+@router.get("/combo/scanners")
+async def combo_scanners_preview(user: Annotated[AuthUser, Depends(require_user)]):
+    """Which engines the combo workflow would run right now."""
+    _ = user
+    from app.combo_assessment import resolve_combo_scanners
+
+    return {
+        "core": resolve_combo_scanners(include_web=False),
+        "with_web": resolve_combo_scanners(include_web=True),
+        "workflow": [
+            "authorize",
+            "scope",
+            "scan (securaiq + nmap…)",
+            "evidence",
+            "investigate-scan",
+            "auto-triage high/critical",
+        ],
+    }
+
+
+@router.post("/combo")
+async def scans_combo_assessment(
+    req: ComboAssessmentCreate,
+    user: Annotated[AuthUser, Depends(require_user)],
+    x_securaiq_org: str | None = Header(default=None, alias="X-SecuraIQ-Org"),
+):
+    """Integrated combo: scan → evidence → investigate pack → optional auto-triage.
+
+    Default ``async_mode=true`` queues ``combo_assessment`` (poll GET /api/jobs/{id}).
+    Set ``async_mode=false`` to run inline and return the full pack in one response.
+    """
+    ensure_scans_schema()
+    oid = resolve_request_org(user, org_id=req.org_id, header_org=x_securaiq_org)
+    require_perm(user, "asset.write", org_id=oid)
+    require_perm(user, "vuln.read", org_id=oid)
+
+    if not req.authorized:
+        raise HTTPException(
+            status_code=400,
+            detail="Authorization required: confirm you own or are authorized to test this target.",
+        )
+
+    scope = normalize_scope_json(req.scope)
+    if req.engagement_id and not scope:
+        eng = get_engagement(user.id, req.engagement_id)
+        if eng:
+            scope = normalize_scope_json(eng.get("scope_json") or "")
+
+    payload = {
+        "user_id": user.id,
+        "target": req.target.strip(),
+        "scope": scope,
+        "authorized": True,
+        "profile": req.profile,
+        "engagement_id": req.engagement_id,
+        "org_id": oid,
+        "include_web": req.include_web or req.profile in {"web", "full", "vulnerability"},
+        "auto_triage_high": req.auto_triage_high,
+    }
+
+    if not req.async_mode:
+        from app.combo_assessment import run_combo_assessment
+
+        result = await run_combo_assessment(**payload)
+        if not result.get("ok"):
+            status = 403 if result.get("blocked") else 400
+            raise HTTPException(status_code=status, detail=result.get("error") or "combo failed")
+        return result
+
+    from app.combo_assessment import enqueue_combo_assessment, resolve_combo_scanners
+
+    job = enqueue_combo_assessment(payload)
+    prof = payload.get("profile") or "discovery"
+    include_web = bool(payload.get("include_web"))
+    return {
+        "status": "queued",
+        "workflow": "combo_assessment",
+        "job_id": job.get("id"),
+        "poll_url": f"/api/jobs/{job.get('id')}",
+        "target": payload["target"],
+        "scope": scope,
+        "include_web": include_web,
+        "auto_triage_high": payload["auto_triage_high"],
+        "scanners": resolve_combo_scanners(include_web=include_web or prof in {"web", "full", "vulnerability"}),
+    }
 
 
 @router.get("/{scan_id}/report")
@@ -281,7 +388,7 @@ async def scans_create(
         if not queued:
             raise HTTPException(
                 status_code=503,
-                detail="No scanners available to run. Install nmap/nuclei/zap or use securaiq.",
+                detail="No scanners available to run. Use securaiq, combo, or install nmap/nuclei on PATH.",
             )
         return {
             "status": "queued",

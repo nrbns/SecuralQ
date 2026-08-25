@@ -99,8 +99,28 @@ def resolve_and_authorize(
     if not target:
         return {"ok": False, "error": "No target"}
 
-    if "/" in target:
-        return {"ok": False, "error": "CIDR/ranges not supported — use a single host IP"}
+    # Real bug found live: a plain https:// URL (https://example.com/,
+    # https://example.com/login) contains "/" from its scheme and path, and
+    # was being misread as CIDR notation and rejected outright with a
+    # confusing "CIDR/ranges not supported" error — so web URL scans never
+    # got past target resolution. Extract just the host when a URL scheme is
+    # present; anything else containing "/" (no scheme) is still treated as
+    # a CIDR/range and rejected, same as before.
+    scheme_match = re.match(r"^[a-zA-Z][a-zA-Z0-9+.\-]*://", target)
+    if scheme_match:
+        host_part = target[scheme_match.end():]
+        host_part = host_part.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+        host_part = host_part.rsplit("@", 1)[-1]  # drop userinfo@ if present
+        if host_part.startswith("["):
+            host_part = host_part.split("]")[0].lstrip("[")
+        else:
+            host_part = host_part.split(":")[0]
+        host_part = host_part.strip()
+        if not host_part:
+            return {"ok": False, "error": "Could not extract a host from that URL"}
+        target = host_part
+    elif "/" in target:
+        return {"ok": False, "error": "CIDR/ranges not supported — use a single host, IP, or URL"}
 
     try:
         infos = socket.getaddrinfo(target, None, type=socket.SOCK_STREAM)
@@ -356,6 +376,9 @@ async def assess_from_request(
     target: str | None = None,
     authorized: bool = False,
     allow_public: bool = False,
+    # Optional: when provided and `authorized=True`, persist Assets/Vulns to the register
+    # so the UI updates via realtime SSE (same mechanism as other tool findings).
+    user_id: str | None = None,
 ) -> dict[str, Any]:
     targets = extract_targets(message, target)
     if not targets:
@@ -367,14 +390,21 @@ async def assess_from_request(
     # Public allow only when user checked authorized
     results = []
     for t in targets:
-        results.append(
-            await assess_target(
-                t,
-                authorized=authorized,
-                allow_public=allow_public and authorized,
-                use_nmap=settings.net_assess_use_nmap,
-            )
+        res = await assess_target(
+            t,
+            authorized=authorized,
+            allow_public=allow_public and authorized,
+            use_nmap=settings.net_assess_use_nmap,
         )
+        results.append(res)
+
+        # Persist "network scan" output as live Assets/Vulns (authorized scope only)
+        if user_id and authorized and res.get("ok"):
+            try:
+                await _persist_net_assessment(user_id, res)
+            except Exception:
+                # Network assess should never break chat flow if persistence fails
+                pass
     any_ok = any(r.get("ok") for r in results)
     return {
         "ok": any_ok,
@@ -382,6 +412,58 @@ async def assess_from_request(
         "results": results,
         "error": None if any_ok else (results[0].get("error") if results else "Assessment failed"),
     }
+
+
+async def _persist_net_assessment(user_id: str, assessment: dict[str, Any]) -> None:
+    """Persist network probe results as live findings + inventory.
+
+    Goal: "network scan" updates Assets/Vulnerabilities in realtime (no demo/canned UI),
+    matching the behavior of scan-engine and local tool pipelines.
+    """
+
+    from app.enterprise import ensure_asset_for_target, upsert_vulnerability
+    from app.exposure import risky_port_finding
+
+    target = str(assessment.get("target") or assessment.get("ip") or "unknown")[:200]
+    ip = assessment.get("ip")
+    open_ports = assessment.get("open_ports") or []
+
+    # Register asset first so findings show under the correct inventory entry
+    ensure_asset_for_target(
+        user_id,
+        target,
+        notes="Live network assess (net_assess) · passive/light probes",
+        asset_type="host",
+    )
+
+    ports = [p for p in open_ports if isinstance(p, int)]
+    ports = ports[:50]
+
+    if ports:
+        # Single discovery finding (dedupes by fixed title+source for non-port-id findings).
+        upsert_vulnerability(
+            user_id,
+            {
+                "title": f"Open ports discovered on {target}",
+                "severity": "info",
+                "asset_name": target,
+                "source": "securaiq:discovery",
+                "raw": {"ports": ports, "ip": ip},
+            },
+            emit_realtime=True,
+        )
+
+    # One finding per port (dedupes by stable finding identity: asset+port).
+    for p in ports:
+        item = risky_port_finding(
+            int(p),
+            target=target,
+            source="securaiq:net_assess",
+            ip=str(ip) if ip else None,
+        )
+        # Add light evidence for UI detail view
+        item.setdefault("raw", {}).update({"evidence": f"{p}/tcp open (net_assess)"})
+        upsert_vulnerability(user_id, item, emit_realtime=True)
 
 
 def format_assess_context(payload: dict[str, Any]) -> str:

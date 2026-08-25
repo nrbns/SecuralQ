@@ -6,8 +6,9 @@ import chromadb
 from chromadb.config import Settings as ChromaSettings
 
 from app.config import settings
+from app.paths import resource_root
 
-KNOWLEDGE_DIR = Path(__file__).resolve().parent.parent / "data" / "knowledge"
+KNOWLEDGE_DIR = resource_root() / "data" / "knowledge"
 
 
 def rag_where_for_org(org_id: str | None) -> dict | None:
@@ -51,6 +52,8 @@ class RAGEngine:
                 path=str(persist),
                 settings=ChromaSettings(anonymized_telemetry=False),
             )
+        if self._collection is None:
+            assert self._client is not None
             self._collection = self._client.get_or_create_collection(
                 name="pentest_knowledge",
                 metadata={"hnsw:space": "cosine"},
@@ -113,11 +116,15 @@ class RAGEngine:
     def document_count(self) -> int:
         if self._cached_count:
             return self._cached_count
-        self._ensure_client()
-        assert self._collection is not None
-        count = self._collection.count()
-        self._cached_count = count
-        return count
+        try:
+            self._ensure_client()
+            if self._collection is None:
+                return 0
+            count = self._collection.count()
+            self._cached_count = count
+            return count
+        except Exception:
+            return 0
 
     def list_sources(self) -> list[str]:
         self._ensure_client()

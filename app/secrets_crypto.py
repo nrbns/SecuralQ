@@ -21,12 +21,13 @@ from __future__ import annotations
 
 import os
 import stat
-from pathlib import Path
 
 ENC_PREFIX = "enc:v1:"
 
 _KEY_ENV_VAR = "ENV_SECRET_ENCRYPTION_KEY"
-_KEY_FILE = Path(__file__).resolve().parent.parent / "data" / ".secret.key"
+from app.paths import project_root
+
+_KEY_FILE = project_root() / "data" / ".secret.key"
 
 _fernet = None  # lazy singleton
 

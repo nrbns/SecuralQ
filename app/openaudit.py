@@ -22,6 +22,7 @@ def status() -> dict[str, Any]:
         cached = 0
     return {
         "configured": configured,
+        "live": True,
         "base_url": (settings.openaudit_base_url or "").rstrip("/") if configured else "",
         "api_root": oa_conn.api_root() if configured else "",
         "verify_ssl": bool(settings.openaudit_verify_ssl),
@@ -54,22 +55,16 @@ def ensure_schema() -> None:
 
 
 def _map_asset_type(oa_type: str) -> str:
-    t = (oa_type or "").lower()
-    if any(x in t for x in ("server", "virtual", "hypervisor", "vm")):
-        return "server"
-    if any(x in t for x in ("computer", "workstation", "laptop", "desktop", "endpoint")):
-        return "endpoint"
-    if any(x in t for x in ("database", "sql")):
-        return "database"
-    if any(x in t for x in ("router", "switch", "firewall", "access point", "network")):
-        return "other"
-    if "printer" in t:
-        return "other"
-    return "server" if t else "other"
+    from app.asset_categories import infer_asset_category
+
+    return infer_asset_category(oa_type=oa_type, asset_type=oa_type)
 
 
 def _upsert_device(item: dict[str, Any], user_id: str) -> tuple[bool, str]:
     """Returns (inserted, asset_id)."""
+    from app.asset_names import canonical_asset_name
+    from app.enterprise import ensure_asset_for_target
+
     ensure_schema()
     did = str(item.get("device_id") or "")
     if not did:
@@ -78,48 +73,35 @@ def _upsert_device(item: dict[str, Any], user_id: str) -> tuple[bool, str]:
     ts = now()
     hostname = (item.get("hostname") or "").strip()
     ip = (item.get("ip") or "").strip()
-    name = (item.get("name") or "").strip() or did
-    if hostname and ip:
-        name = f"{hostname} ({ip})"
-    elif hostname:
-        name = hostname
-    elif ip:
-        name = ip
-    notes = (
-        f"openaudit_id={did}\n"
-        f"ip={item.get('ip') or ''}\n"
-        f"hostname={item.get('hostname') or ''}\n"
-        f"os={item.get('os') or ''}\n"
-        f"domain={item.get('domain') or ''}\n"
-        f"oa_type={item.get('type') or ''}\n"
-        f"{item.get('description') or ''}"
-    ).strip()
+    name = canonical_asset_name(
+        name=(item.get("name") or "").strip() or did,
+        ip=ip,
+        hostname=hostname,
+    )
+    notes = json.dumps(
+        {
+            "openaudit_id": did,
+            "ip": ip,
+            "hostname": hostname,
+            "host": hostname or ip,
+            "os": item.get("os") or "",
+            "domain": item.get("domain") or "",
+            "oa_type": item.get("type") or "",
+            "source": "openaudit",
+            "description": item.get("description") or "",
+        }
+    )[:2000]
     existing = c.execute("SELECT id, asset_id FROM openaudit_devices WHERE device_id = ?", (did,)).fetchone()
     asset_id = (existing["asset_id"] if existing else "") or ""
 
-    if not asset_id:
-        for a in list_assets(user_id):
-            if f"openaudit_id={did}" in (a.get("notes") or ""):
-                asset_id = a["id"]
-                break
-            if (a.get("name") or "").strip().lower() == name.strip().lower():
-                asset_id = a["id"]
-                break
-    if not asset_id:
-        created = create_asset(
-            user_id,
-            name,
-            asset_type=_map_asset_type(str(item.get("type") or "")),
-            criticality="high" if (item.get("status") or "").lower() in {"production", "prod"} else "medium",
-            owner="Inventory",
-            notes=notes,
-        )
-        asset_id = created.get("id") or ""
-    else:
-        c.execute(
-            "UPDATE assets SET name=?, asset_type=?, notes=?, updated_at=? WHERE id=? AND user_id=?",
-            (name, _map_asset_type(str(item.get("type") or "")), notes, ts, asset_id, user_id),
-        )
+    asset = ensure_asset_for_target(
+        user_id,
+        name,
+        notes=notes,
+        asset_type=_map_asset_type(str(item.get("type") or "")),
+        criticality="high" if (item.get("status") or "").lower() in {"production", "prod"} else "medium",
+    )
+    asset_id = (asset or {}).get("id") or asset_id or ""
 
     fields = (
         name,
@@ -157,6 +139,36 @@ def _upsert_device(item: dict[str, Any], user_id: str) -> tuple[bool, str]:
     return inserted, asset_id
 
 
+def ingest_live_device(user_id: str, item: dict[str, Any]) -> dict[str, Any]:
+    """Upsert one live/Open-AudIT-style host and publish inventory immediately."""
+    ensure_schema()
+    ip = str(item.get("ip") or "").strip()
+    if ip:
+        row = get_conn().execute(
+            "SELECT device_id FROM openaudit_devices WHERE ip = ? LIMIT 1",
+            (ip,),
+        ).fetchone()
+        if row and row["device_id"]:
+            item = {**item, "device_id": row["device_id"]}
+    inserted, asset_id = _upsert_device(item, user_id)
+    try:
+        from app.realtime_bus import publish
+
+        publish(
+            type="inventory",
+            source="openaudit",
+            action="upsert",
+            ip=ip,
+            asset_id=asset_id,
+            inserted=inserted,
+            user_id=user_id,
+        )
+        publish(type="asset", source="inventory", id=asset_id, user_id=user_id)
+    except Exception:
+        pass
+    return {"ok": True, "inserted": inserted, "asset_id": asset_id, "ip": ip}
+
+
 def list_devices(limit: int = 100) -> list[dict[str, Any]]:
     ensure_schema()
     rows = get_conn().execute(
@@ -170,6 +182,10 @@ def list_devices(limit: int = 100) -> list[dict[str, Any]]:
             d["raw"] = json.loads(d.get("raw_json") or "{}")
         except Exception:
             d["raw"] = {}
+        raw = d.get("raw") if isinstance(d.get("raw"), dict) else {}
+        d["open_ports"] = raw.get("open_ports") or []
+        d["shares"] = raw.get("shares") or []
+        d["mac"] = raw.get("mac") or ""
         out.append(d)
     return out
 

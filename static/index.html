@@ -29,7 +29,10 @@
       }
     })();
   </script>
-  <link rel="stylesheet" href="/style.css?v=127" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/style.css?v=147" />
   <script src="/vendor/marked.min.js"></script>
 </head>
 <body>
@@ -50,71 +53,63 @@
       <nav class="side-nav" aria-label="Primary">
         <button type="button" class="nav-item" data-view="command" id="navCommand">
           <span class="nav-ico" data-ico="mc" aria-hidden="true"></span>
-          <span class="nav-item-label">Control Board</span>
+          <span class="nav-item-label">Overview</span>
         </button>
         <button type="button" class="nav-item active" data-view="chat" id="navChat">
           <span class="nav-ico" data-ico="ai" aria-hidden="true"></span>
-          <span class="nav-item-label">Assistant</span>
+          <span class="nav-item-label">AI Analyst</span>
         </button>
         <button id="newChatBtn" type="button" class="nav-subaction">+ New chat</button>
       </nav>
 
-      <nav class="side-nav nav-group" aria-label="Security Operations" data-nav-group>
-        <button type="button" class="nav-group-toggle" aria-expanded="true"><span class="nav-ico" data-ico="sec" aria-hidden="true"></span> Security Operations</button>
+      <nav class="side-nav nav-group" aria-label="Security" data-nav-group>
+        <button type="button" class="nav-group-toggle" aria-expanded="true"><span class="nav-ico" data-ico="sec" aria-hidden="true"></span> Security</button>
         <div class="nav-group-body">
           <button type="button" class="nav-link" id="assetBtn" data-workspace="assets"><span class="nav-ico sm" data-ico="asset" aria-hidden="true"></span> Assets</button>
-          <button type="button" class="nav-link" id="vulnBtn" data-workspace="vulns"><span class="nav-ico sm" data-ico="vuln" aria-hidden="true"></span> Vulnerabilities</button>
-          <button type="button" class="nav-link" data-workspace="intel"><span class="nav-ico sm" data-ico="intel" aria-hidden="true"></span> Threat intel</button>
-          <button type="button" class="nav-link" data-view="chat" data-mode="xdr" data-prompt="Act as XDR Analyst: correlate endpoint, identity, email, and network signals for our open critical findings into an attack chain with verdict and response steps"><span class="nav-ico sm" data-ico="soc" aria-hidden="true"></span> XDR analysis</button>
+          <button type="button" class="nav-link" data-workspace="reports"><span class="nav-ico sm" data-ico="rep" aria-hidden="true"></span> Scans</button>
+          <button type="button" class="nav-link" id="vulnBtn" data-workspace="vulns"><span class="nav-ico sm" data-ico="vuln" aria-hidden="true"></span> Findings</button>
           <button type="button" class="nav-link" data-workspace="soc"><span class="nav-ico sm" data-ico="soc" aria-hidden="true"></span> Incidents</button>
+          <button type="button" class="nav-link" data-workspace="intel"><span class="nav-ico sm" data-ico="intel" aria-hidden="true"></span> Threat intelligence</button>
+          <button type="button" class="nav-link" id="softwareBtn" data-workspace="software"><span class="nav-ico sm" data-ico="fw" aria-hidden="true"></span> Software &amp; patches</button>
+        </div>
+      </nav>
+
+      <nav class="side-nav nav-group" aria-label="AI" data-nav-group>
+        <button type="button" class="nav-group-toggle" aria-expanded="true"><span class="nav-ico" data-ico="ai" aria-hidden="true"></span> AI</button>
+        <div class="nav-group-body">
+          <button type="button" class="nav-link" data-view="chat"><span class="nav-ico sm" data-ico="ai" aria-hidden="true"></span> AI Analyst</button>
+          <button type="button" class="nav-link" data-view="chat" data-mode="threat_hunt" data-prompt="Investigate our top critical findings: what happened, why it matters, and prioritized remediation steps"><span class="nav-ico sm" data-ico="soc" aria-hidden="true"></span> Investigations</button>
           <button type="button" class="nav-link" id="playbookBtn" data-workspace="playbooks"><span class="nav-ico sm" data-ico="pb" aria-hidden="true"></span> Playbooks</button>
           <button type="button" class="nav-link" id="campaignBtn" data-workspace="campaigns"><span class="nav-ico sm" data-ico="camp" aria-hidden="true"></span> Campaigns</button>
         </div>
       </nav>
 
-      <nav class="side-nav nav-group" aria-label="Compliance &amp; Risk" data-nav-group>
-        <button type="button" class="nav-group-toggle" aria-expanded="true"><span class="nav-ico" data-ico="comp" aria-hidden="true"></span> Compliance &amp; Risk</button>
+      <nav class="side-nav nav-group" aria-label="Compliance" data-nav-group>
+        <button type="button" class="nav-group-toggle" aria-expanded="true"><span class="nav-ico" data-ico="comp" aria-hidden="true"></span> Compliance</button>
         <div class="nav-group-body">
           <button type="button" class="nav-link" id="frameworksBtn" data-workspace="frameworks"><span class="nav-ico sm" data-ico="fw" aria-hidden="true"></span> Frameworks</button>
-          <button type="button" class="nav-link" id="gapBtn"><span class="nav-ico sm" data-ico="gap" aria-hidden="true"></span> Gap analysis</button>
           <button type="button" class="nav-link" id="remBtn" data-workspace="remediations"><span class="nav-ico sm" data-ico="ctrl" aria-hidden="true"></span> Controls</button>
           <button type="button" class="nav-link" id="navEvidence" data-workspace="evidence"><span class="nav-ico sm" data-ico="ev" aria-hidden="true"></span> Evidence</button>
-          <button type="button" class="nav-link" id="navPolicies" data-view="chat" data-mode="ciso" data-prompt="Draft an information security policy outline mapped to ISO 27001 with evidence checklist"><span class="nav-ico sm" data-ico="pol" aria-hidden="true"></span> Policies</button>
+          <button type="button" class="nav-link" id="reportsBtn" data-workspace="reports"><span class="nav-ico sm" data-ico="rep" aria-hidden="true"></span> Reports</button>
           <button type="button" class="nav-link" id="riskBtn" data-workspace="risks"><span class="nav-ico sm" data-ico="reg" aria-hidden="true"></span> Risk register</button>
-          <button type="button" class="nav-link" id="riskMatrixBtn" data-view="command" data-scroll="ccHeatMap"><span class="nav-ico sm" data-ico="mx" aria-hidden="true"></span> Risk matrix</button>
-          <button type="button" class="nav-link" data-workspace="graph"><span class="nav-ico sm" data-ico="graph" aria-hidden="true"></span> Knowledge graph</button>
-        </div>
-      </nav>
-
-      <nav class="side-nav nav-group" aria-label="Automation" data-nav-group>
-        <button type="button" class="nav-group-toggle" aria-expanded="true"><span class="nav-ico" data-ico="auto" aria-hidden="true"></span> Automation</button>
-        <div class="nav-group-body">
-          <button type="button" class="nav-link" id="navAutomation" data-workspace="automation"><span class="nav-ico sm" data-ico="auto" aria-hidden="true"></span> Workflows</button>
-          <button type="button" class="nav-link" id="reportsBtn" data-workspace="reports" title="Reports hub"><span class="nav-ico sm" data-ico="rep" aria-hidden="true"></span> Reports</button>
-          <button type="button" class="nav-link" id="exportMdBtn" title="Export current chat as Markdown">Export chat</button>
-          <button type="button" class="nav-link" id="dashboardBtn" data-view="command">Operations board</button>
-        </div>
-      </nav>
-
-      <nav class="side-nav nav-group collapsed" aria-label="Cloud &amp; Development" data-nav-group>
-        <button type="button" class="nav-group-toggle" aria-expanded="false"><span class="nav-ico" data-ico="dev" aria-hidden="true"></span> Cloud &amp; Development</button>
-        <div class="nav-group-body">
-          <button type="button" class="nav-link" data-view="chat" data-mode="appsec" data-prompt="Review attached or pasted code for OWASP Top 10 risks and cite concrete remediations">Code review</button>
-          <button type="button" class="nav-link" data-view="chat" data-mode="appsec" data-prompt="How do I scan our repo for secrets safely in CI?">Secrets</button>
-          <button type="button" class="nav-link" data-view="chat" data-mode="appsec" data-prompt="Dependency risk triage checklist for a Node/Python app">Dependencies</button>
-          <button type="button" class="nav-link" data-view="chat" data-mode="cloud" data-prompt="Map our cloud posture gaps and prioritize IAM, logging, and network controls for an authorized lab">Cloud posture</button>
+          <button type="button" class="nav-link" id="gapBtn"><span class="nav-ico sm" data-ico="gap" aria-hidden="true"></span> Gap analysis</button>
         </div>
       </nav>
 
       <nav class="side-nav nav-group collapsed" aria-label="Administration" data-nav-group>
         <button type="button" class="nav-group-toggle" aria-expanded="false"><span class="nav-ico" data-ico="adm" aria-hidden="true"></span> Administration</button>
         <div class="nav-group-body">
-          <button type="button" class="nav-link" id="orgsBtn" data-workspace="orgs">Organizations</button>
           <button type="button" class="nav-link" data-workspace="integrations"><span class="nav-ico sm" data-ico="plug" aria-hidden="true"></span> Integrations</button>
+          <button type="button" class="nav-link" id="orgsBtn" data-workspace="orgs">Team &amp; orgs</button>
+          <button type="button" class="nav-link" id="authBtnNav" data-open-auth>Users / RBAC</button>
           <button type="button" class="nav-link" data-workspace="billing">Billing</button>
           <button type="button" class="nav-link" id="settingsBtnNav" data-open-settings><span class="nav-ico sm" data-ico="set" aria-hidden="true"></span> Settings</button>
-          <button type="button" class="nav-link" id="authBtnNav" data-open-auth>Users / Account</button>
           <button type="button" class="nav-link" id="uploadBtnNav" data-open-upload>Upload evidence</button>
+          <button type="button" class="nav-link" data-workspace="graph"><span class="nav-ico sm" data-ico="graph" aria-hidden="true"></span> Knowledge graph</button>
+          <button type="button" class="nav-link" data-workspace="automation"><span class="nav-ico sm" data-ico="auto" aria-hidden="true"></span> Automation</button>
+          <button type="button" class="nav-link hidden" id="exportMdBtn" title="Export current chat as Markdown">Export chat</button>
+          <button type="button" class="nav-link hidden" id="dashboardBtn" data-view="command">Dashboard</button>
+          <button type="button" class="nav-link hidden" id="riskMatrixBtn" data-view="command" data-scroll="ccHeatMap">Risk matrix</button>
         </div>
       </nav>
 
@@ -166,7 +161,7 @@
           <span class="icon-menu" aria-hidden="true"></span>
         </button>
         <div class="topbar-brand visually-hidden">
-          <span class="topbar-name" id="topbarChatTitle">Mission Control</span>
+          <span class="topbar-name" id="topbarChatTitle">Security dashboard</span>
           <span id="topbarMode" class="topbar-mode">Security OS</span>
         </div>
         <div class="topbar-scope" aria-label="Organization scope">
@@ -176,47 +171,55 @@
           </button>
           <button type="button" class="scope-btn scope-btn-project" id="topProjectsBtn" title="Project / engagement">
             <span class="scope-kicker">Project</span>
-            <strong id="topProjectName">Workspace</strong>
-            <span class="scope-env" id="topEnvName" title="Environment">Live</span>
+            <span class="scope-project-line">
+              <strong id="topProjectName">Local</strong>
+              <span class="scope-env" id="topEnvName" title="Environment">Live</span>
+            </span>
           </button>
         </div>
         <div class="topbar-search-wrap">
           <label class="visually-hidden" for="globalSearch">Search workspace</label>
-          <input id="globalSearch" type="search" class="topbar-search" placeholder="Search…" autocomplete="off" enterkeyhint="search" />
+          <input id="globalSearch" type="search" class="topbar-search" placeholder="Search assets, CVEs, findings, investigations…" autocomplete="off" enterkeyhint="search" title="⌘K — global search" />
           <div id="searchResults" class="search-results hidden" role="listbox" aria-label="Search results"></div>
         </div>
-        <div class="live-ticker" id="liveTicker" data-state="live-off" title="Realtime control feed">
-          <span class="live-dot" aria-hidden="true"></span>
-          <span class="ticker-state" id="tickerState">HOLD</span>
-          <span class="ticker-chip" id="tickerJobs">jobs 0</span>
-          <span class="ticker-chip" id="tickerKpi">open —</span>
-          <span class="ticker-chip" id="topLastSync">pulse —</span>
-        </div>
-        <nav class="topbar-enterprise-nav" aria-label="Enterprise">
-          <span class="notif-wrap">
-            <button type="button" class="topbar-icon-btn" id="notifBtn" title="Notifications" aria-label="Notifications" aria-haspopup="true" aria-expanded="false">
-              <span class="tb-ico" aria-hidden="true"></span>
-              <span class="tb-badge" id="notifBadge" hidden>0</span>
-            </button>
-            <div id="notifPanel" class="notif-panel hidden" role="menu" aria-label="Notifications">
-              <div class="notif-panel-head">
-                <strong>Notifications</strong>
-                <div class="notif-panel-actions">
-                  <button type="button" id="notifMarkAllRead" class="notif-markall">Mark all read</button>
-                  <button type="button" id="notifOpenSoc" class="notif-markall" data-workspace="soc">Open SOC</button>
+        <div class="topbar-util" aria-label="Status and account">
+          <div class="live-ticker" id="liveTicker" data-state="live-off" title="Realtime control feed">
+            <span class="live-dot" aria-hidden="true"></span>
+            <span class="ticker-state" id="tickerState">HOLD</span>
+            <span class="ticker-chip" id="tickerFindings" title="Open findings">— vulns</span>
+            <span class="ticker-chip" id="tickerJobs" title="Background jobs">0 jobs</span>
+          </div>
+          <div id="lanShareBar" class="lan-share-bar" hidden title="Share URL for phones on your LAN">
+            <span class="lan-share-label" aria-hidden="true">LAN</span>
+            <code id="lanShareUrl"></code>
+            <button type="button" id="lanShareCopy" class="lan-share-copy" title="Copy share URL" aria-label="Copy LAN URL">Copy</button>
+          </div>
+          <nav class="topbar-enterprise-nav" aria-label="Enterprise">
+            <span class="notif-wrap">
+              <button type="button" class="topbar-icon-btn" id="notifBtn" title="Notifications" aria-label="Notifications" aria-haspopup="true" aria-expanded="false">
+                <span class="tb-ico" aria-hidden="true"></span>
+                <span class="tb-badge" id="notifBadge" hidden>0</span>
+              </button>
+              <div id="notifPanel" class="notif-panel hidden" role="menu" aria-label="Notifications">
+                <div class="notif-panel-head">
+                  <strong>Notifications</strong>
+                  <div class="notif-panel-actions">
+                    <button type="button" id="notifMarkAllRead" class="notif-markall">Mark all read</button>
+                    <button type="button" id="notifOpenSoc" class="notif-markall" data-workspace="soc">Open SOC</button>
+                  </div>
                 </div>
+                <div id="notifList" class="notif-list"><p class="hint">Loading…</p></div>
               </div>
-              <div id="notifList" class="notif-list"><p class="hint">Loading…</p></div>
-            </div>
-          </span>
-          <button type="button" class="topbar-pill" data-view="chat" data-mode="ciso" data-prompt="List my open AI tasks from Mission Control work queue and propose owners">AI Tasks</button>
-          <button type="button" class="topbar-pill" id="topHelpBtn" title="User manual" onclick="window.open('/manual/','_blank','noopener')">Help</button>
-          <button type="button" class="topbar-pill" id="topSettingsBtn" title="Settings">Settings</button>
-          <button type="button" class="topbar-pill" id="topProfileBtn" title="Profile">Account</button>
-          <button id="themeToggleTop" type="button" class="icon-btn theme-btn" title="Toggle theme" aria-label="Toggle theme">
-            <span class="theme-toggle-icon" aria-hidden="true"></span>
-          </button>
-        </nav>
+            </span>
+            <button type="button" class="topbar-pill topbar-pill-quiet" data-view="chat" data-mode="ciso" data-prompt="List my open AI tasks from Mission Control work queue and propose owners">Tasks</button>
+            <button type="button" class="topbar-pill topbar-pill-quiet" id="topHelpBtn" title="User manual" onclick="window.open('/manual/','_blank','noopener')">Help</button>
+            <button type="button" class="topbar-pill" id="topSettingsBtn" title="Settings">Settings</button>
+            <button type="button" class="topbar-pill" id="topProfileBtn" title="Account">Account</button>
+            <button id="themeToggleTop" type="button" class="icon-btn theme-btn" title="Toggle theme" aria-label="Toggle theme">
+              <span class="theme-toggle-icon" aria-hidden="true"></span>
+            </button>
+          </nav>
+        </div>
       </header>
 
       <section id="setupPanel" class="setup-panel hidden" data-tone="info">
@@ -253,7 +256,8 @@
                 <p class="hint">Create a scan: Nmap discovers ports/services → evidence → findings. Import is optional for third-party reports.</p>
               </div>
               <div class="mc-first-run-actions">
-                <button type="button" class="btn-primary-cc" id="mcLiveScan" data-action="new-scan">New scan</button>
+                <button type="button" class="btn-primary-cc" id="mcComboAssess" data-action="combo-assess">Combo assessment</button>
+                <button type="button" class="btn-secondary" id="mcLiveScan" data-action="new-scan">New scan</button>
                 <button type="button" class="btn-secondary" data-workspace="assets">Add assets</button>
                 <button type="button" class="btn-secondary" data-workspace="vulns">Import (optional)</button>
               </div>
@@ -262,198 +266,198 @@
               <li data-step="org"><button type="button" class="mc-check-btn" data-workspace="orgs"><span>1</span> Organization</button></li>
               <li data-step="assets"><button type="button" class="mc-check-btn" data-workspace="assets"><span>2</span> Assets</button></li>
               <li data-step="scan"><button type="button" class="mc-check-btn" data-action="new-scan"><span>3</span> Run scan</button></li>
-              <li data-step="gap"><button type="button" class="mc-check-btn" data-module="gap"><span>4</span> Gap analysis</button></li>
-              <li data-step="report"><button type="button" class="mc-check-btn" data-workspace="reports"><span>5</span> Reports</button></li>
-              <li data-step="integrations"><button type="button" class="mc-check-btn" data-workspace="integrations"><span>6</span> Connect tools</button></li>
+              <li data-step="hardening"><button type="button" class="mc-check-btn" data-workspace="frameworks"><span>4</span> Hardening audit</button></li>
+              <li data-step="gap"><button type="button" class="mc-check-btn" data-module="gap"><span>5</span> Gap analysis</button></li>
+              <li data-step="report"><button type="button" class="mc-check-btn" data-workspace="reports"><span>6</span> Reports</button></li>
+              <li data-step="integrations"><button type="button" class="mc-check-btn" data-workspace="integrations"><span>7</span> Connect tools</button></li>
             </ol>
           </section>
 
-          <div id="mcLiveDashboard" class="mc-live-dashboard" hidden>
-          <div class="mc-workflow-progress" id="mcWorkflowProgress" aria-label="Finding lifecycle">
-            <div class="mc-wf-step" data-wf="imported"><span>Findings</span><strong id="wfImported">0</strong></div>
-            <div class="mc-wf-step" data-wf="triaged"><span>Triaged</span><strong id="wfTriaged">0</strong></div>
-            <div class="mc-wf-step" data-wf="actions"><span>Actions</span><strong id="wfActions">0</strong></div>
-            <div class="mc-wf-step" data-wf="closed"><span>Closed</span><strong id="wfClosed">0</strong></div>
-          </div>
-
-          <div class="mc-action-bar" aria-label="Primary actions">
-            <div class="mc-workflow-row" aria-label="Quick actions">
-              <button type="button" class="cc-action cc-action-primary" id="mcLiveScanQuick" data-action="new-scan">New scan</button>
-              <button type="button" class="cc-action" data-module="gap">Gap analysis</button>
-              <button type="button" class="cc-action" data-workspace="evidence">Evidence</button>
-              <button type="button" class="cc-action" data-view="chat" data-mode="ciso" data-prompt="Draft a board update from Mission Control: score, top risks, compliance %, and this week’s remediations">Board update</button>
-              <button type="button" class="cc-action cc-action-quiet" data-workspace="vulns" id="mcImportScanners">Import</button>
+          <div id="mcLiveDashboard" class="mc-live-dashboard sq-dashboard" hidden>
+          <header class="sq-hero">
+            <div class="sq-hero-main">
+              <p class="mc-kicker">Security Overview</p>
+              <h2 class="sq-hero-title">Here's what needs your attention today.</h2>
+              <p class="sq-hero-sub" id="wzLastUpdate">Live posture — updates via realtime stream</p>
             </div>
-            <div class="mc-agent-row" aria-label="Ask an agent">
-              <span class="mc-agent-label">Ask</span>
-              <button type="button" class="agent-chip" data-view="chat" data-mode="blueteam" data-prompt="Act as SOC Analyst: summarize open incidents and critical vulns, recommend next 3 actions">SOC</button>
-              <button type="button" class="agent-chip" data-view="chat" data-mode="xdr" data-prompt="Act as XDR Analyst: correlate endpoint, identity, email, and network signals for our open critical findings into an attack chain with verdict and response steps">XDR</button>
-              <button type="button" class="agent-chip" data-view="chat" data-mode="ciso" data-prompt="Act as Compliance Officer: review framework gaps and evidence needed this week">Compliance</button>
-              <button type="button" class="agent-chip" data-view="chat" data-mode="threat_hunt" data-prompt="Act as Threat Hunter: prioritize hunts from our critical findings and intel watchlist">Hunt</button>
-              <button type="button" class="agent-chip" data-view="chat" data-mode="ciso" data-prompt="Act as Executive Advisor: draft a board-ready security posture summary">Executive</button>
+            <div class="sq-hero-actions">
+              <button type="button" class="cc-action cc-action-primary" id="mcLiveScanQuick" data-action="new-scan">+ New Scan</button>
+              <button type="button" class="cc-action" id="sqAiInvestigate" data-view="chat" data-mode="ciso" data-prompt="From our current security posture, what are the top 3 risks that need attention today? For each: what happened, why it matters, and what I should do next.">AI Investigation</button>
+              <button type="button" class="cc-action hidden" id="mcComboQuick" data-action="combo-assess">Combo assessment</button>
             </div>
-          </div>
+          </header>
 
-          <div class="cc-kpi-grid mc-kpi-grid mc-kpi-hero" id="ccKpis">
-            <button type="button" class="cc-kpi mc-kpi mc-kpi-alert" data-workspace="vulns">
-              <span class="mc-kpi-label">Critical / high</span>
-              <strong id="ccCrit">0</strong>
-              <em class="mc-trend" id="ccCritTrend"></em>
-            </button>
-            <button type="button" class="cc-kpi mc-kpi mc-kpi-primary" data-workspace="frameworks">
-              <span class="mc-kpi-label">Security score</span>
-              <div class="mc-gauge" id="ccScoreGauge" style="--p:0">
-                <strong id="ccScore">0</strong>
-              </div>
-              <span class="mc-kpi-level" id="ccScoreLevel">Nil</span>
-              <em class="mc-trend" id="ccScoreTrend"></em>
-            </button>
-            <button type="button" class="cc-kpi mc-kpi" data-workspace="frameworks">
-              <span class="mc-kpi-label">Compliance</span>
-              <strong id="ccCompliance">0%</strong>
-              <div class="cc-bar"><i id="ccComplianceBar" style="width:0%"></i></div>
-              <em class="mc-trend" id="ccCompTrend"></em>
-            </button>
-            <button type="button" class="cc-kpi mc-kpi" data-workspace="remediations">
-              <span class="mc-kpi-label">Open actions</span>
-              <strong id="ccRems">0</strong>
-              <em class="mc-trend" id="ccRemTrend"></em>
-            </button>
-            <button type="button" class="cc-kpi mc-kpi" data-workspace="risks">
-              <span class="mc-kpi-label">Open risks</span>
-              <strong id="ccRisks">0</strong>
-              <em class="mc-trend" id="ccRiskTrend"></em>
-            </button>
-            <button type="button" class="cc-kpi mc-kpi" data-workspace="soc">
-              <span class="mc-kpi-label">Incidents</span>
-              <strong id="ccIncidents">0</strong>
-              <em class="mc-trend" id="ccIncidentTrend"></em>
-            </button>
-            <button type="button" class="cc-kpi mc-kpi" data-workspace="assets">
-              <span class="mc-kpi-label">Assets</span>
+          <div class="sq-stat-row" id="ccKpis">
+            <button type="button" class="sq-stat" data-workspace="assets">
+              <span class="sq-stat-label">Assets</span>
               <strong id="ccAssets">0</strong>
               <em class="mc-trend" id="ccAssetTrend"></em>
             </button>
-            <button type="button" class="cc-kpi mc-kpi" data-workspace="vulns">
-              <span class="mc-kpi-label">All findings</span>
-              <strong id="ccFindingsTotal">0</strong>
+            <button type="button" class="sq-stat sq-stat-crit" data-workspace="vulns">
+              <span class="sq-stat-label">Critical</span>
+              <strong id="ccCrit">0</strong>
+              <em class="mc-trend" id="ccCritTrend"></em>
+            </button>
+            <button type="button" class="sq-stat sq-stat-high" data-workspace="vulns">
+              <span class="sq-stat-label">High</span>
+              <strong id="sqHighCount">0</strong>
               <em class="mc-trend" id="ccFindingsTrend"></em>
             </button>
+            <button type="button" class="sq-stat sq-stat-inc" data-workspace="soc">
+              <span class="sq-stat-label">Incidents</span>
+              <strong id="ccIncidents">0</strong>
+              <em class="mc-trend" id="ccIncidentTrend"></em>
+            </button>
+            <button type="button" class="sq-stat sq-stat-sw" data-workspace="software" title="Software &amp; patch inventory — live SSE">
+              <span class="sq-stat-label">Patch gaps</span>
+              <strong id="ccSoftwareIssues">0</strong>
+              <em class="mc-trend" id="ccSoftwareTrend"></em>
+              <span class="sq-stat-sub" id="ccSoftwareHealthPct">100%</span>
+            </button>
+            <span class="sq-stat-legacy" hidden aria-hidden="true">
+              <strong id="ccFindingsTotal">0</strong>
+              <strong id="wzPatchHealthPct">—</strong>
+              <strong id="ccCompliance">0%</strong>
+              <em id="ccCompTrend"></em>
+              <div class="cc-bar"><i id="ccComplianceBar" style="width:0%"></i></div>
+              <div class="cc-bar"><i id="ccSoftwareHealthBar" style="width:100%"></i></div>
+              <div class="mc-gauge" id="ccScoreGauge" style="--p:0"></div>
+              <strong id="ccRems">0</strong>
+              <strong id="ccRisks">0</strong>
+              <em id="ccRemTrend"></em>
+              <em id="ccRiskTrend"></em>
+            </span>
           </div>
 
-          <section class="cc-panel mc-decision" id="mcDecisionPanel">
-            <header>
-              <h2>What to do next</h2>
-              <button type="button" class="btn-secondary" id="mcAskDecision" data-view="chat" data-mode="ciso" data-prompt="From Mission Control posture, what happened, why, what should I do next, and create a remediation plan">Ask AI</button>
+          <div class="sq-hero-grid">
+            <section class="sq-card sq-posture">
+              <header class="sq-card-head"><h3>Security Posture</h3>
+                <button type="button" class="btn-ghost sq-link-btn" data-module="gap">View risk breakdown →</button>
+              </header>
+              <div class="sq-posture-score">
+                <strong class="sq-score-num" id="ccScore">0</strong>
+                <span class="sq-score-band" id="ccScoreLevel">—</span>
+                <em class="sq-score-trend mc-trend" id="ccScoreTrend"></em>
+              </div>
+              <div class="sq-posture-bars">
+                <div class="sq-pbar"><span>Assets</span><i style="width:0%" id="sqBarAssets"></i><em id="sqBarAssetsVal">0</em></div>
+                <div class="sq-pbar"><span>Vulns</span><i style="width:0%" id="sqBarVulns"></i><em id="sqBarVulnsVal">0</em></div>
+                <div class="sq-pbar"><span>Exposure</span><i style="width:0%" id="sqBarExposure"></i><em id="sqBarExposureVal">0</em></div>
+                <div class="sq-pbar"><span>Compliance</span><i style="width:0%" id="sqBarCompliance"></i><em id="sqBarComplianceVal">0</em></div>
+              </div>
+            </section>
+            <section class="sq-card sq-ai-analyst" id="sqAiAnalyst">
+              <header class="sq-card-head"><h3>✦ AI Security Analyst</h3>
+                <button type="button" class="btn-secondary" id="sqInvestigateAll" data-view="chat" data-mode="ciso" data-prompt="Investigate all top risks from Mission Control: attack path, business impact, and remediation order">Investigate all</button>
+              </header>
+              <div id="sqAiAnalystBody" class="sq-ai-body"><p class="hint">Analyzing posture…</p></div>
+            </section>
+          </div>
+
+          <section class="sq-card sq-top-risks">
+            <header class="sq-card-head"><h3>Top Risks</h3>
+              <button type="button" class="btn-secondary" data-workspace="vulns">All findings</button>
             </header>
-            <div class="mc-decision-grid">
-              <div>
-                <p class="mc-kicker">Attention</p>
-                <p id="mcDecisionWhat" class="mc-decision-body">Import a scan or run gap analysis to unlock guidance.</p>
-              </div>
-              <div>
-                <p class="mc-kicker">Why it matters</p>
-                <p id="mcDecisionWhy" class="mc-decision-body">—</p>
-              </div>
-              <div>
-                <p class="mc-kicker">Do next</p>
-                <p id="mcDecisionNext" class="mc-decision-body">—</p>
-              </div>
-              <div class="mc-decision-actions" id="mcDecisionActions"></div>
-            </div>
+            <div id="sqTopRisksTable" class="sq-risks-table-wrap"><p class="hint">Loading risks…</p></div>
+            <ul id="ccTopRisks" class="cc-list hidden" aria-hidden="true"></ul>
+            <ul id="ccTopVulns" class="cc-list hidden" aria-hidden="true"></ul>
           </section>
 
-          <div class="mc-charts-row" aria-label="Trends">
-            <section class="cc-panel mc-chart-card">
-              <header><h2>Severity mix</h2></header>
-              <div id="ccSevBars" class="sev-bars" aria-label="Vulnerabilities by severity"></div>
+          <div class="sq-mid-grid">
+            <section class="sq-card sq-scans" id="sqRecentScans">
+              <header class="sq-card-head"><h3>Recent Scans</h3>
+                <button type="button" class="btn-secondary" data-action="new-scan">+ New Scan</button>
+              </header>
+              <div id="sqScansBody" class="sq-scans-body"><p class="hint">No scans yet — start with + New Scan.</p></div>
             </section>
-            <section class="cc-panel mc-chart-card">
-              <header><h2>Asset distribution</h2></header>
-              <div id="ccAssetChart" class="asset-breakdown"></div>
+            <section class="sq-card sq-exposure">
+              <header class="sq-card-head"><h3>External Exposure</h3>
+                <button type="button" class="btn-secondary" data-workspace="graph">Asset graph</button>
+              </header>
+              <div id="sqExposureMap" class="sq-exposure-map"><p class="hint">Run a scan to map internet-facing assets.</p></div>
             </section>
-            <section class="cc-panel mc-chart-card">
-              <header><h2>Integrations</h2><button type="button" class="btn-secondary" data-workspace="integrations">Manage</button></header>
-              <ul id="ccIntegStatus" class="integ-status-list"><li class="hint">Loading…</li></ul>
+            <section class="sq-card sq-compliance-mini">
+              <header class="sq-card-head"><h3>Compliance</h3>
+                <button type="button" class="btn-secondary" data-workspace="frameworks">View</button>
+              </header>
+              <ul id="ccFrameworks" class="sq-fw-list"><li class="hint">—</li></ul>
+              <p class="hint sq-fw-evidence" id="sqComplianceEvidence">—</p>
+            </section>
+            <section class="sq-card sq-integ-mini">
+              <header class="sq-card-head"><h3>Connected Sources</h3>
+                <button type="button" class="btn-secondary" data-workspace="integrations">Manage</button>
+              </header>
+              <ul id="ccIntegStatus" class="sq-integ-list"><li class="hint">Loading…</li></ul>
               <p class="hint" id="ccIntegSync">Last sync —</p>
             </section>
           </div>
 
-          <div class="mc-grid-main">
-            <section class="cc-panel mc-work-queue">
-              <header>
-                <h2>Work queue</h2>
-                <span class="hint">Prioritized · actionable</span>
+          <div class="sq-bottom-grid">
+            <section class="sq-card sq-risk-trend">
+              <header class="sq-card-head"><h3>Risk Trend</h3>
+                <div class="sq-trend-tabs" role="tablist"><span class="sq-trend-tab is-active">7D</span></div>
               </header>
-              <div id="ccWorkQueue" class="work-queue"><p class="hint">No items yet</p></div>
+              <div id="sqRiskTrendChart" class="sq-trend-chart" aria-hidden="true"></div>
             </section>
-            <section class="cc-panel">
-              <header><h2>Today</h2></header>
-              <ul id="ccTodayList" class="cc-list mc-today"><li class="hint">—</li></ul>
-              <header style="margin-top:1rem"><h2>Recommended</h2></header>
-              <div id="ccRecommendedToday" class="mc-recommended"><p class="hint">—</p></div>
+            <section class="sq-card sq-attention" id="sqNeedsAttention">
+              <header class="sq-card-head"><h3>Needs Attention</h3>
+                <button type="button" class="btn-secondary" data-workspace="remediations">Review all</button>
+              </header>
+              <ul id="ccApprovals" class="sq-attention-list"><li class="hint">Nothing flagged</li></ul>
             </section>
           </div>
 
-          <div class="cc-panels mc-secondary">
-            <section class="cc-panel">
-              <header>
-                <h2>Needs attention</h2>
-                <button type="button" class="btn-secondary" data-workspace="remediations">Open</button>
-              </header>
-              <ul id="ccApprovals" class="cc-list"><li class="hint">None</li></ul>
-            </section>
-            <section class="cc-panel">
-              <header>
-                <h2>Correlation hotspots</h2>
-                <button type="button" class="btn-secondary" data-workspace="graph">Open graph</button>
-              </header>
-              <p class="hint" id="ccCorrDoctrine">Assets where VAPT, XDR, incidents, and controls intersect</p>
-              <ul id="ccCorrelation" class="cc-list"><li class="hint">—</li></ul>
-            </section>
-            <section class="cc-panel">
-              <header>
-                <h2>Threat intelligence</h2>
-                <button type="button" class="btn-secondary" data-workspace="intel">Open</button>
-              </header>
-              <ul id="ccIntel" class="cc-list"><li class="hint">None</li></ul>
-            </section>
-            <section class="cc-panel">
-              <header><h2>Framework status</h2></header>
-              <ul id="ccFrameworks" class="cc-list"><li class="hint">—</li></ul>
-            </section>
-            <section class="cc-panel">
-              <header><h2>Assets</h2></header>
-              <div id="ccAssetBreakdown" class="asset-breakdown"><p class="hint">—</p></div>
-            </section>
-            <section class="cc-panel">
-              <header><h2>Recent activity</h2></header>
-              <ul id="ccTimeline" class="cc-list timeline-list"><li class="hint">—</li></ul>
-            </section>
-            <section class="cc-panel">
-              <header><h2>MITRE signals</h2></header>
-              <div id="ccMitre" class="mitre-bars"><p class="hint">—</p></div>
-            </section>
-          </div>
-
-          <section class="cc-panel cc-heatmap-panel" id="ccHeatMap">
-            <header>
-              <h2>Risk matrix</h2>
-              <button type="button" class="btn-secondary" data-workspace="risks">Open register</button>
-            </header>
-            <div id="ccRiskHeat" class="risk-heat" aria-label="Risk heat map"></div>
-          </section>
-
-          <div class="cc-panels mc-tops" style="margin-top:0.5rem">
-            <section class="cc-panel">
-              <header><h2>Top risks</h2></header>
-              <ul id="ccTopRisks" class="cc-list"><li class="hint">—</li></ul>
-            </section>
-            <section class="cc-panel">
-              <header><h2>Critical findings</h2></header>
-              <ul id="ccTopVulns" class="cc-list"><li class="hint">—</li></ul>
-            </section>
-          </div>
+          <details class="sq-ops-panel">
+            <summary>Operations · work queue · patch posture · SIEM agents</summary>
+            <div class="mc-workflow-progress sq-wf-bar" id="mcWorkflowProgress" aria-label="Finding lifecycle">
+              <div class="mc-wf-step" data-wf="imported"><span>Findings</span><strong id="wfImported">0</strong></div>
+              <div class="mc-wf-step" data-wf="triaged"><span>Triaged</span><strong id="wfTriaged">0</strong></div>
+              <div class="mc-wf-step" data-wf="actions"><span>Actions</span><strong id="wfActions">0</strong></div>
+              <div class="mc-wf-step" data-wf="closed"><span>Closed</span><strong id="wfClosed">0</strong></div>
+            </div>
+            <div id="mcAssetStrip" class="mc-asset-strip hidden" aria-live="polite"></div>
+            <div class="sq-ops-grid">
+              <section class="sq-card mc-work-queue">
+                <header><h3>Work queue</h3></header>
+                <div id="ccWorkQueue" class="work-queue"><p class="hint">No items yet</p></div>
+              </section>
+              <section class="sq-card wz-decision-panel" id="mcDecisionPanel">
+                <header><h3>Recommended action</h3><button type="button" class="btn-secondary" id="mcAskDecision" data-view="chat" data-mode="ciso" data-prompt="From Mission Control posture, what happened, why, what should I do next, and create a remediation plan">Ask AI</button></header>
+                <p id="mcDecisionWhat" class="wz-decision-lead">—</p>
+                <p class="hint" id="mcDecisionWhy" hidden>—</p>
+                <p class="hint" id="mcDecisionNext" hidden>—</p>
+                <div class="mc-decision-actions" id="mcDecisionActions"></div>
+              </section>
+              <section class="sq-card sw-panel" id="mcSoftwarePanel">
+                <header class="sw-panel-head">
+                  <h3>Software &amp; tools <span class="sw-mc-live-dot" id="mcSoftwareLiveDot" title="Live updates">●</span></h3>
+                  <div class="page-head-actions">
+                    <button type="button" class="sw-tab is-active" data-sw-tab="hosts" aria-selected="true">Hosts</button>
+                    <button type="button" class="sw-tab" data-sw-tab="tools" aria-selected="false">Local tools</button>
+                    <button type="button" class="btn-secondary" id="mcSoftwareSyncAll">Sync all</button>
+                    <button type="button" class="btn-secondary" id="mcSoftwareRebuild">Rebuild</button>
+                    <button type="button" class="btn-secondary hidden" id="mcToolUpdatesRefresh">Check tools</button>
+                  </div>
+                </header>
+                <p class="hint sw-mc-live-line code-scan-live" id="mcSoftwareLiveLine" hidden aria-live="polite"></p>
+                <div id="mcSoftwarePostureBody" class="sw-pane" data-sw-pane="hosts"><p class="hint">Loading…</p></div>
+                <div id="mcToolUpdatesBody" class="sw-pane hidden" data-sw-pane="tools"><p class="hint">Loading…</p></div>
+              </section>
+            </div>
+            <div class="sq-legacy-panels hidden" aria-hidden="true">
+              <span id="wzSiemChip"></span>
+              <div id="wzAgentRing" style="--pct:0"><span id="wzAgentActivePct">0%</span></div>
+              <strong id="wzAgentsActive">0</strong><strong id="wzAgentsDisconn">0</strong><strong id="wzAgentsPatch">0</strong>
+              <div id="wzAgentsTable"></div>
+              <ul id="ccTimeline"></ul><ul id="wzTopAlerts"></ul>
+              <div id="ccSevBars"></div><div id="ccMitre"></div>
+              <div id="ccAssetChart"></div><div id="mcAssetsTable"></div><div id="ccAssetBreakdown"></div>
+              <section id="mcAssetsPanel"></section><section id="mcHardeningPanel"><div id="mcHardeningBody"></div></section>
+              <p id="ccCorrDoctrine"></p><ul id="ccCorrelation"></ul><ul id="ccIntel"></ul>
+              <ul id="ccTodayList"></ul><div id="ccRecommendedToday"></div>
+              <section id="ccHeatMap"><div id="ccRiskHeat"></div></section>
+            </div>
+          </details>
           <p id="ccMeta" class="empty-meta cc-meta"></p>
           </div>
         </section>
@@ -474,7 +478,7 @@
               <p class="empty-brand">SecuraIQ</p>
               <p class="empty-lead" id="emptyLead">Ask about authorized security work — posture, findings, or remediations.</p>
               <div class="empty-suite" id="emptySuite">
-                <button type="button" class="suite-chip" data-view="command">Control Board</button>
+                <button type="button" class="suite-chip" data-view="command">Security dashboard</button>
                 <button type="button" class="suite-chip" data-action="new-scan">New scan</button>
                 <button type="button" class="suite-chip" data-module="gap">Gap analysis</button>
               </div>
@@ -511,15 +515,51 @@
           </div>
         </section>
 
+        <section id="viewSoftware" class="workspace-view hidden" data-module-page data-view-panel="software">
+          <div class="page-head">
+            <h1>Software &amp; patch inventory</h1>
+            <div class="page-head-actions">
+              <button type="button" class="btn-primary-cc" id="softwareLocalRefreshBtn">Refresh this PC</button>
+              <button type="button" class="btn-primary-cc" id="softwareSyncAllBtn">Sync all &amp; rebuild</button>
+              <button type="button" class="btn-secondary" id="softwareRebuildBtn">Rebuild only</button>
+              <button type="button" class="btn-secondary" id="softwareOpenExport">Export</button>
+              <button type="button" class="btn-secondary" data-workspace="soc">Open SOC / XDR</button>
+              <button type="button" class="btn-primary-cc" data-action="new-scan">New scan</button>
+            </div>
+          </div>
+          <p class="hint">Installed software from Control Panel, Windows Update, scans, and connected sources — live on this dashboard.</p>
+          <div class="sw-realtime-bar">
+            <label class="sw-live-toggle" title="Toggle live SSE updates (Google Play–style activity feed)">
+              <input type="checkbox" id="softwareLiveToggle" checked />
+              <span class="sw-live-toggle-ui" aria-hidden="true"></span>
+              <span>Live updates</span>
+            </label>
+            <p class="hint code-scan-live sw-live-bar" id="softwareScanLive" hidden aria-live="polite"></p>
+          </div>
+          <ul id="softwareActivityFeed" class="sw-activity-feed" aria-live="polite" aria-label="Recent software inventory activity"></ul>
+          <div id="softwarePageBody"></div>
+          <aside id="softwareDetailDrawer" class="sw-detail-drawer hidden" aria-hidden="true" aria-label="Software detail">
+            <div class="sw-detail-backdrop" data-sw-detail-close></div>
+            <div class="sw-detail-panel" role="dialog" aria-modal="true">
+              <header class="sw-detail-head">
+                <h2 id="softwareDetailTitle">Software detail</h2>
+                <button type="button" class="btn-secondary" data-sw-detail-close aria-label="Close">Close</button>
+              </header>
+              <div id="softwareDetailBody" class="sw-detail-body"><p class="hint">Loading…</p></div>
+            </div>
+          </aside>
+        </section>
         <section id="viewAssets" class="workspace-view hidden" data-module-page data-view-panel="assets">
           <div class="page-head">
             <h1>Asset inventory</h1>
             <div class="page-head-actions">
               <button type="button" class="btn-secondary" id="oaSyncBtn">Sync inventory</button>
+              <button type="button" class="btn-secondary" id="assetsLanRefresh">Refresh LAN</button>
               <button type="button" class="btn-secondary" data-action="new-scan">New scan</button>
               <button type="button" class="btn-primary-cc" id="assetsOpenCreate">Add asset</button>
             </div>
           </div>
+          <p class="hint code-scan-live" id="assetsScanLive" hidden aria-live="polite"></p>
           <div id="assetsPageBody"></div>
         </section>
         <section id="viewRisks" class="workspace-view hidden" data-module-page data-view-panel="risks">
@@ -536,9 +576,13 @@
               <button type="button" class="btn-secondary" id="vulnsOpenExport">Export</button>
             </div>
           </div>
+          <p class="hint code-scan-live" id="vaScanLive" hidden aria-live="polite"></p>
+          <div id="vulnSummaryBar" class="vuln-summary-bar" aria-live="polite"></div>
           <div class="vuln-layout">
             <div class="vuln-main">
-              <div class="vuln-sources">
+              <details class="vuln-sources-details" id="vulnSourcesDetails" open>
+                <summary class="vuln-sources-summary">Scan sources <span class="hint">Code · Cloud · Hardening</span></summary>
+                <div class="vuln-sources">
                 <section class="cc-panel vuln-source-card" id="sonarPanel">
                   <header>
                     <h2>SecuraIQ Code</h2>
@@ -566,7 +610,18 @@
                   <input type="file" id="cloudImportInput" accept=".json,application/json" class="hidden" />
                   <div id="cloudPosturePanelBody"><p class="hint">Loading…</p></div>
                 </section>
-              </div>
+                <section class="cc-panel vuln-source-card" id="hkVulnPanel">
+                  <header>
+                    <h2>Windows hardening</h2>
+                    <div class="page-head-actions">
+                      <button type="button" class="btn-primary-cc" id="hkVulnAuditBtn">Run audit</button>
+                      <button type="button" class="btn-secondary" data-workspace="frameworks">Open</button>
+                    </div>
+                  </header>
+                  <div id="hkVulnPanelBody"><p class="hint">Loading…</p></div>
+                </section>
+                </div>
+              </details>
               <div class="vuln-findings">
                 <div id="vulnFilterBar" class="filter-bar" aria-label="Vulnerability filters"></div>
                 <div id="vulnsPageBody"></div>
@@ -619,7 +674,12 @@
           <div id="intelPageBody" class="intel-page"></div>
         </section>
         <section id="viewReports" class="workspace-view hidden" data-module-page data-view-panel="reports">
-          <div class="page-head"><h1>Reports</h1></div>
+          <div class="page-head">
+            <div>
+              <h1>Reports</h1>
+              <p class="page-intro hint" style="margin:0.35rem 0 0">Scan evidence and workspace exports — Markdown, PDF, and Excel.</p>
+            </div>
+          </div>
           <div id="reportsPageBody"></div>
         </section>
         <section id="viewSoc" class="workspace-view hidden" data-module-page data-view-panel="soc">
@@ -732,7 +792,7 @@
           <div id="toolsPalette" class="tools-palette hidden" aria-label="Cyber tools palette">
             <div class="tools-palette-head">
               <strong>Tools hub</strong>
-              <span class="hint" id="toolsPaletteHint">Scan engine · PT pack · PATH tools · SIEM / inventory sync</span>
+              <span class="hint" id="toolsPaletteHint">Scan engine · PT pack · live inventory · SIEM</span>
               <button type="button" class="btn-ghost" id="toolsPaletteClose" aria-label="Close tools">Close</button>
             </div>
             <div class="live-scan-bar" id="liveScanBar">
@@ -745,11 +805,12 @@
                 <span>Auth</span>
               </label>
               <select id="toolsEngineScanner" class="tools-engine-select" title="Scan engine">
-                <option value="securaiq">Engine: SecuraIQ</option>
+                <option value="combo">Engine: Integrated VA</option>
+                <option value="securaiq">Engine: SecuraIQ only</option>
                 <option value="all">Engine: all available</option>
                 <option value="nmap">Engine: Nmap</option>
                 <option value="nuclei">Engine: Nuclei</option>
-                <option value="zap">Engine: ZAP</option>
+                <option value="zap">Engine: SecuraIQ Web Scanner</option>
                 <option value="none">Engine: off (tools only)</option>
               </select>
               <select id="toolsEngineProfile" class="tools-engine-select" title="Scan profile">
@@ -760,9 +821,10 @@
               </select>
             </div>
             <div class="tools-hub-actions" id="toolsHubActions">
-              <button type="button" class="btn-secondary" id="toolsPalettePtPack">PT pack</button>
-              <button type="button" class="btn-secondary" id="toolsPaletteEngineRun">Queue engine scan</button>
+              <button type="button" class="btn-secondary" id="toolsPalettePtPack">Integrated VA</button>
+              <button type="button" class="btn-secondary" id="toolsPaletteEngineRun">Run Integrated VA</button>
               <button type="button" class="btn-secondary" id="toolsPaletteSyncSiem">Sync SIEM</button>
+              <button type="button" class="btn-secondary" id="toolsPaletteSyncXdr">Sync XDR</button>
               <button type="button" class="btn-secondary" id="toolsPaletteSyncInv">Sync inventory</button>
               <button type="button" class="btn-primary-cc" id="toolsPaletteRun">Run all</button>
             </div>
@@ -1052,7 +1114,7 @@
 
         <fieldset id="settingsInventory">
           <legend>Network inventory</legend>
-          <p class="hint">Optional discovery appliance. Credentials are POSTed (never placed in a URL). Synced hosts appear on the Assets page.</p>
+          <p class="hint">Live Open-AudIT-style inventory is built in (Refresh LAN / Tools → Sync inventory). Optional <a href="https://www.open-audit.org/" target="_blank" rel="noopener">Open-AudIT</a> appliance credentials are POSTed (never placed in a URL).</p>
           <label>Base URL
             <input type="text" id="setOaUrl" inputmode="url" autocomplete="off" placeholder="http://192.168.56.10" />
           </label>
@@ -1078,6 +1140,32 @@
           </div>
           <p class="hint" id="oaTestHint"></p>
           <p class="hint">After save, open <strong>Assets</strong> and click Sync inventory.</p>
+        </fieldset>
+
+        <fieldset id="settingsSoftwarePatch">
+          <legend>Software &amp; patch probes</legend>
+          <p class="hint">Auto-sync rebuilds software inventory on an interval. Remote SSH probes use key-based login to check <code>apt</code>/<code>dnf</code> or Windows Update on inventoried servers (authorized labs only).</p>
+          <label class="toggle">
+            <input type="checkbox" id="setSoftwareSyncAuto" />
+            Auto sync &amp; rebuild inventory
+          </label>
+          <label>Software sync interval (seconds)
+            <input type="number" id="setSoftwareSyncInterval" min="300" max="86400" step="60" inputmode="numeric" />
+          </label>
+          <label class="toggle">
+            <input type="checkbox" id="setSshPatchEnabled" />
+            Enable remote SSH patch probes
+          </label>
+          <label>Default SSH user
+            <input type="text" id="setSshPatchUser" autocomplete="off" placeholder="root" />
+          </label>
+          <label>SSH private key path (optional)
+            <input type="text" id="setSshPatchKey" autocomplete="off" placeholder="C:\Users\you\.ssh\id_rsa" />
+          </label>
+          <label>Max hosts per rebuild
+            <input type="number" id="setSshPatchMaxHosts" min="1" max="50" step="1" inputmode="numeric" />
+          </label>
+          <p class="hint">Per-asset override in asset notes JSON: <code>{"ssh_user":"admin","ssh_port":22,"ssh_key":"/path/key"}</code></p>
         </fieldset>
 
         <fieldset id="settingsHardening">
@@ -1738,10 +1826,17 @@
           <label>Type
             <select id="assetType">
               <option value="server">Server</option>
+              <option value="computer">Computer</option>
               <option value="endpoint">Endpoint</option>
-              <option value="app">Application</option>
-              <option value="cloud">Cloud account</option>
+              <option value="mobile">Mobile</option>
               <option value="network">Network</option>
+              <option value="printer">Printer</option>
+              <option value="iot">IoT</option>
+              <option value="database">Database</option>
+              <option value="web">Web app</option>
+              <option value="cloud">Cloud</option>
+              <option value="container">Container</option>
+              <option value="code">Code</option>
               <option value="other">Other</option>
             </select>
           </label>
@@ -1885,7 +1980,7 @@
       <p class="hint">Scanner engine runs in a background worker. AI does not perform the scan — it interprets evidence afterward.</p>
       <form id="newScanForm" class="scan-form">
         <label>Target
-          <input type="text" id="newScanTarget" required placeholder="example.com or 192.168.56.101" autocomplete="off" spellcheck="false" />
+          <input type="text" id="newScanTarget" required placeholder="hostname or IP you own" autocomplete="off" spellcheck="false" />
         </label>
         <fieldset class="scan-profile-set">
           <legend>Scan profile</legend>
@@ -1896,18 +1991,24 @@
         </fieldset>
         <label>Scanner
           <select id="newScanScanner">
+            <option value="combo">Combo workflow (scan → evidence → AI → triage)</option>
             <option value="securaiq">SecuraIQ Scanner (built-in)</option>
             <option value="all">All available scanners</option>
             <option value="nmap">Nmap (if installed)</option>
             <option value="nuclei">Nuclei (if installed)</option>
-            <option value="zap">OWASP ZAP (if installed)</option>
+            <option value="zap">SecuraIQ Web Scanner (built-in DAST)</option>
           </select>
         </label>
-        <label>Scope (optional — one host/CIDR per line; defaults to engagement scope)
+        <p class="hint" id="newScanScannerHint"></p>
+        <label class="chip-toggle scan-auth-row">
+          <input type="checkbox" id="newScanAutoTriage" checked />
+          <span>Combo: auto-triage high/critical findings</span>
+        </label>
+        <label>Scope (required for combo / Nmap / Nuclei / ZAP and VA/full — one host/CIDR per line)
           <textarea id="newScanScope" rows="3" placeholder="example.com&#10;*.example.com&#10;10.0.0.0/24"></textarea>
         </label>
         <label class="chip-toggle scan-auth-row">
-          <input type="checkbox" id="newScanAuthorized" />
+          <input type="checkbox" id="newScanAuthorized" checked />
           <span>I own / am authorized to test this target</span>
         </label>
         <div class="modal-footer">
@@ -1923,7 +2024,7 @@
     </div>
   </div>
 
-  <script src="/app.js?v=139"></script>
-  <script src="/workspace.js?v=135"></script>
+  <script src="/app.js?v=187"></script>
+  <script src="/workspace.js?v=176"></script>
 </body>
 </html>

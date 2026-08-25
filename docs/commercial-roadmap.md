@@ -39,7 +39,7 @@ Security Tools / Evidence / Scans
 | Document AI / RAG | Shipped ★★★ | Chroma default; Qdrant optional profile |
 | Gap Analysis | Shipped ★★★★ | ISO · NIST · CIS · SOC2 · PCI · ASVS |
 | Risk Register | Shipped ★★★ | Scored CRUD + export + heat map |
-| Vulnerability Mgmt | Shipped ★★★★ | CSV/JSON/XML + Trivy/Semgrep/Gitleaks/Grype/Checkov/Bandit/Sonar/ZAP |
+| Vulnerability Mgmt | Shipped ★★★★ | CSV/JSON/XML + Trivy/Semgrep/Gitleaks/Grype/Checkov/Bandit/Sonar/SecuraIQ Web Scanner |
 | Compliance hub | Shipped ★★★ | Frameworks + evidence + control center (+ ISO 27701 / HIPAA / GDPR subsets) |
 | Asset Inventory | Shipped ★★★ | CRUD + Ask AI |
 | Threat Intel | Shipped ★★★ | Watchlist + CISA KEV + NVD |
@@ -97,7 +97,7 @@ Administration → Orgs · Settings · Account
 - [x] Risk register + heat map  
 - [x] Asset + vulnerability modules  
 - [x] Knowledge-graph style entity links in UI (`/api/graph`)  
-- [x] Scanner adapters: Trivy · Semgrep · Gitleaks · Grype · Checkov · Bandit · SonarQube · ZAP  
+- [x] Scanner adapters: Trivy · Semgrep · Gitleaks · Grype · Checkov · Bandit · SonarQube · SecuraIQ Web Scanner (ZAP export)
 - [x] Enterprise integrations catalog (`/api/integrations/catalog`)  
 - [x] Intel feeds: CISA KEV sync + NVD CVE lookup  
 - [x] Office reports: DOCX + XLSX (plus existing PDF/MD)  

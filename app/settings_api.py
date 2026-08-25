@@ -43,6 +43,9 @@ def public_settings() -> dict[str, Any]:
         "local_tools_enabled": settings.local_tools_enabled,
         "local_tools_auto": settings.local_tools_auto,
         "local_tools_allow_heavy": settings.local_tools_allow_heavy,
+        "zap_api_url": getattr(settings, "zap_api_url", "") or "http://127.0.0.1:8090",
+        "zap_api_key_set": bool(getattr(settings, "zap_api_key", "")),
+        "zap_prefer_api": bool(getattr(settings, "zap_prefer_api", True)),
         "jira_base_url": settings.jira_base_url or "",
         "jira_email": settings.jira_email or "",
         "jira_project_key": settings.jira_project_key or "",
@@ -152,6 +155,12 @@ def public_settings() -> dict[str, Any]:
         "defender_client_id": getattr(settings, "defender_client_id", "") or "",
         "defender_client_secret_set": bool(getattr(settings, "defender_client_secret", "")),
         "defender_hunting_api": getattr(settings, "defender_hunting_api", "auto") or "auto",
+        "ssh_patch_enabled": bool(getattr(settings, "ssh_patch_enabled", False)),
+        "ssh_patch_user": getattr(settings, "ssh_patch_user", "") or "root",
+        "ssh_patch_key_path": getattr(settings, "ssh_patch_key_path", "") or "",
+        "ssh_patch_max_hosts": int(getattr(settings, "ssh_patch_max_hosts", 15) or 15),
+        "software_sync_auto_enabled": bool(getattr(settings, "software_sync_auto_enabled", True)),
+        "software_sync_interval_sec": int(getattr(settings, "software_sync_interval_sec", 3600) or 3600),
     }
     # Defense-in-depth: never allow raw secret keys in the payload
     forbidden = {
@@ -301,6 +310,12 @@ _WRITABLE: dict[str, tuple[str, type]] = {
     "defender_client_id": ("DEFENDER_CLIENT_ID", str),
     "defender_client_secret": ("DEFENDER_CLIENT_SECRET", str),
     "defender_hunting_api": ("DEFENDER_HUNTING_API", str),
+    "ssh_patch_enabled": ("SSH_PATCH_ENABLED", bool),
+    "ssh_patch_user": ("SSH_PATCH_USER", str),
+    "ssh_patch_key_path": ("SSH_PATCH_KEY_PATH", str),
+    "ssh_patch_max_hosts": ("SSH_PATCH_MAX_HOSTS", int),
+    "software_sync_auto_enabled": ("SOFTWARE_SYNC_AUTO_ENABLED", bool),
+    "software_sync_interval_sec": ("SOFTWARE_SYNC_INTERVAL_SEC", int),
 }
 
 

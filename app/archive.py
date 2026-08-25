@@ -79,6 +79,26 @@ def archive_user_scans(user_id: str) -> dict[str, Any]:
                 shutil.copytree(src, dest)
             else:
                 dest.mkdir(parents=True, exist_ok=True)
+            # Real gap found live: report.pdf is only ever written the first
+            # time someone clicks "PDF" on a live scan (lazy, on-demand in
+            # scans_api.py) — a scan archived before that click carried no
+            # PDF into the archive, so "Archived" rows showed Markdown only
+            # with no explanation. The Markdown report is already generated
+            # at scan completion, so build the PDF from it now too, honestly,
+            # from the same real report content — not a fake placeholder.
+            report_md = dest / "report.md"
+            report_pdf = dest / "report.pdf"
+            if report_md.is_file() and not report_pdf.is_file():
+                try:
+                    from app.commercial_ext import markdown_to_simple_pdf
+
+                    md_text = report_md.read_text(encoding="utf-8")
+                    pdf_bytes = markdown_to_simple_pdf(
+                        md_text, title=f"SecuraIQ VA Report — {scan.get('target') or sid[:8]}"
+                    )
+                    report_pdf.write_bytes(pdf_bytes)
+                except Exception:
+                    pass  # keep archiving even if PDF rendering fails — Markdown still available
             meta = {
                 "scan_id": sid,
                 "user_id": user_id,
@@ -182,6 +202,19 @@ def list_archives(user_id: str, *, limit: int = 40) -> list[dict[str, Any]]:
             target = meta.get("target") or "target"
             scanner = meta.get("scanner") or "scan"
             title = f"Archive - {target} ({scanner})"
+            # Real UI bug found live: unlike the live-scan title format in
+            # app/ops.py reports_catalog ("Scan - target (scanner) - N
+            # findings"), this archive title never included a findings
+            # count, so the Reports page's Findings column parses nothing
+            # and always shows "—" for every archived scan, even ones with
+            # real findings.
+            summary = meta.get("summary")
+            if isinstance(summary, dict):
+                fcount = summary.get("findings_created")
+                if fcount is None:
+                    fcount = summary.get("findings")
+                if fcount is not None:
+                    title += f" - {fcount} findings"
             if (scan_dir / "report.md").is_file():
                 items.append(
                     {
@@ -194,7 +227,15 @@ def list_archives(user_id: str, *, limit: int = 40) -> list[dict[str, Any]]:
                         "path": str(scan_dir),
                     }
                 )
-            if (scan_dir / "report.pdf").is_file():
+            # Mirror the live-scan report listing (app/ops.py reports_catalog):
+            # the PDF entry is offered whenever report.md exists, even if
+            # report.pdf hasn't been written yet, because
+            # /api/archive/scans/{id}/report.pdf now lazily renders it from
+            # the Markdown on first download (same pattern as live scans).
+            # Real UI gap this closes: archived scans predating that lazy
+            # render showed a Markdown button but no PDF button at all, with
+            # no way to get a PDF for an already-archived scan.
+            if (scan_dir / "report.pdf").is_file() or (scan_dir / "report.md").is_file():
                 items.append(
                     {
                         "id": f"archive-pdf-{sid}",
@@ -245,7 +286,8 @@ def prototype_status() -> dict[str, Any]:
         pass
     return {
         "ok": True,
-        "data_persists": (not zero) or auth,
+        "data_persists": True,
+        "live_resets_on_boot": bool(zero and not auth),
         "workspace_zero_start": zero,
         "auth_enabled": auth,
         "realtime": True,
@@ -253,8 +295,8 @@ def prototype_status() -> dict[str, Any]:
         "live_evidence_scans": evidence_n,
         "archive_batches": archive_n,
         "hint": (
-            "Data kept across restarts · clear moves scans to data/archive"
-            if (not zero) or auth
-            else "WORKSPACE_ZERO_START=true will wipe workspace on boot — set false for prototype"
+            "Lab zero-start: live workspace empty on boot · prior scans in data/archive"
+            if zero and not auth
+            else "Live data kept across restarts · clear still archives first"
         ),
     }

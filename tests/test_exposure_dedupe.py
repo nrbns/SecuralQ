@@ -116,3 +116,75 @@ def test_cross_tool_dedupe_same_ports(tmp_path, monkeypatch):
     assert result.get("created", result.get("count", len(vulns))) >= 1
     assert len(port_findings) == 3
     assert all((v.get("severity") or "").lower() == "info" for v in port_findings)
+
+
+def test_upsert_and_collapse_stacked_scan_findings(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("WORKSPACE_ZERO_START", "false")
+    monkeypatch.setenv("AUTH_ENABLED", "true")
+    monkeypatch.setenv("DEPLOYMENT_MODE", "lab")
+    monkeypatch.setenv("DATABASE_URL", "")
+    import app.config as config_mod
+    import app.db as db_mod
+
+    importlib.reload(config_mod)
+    db_mod.reset_conn_for_tests()
+    importlib.reload(db_mod)
+
+    from app.auth import register_user
+    from app.enterprise import (
+        collapse_duplicate_findings,
+        create_vulnerability,
+        list_vulnerabilities,
+        upsert_vulnerability,
+    )
+    from app.tenancy import ensure_tenant_schema
+
+    ensure_tenant_schema()
+    user = register_user("stack_u", "password123", role="user")
+    item = {
+        "title": "Windows LAN service on port 445/tcp (private/lab)",
+        "severity": "info",
+        "asset_name": "192.168.1.10",
+        "source": "securaiq:port-445",
+        "raw": {"port": 445, "scope": "private", "evidence": "445/tcp open microsoft-ds"},
+    }
+    for _ in range(5):
+        create_vulnerability(user.id, item, emit_realtime=False)
+    create_vulnerability(
+        user.id,
+        {
+            "title": "Open ports discovered on 192.168.1.10",
+            "severity": "info",
+            "asset_name": "192.168.1.10",
+            "source": "securaiq:discovery",
+            "raw": {"ports": [{"port": 445}]},
+        },
+        emit_realtime=False,
+    )
+    create_vulnerability(
+        user.id,
+        {
+            "title": "Open ports discovered on 192.168.1.10",
+            "severity": "info",
+            "asset_name": "192.168.1.10",
+            "source": "securaiq:discovery",
+            "raw": {"ports": [{"port": 445}, {"port": 135}]},
+        },
+        emit_realtime=False,
+    )
+
+    out = collapse_duplicate_findings(user.id)
+    assert out["removed"] == 5
+    rows = list_vulnerabilities(user.id)
+    titles = [v.get("title") for v in rows]
+    assert titles.count("Windows LAN service on port 445/tcp (private/lab)") == 1
+    assert titles.count("Open ports discovered on 192.168.1.10") == 1
+
+    refreshed = upsert_vulnerability(
+        user.id,
+        {**item, "raw": {**item["raw"], "evidence": "445/tcp open smb — rescan"}},
+        emit_realtime=False,
+    )
+    assert refreshed.get("_upsert") == "updated"
+    assert len(list_vulnerabilities(user.id)) == 2

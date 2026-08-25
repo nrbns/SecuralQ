@@ -1,8 +1,20 @@
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from app.paths import project_root
+
+_PROJECT_ROOT = project_root()
+_ENV_FILE = _PROJECT_ROOT / ".env"
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        # Always load .env from the repo root — not from whatever cwd started Python.
+        env_file=str(_ENV_FILE) if _ENV_FILE.is_file() else None,
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     model_backend: str = "ollama"
     ollama_base_url: str = "http://localhost:11434"
@@ -55,9 +67,12 @@ class Settings(BaseSettings):
     embedding_model: str = "all-MiniLM-L6-v2"
     # When false, knowledge files are not indexed until the user clicks Re-index (empty/fast start).
     rag_auto_ingest: bool = False
-    # When true and auth is off, wipe the local workspace on each server start (nil / zero UI).
-    # Default false so gap assessments, assets, and findings persist across restarts.
+    # When true and auth is off, wipe the live workspace on each server start (nil / zero UI).
+    # Previous scans are archived under data/archive first (no-loss). Default off so data persists.
     workspace_zero_start: bool = False
+    # When true and HOST is 0.0.0.0, queue a discovery scan of THIS host so phones
+    # load assets without a second click. Never scans other LAN devices.
+    lan_auto_scan: bool = False
     # Optional Qdrant vector store (compose profile). Empty = use Chroma only.
     qdrant_url: str = ""
     qdrant_collection: str = "securaiq_knowledge"
@@ -73,6 +88,10 @@ class Settings(BaseSettings):
     local_tools_enabled: bool = True
     local_tools_auto: bool = True  # auto light tools on assess / when target set
     local_tools_allow_heavy: bool = False  # nuclei/nikto/ffuf only when instructed
+    # SecuraIQ Web Scanner (built-in) + optional ZAP REST API boost
+    zap_api_url: str = "http://127.0.0.1:8090"
+    zap_api_key: str = ""
+    zap_prefer_api: bool = False  # optional ZAP daemon boost; built-in engine always runs
     # Commercial / team foundations
     auth_enabled: bool = False
     auth_allow_register: bool = False  # invite-only when auth is on; enable explicitly if needed
@@ -228,6 +247,14 @@ class Settings(BaseSettings):
     # push without polling still works via POST /api/xdr/ingest.
     xdr_near_realtime_enabled: bool = True
     xdr_near_realtime_interval_sec: int = 60
+    # Remote SSH OS patch probes (authorized lab assets — key-based SSH only)
+    ssh_patch_enabled: bool = False
+    ssh_patch_user: str = "root"
+    ssh_patch_key_path: str = ""  # path to private key; empty = default ssh agent keys
+    ssh_patch_max_hosts: int = 15
+    # Scheduled software inventory sync (SIEM/XDR/inventory + rebuild)
+    software_sync_auto_enabled: bool = True
+    software_sync_interval_sec: int = 3600
     # SentinelOne (static API token)
     sentinelone_api_token: str = ""
     sentinelone_base_url: str = ""  # e.g. https://<tenant>.sentinelone.net
@@ -242,6 +269,31 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def _absolutize_relative_paths() -> None:
+    """Make data/chroma/adapter paths absolute so the app works from any cwd."""
+    from app.paths import resolve_path
+
+    for name in ("data_dir", "chroma_persist_dir", "unsloth_adapter_dir"):
+        raw = getattr(settings, name, None)
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        setattr(settings, name, str(resolve_path(raw)))
+    gcp = (getattr(settings, "gcp_service_account_json", "") or "").strip()
+    if gcp and not gcp.startswith("{"):
+        # Path to SA JSON (not inline JSON)
+        try:
+            setattr(settings, "gcp_service_account_json", str(resolve_path(gcp)))
+        except Exception:
+            pass
+    Path(settings.data_dir).mkdir(parents=True, exist_ok=True)
+
+
+try:
+    _absolutize_relative_paths()
+except Exception:
+    pass
 
 
 def _decrypt_secret_fields_in_place() -> None:
@@ -269,11 +321,26 @@ except Exception:
 
 def cors_origin_list() -> list[str]:
     raw = (settings.cors_origins or "").strip()
+    host = (settings.host or "").strip()
+    open_bind = host in {"0.0.0.0", "::", "[::]"}
+    # Lab LAN: phones open http://<lan-ip>:port — same-origin usually, but
+    # allow * when the operator explicitly opted into open LAN.
+    if raw == "*" or (open_bind and getattr(settings, "allow_open_lan", False)):
+        return ["*"]
     if not raw:
-        return [
+        origins = [
             f"http://127.0.0.1:{settings.port}",
             f"http://localhost:{settings.port}",
         ]
-    if raw == "*":
-        return ["*"]
-    return [o.strip() for o in raw.split(",") if o.strip()]
+    else:
+        origins = [o.strip() for o in raw.split(",") if o.strip()]
+    if open_bind:
+        try:
+            from app.platform_info import platform_info
+
+            for url in platform_info().get("lan_urls") or []:
+                if url not in origins:
+                    origins.append(url)
+        except Exception:
+            pass
+    return origins

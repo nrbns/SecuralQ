@@ -9,6 +9,7 @@ Integration model:
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import re
 from typing import Any
@@ -218,18 +219,28 @@ async def lookup_greynoise(ip: str) -> dict[str, Any]:
 
 async def lookup_phishstats(query: str, *, size: int = 5) -> dict[str, Any]:
     q = query.strip().replace("'", "")
-    url = (
-        "https://phishstats.info:2096/api/phishing"
-        f"?_where=(url,like,~{quote(q)}~)&_size={min(20, max(1, size))}&_sort=-date"
-    )
-    try:
-        data = await _get_json(url, timeout=12.0)
-    except Exception:
+    sz = min(20, max(1, size))
+
+    async def _fetch(field: str) -> Any:
         url = (
             "https://phishstats.info:2096/api/phishing"
-            f"?_where=(host,like,~{quote(q)}~)&_size={min(20, max(1, size))}&_sort=-date"
+            f"?_where=({field},like,~{quote(q)}~)&_size={sz}&_sort=-date"
         )
-        data = await _get_json(url, timeout=12.0)
+        return await _get_json(url, timeout=6.0)
+
+    settled = await asyncio.gather(_fetch("url"), _fetch("host"), return_exceptions=True)
+    data: Any = []
+    for item in settled:
+        if isinstance(item, list) and item:
+            data = item
+            break
+    if not data:
+        for item in settled:
+            if isinstance(item, list):
+                data = item
+                break
+    if not data and any(isinstance(item, Exception) for item in settled):
+        raise ValueError("phishstats unavailable")
     return {"source": "phishstats", "query": q, "count": len(data) if isinstance(data, list) else 1, "data": data}
 
 
@@ -393,7 +404,7 @@ async def lookup_otx(indicator: str, kind: str) -> dict[str, Any]:
         "hostname": "hostname",
     }.get(kind, "hostname")
     url = f"https://otx.alienvault.com/api/v1/indicators/{section}/{quote(indicator)}/general"
-    data = await _get_json(url, headers=headers)
+    data = await _get_json(url, headers=headers, timeout=12.0)
     return {"source": "otx", "kind": kind, "query": indicator, "data": data}
 
 
@@ -402,7 +413,9 @@ async def lookup_urlscan(q: str) -> dict[str, Any]:
     key = _key("urlscan_api_key")
     if key:
         headers["API-Key"] = key
-    data = await _get_json("https://urlscan.io/api/v1/search/", params={"q": q, "size": 5}, headers=headers)
+    data = await _get_json(
+        "https://urlscan.io/api/v1/search/", params={"q": q, "size": 5}, headers=headers, timeout=12.0
+    )
     return {"source": "urlscan", "query": q, "data": data}
 
 
@@ -445,47 +458,43 @@ async def lookup_malwarebazaar(file_hash: str) -> dict[str, Any]:
 
 
 async def unified_lookup(query: str) -> dict[str, Any]:
-    """Route a single indicator to the best free/keyed providers."""
+    """Route a single indicator to the best free/keyed providers (parallel with per-provider errors)."""
     q = (query or "").strip()
     kind = _detect_kind(q)
-    results: list[dict[str, Any]] = []
-    errors: list[dict[str, str]] = []
+    tasks: list[tuple[str, Any]] = []
 
-    async def _try(name: str, coro):
-        try:
-            results.append(await coro)
-        except Exception as exc:  # noqa: BLE001
-            errors.append({"provider": name, "error": str(exc)[:240]})
+    def _add(name: str, coro):
+        tasks.append((name, coro))
 
     if kind == "cve":
-        await _try("nvd", lookup_nvd_cve(q))
-        await _try("msrc", lookup_msrc(limit=8))
+        _add("nvd", lookup_nvd_cve(q))
+        _add("msrc", lookup_msrc(limit=8))
     elif kind == "email":
         if _key("emailrep_api_key"):
-            await _try("emailrep", lookup_emailrep(q))
+            _add("emailrep", lookup_emailrep(q))
         else:
-            errors.append({"provider": "emailrep", "error": "Configure EMAILREP_API_KEY"})
+            pass  # appended after gather
         if _key("hibp_api_key"):
-            await _try("hibp", lookup_hibp_breaches(q))
+            _add("hibp", lookup_hibp_breaches(q))
     elif kind == "ip":
-        await _try("greynoise", lookup_greynoise(q))
-        await _try("otx", lookup_otx(q, "ip"))
+        _add("greynoise", lookup_greynoise(q))
+        _add("otx", lookup_otx(q, "ip"))
         if _key("urlhaus_api_key"):
-            await _try("urlhaus", lookup_urlhaus(q))
+            _add("urlhaus", lookup_urlhaus(q))
         if _key("abuseipdb_api_key"):
-            await _try("abuseipdb", lookup_abuseipdb(q))
+            _add("abuseipdb", lookup_abuseipdb(q))
         if _key("shodan_api_key"):
-            await _try("shodan", lookup_shodan(q))
+            _add("shodan", lookup_shodan(q))
         if _key("virustotal_api_key"):
-            await _try("virustotal", lookup_virustotal(q, "ip"))
+            _add("virustotal", lookup_virustotal(q, "ip"))
         if _key("pulsedive_api_key"):
-            await _try("pulsedive", lookup_pulsedive(q))
+            _add("pulsedive", lookup_pulsedive(q))
     elif kind in {"domain", "url"}:
         host = q
         if kind == "url":
             if _key("urlhaus_api_key"):
-                await _try("urlhaus", lookup_urlhaus(q))
-            await _try("urlscan", lookup_urlscan(q))
+                _add("urlhaus", lookup_urlhaus(q))
+            _add("urlscan", lookup_urlscan(q))
             try:
                 from urllib.parse import urlparse
 
@@ -493,31 +502,50 @@ async def unified_lookup(query: str) -> dict[str, Any]:
             except Exception:
                 host = q
         if _key("urlhaus_api_key"):
-            await _try("urlhaus_host", lookup_urlhaus(host))
-        await _try("phishstats", lookup_phishstats(host))
-        await _try("otx", lookup_otx(host, "domain" if kind == "domain" else "url"))
+            _add("urlhaus_host", lookup_urlhaus(host))
+        _add("phishstats", lookup_phishstats(host))
+        _add("otx", lookup_otx(host, "domain" if kind == "domain" else "url"))
         if kind == "domain":
-            await _try("urlscan", lookup_urlscan(f"domain:{host}"))
+            _add("urlscan", lookup_urlscan(f"domain:{host}"))
         if _key("virustotal_api_key"):
-            await _try("virustotal", lookup_virustotal(host if kind == "domain" else q, kind))
+            _add("virustotal", lookup_virustotal(host if kind == "domain" else q, kind))
         if _key("pulsedive_api_key"):
-            await _try("pulsedive", lookup_pulsedive(host))
+            _add("pulsedive", lookup_pulsedive(host))
     elif kind == "hash":
-        await _try("otx", lookup_otx(q, "hash"))
+        _add("otx", lookup_otx(q, "hash"))
         if _key("virustotal_api_key"):
-            await _try("virustotal", lookup_virustotal(q, "hash"))
+            _add("virustotal", lookup_virustotal(q, "hash"))
         if _key("malwarebazaar_api_key"):
-            await _try("malwarebazaar", lookup_malwarebazaar(q))
-        if not results:
-            errors.append(
-                {
-                    "provider": "hash",
-                    "error": "Configure VIRUSTOTAL_API_KEY or MALWAREBAZAAR_API_KEY for richer hash lookups (OTX tried)",
-                }
-            )
+            _add("malwarebazaar", lookup_malwarebazaar(q))
     else:
-        await _try("phishstats", lookup_phishstats(q))
-        await _try("urlscan", lookup_urlscan(q))
+        _add("phishstats", lookup_phishstats(q))
+        _add("urlscan", lookup_urlscan(q))
+
+    async def _run(name: str, coro):
+        try:
+            return name, await coro, None
+        except Exception as exc:  # noqa: BLE001
+            return name, None, str(exc)[:240] or "unavailable"
+
+    results: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    if tasks:
+        settled = await asyncio.gather(*[_run(name, coro) for name, coro in tasks])
+        for name, payload, err in settled:
+            if err:
+                errors.append({"provider": name, "error": err})
+            elif payload:
+                results.append(payload)
+
+    if kind == "email" and not _key("emailrep_api_key"):
+        errors.append({"provider": "emailrep", "error": "Configure EMAILREP_API_KEY"})
+    if kind == "hash" and not results:
+        errors.append(
+            {
+                "provider": "hash",
+                "error": "Configure VIRUSTOTAL_API_KEY or MALWAREBAZAAR_API_KEY for richer hash lookups (OTX tried)",
+            }
+        )
 
     return {
         "query": q,

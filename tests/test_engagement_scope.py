@@ -7,10 +7,29 @@ import importlib
 import pytest
 
 from app.services.tool_policy import (
-    normalize_scope_json,
-    target_in_scope,
+    assert_structured_scope,
     assert_tool_target_allowed,
+    normalize_scope_json,
+    requires_structured_scope,
+    target_in_scope,
 )
+
+
+def test_requires_structured_scope_for_engine_and_va():
+    assert requires_structured_scope("nmap", "discovery") is True
+    assert requires_structured_scope("nuclei", "web") is True
+    assert requires_structured_scope("zap", "web") is True
+    assert requires_structured_scope("securaiq", "discovery") is False
+    assert requires_structured_scope("securaiq", "vulnerability") is True
+    assert requires_structured_scope("securaiq", "full") is True
+    ok, _ = assert_structured_scope(scanner_id="nmap", profile="discovery", scope=[])
+    assert not ok
+    ok2, reason = assert_structured_scope(
+        scanner_id="nmap", profile="discovery", scope=["192.168.56.0/24"]
+    )
+    assert ok2 and "present" in reason
+    ok3, _ = assert_structured_scope(scanner_id="securaiq", profile="discovery", scope=[])
+    assert ok3
 
 
 def test_normalize_scope_json_variants():

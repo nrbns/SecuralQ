@@ -126,6 +126,38 @@ async def fetch_agents(limit: int = 200) -> list[dict[str, Any]]:
     return out
 
 
+async def fetch_syscollector_packages(agent_id: str, *, limit: int = 500) -> list[dict[str, Any]]:
+    """Installed packages reported by Wazuh syscollector for one agent."""
+    if not is_configured() or not (agent_id or "").strip():
+        return []
+    aid = str(agent_id).strip()
+    data = await _manager_get(
+        f"/syscollector/{aid}/packages",
+        {"limit": min(max(limit, 1), 500), "sort": "-name"},
+    )
+    items = ((data or {}).get("data") or {}).get("affected_items") or []
+    out: list[dict[str, Any]] = []
+    for pkg in items:
+        if not isinstance(pkg, dict):
+            continue
+        name = str(pkg.get("name") or pkg.get("package") or "").strip()
+        if not name:
+            continue
+        out.append(
+            {
+                "name": name,
+                "version": str(pkg.get("version") or "")[:80],
+                "vendor": str(pkg.get("vendor") or pkg.get("publisher") or "")[:120],
+                "publisher": str(pkg.get("publisher") or pkg.get("vendor") or "")[:120],
+                "architecture": str(pkg.get("architecture") or pkg.get("arch") or "")[:32],
+                "location": str(pkg.get("location") or pkg.get("install_time") or "")[:200],
+                "install_time": str(pkg.get("install_time") or "")[:40],
+                "description": str(pkg.get("description") or "")[:300],
+            }
+        )
+    return out
+
+
 async def _fetch_alerts_from_indexer(limit: int = 100) -> list[dict[str, Any]]:
     url = settings.wazuh_indexer_url.rstrip("/")
     user = (settings.wazuh_indexer_user or settings.wazuh_user or "").strip()

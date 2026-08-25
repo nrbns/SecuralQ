@@ -21,7 +21,6 @@ import asyncio
 import json
 import os
 import sys
-from pathlib import Path
 from typing import Any
 
 
@@ -95,9 +94,10 @@ async def run_kind_via_prefect(kind: str, payload: dict[str, Any] | None = None)
         raise RuntimeError("Prefect is not installed. pip install 'prefect>=3.0,<4'")
 
     from app.config import settings
+    from app.paths import project_root
 
     api_url = (getattr(settings, "prefect_api_url", "") or "").strip()
-    root = Path(__file__).resolve().parent.parent
+    root = project_root()
     env = os.environ.copy()
     if api_url:
         env["PREFECT_API_URL"] = api_url

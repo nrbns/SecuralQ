@@ -9,6 +9,52 @@ from typing import Any
 
 from app.config import settings
 
+# VirtualBox host-only, Hyper-V ICS, VMware/Parallels NAT — not the Wi-Fi LAN
+_VIRTUAL_PREFIXES = (
+    "192.168.56.",
+    "192.168.57.",
+    "192.168.58.",
+    "192.168.59.",
+    "192.168.137.",
+    "192.168.64.",
+    "198.18.",
+)
+
+
+def rank_lan_ips(ips: list[str], *, preferred: str = "") -> list[str]:
+    """Prefer the default-route NIC over VirtualBox/VMware host-only adapters."""
+    seen: list[str] = []
+    for raw in ips:
+        ip = (raw or "").strip()
+        if not ip or ip.startswith("127.") or ip in seen:
+            continue
+        seen.append(ip)
+
+    def _key(ip: str) -> tuple[int, str]:
+        if preferred and ip == preferred:
+            return (0, ip)
+        if ip.startswith("169.254."):
+            return (8, ip)
+        if any(ip.startswith(p) for p in _VIRTUAL_PREFIXES):
+            return (5, ip)
+        return (1, ip)
+
+    return sorted(seen, key=_key)
+
+
+def _default_route_ip() -> str:
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(0.5)
+        sock.connect(("8.8.8.8", 80))
+        ip = sock.getsockname()[0]
+        sock.close()
+        if ip and not ip.startswith("127."):
+            return ip
+    except OSError:
+        pass
+    return ""
+
 
 def _lan_ips() -> list[str]:
     ips: list[str] = []
@@ -20,17 +66,10 @@ def _lan_ips() -> list[str]:
                 ips.append(ip)
     except OSError:
         pass
-    # Fallback: UDP trick (no packets sent)
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.connect(("8.8.8.8", 80))
-        ip = sock.getsockname()[0]
-        sock.close()
-        if ip and not ip.startswith("127.") and ip not in ips:
-            ips.insert(0, ip)
-    except OSError:
-        pass
-    return ips[:5]
+    preferred = _default_route_ip()
+    if preferred:
+        ips.append(preferred)
+    return rank_lan_ips(ips, preferred=preferred)[:5]
 
 
 def _module_available(name: str) -> bool:
@@ -76,6 +115,10 @@ def platform_info() -> dict[str, Any]:
         "port": port,
         "lan_urls": [f"http://{ip}:{port}" for ip in ips],
         "local_url": f"http://127.0.0.1:{port}",
+        "lan_mode": (settings.host or "").strip() in {"0.0.0.0", "::", "[::]"},
+        "share_url": ([f"http://{ip}:{port}" for ip in ips] or [f"http://127.0.0.1:{port}"])[0],
+        "lan_auto_scan": bool(getattr(settings, "lan_auto_scan", False)),
+        "workspace_zero_start": bool(getattr(settings, "workspace_zero_start", False)),
         "client_note": (
             "Open this UI from any browser on Windows, Linux, macOS, Android, or iOS. "
             "On phones/tablets use a LAN URL below (same Wi‑Fi). "

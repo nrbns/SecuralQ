@@ -39,9 +39,10 @@ _TOOL_WORD_RE = re.compile(
     r"\b(nmap|nikto|nuclei|whatweb|gobuster|ffuf|sslscan|sslyze|dig|whois|curl|"
     r"traceroute|tracert|ping|openssl|wafw00f|ports?|dns|tls|http|robots|tech|"
     r"cve_lookup|headers?(?:\s+security)?|zap|zaproxy|sqlmap|wpscan|masscan|"
-    r"rustscan|openvas|greenbone|gvm|securaiq(?:_scan|_code|_engine)?|sonarqube|sonar|burp|acunetix|email_auth|phishing_url|suite_guide|"
+    r"rustscan|openvas|greenbone|gvm|securaiq(?:_scan|_code|_engine|_siem)?|sonarqube|sonar|burp|acunetix|email_auth|phishing_url|suite_guide|"
     r"spf|dmarc|dkim|phish(?:ing)?|awareness|hardening(?:_baseline)?|patch(?:es|ing|"
-    r"\s+compliance)?|xdr|edr|defender(?:_hunt)?|advanced\s*hunting|kql|semgrep|codeql|code_scan)\b",
+    r"\s+compliance)?|xdr|edr|defender(?:_hunt)?|advanced\s*hunting|kql|semgrep|codeql|code_scan|"
+    r"wazuh|siem(?:_sync)?|thehive(?:_sync)?|crowdstrike|sophos|sentinelone|inventory(?:_sync)?|openaudit)\b",
     re.IGNORECASE,
 )
 _RUN_HINT_RE = re.compile(
@@ -68,6 +69,39 @@ _DIR_WORDS = [
 ]
 
 
+def _publish_tool_pulse(
+    *,
+    kind: str,
+    status: str,
+    user_id: str = "local",
+    target: str = "",
+    findings: int | None = None,
+    tools: list[str] | None = None,
+    message: str = "",
+) -> None:
+    try:
+        from app.realtime_bus import publish
+
+        payload: dict[str, Any] = {
+            "type": "tool",
+            "kind": kind,
+            "tool": kind,
+            "status": status,
+            "user_id": user_id or "local",
+        }
+        if target:
+            payload["target"] = str(target)[:120]
+        if findings is not None:
+            payload["findings"] = int(findings)
+        if tools:
+            payload["tools"] = tools[:8]
+        if message:
+            payload["message"] = message
+        publish(**payload)
+    except Exception:
+        pass
+
+
 def parse_tool_request(
     message: str,
     *,
@@ -82,8 +116,18 @@ def parse_tool_request(
     awareness_mode = mode_l in {"awareness", "ciso", "tabletop"}
 
     if explicit:
+        _explicit_alias = {
+            "wazuh": "siem_sync",
+            "siem": "siem_sync",
+            "xdr": "xdr_sync",
+            "thehive": "thehive_sync",
+            "inventory": "inventory_sync",
+            "openaudit": "inventory_sync",
+        }
         for t in explicit:
             tid = (t or "").strip().lower().replace(" ", "_")
+            if tid in _explicit_alias:
+                tid = _explicit_alias[tid]
             if tid == "tracert":
                 tid = "traceroute"
             if tid in ("header", "headers", "headers_security"):
@@ -111,9 +155,19 @@ def parse_tool_request(
             "openvas": "openvas",
             "network_scanner": "openvas",
             "securaiq_network": "openvas",
+            "web_scanner": "zap",
+            "securaiq_web": "zap",
+            "dast": "zap",
             "securaiq": "securaiq",
             "securaiq_scan": "securaiq",
             "securaiq_engine": "securaiq",
+            "combo": "combo_assessment",
+            "integrated_va": "combo_assessment",
+            "integrated": "combo_assessment",
+            "va_combo": "combo_assessment",
+            "full_scan": "combo_assessment",
+            "pentest": "combo_assessment",
+            "assessment": "combo_assessment",
             "sonarqube": "securaiq_code",
             "sonar": "securaiq_code",
             "sonarcloud": "securaiq_code",
@@ -139,6 +193,20 @@ def parse_tool_request(
             "defender_hunt": "defender_hunt",
             "advanced hunting": "defender_hunt",
             "kql": "defender_hunt",
+            "wazuh": "siem_sync",
+            "siem": "siem_sync",
+            "securaiq_siem": "siem_sync",
+            "siem_sync": "siem_sync",
+            "xdr_sync": "xdr_sync",
+            "crowdstrike": "xdr_sync",
+            "sophos": "xdr_sync",
+            "sentinelone": "xdr_sync",
+            "thehive": "thehive_sync",
+            "thehive_sync": "thehive_sync",
+            "inventory": "inventory_sync",
+            "inventory_sync": "inventory_sync",
+            "openaudit": "inventory_sync",
+            "lan": "inventory_sync",
         }.get(raw, raw.replace(" ", "_"))
         if alias in TOOL_CATALOG:
             mentioned.append(alias)
@@ -521,6 +589,97 @@ async def _tool_defender_hunt(message: str) -> dict[str, Any]:
     }
 
 
+async def _tool_siem_sync(user_id: str = "local") -> dict[str, Any]:
+    from app.connectors import wazuh as wz
+    from app.jobs import enqueue_job
+
+    if not wz.is_configured():
+        return {
+            "ok": False,
+            "error": "SecuraIQ SIEM not configured",
+            "output": (
+                "Set WAZUH_BASE_URL, WAZUH_USER, and WAZUH_PASSWORD under "
+                "Settings → SecuraIQ SIEM, then run `siem sync` again."
+            ),
+        }
+    job = enqueue_job("wazuh_sync", {"user_id": user_id}, engine="auto")
+    jid = (job or {}).get("id") or "?"
+    return {
+        "ok": True,
+        "output": (
+            f"SecuraIQ SIEM sync queued · job `{jid}` · pulls Wazuh agents into Assets "
+            f"and alerts into the SOC/XDR feed. Open SOC workspace to watch progress."
+        ),
+        "job_id": jid,
+    }
+
+
+async def _tool_xdr_sync(user_id: str = "local") -> dict[str, Any]:
+    from app.jobs import enqueue_job
+    from app.xdr import status as xdr_st
+
+    vendors = xdr_st()
+    configured = [v for v, meta in vendors.items() if meta.get("configured")]
+    if not configured:
+        return {
+            "ok": False,
+            "error": "No XDR vendors configured",
+            "output": (
+                "Configure at least one vendor under Settings → XDR "
+                "(Sophos, CrowdStrike, SentinelOne, or Microsoft Defender), then run `xdr sync`."
+            ),
+        }
+    job = enqueue_job("xdr_sync", {"user_id": user_id}, engine="auto")
+    jid = (job or {}).get("id") or "?"
+    return {
+        "ok": True,
+        "output": (
+            f"XDR sync queued · job `{jid}` · vendors: {', '.join(configured)}. "
+            "Detections land in SOC → XDR / EDR and may open incidents for critical/high alerts."
+        ),
+        "job_id": jid,
+        "vendors": configured,
+    }
+
+
+async def _tool_thehive_sync(user_id: str = "local") -> dict[str, Any]:
+    from app.connectors import thehive as th
+    from app.jobs import enqueue_job
+
+    if not th.is_configured():
+        return {
+            "ok": False,
+            "error": "TheHive not configured",
+            "output": "Set THEHIVE_URL and THEHIVE_API_KEY under Settings → TheHive.",
+        }
+    job = enqueue_job("thehive_sync", {"user_id": user_id}, engine="auto")
+    jid = (job or {}).get("id") or "?"
+    return {
+        "ok": True,
+        "output": f"TheHive case sync queued · job `{jid}` · cases appear under Incidents.",
+        "job_id": jid,
+    }
+
+
+async def _tool_inventory_sync(user_id: str = "local") -> dict[str, Any]:
+    from app.lan_sync import refresh_lan_assets
+
+    result = refresh_lan_assets(user_id, queue_scan=False)
+    inv_job = (result or {}).get("inventory_job") or {}
+    jid = inv_job.get("id") or "?"
+    subnet = (result or {}).get("subnet") or "local /24"
+    n = 1 + len((result or {}).get("neighbors") or [])
+    return {
+        "ok": True,
+        "output": (
+            f"Network inventory refresh queued · {n} host(s) on `{subnet}` · job `{jid}`. "
+            "Hosts stream into Assets → Open Audit as they are probed."
+        ),
+        "job_id": jid,
+        "subnet": subnet,
+    }
+
+
 async def _tool_cve_lookup(message: str) -> dict[str, Any]:
     cves = list(dict.fromkeys(_CVE_RE.findall(message or "")))[:3]
     if not cves:
@@ -621,14 +780,17 @@ async def _tool_phishing_url(message: str) -> dict[str, Any]:
 
 
 async def _tool_suite_guide() -> dict[str, Any]:
-    zap = resolve_binary(TOOL_CATALOG["zap"]) if "zap" in TOOL_CATALOG else None
+    from app.scanners.registry import get_scanner
+
+    zap_avail, zap_detail = get_scanner("zap").available()
     nuclei = resolve_binary(TOOL_CATALOG["nuclei"]) if "nuclei" in TOOL_CATALOG else None
+    zap_line = f"READY: {zap_detail}" if zap_avail else "built-in (always available)"
     text = f"""Authorized lab / engagement tool playbooks
 
 ## Burp Suite (PortSwigger)
 - Community/Pro GUI: proxy 127.0.0.1:8080, intercept, repeater, intruder (lab apps).
 - Scope only in-scope hosts. Export sitemap → report.
-- Equivalent FOSS: OWASP ZAP {'READY: ' + zap if zap else '(install zaproxy / zap.sh)'}.
+- SecuraIQ twin: **SecuraIQ Web Scanner** (built-in DAST) — {zap_line}.
 - **Results import is real, not just a guide**: Scanner tab → right-click → "Report selected issues" →
   XML → upload via Import (`POST /api/vulnerabilities/import`) if you prefer file import over Live scan.
   Findings land as real, severity-scored
@@ -651,8 +813,7 @@ async def _tool_suite_guide() -> dict[str, Any]:
 ## Quick authorized commands
 ```bash
 # SecuraIQ Live scan: Auth + openvas on owned host
-# ZAP baseline
-zap-baseline.py -t http://192.168.56.101/
+# SecuraIQ Web Scanner (built-in — New Scan → zap, or POST /api/scans with scanner=zap)
 # Nuclei
 nuclei -u http://192.168.56.101/ -severity critical,high
 # Nmap service
@@ -939,6 +1100,112 @@ async def _tool_openvas(host: str, ip: str, open_ports: list[int] | None) -> dic
     result["output"] = branded
     result["scanner"] = "securaiq_network"
     return result
+
+
+async def _tool_zap(
+    host: str,
+    ip: str,
+    open_ports: list[int] | None,
+    *,
+    authorized: bool,
+    user_id: str,
+    engagement_id: str | None,
+    light: bool,
+) -> dict[str, Any]:
+    """SecuraIQ Web Scanner — built-in DAST via scan engine."""
+    eng_target = (host or ip or "").strip()
+    if not eng_target:
+        return {"ok": False, "error": "no target", "output": ""}
+    if not eng_target.startswith(("http://", "https://")):
+        urls = _guess_base_urls(ip or host, open_ports)
+        eng_target = urls[0] if urls else f"http://{eng_target}/"
+    profile = "discovery" if light else "vulnerability"
+    result = await _tool_engine_scan(
+        "zap",
+        eng_target,
+        authorized=authorized,
+        user_id=user_id,
+        engagement_id=engagement_id,
+        profile=profile,
+        wait_sec=180.0 if light else 240.0,
+    )
+    out = result.get("output") or ""
+    branded = dict(result)
+    branded["output"] = f"SecuraIQ Web Scanner (built-in) · target {eng_target}\n{out}"
+    branded["scanner"] = "securaiq_web"
+    return branded
+
+
+async def _tool_combo_assessment(
+    target: str,
+    *,
+    authorized: bool,
+    user_id: str,
+    engagement_id: str | None = None,
+    profile: str = "discovery",
+    org_id: str | None = None,
+) -> dict[str, Any]:
+    """Single integrated VA tool — all scanners + evidence + investigate + triage."""
+    from app.combo_assessment import default_scope_for_target, run_combo_assessment
+
+    target = (target or "").strip()
+    if not target:
+        return {"ok": False, "error": "target required", "output": ""}
+    if not authorized:
+        return {
+            "ok": False,
+            "error": "Auth required",
+            "output": "Check Auth — only assess systems you own or are authorized to test.",
+        }
+    prof = (profile or "discovery").lower()
+    include_web = prof in {"web", "vulnerability", "full"}
+    pack = await run_combo_assessment(
+        user_id=user_id or "local",
+        target=target,
+        scope=default_scope_for_target(target),
+        authorized=True,
+        profile=prof,
+        engagement_id=engagement_id,
+        org_id=org_id,
+        include_web=include_web,
+        auto_triage_high=True,
+    )
+    if not pack.get("ok"):
+        err = pack.get("error") or "combo assessment failed"
+        return {
+            "ok": False,
+            "error": err,
+            "output": err,
+            "blocked": pack.get("blocked"),
+        }
+    summary = pack.get("summary") or {}
+    scanners = ", ".join(
+        s.get("scanner") or "?"
+        for s in (pack.get("scans") or [])
+        if s.get("ok")
+    ) or "securaiq"
+    lines = [
+        "Integrated VA (combo_assessment) — one tool, full pipeline",
+        f"target={target} · profile={prof}",
+        f"scanners_ok={summary.get('scanners_ok', 0)} ({scanners})",
+        f"findings={pack.get('findings_count', 0)} · high/crit={summary.get('high_critical', 0)}",
+        f"triaged={summary.get('triaged', 0)}",
+        f"primary_scan={pack.get('primary_scan_id')}",
+        f"report={pack.get('report_url')}",
+        "",
+        "Evidence-backed AI prompt (use Ask AI or paste into chat):",
+        (pack.get("prompt") or "")[:12000],
+    ]
+    return {
+        "ok": True,
+        "output": "\n".join(lines),
+        "combo": pack,
+        "scan_id": pack.get("primary_scan_id"),
+        "scan_ids": pack.get("scan_ids"),
+        "findings": pack.get("findings_count"),
+        "prompt": pack.get("prompt"),
+        "workflow": "combo_assessment",
+    }
 
 
 async def _tool_engine_scan(
@@ -1245,15 +1512,6 @@ async def _run_external(tool_id: str, target: str, ip: str, open_ports: list[int
             return {"ok": False, "error": str(exc), "output": ""}
     if tool_id == "wafw00f":
         return await _run_cmd([binary, base_http], timeout=20)
-    if tool_id == "zap":
-        # Prefer zap-baseline.py alongside zap if present
-        baseline = shutil.which("zap-baseline.py") or shutil.which("zap-baseline")
-        if baseline:
-            return await _run_cmd([baseline, "-t", base_http, "-I"], timeout=50)
-        return await _run_cmd(
-            [binary, "-cmd", "-quickurl", base_http, "-quickprogress"],
-            timeout=50,
-        )
     if tool_id == "sqlmap":
         return await _run_cmd(
             [binary, "-u", base_http, "--batch", "--level=1", "--risk=1", "--timeout=8", "--smart"],
@@ -1843,6 +2101,10 @@ async def iter_security_tools(
             "securaiq_code",
             "semgrep",
             "codeql",
+            "siem_sync",
+            "xdr_sync",
+            "thehive_sync",
+            "inventory_sync",
         }
         for tid in tool_ids
     )
@@ -1935,6 +2197,11 @@ async def iter_security_tools(
                     return
             else:
                 ip = meta.get("ip") or ""
+                # resolve_and_authorize returns the cleaned host (scheme/path
+                # stripped) when the raw target was a full URL — use that for
+                # every downstream tool (e.g. email_auth's domain lookup)
+                # instead of the raw URL string.
+                host = meta.get("target") or host
 
     # Engagement structured scope gate (deterministic — AI cannot bypass)
     policy_meta: dict[str, Any] | None = None
@@ -1988,6 +2255,14 @@ async def iter_security_tools(
                 result = await _tool_cve_lookup(message)
             elif tid == "defender_hunt":
                 result = await _tool_defender_hunt(message)
+            elif tid == "siem_sync":
+                result = await _tool_siem_sync(user_id or "local")
+            elif tid == "xdr_sync":
+                result = await _tool_xdr_sync(user_id or "local")
+            elif tid == "thehive_sync":
+                result = await _tool_thehive_sync(user_id or "local")
+            elif tid == "inventory_sync":
+                result = await _tool_inventory_sync(user_id or "local")
             elif tid == "phishing_url":
                 result = await _tool_phishing_url(message)
             elif tid == "suite_guide":
@@ -2046,17 +2321,45 @@ async def iter_security_tools(
                 result = await _tool_netvuln_scan(host, ip, ports_hint)
             elif tid == "openvas":
                 result = await _tool_openvas(host, ip, ports_hint)
-            elif tid == "securaiq" or tid in ENGINE_TOOLS:
-                scanner_key = ENGINE_TOOLS.get(tid, "securaiq")
+            elif tid == "zap":
+                result = await _tool_zap(
+                    host,
+                    ip,
+                    ports_hint,
+                    authorized=bool(authorized),
+                    user_id=user_id or "local",
+                    engagement_id=engagement_id,
+                    light=light_mode,
+                )
+            elif tid in {"combo_assessment", "combo", "integrated_va"}:
                 eng_target = host or ip or (target or "").strip()
-                result = await _tool_engine_scan(
-                    scanner_key,
+                result = await _tool_combo_assessment(
                     eng_target,
                     authorized=bool(authorized),
                     user_id=user_id or "local",
                     engagement_id=engagement_id,
-                    profile="discovery" if light_mode else "vulnerability",
+                    profile="vulnerability" if not light_mode else "discovery",
                 )
+            elif tid == "securaiq" or tid in ENGINE_TOOLS:
+                scanner_key = ENGINE_TOOLS.get(tid, "securaiq")
+                eng_target = host or ip or (target or "").strip()
+                if scanner_key == "combo_assessment":
+                    result = await _tool_combo_assessment(
+                        eng_target,
+                        authorized=bool(authorized),
+                        user_id=user_id or "local",
+                        engagement_id=engagement_id,
+                        profile="discovery" if light_mode else "vulnerability",
+                    )
+                else:
+                    result = await _tool_engine_scan(
+                        scanner_key,
+                        eng_target,
+                        authorized=bool(authorized),
+                        user_id=user_id or "local",
+                        engagement_id=engagement_id,
+                        profile="discovery" if light_mode else "vulnerability",
+                    )
                 if result.get("scanner_unavailable") and tid != "securaiq":
                     if not is_available(tid):
                         fb = EXTERNAL_FALLBACKS.get(tid)
@@ -2202,6 +2505,13 @@ async def iter_security_tools(
     if needs_ports:
         rest = [t for t in rest if t != "ports"]
         yield {"event": "tool_start", "tool": "ports", "name": "Port probe"}
+        _publish_tool_pulse(
+            kind="ports",
+            status="running",
+            user_id=user_id,
+            target=str(ip or target or "")[:120],
+            message="Port probe running",
+        )
         entry = await _execute("ports", open_ports)
         open_ports = entry.get("open_ports") or open_ports
         runs.append(entry)
@@ -2226,6 +2536,14 @@ async def iter_security_tools(
                 "tool": tid,
                 "name": TOOL_CATALOG[tid].name if tid in TOOL_CATALOG else tid,
             }
+            _publish_tool_pulse(
+                kind=tid,
+                status="running",
+                user_id=user_id,
+                target=str(target or "")[:120],
+                tools=light_ids,
+                message=f"{TOOL_CATALOG[tid].name if tid in TOOL_CATALOG else tid} running",
+            )
         tasks = [asyncio.create_task(_guarded(tid)) for tid in light_ids]
         for fut in asyncio.as_completed(tasks):
             while True:
@@ -2244,6 +2562,13 @@ async def iter_security_tools(
             "tool": tid,
             "name": TOOL_CATALOG[tid].name if tid in TOOL_CATALOG else tid,
         }
+        _publish_tool_pulse(
+            kind=tid,
+            status="running",
+            user_id=user_id,
+            target=str(target or "")[:120],
+            message=f"{TOOL_CATALOG[tid].name if tid in TOOL_CATALOG else tid} running",
+        )
         task = asyncio.create_task(_execute(tid, open_ports))
         while not task.done():
             try:
@@ -2276,6 +2601,7 @@ async def iter_security_tools(
         "target": effective_target,
         "ip": ip or None,
         "private": (meta or {}).get("private"),
+        "ptr": (meta or {}).get("ptr"),
         "requested": tool_ids,
         "open_ports": open_ports,
         "runs": runs,
@@ -2314,6 +2640,33 @@ async def iter_security_tools(
                 "fingerprint": fp,
             },
         )
+    except Exception:
+        pass
+    try:
+        from app.realtime_bus import publish
+
+        findings_n = int((payload.get("vulnerabilities_persisted") or {}).get("created") or 0)
+        publish(
+            type="tool",
+            kind="security_tools",
+            status="done" if ok_any else "error",
+            tools=tool_ids,
+            target=str(effective_target or "")[:120],
+            findings=findings_n,
+            user_id=user_id or "local",
+            message=(
+                f"{', '.join(tool_ids[:4])} finished"
+                + (f" · {findings_n} finding(s)" if findings_n else "")
+            ),
+        )
+        if findings_n:
+            publish(
+                type="vuln_batch",
+                source="local_tools",
+                count=findings_n,
+                target=str(effective_target or "")[:120],
+                user_id=user_id or "local",
+            )
     except Exception:
         pass
     yield {"event": "done", "payload": payload}
@@ -2357,12 +2710,20 @@ def _parse_nuclei_jsonl(output: str) -> list[dict[str, Any]]:
                 cve = m.group(0).upper()
                 break
         matched = row.get("matched-at") or row.get("host") or row.get("ip") or ""
+        host_label = str(matched)
+        if host_label.startswith("http://") or host_label.startswith("https://"):
+            try:
+                from app.scanners.nuclei import _hostname_from_target
+
+                host_label = _hostname_from_target(host_label) or host_label
+            except Exception:
+                pass
         findings.append(
             {
                 "title": str(title)[:300],
                 "severity": sev if sev in {"critical", "high", "medium", "low", "info"} else "medium",
                 "cve": cve[:40],
-                "asset_name": str(matched)[:200],
+                "asset_name": host_label[:200],
                 "source": f"nuclei:{row.get('template-id') or row.get('template_id') or 'scan'}",
                 "raw": row,
             }
@@ -2376,20 +2737,33 @@ def persist_tool_findings_to_vulns(user_id: str, payload: dict[str, Any]) -> dic
     Cross-tool dedupe: the same risky port from ports + openvas + hardening_baseline
     becomes one finding. Private Windows LAN ports (135/139/445) are info-severity.
     """
-    from app.enterprise import create_vulnerability, ensure_asset_for_target, list_vulnerabilities
+    from app.asset_names import canonical_vuln_asset_name, resolve_target_labels
+    from app.enterprise import ensure_asset_for_target, list_vulnerabilities, upsert_vulnerability
 
     target = payload.get("target") or payload.get("ip") or "unknown"
     ip = str(payload.get("ip") or "") or None
-    # Live inventory: every authorized scan registers the target as an asset
+    ptr = str(payload.get("ptr") or "") or None
+    labels = resolve_target_labels(str(target), ptr=ptr, resolve_ptr=True)
+    notes = json.dumps(
+        {
+            "source": "live_tools",
+            "ip": labels["ip"] or ip or "",
+            "hostname": labels["hostname"],
+            "host": labels["host"],
+            "tools": payload.get("requested") or [],
+        }
+    )[:2000]
     asset = None
     try:
         asset = ensure_asset_for_target(
             user_id,
-            str(target)[:200],
-            notes=f"Live scan · tools={','.join(payload.get('requested') or [])}"[:2000],
+            labels["asset_name"],
+            notes=notes,
+            resolve_ptr=True,
         )
     except Exception:
         asset = None
+    target_display = canonical_vuln_asset_name(labels["asset_name"], asset=asset if isinstance(asset, dict) else None)
 
     existing = {
         ((v.get("title") or "").strip().lower(), (v.get("asset_name") or "").strip().lower())
@@ -2424,8 +2798,9 @@ def persist_tool_findings_to_vulns(user_id: str, payload: dict[str, Any]) -> dic
         if key in seen_ports:
             return None
         seen_ports.add(key)
-        item = _risky_port_finding(port, target=str(target), source=source, ip=ip)
-        tkey = (item["title"].lower(), str(target).lower())
+        item = _risky_port_finding(port, target=target_display, source=source, ip=ip)
+        item["asset_name"] = target_display[:200]
+        tkey = (item["title"].lower(), target_display.lower())
         if tkey in existing:
             return None
         existing.add(tkey)
@@ -2443,7 +2818,9 @@ def persist_tool_findings_to_vulns(user_id: str, payload: dict[str, Any]) -> dic
                 if not isinstance(f, dict):
                     continue
                 if not f.get("asset_name"):
-                    f["asset_name"] = str(target)[:200]
+                    f["asset_name"] = target_display[:200]
+                else:
+                    f["asset_name"] = canonical_vuln_asset_name(str(f["asset_name"]), asset=asset if isinstance(asset, dict) else None)
                 key = (str(f.get("title") or "").lower(), (f.get("asset_name") or "").lower())
                 if key in existing:
                     continue
@@ -2492,7 +2869,7 @@ def persist_tool_findings_to_vulns(user_id: str, payload: dict[str, Any]) -> dic
                     {
                         "title": title,
                         "severity": sev,
-                        "asset_name": str(target)[:200],
+                        "asset_name": target_display[:200],
                         "source": "hardening_baseline",
                         "raw": {"line": line, "scope": scope},
                     }
@@ -2512,7 +2889,7 @@ def persist_tool_findings_to_vulns(user_id: str, payload: dict[str, Any]) -> dic
                         "title": title,
                         "cve": cve_val if cve_val.upper().startswith("CVE-") else "",
                         "severity": "critical" if "backdoor" in (cm.get("note") or "").lower() else "high",
-                        "asset_name": str(target)[:200],
+                        "asset_name": target_display[:200],
                         "source": "securaiq_network" if tid == "openvas" else "netvuln_scan",
                         "raw": cm,
                     }
@@ -2545,7 +2922,7 @@ def persist_tool_findings_to_vulns(user_id: str, payload: dict[str, Any]) -> dic
                     {
                         "title": title,
                         "severity": sev,
-                        "asset_name": str(target)[:200],
+                        "asset_name": target_display[:200],
                         "source": "securaiq_network" if tid == "openvas" else "netvuln_scan",
                         "raw": {"line": line, "scope": scope},
                     }
@@ -2633,19 +3010,20 @@ def persist_tool_findings_to_vulns(user_id: str, payload: dict[str, Any]) -> dic
                         "title": title,
                         "cve": cve,
                         "severity": "medium",
-                        "asset_name": str(target)[:200],
+                        "asset_name": target_display[:200],
                         "source": "nikto",
                         "raw": {"cve": cve},
                     }
                 )
 
     created = []
+    # Real-time: emit `vuln` updates so the Vulns page refreshes while tools run
     for item in to_create[:100]:
         if asset and asset.get("id") and not item.get("asset_id"):
             item["asset_id"] = asset["id"]
         if asset and asset.get("name") and not item.get("asset_name"):
             item["asset_name"] = asset["name"]
-        created.append(create_vulnerability(user_id, item, emit_realtime=False))
+        created.append(upsert_vulnerability(user_id, item, emit_realtime=True))
     if created:
         try:
             from app.realtime_bus import publish
@@ -2667,7 +3045,7 @@ def persist_tool_findings_to_vulns(user_id: str, payload: dict[str, Any]) -> dic
         "ok": True,
         "created": len(created),
         "asset_id": (asset or {}).get("id"),
-        "asset_name": (asset or {}).get("name") or str(target)[:200],
+        "asset_name": (asset or {}).get("name") or target_display[:200],
         "titles": [c.get("title") for c in created[:15]],
     }
 

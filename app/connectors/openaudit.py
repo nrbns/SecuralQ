@@ -248,3 +248,61 @@ async def fetch_networks(limit: int = 100) -> list[dict[str, Any]]:
                 }
             )
     return out
+
+
+async def trigger_subnet_discovery(subnet: str, *, name: str = "") -> dict[str, Any]:
+    """Best-effort Open-AudIT discovery run for an owned/lab CIDR.
+
+    See https://www.open-audit.org/
+    """
+    if not is_configured():
+        return {"ok": False, "skipped": "not_configured"}
+    cidr = (subnet or "").strip()
+    if not cidr:
+        return {"ok": False, "skipped": "no_subnet"}
+    label = (name or f"SecuraIQ {cidr}").strip()[:80]
+    body = {
+        "data": {
+            "type": "discoveries",
+            "attributes": {
+                "name": label,
+                "subnet": cidr,
+                "network_address": cidr,
+                "type": "subnet",
+            },
+        }
+    }
+    try:
+        async with _client() as client:
+            await _logon(client)
+            root = api_root()
+            resp = await client.post(
+                f"{root}/discoveries",
+                json=body,
+                params={"format": "json"},
+                headers={"Content-Type": "application/json", **_UA},
+            )
+            if resp.status_code >= 400:
+                return {
+                    "ok": False,
+                    "error": f"create discovery {resp.status_code}: {resp.text[:200]}",
+                }
+            payload: dict[str, Any] = {}
+            try:
+                parsed = resp.json()
+                if isinstance(parsed, dict):
+                    payload = parsed
+            except Exception:
+                payload = {}
+            did = ""
+            data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+            if isinstance(data, dict):
+                did = str(data.get("id") or (data.get("attributes") or {}).get("id") or "")
+            if did:
+                await client.post(
+                    f"{root}/discoveries/{did}",
+                    params={"format": "json", "action": "execute"},
+                )
+            return {"ok": True, "discovery_id": did or None, "subnet": cidr}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)[:300]}

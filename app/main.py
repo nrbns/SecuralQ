@@ -82,6 +82,7 @@ from app.rag import rag_engine
 from app.settings_api import apply_settings_patch, public_settings
 from app.tools import (
     format_tools_context,
+    get_all_tool_versions,
     iter_security_tools,
     list_tools_status,
     run_security_tools,
@@ -90,7 +91,9 @@ from app.uploads import attachment_context
 from app.web_search import format_search_context, web_search
 from app.workspace import append_message, memory_context_raw
 
-STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+from app.paths import resource_root
+
+STATIC_DIR = resource_root() / "static"
 
 
 def _encode_citations(sources: list[dict]) -> str:
@@ -126,19 +129,26 @@ async def lifespan(app: FastAPI):
         from app.wazuh import ensure_schema as ensure_wazuh_schema
 
         ensure_wazuh_schema()
+        from app.software_inventory import ensure_schema as ensure_software_schema
+
+        ensure_software_schema()
         from app.scan_engine.models import ensure_scans_schema
         import app.scan_engine.jobs  # noqa: F401 — register scan_execute handler
+        import app.combo_assessment  # noqa: F401 — register combo_assessment handler
 
         ensure_scans_schema()
         try:
-            from app.archive import ensure_data_layout, prototype_status
+            from app.bootstrap import bootstrap
 
-            layout = ensure_data_layout()
-            proto = prototype_status()
+            boot = bootstrap()
+            be = boot.get("backend") or {}
+            layout = boot.get("layout") or {}
             print(
                 f"Data layout ready: evidence={layout.get('evidence')} archive={layout.get('archive')}"
             )
-            print(f"Prototype: {proto.get('hint')}")
+            print(f"Backend: {be.get('backend')} ({be.get('reason')})")
+            if be.get("hint"):
+                print(be["hint"])
         except Exception as exc:
             print(f"Data layout skipped: {exc}")
     except Exception as exc:
@@ -178,6 +188,21 @@ async def lifespan(app: FastAPI):
     print(f"Auth: {'ENABLED' if settings.auth_enabled else 'disabled (local open mode)'}")
     start_background_jobs()
     print("Background jobs: worker + periodic scheduler started (KEV sync every 6h).")
+    try:
+        from app.lan_sync import is_lan_bind, maybe_queue_lan_auto_scan, refresh_lan_assets
+
+        if is_lan_bind():
+            lan = refresh_lan_assets("local", queue_scan=False)
+            print(
+                f"LAN inventory: host {lan.get('this_host')} · {len(lan.get('neighbors') or [])} ARP neighbors · {lan.get('assets_upserted') or 0} assets"
+            )
+        auto = maybe_queue_lan_auto_scan()
+        if auto.get("ok"):
+            print(f"LAN auto-scan: queued {auto.get('target')} -> assets load on every device")
+        elif auto.get("skipped") not in {None, "not_lan_bind", "lan_auto_scan_off"}:
+            print(f"LAN auto-scan: skipped ({auto.get('skipped')})")
+    except Exception as exc:
+        print(f"LAN auto-scan skipped: {exc}")
     try:
         from app.realtime_bus import bind_loop
 
@@ -673,6 +698,7 @@ async def _iter_build_messages(req: ChatRequest, user_id: str = "local"):
                 target=req.target,
                 authorized=authorized,
                 allow_public=bool(req.authorized_target),
+                user_id=user_id,
             )
         )
 
@@ -1046,6 +1072,40 @@ async def api_tools():
     return status
 
 
+@app.get("/api/tools/versions")
+async def api_tools_versions(request: Request, refresh: bool = False):
+    """SecuraIQ's own software/tool patch status: installed vs. latest
+    published version for every external tool on PATH, plus SecuraIQ's own
+    product version and git build info. Cached ~6h — pass ?refresh=true to
+    force a fresh check."""
+    payload = await get_all_tool_versions(force=refresh)
+    if refresh:
+        try:
+            from app.realtime_bus import publish
+
+            user = resolve_user(
+                request.headers.get("authorization"),
+                request.headers.get("x-securaiq-key") or request.headers.get("x-hackgpt-key"),
+            )
+            counts = payload.get("counts") or {}
+            outdated = int(counts.get("outdated") or 0)
+            publish(
+                type="tool",
+                kind="tool_versions",
+                status="done",
+                user_id=(user.id if user else "local"),
+                findings=outdated,
+                message=(
+                    f"Local tools checked · {outdated} update(s) available"
+                    if outdated
+                    else "Local tools checked · all known versions current"
+                ),
+            )
+        except Exception:
+            pass
+    return payload
+
+
 class ToolsRunRequest(BaseModel):
     target: str | None = Field(default=None, max_length=253)
     message: str = ""
@@ -1330,13 +1390,14 @@ async def realtime_feed():
             except Exception:
                 pass
 
-            inventory = {"configured": False, "devices_cached": 0}
+            inventory = {"configured": False, "live": True, "devices_cached": 0}
             try:
                 from app.openaudit import status as oa_status
 
                 oa = oa_status()
                 inventory = {
                     "configured": bool(oa.get("configured")),
+                    "live": True,
                     "devices_cached": int(oa.get("devices_cached") or 0),
                 }
             except Exception:

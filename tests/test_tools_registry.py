@@ -24,7 +24,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 RUNNER_SRC = (REPO_ROOT / "app" / "tools" / "runner.py").read_text(encoding="utf-8")
 
 _DISPATCH_ID_RE = re.compile(r'tid == "([a-z0-9_]+)"')
+_DISPATCH_IN_RE = re.compile(r"tid in \{([^}]+)\}")
 DISPATCHED_IDS = set(_DISPATCH_ID_RE.findall(RUNNER_SRC))
+for _m in _DISPATCH_IN_RE.finditer(RUNNER_SRC):
+    DISPATCHED_IDS.update(re.findall(r'"([a-z0-9_]+)"', _m.group(1)))
 
 
 def test_every_builtin_tool_has_a_dispatch_branch():
@@ -99,11 +102,15 @@ def test_tools_split_securaiq_vs_third_party():
     assert TOOL_CATALOG["netvuln_scan"].origin == "securaiq"
     assert TOOL_CATALOG["openvas"].origin == "securaiq"
     assert TOOL_CATALOG["openvas"].kind == "builtin"
+    assert TOOL_CATALOG["zap"].origin == "securaiq"
+    assert TOOL_CATALOG["zap"].kind == "builtin"
+    assert TOOL_CATALOG["zap"].name == "SecuraIQ Web Scanner"
+    assert "zap" in DISPATCHED_IDS
     assert TOOL_CATALOG["securaiq"].kind == "builtin"
     assert TOOL_CATALOG["securaiq"].origin == "securaiq"
     assert TOOL_CATALOG["securaiq_code"].origin == "securaiq"
     assert TOOL_CATALOG["securaiq_code"].kind == "builtin"
-    assert "securaiq" in PT_PACK_TOOLS
+    assert "combo_assessment" in PT_PACK_TOOLS
     assert ENGINE_TOOLS["securaiq"] == "securaiq"
     assert set(ENGINE_TOOLS) >= {"securaiq", "nmap", "nuclei", "zap"}
     assert status.get("engine_tools", {}).get("securaiq") == "securaiq"
