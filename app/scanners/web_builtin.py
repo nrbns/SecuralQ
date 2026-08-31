@@ -67,6 +67,27 @@ def _risk_label(code: str) -> str:
     return {"3": "High", "2": "Medium", "1": "Low", "0": "Informational"}.get(code, "Informational")
 
 
+# Maps this scanner's real internal checkpoints onto the generic phase list
+# every scan uses (app/scan_engine/models.py DEFAULT_PROGRESS). Real UI bug
+# found live: app/scan_engine/executor.py marks "discovery" and "port_scan"
+# both "active" once, right before the single opaque `await scanner.execute()`
+# call, and only flips them to "done" after it returns — for a web/DAST scan
+# that single call can run 1-6 minutes (see _TIMEOUT in app/scanners/zap.py),
+# so the "New scan" modal's phase list just sat frozen the whole time even
+# though this scanner was actively working through real checkpoints
+# internally (and already publishing them over the realtime bus). Advancing
+# the DB-persisted progress here means both the live SSE push AND the
+# polling `GET /api/scans/{id}` (which the modal reads via
+# applyScanRecordToUi -> renderScanSteps) show real forward motion.
+_WEB_STEP_SEQUENCE = ("discovery", "port_scan", "service_detect", "collecting")
+_DB_STEP_FOR_EVENT = {
+    "web_fetch": "discovery",
+    "web_headers": "port_scan",
+    "web_paths": "service_detect",
+    "web_active": "collecting",
+}
+
+
 async def _emit(scan_id: str | None, step: str, *, pct: int | None = None) -> None:
     if not scan_id:
         return
@@ -83,6 +104,21 @@ async def _emit(scan_id: str | None, step: str, *, pct: int | None = None) -> No
         if pct is not None:
             payload["pct"] = pct
         publish(**payload)
+    except Exception:
+        pass
+    try:
+        from app.scan_engine.models import set_progress
+
+        if step == "web_done":
+            for sid in _WEB_STEP_SEQUENCE:
+                set_progress(scan_id, sid, "done")
+            return
+        mapped = _DB_STEP_FOR_EVENT.get(step)
+        if mapped:
+            idx = _WEB_STEP_SEQUENCE.index(mapped)
+            for prior in _WEB_STEP_SEQUENCE[:idx]:
+                set_progress(scan_id, prior, "done")
+            set_progress(scan_id, mapped, "active")
     except Exception:
         pass
 
@@ -184,19 +220,34 @@ async def run_builtin_web_scan(
             cookies = resp.headers.get_list("set-cookie") if hasattr(resp.headers, "get_list") else []
             if not cookies and hdr.get("set-cookie"):
                 cookies = [hdr["set-cookie"]]
+            missing_flags = False
+            missing_samesite = False
             for ck in cookies:
                 low = ck.lower()
                 if "httponly" not in low or ("secure" not in low and final_url.startswith("https")):
-                    alerts.append(
-                        _alert(
-                            "Cookie without Secure/HttpOnly flags",
-                            riskcode="1",
-                            riskdesc="Low",
-                            pluginid="seciq-1002",
-                            url=final_url,
-                        )
+                    missing_flags = True
+                if "samesite" not in low:
+                    missing_samesite = True
+            if missing_flags:
+                alerts.append(
+                    _alert(
+                        "Cookie without Secure/HttpOnly flags",
+                        riskcode="1",
+                        riskdesc="Low",
+                        pluginid="seciq-1002",
+                        url=final_url,
                     )
-                    break
+                )
+            if missing_samesite:
+                alerts.append(
+                    _alert(
+                        "Cookie without SameSite attribute (CSRF exposure)",
+                        riskcode="1",
+                        riskdesc="Low",
+                        pluginid="seciq-1006",
+                        url=final_url,
+                    )
+                )
 
             body_sample = (resp.text or "")[:50000].lower()
             if re.search(r"(stack trace|syntax error|mysql_|postgresql|sqlite_|exception in)", body_sample):
@@ -279,6 +330,43 @@ async def run_builtin_web_scan(
                                 url=base_url,
                             )
                         )
+
+                # HTTP method exposure — TRACE enables classic XST (cross-site
+                # tracing) attacks that read cookies/headers past HttpOnly;
+                # PUT/DELETE open on the root path is almost always a
+                # misconfiguration worth flagging.
+                try:
+                    tr = await client.request("TRACE", base_url, headers={"User-Agent": "SecuraIQ-WebScanner/1.0"})
+                    await _log("trace", {"status": tr.status_code})
+                    if tr.status_code < 400:
+                        alerts.append(
+                            _alert(
+                                "HTTP TRACE method enabled (Cross-Site Tracing risk)",
+                                riskcode="1",
+                                riskdesc="Low",
+                                pluginid="seciq-1007",
+                                url=base_url,
+                            )
+                        )
+                except Exception as exc:
+                    await _log("trace", {"error": str(exc)})
+                try:
+                    opt = await client.options(base_url, headers={"User-Agent": "SecuraIQ-WebScanner/1.0"})
+                    allow = (opt.headers.get("allow") or "").upper()
+                    await _log("options", {"status": opt.status_code, "allow": allow})
+                    risky_methods = {"PUT", "DELETE"} & {m.strip() for m in allow.split(",") if m.strip()}
+                    if risky_methods:
+                        alerts.append(
+                            _alert(
+                                f"Potentially unsafe HTTP method(s) allowed: {', '.join(sorted(risky_methods))}",
+                                riskcode="1",
+                                riskdesc="Low",
+                                pluginid="seciq-1008",
+                                url=base_url,
+                            )
+                        )
+                except Exception as exc:
+                    await _log("options", {"error": str(exc)})
 
     parsed = urlparse(base_url)
     if parsed.scheme == "https":

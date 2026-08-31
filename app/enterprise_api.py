@@ -20,6 +20,7 @@ from app.services.assets import (
     update_asset,
 )
 from app.services.findings import (
+    delete_vulnerability,
     get_vulnerability,
     import_vulnerabilities,
     list_vulnerabilities,
@@ -41,6 +42,7 @@ from app.enterprise import (
     create_remediation,
     delete_campaign,
     delete_playbook,
+    delete_remediation,
     enterprise_dashboard,
     evidence_from_files,
     export_risk_markdown,
@@ -958,6 +960,14 @@ async def vulns_update(vuln_id: str, req: VulnUpdate, user: Annotated[AuthUser, 
     return out
 
 
+@router.delete("/vulnerabilities/{vuln_id}")
+async def vulns_delete(vuln_id: str, user: Annotated[AuthUser, Depends(require_user)]):
+    require_perm(user, "vuln.write")
+    if not delete_vulnerability(user.id, vuln_id):
+        raise HTTPException(status_code=404, detail="Not found")
+    return {"ok": True}
+
+
 class VulnTriage(BaseModel):
     owner: str = "SecOps"
     create_jira: bool = False
@@ -1051,6 +1061,13 @@ async def rem_update(rem_id: str, req: RemediationUpdate, user: Annotated[AuthUs
     if not out:
         raise HTTPException(status_code=404, detail="Not found")
     return out
+
+
+@router.delete("/gap/remediations/{rem_id}")
+async def rem_delete(rem_id: str, user: Annotated[AuthUser, Depends(require_user)]):
+    if not delete_remediation(user.id, rem_id):
+        raise HTTPException(status_code=404, detail="Not found")
+    return {"ok": True}
 
 
 @router.get("/playbooks")

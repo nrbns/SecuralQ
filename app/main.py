@@ -54,6 +54,7 @@ from app.commercial_ext_api import router as commercial_ext_router
 from app.platform_api import router as platform_router
 from app.billing_api import router as billing_router
 from app.xdr_api import router as xdr_router
+from app.agents_api import router as agents_router
 from app.wazuh_api import router as wazuh_router
 from app.openaudit_api import router as openaudit_router
 from app.hardeningkitty_api import router as hardeningkitty_router
@@ -322,6 +323,7 @@ app.include_router(billing_router)
 app.include_router(xdr_router)
 app.include_router(wazuh_router, prefix="/api/siem")
 app.include_router(wazuh_router, prefix="/api/wazuh")  # compat alias
+app.include_router(agents_router)
 app.include_router(openaudit_router)
 app.include_router(hardeningkitty_router)
 app.include_router(thehive_router)

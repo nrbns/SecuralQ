@@ -120,6 +120,7 @@
       soc: "Ask AI for IR steps on an incident…",
       intel: "Ask AI for a threat brief on a CVE or IOC…",
       reports: "Ask AI to draft an executive or technical report…",
+      webscan: "Ask AI about a web finding, or paste a URL to scan…",
       evidence: "Ask AI what evidence is missing for an audit…",
       playbooks: "Ask AI to expand or tabletop a playbook…",
       campaigns: "Ask AI to design an awareness campaign…",
@@ -152,6 +153,7 @@
       campaigns: "viewCampaignsPage",
       intel: "viewIntel",
       reports: "viewReports",
+      webscan: "viewWebscan",
       soc: "viewSoc",
       evidence: "viewEvidence",
       orgs: "viewOrgs",
@@ -190,6 +192,7 @@
         campaigns: "Campaigns",
         intel: "Threat Intelligence",
         reports: "Reports",
+        webscan: "Web URL Scan",
         soc: "SOC",
         evidence: "Evidence Locker",
         orgs: "Organizations",
@@ -213,6 +216,7 @@
     if (view === "campaigns") renderCampaignsPage();
     if (view === "intel") renderIntelPage();
     if (view === "reports") renderReportsPage();
+    if (view === "webscan") renderWebScanPage();
     if (view === "soc") renderSocPage();
     if (view === "evidence") renderEvidencePage();
     if (view === "orgs") renderOrgsPage();
@@ -1792,6 +1796,7 @@
         <button type="button" class="btn-secondary ws-vuln-jira" data-id="${escapeHtml(v.id)}">Jira</button>
         <button type="button" class="btn-secondary ws-vuln-sn" data-id="${escapeHtml(v.id)}" data-title="${escapeHtml(v.title || v.cve || "")}">ServiceNow</button>
         <button type="button" class="btn-secondary ws-close-vuln" data-id="${escapeHtml(v.id)}">Close</button>
+        <button type="button" class="btn-secondary ws-del-vuln" data-id="${escapeHtml(v.id)}">Delete</button>
       </div>`;
     wireAskAiButtons("vulnDetailPanel");
     wireVulnActionButtons(panel);
@@ -1899,6 +1904,26 @@
         renderVulnsPage();
       loadVulnSampleButtons();
         if (typeof loadCommandCenter === "function") loadCommandCenter();
+      });
+    });
+    root?.querySelectorAll(".ws-del-vuln").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        if (!confirm("Delete this finding? This cannot be undone.")) return;
+        const id = btn.getAttribute("data-id");
+        try {
+          const res = await fetch(`/api/vulnerabilities/${id}`, { method: "DELETE", headers: authHeaders() });
+          if (!res.ok) {
+            const d = await res.json().catch(() => ({}));
+            throw new Error(d.detail || `HTTP ${res.status}`);
+          }
+          _vulnCache = _vulnCache.filter((v) => v.id !== id);
+          if (_vulnSelectedId === id) _vulnSelectedId = "";
+          paintVulnTable();
+          if (typeof loadCommandCenter === "function") loadCommandCenter();
+        } catch (err) {
+          if (typeof notifyUser === "function") notifyUser(`**Delete failed:** ${err.message || err}`);
+          else alert(err.message || "Delete failed");
+        }
       });
     });
   }
@@ -2615,6 +2640,7 @@
           <button type="button" class="btn-secondary ws-rem-sn" data-id="${r.id}" data-title="${escapeHtml(
             r.title
           )}" data-control="${escapeHtml(r.control_id)}">ServiceNow</button>
+          <button type="button" class="btn-secondary ws-rem-del" data-id="${r.id}">Delete</button>
         </td>
       </tr>`
       )
@@ -2635,6 +2661,24 @@
         });
         renderRemsPage();
         if (typeof loadCommandCenter === "function") loadCommandCenter();
+      });
+    });
+    qs("remsPageBody")?.querySelectorAll(".ws-rem-del").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        if (!confirm("Delete this remediation/control task?")) return;
+        const id = btn.getAttribute("data-id");
+        try {
+          const res = await fetch(`/api/gap/remediations/${id}`, { method: "DELETE", headers: authHeaders() });
+          if (!res.ok) {
+            const d = await res.json().catch(() => ({}));
+            throw new Error(d.detail || `HTTP ${res.status}`);
+          }
+          renderRemsPage();
+          if (typeof loadCommandCenter === "function") loadCommandCenter();
+        } catch (err) {
+          if (typeof notifyUser === "function") notifyUser(`**Delete failed:** ${err.message || err}`);
+          else alert(err.message || "Delete failed");
+        }
       });
     });
     qs("remsPageBody")?.querySelectorAll(".ws-rem-jira").forEach((btn) => {
@@ -3935,6 +3979,119 @@
     }
   }
 
+  async function renderAgentsPanel() {
+    const el = qs("agentsPanelBody");
+    if (!el) return;
+    try {
+      const [res, threatsRes] = await Promise.all([
+        fetch("/api/agents", { headers: authHeaders() }),
+        fetch("/api/agents/threats?limit=50", { headers: authHeaders() }).catch(() => null),
+      ]);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+      const agents = data.agents || [];
+      const threatsData = threatsRes && threatsRes.ok ? await threatsRes.json().catch(() => ({})) : {};
+      const threats = threatsData.threats || [];
+      const threatsByAgent = {};
+      threats.forEach((t) => {
+        (threatsByAgent[t.agent_id] = threatsByAgent[t.agent_id] || []).push(t);
+      });
+      if (!agents.length) {
+        el.innerHTML = `<p class="hint">No agents enrolled yet. Click <strong>Enroll new agent</strong>, then install <code>scripts/securaiq_agent.py</code> on a server to monitor.</p>`;
+        return;
+      }
+      const statusChip = (st) => {
+        const cls = st === "online" ? "status-done" : st === "pending" ? "status-planned" : st === "revoked" ? "status-error" : "status-error";
+        return `<span class="auto-job-status ${cls}">${escapeHtml(st)}</span>`;
+      };
+      const sevRank = { critical: 4, high: 3, medium: 2, low: 1 };
+      const sevChip = (sev) => {
+        const cls = sev === "critical" || sev === "high" ? "status-error" : sev === "medium" ? "status-planned" : "status-done";
+        return `<span class="auto-job-status ${cls}">${escapeHtml(sev)}</span>`;
+      };
+      const sentinelBadge = (agentThreats) => {
+        const active = (agentThreats || []).filter((t) => t.status !== "resolved");
+        if (!active.length) return `<span class="auto-job-status status-done">clean</span>`;
+        const worst = active.reduce((w, t) => (sevRank[t.severity] > sevRank[w] ? t.severity : w), "low");
+        return `${sevChip(worst)} <span class="hint">${active.length} active</span>`;
+      };
+      const fmtWhen = (ts) => {
+        if (!ts) return "never";
+        const d = new Date(Number(ts) * 1000);
+        return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString();
+      };
+      el.innerHTML = `<div class="data-table-wrap"><table class="data-table">
+        <thead><tr><th>Host</th><th>Status</th><th>OS</th><th>Ports</th><th>Packages</th><th>Sentinel</th><th>Last check-in</th><th></th></tr></thead>
+        <tbody>${agents
+          .map((a) => {
+            const payload = a.last_payload || {};
+            return `<tr>
+              <td><strong>${escapeHtml(a.hostname || a.name || a.id.slice(0, 8))}</strong>${a.ip ? `<div class="hint">${escapeHtml(a.ip)}</div>` : ""}</td>
+              <td>${statusChip(a.status)}</td>
+              <td class="hint">${escapeHtml(a.os || "—")} ${escapeHtml(a.os_version || "")}</td>
+              <td>${(payload.listening_ports || []).length}</td>
+              <td>${(payload.packages || []).length}</td>
+              <td>${sentinelBadge(threatsByAgent[a.id])}</td>
+              <td class="hint">${escapeHtml(fmtWhen(a.last_checkin))} · ${Number(a.checkin_count || 0)} check-in(s)</td>
+              <td class="reports-dl-cell">
+                ${a.asset_id ? `<button type="button" class="btn-secondary agents-view-asset" data-id="${escapeHtml(a.asset_id)}">View asset</button>` : ""}
+                <button type="button" class="btn-secondary agents-revoke" data-id="${escapeHtml(a.id)}">Revoke</button>
+                <button type="button" class="btn-secondary agents-delete" data-id="${escapeHtml(a.id)}">Delete</button>
+              </td>
+            </tr>`;
+          })
+          .join("")}</tbody></table></div>
+        ${
+          threats.length
+            ? `<div class="agents-threats-feed" style="margin-top:12px">
+                <h4 style="margin:0 0 6px">SecuraIQ Sentinel — recent detections</h4>
+                <ul class="hint" style="list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:4px;max-height:220px;overflow:auto">
+                  ${threats
+                    .slice(0, 20)
+                    .map(
+                      (t) =>
+                        `<li>${sevChip(t.severity)} <strong>${escapeHtml(t.title)}</strong> — ${escapeHtml(t.hostname || t.agent_id.slice(0, 8))} · ${escapeHtml(t.category)} · ${fmtWhen(t.last_seen)}${t.hit_count > 1 ? ` · seen ${Number(t.hit_count)}x` : ""}</li>`
+                    )
+                    .join("")}
+                </ul>
+              </div>`
+            : ""
+        }`;
+      el.querySelectorAll(".agents-view-asset").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          window.showWorkspace?.("assets");
+        });
+      });
+      el.querySelectorAll(".agents-revoke").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const id = btn.getAttribute("data-id");
+          try {
+            const r = await fetch(`/api/agents/${encodeURIComponent(id)}/revoke`, { method: "POST", headers: authHeaders() });
+            if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.detail || `HTTP ${r.status}`); }
+            renderAgentsPanel();
+          } catch (err) {
+            alert(err.message || "Revoke failed");
+          }
+        });
+      });
+      el.querySelectorAll(".agents-delete").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          if (!confirm("Delete this agent record? The install token will stop working.")) return;
+          const id = btn.getAttribute("data-id");
+          try {
+            const r = await fetch(`/api/agents/${encodeURIComponent(id)}`, { method: "DELETE", headers: authHeaders() });
+            if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.detail || `HTTP ${r.status}`); }
+            renderAgentsPanel();
+          } catch (err) {
+            alert(err.message || "Delete failed");
+          }
+        });
+      });
+    } catch (err) {
+      el.innerHTML = `<p class="hint">Agents unavailable: ${escapeHtml(err.message || String(err))}</p>`;
+    }
+  }
+
   async function renderTheHivePanel() {
     const el = qs("thehivePanelBody");
     if (!el) return;
@@ -3981,10 +4138,277 @@
     }
   }
 
+  // --- Web URL Scan: dedicated page (not buried in the New Scan modal's
+  // scanner dropdown) that drives the SecuraIQ Web Scanner (scanner="zap",
+  // app/scanners/zap.py + app/scanners/web_builtin.py) directly against a
+  // URL. Reuses the same /api/scans endpoints as "New scan" — this is a
+  // focused front-end for the same real, install-free DAST engine, not a
+  // separate backend.
+  function renderWebScanSteps(progress) {
+    const ul = qs("webscanSteps");
+    if (!ul) return;
+    const steps = Array.isArray(progress) ? progress : [];
+    ul.innerHTML = steps
+      .map((s) => {
+        const st = s.status || "pending";
+        const mark = st === "done" ? "✓" : st === "active" ? "●" : st === "failed" ? "✗" : "○";
+        return `<li class="scan-step scan-step-${st}"><span>${mark}</span> ${escapeHtml(s.label || s.id || "")}</li>`;
+      })
+      .join("");
+  }
+
+  function renderWebScanResult(scan) {
+    const resultPanel = qs("webscanResultPanel");
+    const body = qs("webscanResultBody");
+    if (!resultPanel || !body) return;
+    resultPanel.style.display = "";
+    if (!scan || scan.status !== "completed") {
+      body.innerHTML = `<p class="hint">${escapeHtml((scan && (scan.error || scan.status)) || "Scan did not complete")}</p>`;
+      return;
+    }
+    const sum = scan.summary || {};
+    const reportUrl = `/api/scans/${encodeURIComponent(scan.id)}/report`;
+    const pdfUrl = `/api/scans/${encodeURIComponent(scan.id)}/report.pdf`;
+    body.innerHTML = `
+      <div class="comp-kpi-row">
+        <div class="comp-kpi"><span>Findings</span><strong>${sum.findings_created ?? sum.findings ?? 0}</strong></div>
+        <div class="comp-kpi"><span>Alerts</span><strong>${sum.alerts ?? "—"}</strong></div>
+        <div class="comp-kpi"><span>Risk</span><strong>${
+          sum.risk?.score != null ? `${sum.risk.score} (${sum.risk.band || "—"})` : "—"
+        }</strong></div>
+      </div>
+      <div class="cc-action-row" style="margin-top:0.75rem">
+        <button type="button" class="btn-secondary" id="webscanDlMd">Download Markdown</button>
+        <button type="button" class="btn-secondary" id="webscanDlPdf">Download PDF</button>
+        <button type="button" class="btn-secondary" data-workspace="vulns">View findings</button>
+        <button type="button" class="btn-secondary" data-workspace="reports">Open Reports</button>
+      </div>`;
+    body.querySelectorAll("[data-workspace]").forEach((b) =>
+      b.addEventListener("click", () => window.showWorkspace?.(b.getAttribute("data-workspace")))
+    );
+    qs("webscanDlMd")?.addEventListener("click", async () => {
+      try {
+        if (typeof downloadMd === "function") {
+          await downloadMd(reportUrl, `securaiq-scan-${String(scan.id).slice(0, 8)}.md`);
+        } else {
+          const r = await fetch(reportUrl, { headers: authHeaders() });
+          const md = await r.text();
+          const a = document.createElement("a");
+          a.href = URL.createObjectURL(new Blob([md], { type: "text/markdown" }));
+          a.download = `securaiq-scan-${String(scan.id).slice(0, 8)}.md`;
+          a.click();
+        }
+      } catch (err) {
+        alert(err.message || "Download failed");
+      }
+    });
+    qs("webscanDlPdf")?.addEventListener("click", async () => {
+      try {
+        if (typeof window.downloadBinary === "function") {
+          await window.downloadBinary(pdfUrl, `securaiq-va-${String(scan.id).slice(0, 8)}.pdf`, "application/pdf");
+        } else {
+          const r = await fetch(pdfUrl, { headers: authHeaders() });
+          const buf = await r.arrayBuffer();
+          const a = document.createElement("a");
+          a.href = URL.createObjectURL(new Blob([buf], { type: "application/pdf" }));
+          a.download = `securaiq-va-${String(scan.id).slice(0, 8)}.pdf`;
+          a.click();
+        }
+      } catch (err) {
+        alert(err.message || "Download failed");
+      }
+    });
+  }
+
+  async function pollWebScan(scanId) {
+    const statusLabel = qs("webscanStatusLabel");
+    const summaryEl = qs("webscanSummary");
+    if (typeof window.watchScanRealtime === "function") window.watchScanRealtime(scanId);
+    for (let i = 0; i < 240; i++) {
+      let res;
+      try {
+        res = await fetch(`/api/scans/${encodeURIComponent(scanId)}`, { headers: authHeaders() });
+      } catch {
+        break;
+      }
+      if (!res.ok) break;
+      const scan = await res.json().catch(() => ({}));
+      if (statusLabel) statusLabel.textContent = (scan.status || "").toUpperCase();
+      renderWebScanSteps(scan.progress);
+      const terminal = ["completed", "failed", "blocked"].includes(scan.status);
+      if (terminal) {
+        if (typeof window.unwatchScanRealtime === "function") window.unwatchScanRealtime(scanId);
+        renderWebScanResult(scan);
+        if (summaryEl) {
+          summaryEl.textContent =
+            scan.status === "completed" ? `Scan complete on ${scan.target || ""}` : scan.error || scan.status;
+        }
+        if (typeof syncLiveWorkspace === "function") syncLiveWorkspace({ pushType: "scan" });
+        return scan;
+      }
+      if (summaryEl) summaryEl.textContent = `Scanning ${scan.target || ""}…`;
+      await new Promise((r) => setTimeout(r, 800));
+    }
+    if (summaryEl) summaryEl.textContent = "Still running — check Reports or refresh later.";
+    return null;
+  }
+
+  async function submitWebScan(ev) {
+    ev.preventDefault();
+    const targetEl = qs("webscanTarget");
+    const target = (targetEl?.value || "").trim();
+    const profile = qs("webscanProfile")?.value || "vulnerability";
+    const authorized = !!qs("webscanAuthorized")?.checked;
+    if (!target) {
+      alert("Enter a URL to scan.");
+      targetEl?.focus();
+      return;
+    }
+    if (!authorized) {
+      alert("Confirm you're authorized to scan this target before starting.");
+      return;
+    }
+    const btn = qs("webscanStart");
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "Starting…";
+    }
+    const progressPanel = qs("webscanProgressPanel");
+    const resultPanel = qs("webscanResultPanel");
+    const statusLabel = qs("webscanStatusLabel");
+    const summaryEl = qs("webscanSummary");
+    if (resultPanel) resultPanel.style.display = "none";
+    if (progressPanel) progressPanel.style.display = "";
+    if (statusLabel) statusLabel.textContent = "QUEUED";
+    if (summaryEl) summaryEl.textContent = `Starting web scan on ${target}…`;
+    renderWebScanSteps([]);
+    try {
+      const res = await fetch("/api/scans", {
+        method: "POST",
+        headers: authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({
+          target,
+          scanner: "zap",
+          profile,
+          authorized: true,
+          scope: [target],
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+      const scanId = data.scan_id;
+      if (!scanId) throw new Error("No scan_id returned");
+      await pollWebScan(scanId);
+    } catch (err) {
+      if (statusLabel) statusLabel.textContent = "FAILED";
+      if (summaryEl) summaryEl.textContent = String(err.message || err);
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "Start scan";
+      }
+      refreshWebScanHistory();
+    }
+  }
+
+  async function refreshWebScanHistory() {
+    const el = qs("webscanHistoryBody");
+    if (!el) return;
+    try {
+      const res = await fetch("/api/scans?limit=25", { headers: authHeaders() });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+      const rows = (data.scans || []).filter((s) => s.scanner === "zap");
+      if (!rows.length) {
+        el.innerHTML = `<p class="hint">No web scans yet — enter a URL above and click Start scan.</p>`;
+        return;
+      }
+      const fmtWhen = (ts) => {
+        if (ts == null || ts === "") return "—";
+        const d = new Date(typeof ts === "number" && ts < 1e12 ? ts * 1000 : ts);
+        return Number.isNaN(d.getTime()) ? String(ts) : d.toLocaleString();
+      };
+      el.innerHTML = `<div class="data-table-wrap"><table class="data-table">
+        <thead><tr><th>Target</th><th>Status</th><th>Findings</th><th>When</th><th></th></tr></thead>
+        <tbody>${rows
+          .map((s) => {
+            const sum = s.summary || {};
+            return `<tr>
+              <td><strong>${escapeHtml(s.target || "")}</strong></td>
+              <td>${escapeHtml(s.status || "")}</td>
+              <td>${sum.findings_created ?? sum.findings ?? "—"}</td>
+              <td class="hint">${escapeHtml(fmtWhen(s.created_at))}</td>
+              <td><button type="button" class="btn-secondary webscan-view" data-id="${escapeHtml(s.id)}">View</button></td>
+            </tr>`;
+          })
+          .join("")}</tbody></table></div>`;
+      el.querySelectorAll(".webscan-view").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const id = btn.getAttribute("data-id");
+          try {
+            const r = await fetch(`/api/scans/${encodeURIComponent(id)}`, { headers: authHeaders() });
+            const scan = await r.json().catch(() => ({}));
+            if (!r.ok) throw new Error(scan.detail || `HTTP ${r.status}`);
+            const progressPanel = qs("webscanProgressPanel");
+            if (progressPanel) progressPanel.style.display = "none";
+            renderWebScanResult(scan);
+            qs("webscanResultPanel")?.scrollIntoView({ behavior: "smooth", block: "start" });
+          } catch (err) {
+            alert(err.message || "Could not load scan");
+          }
+        });
+      });
+    } catch (err) {
+      el.innerHTML = `<p class="hint">Could not load web scan history: ${escapeHtml(err.message || String(err))}</p>`;
+    }
+  }
+
+  async function renderWebScanPage() {
+    const body = qs("webscanPageBody");
+    if (!body) return;
+    body.innerHTML = `
+      <div class="webscan-page">
+        <section class="cc-panel">
+          <header><h2>Scan a URL</h2></header>
+          <form id="webscanForm" class="inline-form inline-form-col" style="gap:0.6rem">
+            <input id="webscanTarget" type="text" placeholder="https://example.com" required style="width:100%" />
+            <div style="display:flex;gap:0.75rem;flex-wrap:wrap;align-items:center">
+              <label class="hint">Depth
+                <select id="webscanProfile">
+                  <option value="web">Standard — headers, TLS, robots/sitemap</option>
+                  <option value="vulnerability" selected>Deep — + sensitive paths, cookies, CORS</option>
+                  <option value="full">Full — + active checks (reflected input, open redirect)</option>
+                </select>
+              </label>
+              <label class="hint"><input type="checkbox" id="webscanAuthorized" checked /> I'm authorized to scan this target</label>
+              <button type="submit" class="btn-primary" id="webscanStart">Start scan</button>
+            </div>
+            <p class="hint">Authorized lab/owned targets only. Public targets need the checkbox above confirmed.</p>
+          </form>
+        </section>
+        <section class="cc-panel" id="webscanProgressPanel" style="margin-top:1rem;display:none">
+          <header><h2>Scan progress</h2><span class="hint" id="webscanStatusLabel"></span></header>
+          <ul class="cc-list scan-steps" id="webscanSteps"></ul>
+          <p class="hint" id="webscanSummary"></p>
+        </section>
+        <section class="cc-panel" id="webscanResultPanel" style="margin-top:1rem;display:none">
+          <header><h2>Results</h2></header>
+          <div id="webscanResultBody"></div>
+        </section>
+        <section class="cc-panel" style="margin-top:1rem">
+          <header><h2>Recent web scans</h2></header>
+          <div id="webscanHistoryBody"><p class="hint">Loading…</p></div>
+        </section>
+      </div>`;
+    qs("webscanForm")?.addEventListener("submit", submitWebScan);
+    await refreshWebScanHistory();
+  }
+  window.renderWebScanPage = renderWebScanPage;
+
   // Push types that actually affect the SOC page's SIEM/XDR/incident panels.
   // Used to skip pointless sub-panel refetches when a live event (e.g. an
   // unrelated scan/tool tick) fires while the user is sitting on SOC view.
-  const SOC_RELEVANT_PUSH_TYPES = new Set(["siem", "xdr", "xdr_batch", "incident", "hunt", "thehive"]);
+  const SOC_RELEVANT_PUSH_TYPES = new Set(["siem", "xdr", "xdr_batch", "incident", "hunt", "thehive", "agent", "agent_threat"]);
 
   async function renderSocPage(opts) {
     opts = opts || {};
@@ -4057,6 +4481,7 @@
       // actually relevant to them — a bare heartbeat or unrelated scan/tool
       // event shouldn't re-hit /api/siem/overview, /api/xdr/status, etc.
       if (!opts.pushType || SOC_RELEVANT_PUSH_TYPES.has(opts.pushType)) {
+        renderAgentsPanel();
         renderXdrPanel(true);
         renderWazuhPanel(true);
         renderTheHivePanel(true);
@@ -4115,6 +4540,11 @@
           </form>
         </section>
       </div>
+      <section class="cc-panel" id="agentsPanel" style="margin-top:1rem">
+        <header><h2>SecuraIQ Agents</h2><button type="button" class="btn-secondary" id="agentsEnrollBtn">Enroll new agent</button></header>
+        <div id="agentsEnrollResult"></div>
+        <div id="agentsPanelBody"><p class="hint">Loading…</p></div>
+      </section>
       <section class="cc-panel" id="xdrPanel" style="margin-top:1rem">
         <header><h2>XDR / EDR</h2><button type="button" class="btn-secondary" id="xdrSyncBtn">Sync now</button></header>
         <div id="xdrPanelBody"><p class="hint">Loading…</p></div>
@@ -4128,9 +4558,44 @@
         <div id="thehivePanelBody"><p class="hint">Loading…</p></div>
       </section>`;
     body.dataset.socRendered = "1";
+    renderAgentsPanel();
     renderXdrPanel();
     renderWazuhPanel();
     renderTheHivePanel();
+    qs("agentsEnrollBtn")?.addEventListener("click", async () => {
+      const btn = qs("agentsEnrollBtn");
+      const resultEl = qs("agentsEnrollResult");
+      if (btn) { btn.disabled = true; btn.textContent = "Enrolling…"; }
+      try {
+        const res = await fetch("/api/agents/enroll", {
+          method: "POST",
+          headers: authHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify({ name: "" }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+        if (resultEl) {
+          resultEl.innerHTML = `
+            <div class="cc-panel" style="margin:0.75rem 0;background:var(--panel-2,rgba(255,255,255,0.03))">
+              <p class="hint"><strong>Agent enrolled</strong> · id <code>${escapeHtml(data.agent_id)}</code></p>
+              <p class="hint">This token is shown ONCE — copy it now. Run this on the server you want to monitor:</p>
+              <textarea readonly rows="3" style="width:100%;font-family:ui-monospace,monospace;font-size:0.82rem" onclick="this.select()">${escapeHtml(
+                data.install_hint || ""
+              )}</textarea>
+              <button type="button" class="btn-secondary" id="agentsEnrollDismiss" style="margin-top:0.5rem">Dismiss</button>
+            </div>`;
+          qs("agentsEnrollDismiss")?.addEventListener("click", () => {
+            resultEl.innerHTML = "";
+          });
+        }
+        renderAgentsPanel();
+      } catch (err) {
+        if (typeof notifyUser === "function") notifyUser(`**Agent enroll failed:** ${err.message || err}`);
+        else alert(err.message || "Enroll failed");
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = "Enroll new agent"; }
+      }
+    });
     qs("xdrSyncBtn")?.addEventListener("click", async () => {
       const btn = qs("xdrSyncBtn");
       if (btn) { btn.disabled = true; btn.textContent = "Syncing…"; }
@@ -4407,7 +4872,7 @@
         </section>
         <section class="cc-panel">
           <header><h2>Link evidence</h2></header>
-          <form id="evidenceLinkForm" class="inline-form" style="flex-direction:column;align-items:stretch;gap:0.5rem">
+          <form id="evidenceLinkForm" class="inline-form inline-form-col" style="gap:0.5rem">
             <select id="evidenceFileId" required ${files.length ? "" : "disabled"}>
               <option value="">Select file</option>${fileOpts}
             </select>

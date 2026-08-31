@@ -2854,6 +2854,21 @@ html[data-theme="light"],
   padding: 0.35rem 0.6rem;
   font: inherit;
 }
+/* Vertically-stacked variant (label-above-field forms). The base rule above
+   uses `flex: 1 1 8rem` so inputs/selects share out horizontal space in the
+   default row layout — but that same rule reinterprets its 8rem flex-basis
+   as a HEIGHT once flex-direction flips to column, which grows fields to
+   fill the panel (the "giant empty input box" bug). This modifier resets
+   flex-grow so stacked fields size to their natural/explicit height instead. */
+.inline-form.inline-form-col {
+  flex-direction: column;
+  align-items: stretch;
+}
+.inline-form.inline-form-col > input,
+.inline-form.inline-form-col > select,
+.inline-form.inline-form-col > button {
+  flex: 0 0 auto;
+}
 .inline-form button {
   font: inherit;
   font-weight: 700;

@@ -90,6 +90,33 @@ def parse_engagement_scope(engagement: dict[str, Any] | None) -> list[str]:
     return normalize_scope_json(engagement.get("scope_json") or "")
 
 
+def _url_to_host(value: str) -> str:
+    """Extract a bare host from a value that may be a full URL.
+
+    Real bug found live: scope entries and targets containing a full URL
+    (scheme://host[:port][/path]) never matched target_in_scope's exact-IP
+    or hostname comparisons below, which expect bare hosts. Since the UI
+    auto-seeds the Scope field from Target verbatim, and web scans pass a
+    URL as the target, every URL-based scan with scope populated was
+    silently rejected as "out_of_scope" even when the host genuinely was
+    in scope. Mirrors the same scheme/path/port stripping already used in
+    app/net_assess.py resolve_and_authorize for the same class of bug.
+    """
+    v = (value or "").strip()
+    if not v:
+        return v
+    m = re.match(r"^[a-zA-Z][a-zA-Z0-9+.\-]*://", v)
+    if m:
+        v = v[m.end():]
+    v = v.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+    v = v.rsplit("@", 1)[-1]
+    if v.startswith("["):
+        v = v.split("]")[0].lstrip("[")
+    else:
+        v = v.split(":")[0]
+    return v.strip()
+
+
 def _host_matches(candidate: str, pattern: str) -> bool:
     c = (candidate or "").strip().lower().rstrip(".")
     p = (pattern or "").strip().lower().rstrip(".")
@@ -117,14 +144,23 @@ def target_in_scope(
     candidates: list[str] = []
     for v in (target, ip):
         if v and str(v).strip():
-            candidates.append(str(v).strip().lower().rstrip("."))
+            raw = str(v).strip().lower().rstrip(".")
+            candidates.append(_url_to_host(raw) or raw)
 
     if not candidates:
         return False, "no_target_to_check"
 
     for entry in scope:
-        # CIDR
-        if "/" in entry:
+        entry = (entry or "").strip()
+        if not entry:
+            continue
+        # A URL's scheme/path also contains "/", which used to be
+        # misdetected as CIDR notation below (ipaddress.ip_network() then
+        # raised and the entry was silently skipped) — check for an actual
+        # URL scheme first so "http://host/path" and "10.0.0.0/24" aren't
+        # both routed into the CIDR branch.
+        looks_like_url = bool(re.match(r"^[a-zA-Z][a-zA-Z0-9+.\-]*://", entry))
+        if not looks_like_url and "/" in entry:
             try:
                 net = ipaddress.ip_network(entry, strict=False)
             except ValueError:
@@ -136,23 +172,24 @@ def target_in_scope(
                 except ValueError:
                     continue
             continue
+        entry_host = _url_to_host(entry) or entry
         # Exact IP
         try:
-            ipaddress.ip_address(entry)
+            ipaddress.ip_address(entry_host)
             for cand in candidates:
                 try:
-                    if ipaddress.ip_address(cand) == ipaddress.ip_address(entry):
-                        return True, f"matched_ip:{entry}"
+                    if ipaddress.ip_address(cand) == ipaddress.ip_address(entry_host):
+                        return True, f"matched_ip:{entry_host}"
                 except ValueError:
-                    if cand == entry:
-                        return True, f"matched_ip:{entry}"
+                    if cand == entry_host:
+                        return True, f"matched_ip:{entry_host}"
             continue
         except ValueError:
             pass
         # Hostname / wildcard
         for cand in candidates:
-            if _host_matches(cand, entry):
-                return True, f"matched_host:{entry}"
+            if _host_matches(cand, entry_host):
+                return True, f"matched_host:{entry_host}"
 
     return False, "out_of_scope"
 

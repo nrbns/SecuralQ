@@ -2578,6 +2578,13 @@ function startRealtimeFeed() {
         if (pushType === "intel" || pushType === "intel_watch") {
           refreshIntelStrip();
         }
+        if (pushType === "agent_threat" && push && typeof notifyUser === "function") {
+          const sev = String(push.severity || "medium");
+          if (sev === "critical" || sev === "high") {
+            const host = push.hostname || push.agent_id || "agent";
+            notifyUser(`**SecuraIQ Sentinel · ${sev.toUpperCase()}** — ${push.title || "Suspicious activity"} on \`${host}\``);
+          }
+        }
         // Detect job completions → notify workspace to refresh
         const prevJobs = JSON.stringify((prev.jobs_recent || []).map((j) => `${j.id}:${j.status}`));
         const nextJobs = JSON.stringify((data.jobs_recent || []).map((j) => `${j.id}:${j.status}`));
@@ -2606,6 +2613,46 @@ function startRealtimeFeed() {
           pushType,
           heartbeat: !pushType,
         });
+        // The SSE endpoint coalesces a burst of pushes fired in quick succession
+        // (e.g. agent check-in publishes "asset" then "agent") into ONE frame,
+        // keeping only the first as the top-level `push` and stashing the rest
+        // in `push.also[]`. Without this, any type buried in `also[]` never
+        // reaches type-based UI refresh logic (REALTIME_LIVE_TYPES,
+        // SOC_RELEVANT_PUSH_TYPES, etc.) even though the data arrived live.
+        // Replay the same dispatch for each nested sub-event so its type is
+        // treated as a first-class live push.
+        const alsoPushes = push && Array.isArray(push.also) ? push.also : [];
+        for (const sub of alsoPushes) {
+          const subType = sub && sub.type ? String(sub.type) : "";
+          if (!subType || subType === pushType) continue;
+          const subData = { ...data, push: sub };
+          window.dispatchEvent(
+            new CustomEvent("securaiq:realtime", {
+              detail: {
+                ...subData,
+                jobsChanged,
+                kpisChanged,
+                pushRefresh: true,
+                pushType: subType,
+                heartbeat: false,
+              },
+            })
+          );
+          applyRealtimeWorkspaceRefresh(subData, {
+            jobsChanged,
+            kpisChanged,
+            pushRefresh: true,
+            pushType: subType,
+            heartbeat: false,
+          });
+          if (subType === "agent_threat" && typeof notifyUser === "function") {
+            const sev = String(sub.severity || "medium");
+            if (sev === "critical" || sev === "high") {
+              const host = sub.hostname || sub.agent_id || "agent";
+              notifyUser(`**SecuraIQ Sentinel · ${sev.toUpperCase()}** — ${sub.title || "Suspicious activity"} on \`${host}\``);
+            }
+          }
+        }
         if (pushType === "notification" && typeof refreshNotifBadge === "function") {
           clearTimeout(window.__securaiqNotifRtTimer);
           window.__securaiqNotifRtTimer = setTimeout(() => {
@@ -2659,6 +2706,8 @@ const REALTIME_LIVE_TYPES = new Set([
   "xdr",
   "xdr_batch",
   "siem",
+  "agent",
+  "agent_threat",
   "cloud",
   "thehive",
   "incident",
@@ -3911,7 +3960,7 @@ function showView(view, opts = {}) {
   const moduleViews = new Set([
     "assets", "risks", "vulns", "remediations", "playbooks", "campaigns",
     "intel", "reports", "soc", "evidence", "orgs", "frameworks",
-    "integrations", "billing", "graph", "automation",
+    "integrations", "billing", "graph", "automation", "webscan", "software",
   ]);
   if (moduleViews.has(view) && typeof window.showWorkspace === "function") {
     window.showWorkspace(view, opts);

@@ -620,6 +620,25 @@ def get_vulnerability(user_id: str, vuln_id: str) -> dict[str, Any] | None:
     return data
 
 
+def delete_vulnerability(user_id: str, vuln_id: str) -> bool:
+    """Delete a single finding. Tenant-scoped via get_vulnerability's
+    visibility check so a user can't delete another org's finding by id."""
+    if not get_vulnerability(user_id, vuln_id):
+        return False
+    cur = get_conn().execute("DELETE FROM vulnerabilities WHERE id = ?", (vuln_id,))
+    get_conn().commit()
+    if cur.rowcount:
+        audit("vuln_delete", user_id, {"id": vuln_id})
+        try:
+            from app.realtime_bus import publish
+
+            publish(type="vuln", id=vuln_id, user_id=user_id, action="delete")
+        except Exception:
+            pass
+        return True
+    return False
+
+
 def list_vulnerabilities(
     user_id: str,
     *,
@@ -1246,6 +1265,28 @@ def update_remediation(user_id: str, rem_id: str, patch: dict[str, Any]) -> dict
     except Exception:
         pass
     return result
+
+
+def delete_remediation(user_id: str, rem_id: str) -> bool:
+    row = get_conn().execute(
+        "SELECT id FROM gap_remediations WHERE id = ? AND user_id = ?", (rem_id, user_id)
+    ).fetchone()
+    if not row:
+        return False
+    cur = get_conn().execute(
+        "DELETE FROM gap_remediations WHERE id = ? AND user_id = ?", (rem_id, user_id)
+    )
+    get_conn().commit()
+    if cur.rowcount:
+        audit("gap_remediation_delete", user_id, {"id": rem_id})
+        try:
+            from app.realtime_bus import publish
+
+            publish(type="remediation", id=rem_id, user_id=user_id, action="delete")
+        except Exception:
+            pass
+        return True
+    return False
 
 
 def evidence_from_files(user_id: str, file_ids: list[str]) -> str:
