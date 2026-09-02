@@ -881,7 +881,7 @@ async def vulns_list(
 ):
     oid = resolve_request_org(user, org_id=org_id, header_org=x_securaiq_org)
     require_perm(user, "vuln.read", org_id=oid)
-    from app.enterprise import collapse_duplicate_findings, enrich_vulnerabilities_display, list_vulnerabilities
+    from app.enterprise import collapse_duplicate_findings, enrich_vulnerabilities_display
 
     collapse_duplicate_findings(user.id)
     vulns = list_vulnerabilities(
