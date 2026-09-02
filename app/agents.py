@@ -127,6 +127,9 @@ def ensure_schema() -> None:
             ("rejected_reason", "ALTER TABLE securaiq_agent_commands ADD COLUMN rejected_reason TEXT NOT NULL DEFAULT ''"),
             ("campaign_id", "ALTER TABLE securaiq_agent_commands ADD COLUMN campaign_id TEXT NOT NULL DEFAULT ''"),
             ("ring_index", "ALTER TABLE securaiq_agent_commands ADD COLUMN ring_index INTEGER NOT NULL DEFAULT 0"),
+            ("verification_status", "ALTER TABLE securaiq_agent_commands ADD COLUMN verification_status TEXT NOT NULL DEFAULT ''"),
+            ("verification_detail", "ALTER TABLE securaiq_agent_commands ADD COLUMN verification_detail TEXT NOT NULL DEFAULT ''"),
+            ("verified_at", "ALTER TABLE securaiq_agent_commands ADD COLUMN verified_at REAL NOT NULL DEFAULT 0"),
         ):
             if col not in cmd_cols:
                 c.execute(ddl)
@@ -154,10 +157,17 @@ def ensure_schema() -> None:
             window_days_json TEXT NOT NULL DEFAULT '[]',
             ring_threshold_pct REAL NOT NULL DEFAULT 100,
             status TEXT NOT NULL DEFAULT 'active',
+            resolved_ring INTEGER NOT NULL DEFAULT -1,
             created_at REAL NOT NULL
         )
         """
     )
+    try:
+        camp_cols = table_columns(c, "securaiq_patch_campaigns")
+        if "resolved_ring" not in camp_cols:
+            c.execute("ALTER TABLE securaiq_patch_campaigns ADD COLUMN resolved_ring INTEGER NOT NULL DEFAULT -1")
+    except Exception:
+        pass
     c.execute(
         "CREATE INDEX IF NOT EXISTS idx_patch_campaigns_user ON securaiq_patch_campaigns(user_id, created_at)"
     )
@@ -837,7 +847,15 @@ def _maybe_advance_campaign_ring(campaign_id: str, user_id: str) -> None:
     last unresolved item in its ring, decide whether to auto-stop the
     campaign (ring failed below threshold) or materialize the next ring's
     commands (ring passed). No-op for campaigns with no further rings, or
-    if the ring still has unresolved (pending/queued/sent) items."""
+    if the ring still has unresolved (pending/queued/sent) items.
+
+    Idempotency: two agents in the same ring can report their results
+    within milliseconds of each other, so two concurrent calls can both
+    observe "ring fully resolved" before either has written anything. The
+    `resolved_ring` column is a compare-and-swap guard — only the caller
+    whose UPDATE actually advances it (rowcount == 1) is allowed to act on
+    this ring's resolution, so halt/complete/advance each fire exactly
+    once per ring no matter how many callers race here."""
     c = get_conn()
     campaign = c.execute(
         "SELECT * FROM securaiq_patch_campaigns WHERE id = ?", (campaign_id,)
@@ -861,8 +879,20 @@ def _maybe_advance_campaign_ring(campaign_id: str, user_id: str) -> None:
     unresolved = {"pending_approval", "queued", "sent"}
     if any(r["status"] in unresolved for r in current_ring_rows):
         return  # current ring still in flight
+
+    # Atomic claim — only proceeds if this call is the first to notice this
+    # ring finished (resolved_ring hasn't already reached max_created_ring).
+    claim = c.execute(
+        "UPDATE securaiq_patch_campaigns SET resolved_ring = ? WHERE id = ? AND status = 'active' AND resolved_ring < ?",
+        (max_created_ring, campaign_id, max_created_ring),
+    )
+    c.commit()
+    if claim.rowcount == 0:
+        return  # another concurrent call already claimed this ring's resolution
+
     total = len(current_ring_rows)
     done = sum(1 for r in current_ring_rows if r["status"] == "done")
+    errored = total - done
     success_pct = (done / total * 100) if total else 0
     threshold = campaign.get("ring_threshold_pct", 100)
     next_ring_index = max_created_ring + 1
@@ -877,14 +907,29 @@ def _maybe_advance_campaign_ring(campaign_id: str, user_id: str) -> None:
         )
         return
     if next_ring_index >= len(ring_list):
+        # Ring passed its threshold, but "passed >= threshold" and "zero
+        # failures" are different things (e.g. an 80% threshold lets 2/10
+        # failures through) — a campaign with any errored item anywhere is
+        # marked completed_with_failures, not a clean 'completed', so a
+        # partial success can't read as a full one in the campaign list.
+        any_errors = errored > 0 or c.execute(
+            "SELECT 1 FROM securaiq_agent_commands WHERE campaign_id = ? AND status = 'error' LIMIT 1",
+            (campaign_id,),
+        ).fetchone() is not None
+        final_status = "completed_with_failures" if any_errors else "completed"
         c.execute(
-            "UPDATE securaiq_patch_campaigns SET status = 'completed' WHERE id = ?", (campaign_id,)
+            "UPDATE securaiq_patch_campaigns SET status = ? WHERE id = ?", (final_status, campaign_id)
         )
         c.commit()
-        audit("patch_campaign_completed", user_id, {"campaign_id": campaign_id, "rings": len(ring_list)})
+        audit(
+            "patch_campaign_completed", user_id,
+            {"campaign_id": campaign_id, "rings": len(ring_list), "status": final_status},
+        )
         return
     # ring passed and there's a next ring — materialize it (pending_approval,
-    # same as ring 0; a human still approves each ring's dispatch).
+    # same as ring 0; a human still approves each ring's dispatch). Guarded
+    # by the resolved_ring claim above, so this can't run twice even if two
+    # agents in this ring reported their results concurrently.
     next_targets = ring_list[next_ring_index] or []
     manager, package, target_version = campaign.get("manager", ""), campaign.get("package", ""), campaign.get("target_version", "")
     created = 0
@@ -915,6 +960,29 @@ def _campaign_summary(user_id: str, campaign_id: str) -> dict[str, Any]:
     ).fetchall()
     counts = {r["status"]: r["n"] for r in rows}
     total = sum(counts.values())
+    # queued/sent items whose owning agent has gone offline — a stalled
+    # command must never be counted toward "in progress" without a visible
+    # flag, since it isn't actually going to complete until the agent comes
+    # back.
+    undelivered = get_conn().execute(
+        "SELECT agent_id, status FROM securaiq_agent_commands WHERE user_id = ? AND campaign_id = ? AND status IN ('queued','sent')",
+        (user_id, campaign_id),
+    ).fetchall()
+    waiting_for_agent = 0
+    agent_cache: dict[str, bool] = {}
+    for r in undelivered:
+        aid = r["agent_id"]
+        if aid not in agent_cache:
+            agent = get_agent(aid)
+            agent_cache[aid] = bool(agent) and _row_status(agent) == "offline"
+        if agent_cache[aid]:
+            waiting_for_agent += 1
+    verif_rows = get_conn().execute(
+        "SELECT verification_status, COUNT(*) as n FROM securaiq_agent_commands "
+        "WHERE user_id = ? AND campaign_id = ? AND status = 'done' GROUP BY verification_status",
+        (user_id, campaign_id),
+    ).fetchall()
+    verif_counts = {r["verification_status"]: r["n"] for r in verif_rows}
     return {
         "total": total,
         "pending_approval": counts.get("pending_approval", 0),
@@ -923,6 +991,13 @@ def _campaign_summary(user_id: str, campaign_id: str) -> dict[str, Any]:
         "done": counts.get("done", 0),
         "error": counts.get("error", 0),
         "rejected": counts.get("rejected", 0),
+        "waiting_for_agent": waiting_for_agent,
+        # of the 'done' (executed) items, how many are confirmed fixed vs
+        # not — 'done' alone is execution, not verification (see
+        # report_command_result's docstring).
+        "verified": verif_counts.get("verified", 0),
+        "verification_failed": verif_counts.get("verification_failed", 0),
+        "verification_pending": verif_counts.get("pending", 0),
     }
 
 
@@ -962,6 +1037,7 @@ def get_campaign(user_id: str, campaign_id: str) -> dict[str, Any] | None:
         except Exception:
             item["payload"], item["result"] = {}, {}
         items.append(item)
+    _annotate_waiting_for_agent(items)
     d["items"] = items
     return d
 
@@ -1018,6 +1094,28 @@ def reject_campaign(user_id: str, campaign_id: str, *, approver_id: str, reason:
     return {"id": campaign_id, "rejected": rejected, "failed": failed}
 
 
+_UNDELIVERED_STATUSES = {"queued", "sent"}
+
+
+def _annotate_waiting_for_agent(items: list[dict[str, Any]]) -> None:
+    """Mutates each item in place, adding waiting_for_agent=True when the
+    command is still undelivered (queued/sent — never 'done') AND its
+    owning agent is currently offline. This is a derived, non-persisted
+    signal: it doesn't change the command's actual status (an undelivered
+    command must never be reported as if it succeeded), it just makes an
+    otherwise-silent stall visible instead of looking like normal
+    in-progress work."""
+    agent_cache: dict[str, bool] = {}
+    for item in items:
+        if item.get("status") not in _UNDELIVERED_STATUSES:
+            continue
+        aid = item.get("agent_id") or ""
+        if aid not in agent_cache:
+            agent = get_agent(aid)
+            agent_cache[aid] = bool(agent) and _row_status(agent) == "offline"
+        item["waiting_for_agent"] = agent_cache[aid]
+
+
 def list_commands(user_id: str, agent_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
     ensure_schema()
     rows = get_conn().execute(
@@ -1033,14 +1131,26 @@ def list_commands(user_id: str, agent_id: str, *, limit: int = 100) -> list[dict
             except Exception:
                 d[key[: -len("_json")]] = {}
         out.append(d)
+    _annotate_waiting_for_agent(out)
     return out
 
 
 def report_command_result(agent_id: str, command_id: str, *, status: str, result: dict[str, Any]) -> dict[str, Any]:
-    """Agent reports the outcome of a command it executed. Also kicks off
-    verification: a software-inventory refresh for this agent's asset, so
-    the patch-gap dashboard reflects the new version on the very next
-    check-in rather than waiting on the periodic sync schedule."""
+    """Agent reports the outcome of a command it executed.
+
+    IMPORTANT: 'done' here means the agent's patch-manager invocation
+    exited successfully — it does NOT mean the fix is confirmed. Those are
+    different claims (a package manager can report success while the CVE
+    that motivated the patch is still present, e.g. a version pin, a
+    partial install, or advisory data that hasn't caught up yet). So a
+    'done' command starts in verification_status='pending' and a
+    software_advisory_refresh job is enqueued; once that job re-syncs the
+    installed version and re-runs CVE/advisory correlation, it calls
+    record_command_verification() to flip verification_status to
+    'verified' or 'verification_failed' — see app/jobs.py's
+    _job_software_advisory_refresh. Callers that only check `status=='done'`
+    are checking execution, not verification; check `verification_status`
+    for the latter."""
     ensure_schema()
     c = get_conn()
     row = c.execute(
@@ -1063,6 +1173,15 @@ def report_command_result(agent_id: str, command_id: str, *, status: str, result
     c.commit()
     agent = get_agent(agent_id)
     asset_id = (agent or {}).get("asset_id") or ""
+    if status == "done":
+        if asset_id:
+            c.execute("UPDATE securaiq_agent_commands SET verification_status = 'pending' WHERE id = ?", (command_id,))
+        else:
+            c.execute(
+                "UPDATE securaiq_agent_commands SET verification_status = 'unknown', verification_detail = ? WHERE id = ?",
+                ("Agent has no linked asset yet — cannot verify", command_id),
+            )
+        c.commit()
     try:
         from app.realtime_bus import publish
 
@@ -1097,3 +1216,30 @@ def report_command_result(agent_id: str, command_id: str, *, status: str, result
         except Exception:
             pass
     return {"ok": True, "status": status}
+
+
+def record_command_verification(command_id: str, *, verified: bool | None, detail: str = "") -> dict[str, Any]:
+    """Called by the software_advisory_refresh job once it's re-synced
+    inventory and re-run CVE/advisory correlation for a completed patch
+    command. verified=True/False records a definitive outcome;
+    verified=None means the refresh ran but couldn't locate the package in
+    inventory to judge either way (status stays 'unknown', not silently
+    dropped as if nothing happened)."""
+    ensure_schema()
+    c = get_conn()
+    row = c.execute("SELECT id, agent_id, status FROM securaiq_agent_commands WHERE id = ?", (command_id,)).fetchone()
+    if not row:
+        return {"ok": False, "error": "unknown command"}
+    v_status = "verified" if verified is True else "verification_failed" if verified is False else "unknown"
+    c.execute(
+        "UPDATE securaiq_agent_commands SET verification_status = ?, verification_detail = ?, verified_at = ? WHERE id = ?",
+        (v_status, str(detail or "")[:500], now(), command_id),
+    )
+    c.commit()
+    try:
+        from app.realtime_bus import publish
+
+        publish(type="agent_command", agent_id=row["agent_id"], id=command_id, status=row["status"], verification_status=v_status)
+    except Exception:
+        pass
+    return {"ok": True, "verification_status": v_status}

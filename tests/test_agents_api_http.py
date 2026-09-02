@@ -897,3 +897,315 @@ def test_campaign_maintenance_window_allows_delivery_when_inside(tmp_path, monke
     )
     assert len(checkin.json()["commands"]) == 1
     _ = created
+
+
+# --- ring-advancement hardening: idempotency + partial-success status -------
+
+
+def test_ring_advance_is_idempotent_against_duplicate_calls(tmp_path, monkeypatch):
+    """Two agents in the same ring resolving near-simultaneously must not
+    create the next ring's commands twice. We can't force a real thread
+    race deterministically, so this calls the internal advance function an
+    extra time after the natural one (triggered by report_command_result)
+    already ran — the resolved_ring compare-and-swap guard must make the
+    second call a no-op either way."""
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    enroll1 = client.post("/api/agents/enroll", json={"name": "idem-a1"}, headers=_auth(token))
+    a1, a1_tok = enroll1.json()["agent_id"], enroll1.json()["agent_token"]
+    enroll2 = client.post("/api/agents/enroll", json={"name": "idem-a2"}, headers=_auth(token))
+    a2 = enroll2.json()["agent_id"]
+
+    created = client.post(
+        "/api/agents/campaigns",
+        json={"manager": "apt", "package": "curl", "rings": [[a1], [a2]], "ring_threshold_pct": 100},
+        headers=_auth(token),
+    )
+    campaign_id = created.json()["id"]
+    ring0_cmd = client.get(f"/api/agents/{a1}/commands", headers=_auth(token)).json()["commands"][0]
+
+    _run_command_to_done(client, token, a1, a1_tok, ring0_cmd["id"], status="done")
+
+    ring1_cmds_before = client.get(f"/api/agents/{a2}/commands", headers=_auth(token)).json()["commands"]
+    assert len(ring1_cmds_before) == 1
+
+    # simulate a second, racing call trying to advance the same ring again
+    from app.agents import _maybe_advance_campaign_ring
+
+    _maybe_advance_campaign_ring(campaign_id, "local")
+    _maybe_advance_campaign_ring(campaign_id, "local")
+
+    ring1_cmds_after = client.get(f"/api/agents/{a2}/commands", headers=_auth(token)).json()["commands"]
+    assert len(ring1_cmds_after) == 1  # still exactly one — no duplicate
+
+
+def test_campaign_completed_with_failures_when_partial_success_clears_threshold(tmp_path, monkeypatch):
+    """A ring can clear a <100% threshold while still having failed items —
+    the campaign must land on 'completed_with_failures', not a clean
+    'completed', so partial success stays visible."""
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    enroll1 = client.post("/api/agents/enroll", json={"name": "partial-a1"}, headers=_auth(token))
+    a1, a1_tok = enroll1.json()["agent_id"], enroll1.json()["agent_token"]
+    enroll2 = client.post("/api/agents/enroll", json={"name": "partial-a2"}, headers=_auth(token))
+    a2, a2_tok = enroll2.json()["agent_id"], enroll2.json()["agent_token"]
+
+    created = client.post(
+        "/api/agents/campaigns",
+        json={"manager": "apt", "package": "curl", "agent_ids": [a1, a2], "ring_threshold_pct": 50},
+        headers=_auth(token),
+    )
+    campaign_id = created.json()["id"]
+    cmds = client.get(f"/api/agents/{a1}/commands", headers=_auth(token)).json()["commands"]
+    cmd1 = cmds[0]
+    cmd2 = client.get(f"/api/agents/{a2}/commands", headers=_auth(token)).json()["commands"][0]
+
+    _run_command_to_done(client, token, a1, a1_tok, cmd1["id"], status="done")
+    _run_command_to_done(client, token, a2, a2_tok, cmd2["id"], status="error")
+
+    detail = client.get(f"/api/agents/campaigns/{campaign_id}", headers=_auth(token)).json()
+    assert detail["status"] == "completed_with_failures"
+    assert detail["summary"]["done"] == 1
+    assert detail["summary"]["error"] == 1
+
+
+def test_campaign_completed_cleanly_when_all_items_succeed(tmp_path, monkeypatch):
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    enroll = client.post("/api/agents/enroll", json={"name": "clean-a1"}, headers=_auth(token))
+    a1, a1_tok = enroll.json()["agent_id"], enroll.json()["agent_token"]
+
+    created = client.post(
+        "/api/agents/campaigns",
+        json={"manager": "apt", "package": "curl", "agent_ids": [a1]},
+        headers=_auth(token),
+    )
+    campaign_id = created.json()["id"]
+    cmd = client.get(f"/api/agents/{a1}/commands", headers=_auth(token)).json()["commands"][0]
+    _run_command_to_done(client, token, a1, a1_tok, cmd["id"], status="done")
+
+    detail = client.get(f"/api/agents/campaigns/{campaign_id}", headers=_auth(token)).json()
+    assert detail["status"] == "completed"
+
+
+# --- waiting_for_agent (offline-agent visibility) ----------------------------
+
+
+def test_queued_command_flagged_waiting_for_agent_when_agent_offline(tmp_path, monkeypatch):
+    """A command that's approved and queued but never delivered because its
+    agent has gone offline must be visibly flagged, not silently sit there
+    looking like ordinary in-progress work."""
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    enroll = client.post("/api/agents/enroll", json={"name": "offline-a1"}, headers=_auth(token))
+    agent_id = enroll.json()["agent_id"]
+
+    requested = client.post(
+        f"/api/agents/{agent_id}/commands",
+        json={"kind": "patch_package", "payload": {"manager": "apt", "package": "curl"}},
+        headers=_auth(token),
+    )
+    command_id = requested.json()["id"]
+    approved = client.post(f"/api/agents/{agent_id}/commands/{command_id}/approve", headers=_auth(token))
+    assert approved.json()["status"] == "queued"
+
+    # simulate the agent having gone offline (a stale last_checkin older
+    # than app.agents.OFFLINE_AFTER_SEC)
+    from app.agents import OFFLINE_AFTER_SEC
+    from app.db import get_conn, now
+
+    c = get_conn()
+    c.execute("UPDATE securaiq_agents SET last_checkin = ? WHERE id = ?", (now() - OFFLINE_AFTER_SEC - 60, agent_id))
+    c.commit()
+
+    cmds = client.get(f"/api/agents/{agent_id}/commands", headers=_auth(token)).json()["commands"]
+    assert cmds[0]["status"] == "queued"  # never silently marked done/anything else
+    assert cmds[0]["waiting_for_agent"] is True
+
+
+def test_queued_command_not_flagged_when_agent_recently_checked_in(tmp_path, monkeypatch):
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    enroll = client.post("/api/agents/enroll", json={"name": "online-a1"}, headers=_auth(token))
+    agent_id, agent_token = enroll.json()["agent_id"], enroll.json()["agent_token"]
+
+    requested = client.post(
+        f"/api/agents/{agent_id}/commands",
+        json={"kind": "patch_package", "payload": {"manager": "apt", "package": "curl"}},
+        headers=_auth(token),
+    )
+    command_id = requested.json()["id"]
+    client.post(f"/api/agents/{agent_id}/commands/{command_id}/approve", headers=_auth(token))
+
+    # a fresh check-in delivers the command (status flips to 'sent'), and
+    # the agent is recently seen — should NOT be flagged waiting_for_agent
+    client.post(
+        "/api/agents/checkin",
+        json={"hostname": "online-a1"},
+        headers={"Authorization": f"Bearer {agent_token}"},
+    )
+    cmds = client.get(f"/api/agents/{agent_id}/commands", headers=_auth(token)).json()["commands"]
+    assert cmds[0]["status"] == "sent"
+    assert not cmds[0].get("waiting_for_agent")
+
+
+# --- patch verification (executed != verified) -------------------------------
+
+
+def _seed_installation(user_id, asset_id, *, product_name, installed_version, patch_status):
+    """Directly seed a minimal software_installations/products/patch_status
+    row set, bypassing the real inventory sync pipeline — this test only
+    cares about app.jobs._verify_patch_command's read side."""
+    from app.db import get_conn, new_id, now
+    from app.software.models import ensure_schema as ensure_software_schema
+
+    ensure_software_schema()
+    c = get_conn()
+    ts = now()
+    product_id = new_id()
+    c.execute(
+        "INSERT INTO software_products (id, user_id, name, normalized_name, canonical_id, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (product_id, user_id, product_name, product_name.lower(), product_name.lower(), ts, ts),
+    )
+    installation_id = new_id()
+    c.execute(
+        "INSERT INTO software_installations "
+        "(id, user_id, asset_id, asset_name, software_product_id, version, first_seen, last_seen, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (installation_id, user_id, asset_id, "seeded-host", product_id, installed_version, ts, ts, ts),
+    )
+    patch_status_id = new_id()
+    c.execute(
+        "INSERT INTO patch_status (id, user_id, asset_id, software_installation_id, current_version, status, checked_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (patch_status_id, user_id, asset_id, installation_id, installed_version, patch_status, ts),
+    )
+    c.commit()
+    return installation_id
+
+
+def _prepare_done_command_with_asset(client, token, name):
+    """Enroll + check in an agent (so it gets a real asset_id), request +
+    approve + deliver + report a 'done' patch_package command, and return
+    (command_id, asset_id, user_id)."""
+    enroll = client.post("/api/agents/enroll", json={"name": name}, headers=_auth(token))
+    agent_id, agent_token = enroll.json()["agent_id"], enroll.json()["agent_token"]
+    checkin = client.post(
+        "/api/agents/checkin",
+        json={"hostname": name, "os": "linux"},
+        headers={"Authorization": f"Bearer {agent_token}"},
+    )
+    asset_id = checkin.json()["asset_id"]
+    requested = client.post(
+        f"/api/agents/{agent_id}/commands",
+        json={"kind": "patch_package", "payload": {"manager": "apt", "package": "curl", "target_version": "8.5.0"}},
+        headers=_auth(token),
+    )
+    command_id = requested.json()["id"]
+    client.post(f"/api/agents/{agent_id}/commands/{command_id}/approve", headers=_auth(token))
+    client.post(
+        "/api/agents/checkin",
+        json={"hostname": name, "os": "linux"},
+        headers={"Authorization": f"Bearer {agent_token}"},
+    )
+    client.post(
+        f"/api/agents/commands/{command_id}/result",
+        json={"status": "done", "result": {"old_version": "7.0.0", "new_version": "8.5.0"}},
+        headers={"Authorization": f"Bearer {agent_token}"},
+    )
+    return command_id, asset_id, agent_id
+
+
+def test_done_command_starts_verification_pending_not_verified(tmp_path, monkeypatch):
+    """'done' must never read as 'verified' — they're different claims."""
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    command_id, asset_id, agent_id = _prepare_done_command_with_asset(client, token, "verify-pending-1")
+    cmds = client.get(f"/api/agents/{agent_id}/commands", headers=_auth(token)).json()["commands"]
+    done_cmd = next(c for c in cmds if c["id"] == command_id)
+    assert done_cmd["status"] == "done"
+    assert done_cmd["verification_status"] == "pending"
+
+
+def test_verify_patch_command_confirms_up_to_date(tmp_path, monkeypatch):
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    command_id, asset_id, agent_id = _prepare_done_command_with_asset(client, token, "verify-utd-1")
+
+    from app.agents import get_agent
+
+    agent = get_agent(agent_id)
+    _seed_installation(agent["user_id"], asset_id, product_name="curl", installed_version="8.5.0", patch_status="up_to_date")
+
+    from app.jobs import _verify_patch_command
+
+    _verify_patch_command(command_id)
+
+    cmds = client.get(f"/api/agents/{agent_id}/commands", headers=_auth(token)).json()["commands"]
+    done_cmd = next(c for c in cmds if c["id"] == command_id)
+    assert done_cmd["verification_status"] == "verified"
+    assert "up to date" in done_cmd["verification_detail"].lower()
+
+
+def test_verify_patch_command_flags_failure_when_still_outdated(tmp_path, monkeypatch):
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    command_id, asset_id, agent_id = _prepare_done_command_with_asset(client, token, "verify-fail-1")
+
+    from app.agents import get_agent
+
+    agent = get_agent(agent_id)
+    # patch reported "done" (old 7.0.0 -> new 8.5.0) but the re-synced
+    # inventory shows the installed version never actually moved and
+    # advisories still flag it — the patch didn't really take.
+    _seed_installation(agent["user_id"], asset_id, product_name="curl", installed_version="7.0.0", patch_status="security_update")
+
+    from app.jobs import _verify_patch_command
+
+    _verify_patch_command(command_id)
+
+    cmds = client.get(f"/api/agents/{agent_id}/commands", headers=_auth(token)).json()["commands"]
+    done_cmd = next(c for c in cmds if c["id"] == command_id)
+    assert done_cmd["verification_status"] == "verification_failed"
+
+
+def test_verify_patch_command_unknown_when_package_not_in_inventory(tmp_path, monkeypatch):
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    command_id, asset_id, agent_id = _prepare_done_command_with_asset(client, token, "verify-unknown-1")
+
+    from app.jobs import _verify_patch_command
+
+    _verify_patch_command(command_id)  # no software_installations row seeded at all
+
+    cmds = client.get(f"/api/agents/{agent_id}/commands", headers=_auth(token)).json()["commands"]
+    done_cmd = next(c for c in cmds if c["id"] == command_id)
+    assert done_cmd["verification_status"] == "unknown"
+
+
+def test_campaign_summary_reports_verification_breakdown(tmp_path, monkeypatch):
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    enroll = client.post("/api/agents/enroll", json={"name": "verify-campaign-1"}, headers=_auth(token))
+    agent_id, agent_token = enroll.json()["agent_id"], enroll.json()["agent_token"]
+
+    created = client.post(
+        "/api/agents/campaigns",
+        json={"manager": "apt", "package": "curl", "agent_ids": [agent_id]},
+        headers=_auth(token),
+    )
+    campaign_id = created.json()["id"]
+    cmd = client.get(f"/api/agents/{agent_id}/commands", headers=_auth(token)).json()["commands"][0]
+    # _run_command_to_done's check-in (hostname "ring-host") is what links
+    # this agent to its real asset — fetch asset_id AFTER that, not before,
+    # since checkin() (re)links the agent's asset by hostname.
+    _run_command_to_done(client, token, agent_id, agent_token, cmd["id"], status="done")
+    asset_id = client.get(f"/api/agents/{agent_id}", headers=_auth(token)).json()["asset_id"]
+
+    detail = client.get(f"/api/agents/campaigns/{campaign_id}", headers=_auth(token)).json()
+    assert detail["summary"]["done"] == 1
+    assert detail["summary"]["verification_pending"] == 1
+    assert detail["summary"]["verified"] == 0
+
+    from app.agents import get_agent
+
+    agent = get_agent(agent_id)
+    _seed_installation(agent["user_id"], asset_id, product_name="curl", installed_version="9.9.9", patch_status="up_to_date")
+    from app.jobs import _verify_patch_command
+
+    _verify_patch_command(cmd["id"])
+
+    detail2 = client.get(f"/api/agents/campaigns/{campaign_id}", headers=_auth(token)).json()
+    assert detail2["summary"]["verified"] == 1
+    assert detail2["summary"]["verification_pending"] == 0

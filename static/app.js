@@ -2766,6 +2766,19 @@ function applyRealtimeWorkspaceRefresh(data, flags) {
       }
       if (view === "software" && typeof renderSoftwarePage === "function") renderSoftwarePage({ quiet: true });
     }
+    // A separate, later event: the agent executing the patch ("done") and
+    // the fix actually being confirmed present ("verified") are different
+    // claims — this is the second one, arriving once the post-patch
+    // advisory refresh has re-checked the installed version.
+    if (p.verification_status === "verified" || p.verification_status === "verification_failed") {
+      if (typeof notifyUser === "function") {
+        notifyUser(
+          p.verification_status === "verified"
+            ? `**Patch verified** — command \`${(p.id || "").slice(0, 8)}\` confirmed fixed after inventory refresh.`
+            : `**Patch not confirmed** — command \`${(p.id || "").slice(0, 8)}\` still shows the issue after inventory refresh. It may need a retry or manual check.`
+        );
+      }
+    }
     // renderAgentsPanel() no-ops if its container isn't currently mounted
     // (same null-guard pattern as every other panel renderer), so it's safe
     // to call unconditionally rather than tracking panel visibility.

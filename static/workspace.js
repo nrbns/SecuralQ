@@ -18,6 +18,24 @@
       .replace(/"/g, "&quot;");
   }
 
+  // Maintenance windows are stored and evaluated server-side in UTC (the
+  // right call — the server may serve viewers in many timezones, so UTC is
+  // the only unambiguous ground truth). This just renders the equivalent
+  // local-time range next to it so a viewer isn't stuck doing UTC math in
+  // their head. Purely a display convenience — never sent back to the API.
+  function _utcHourRangeToLocal(startHour, endHour) {
+    try {
+      const now = new Date();
+      const fmt = (h) => {
+        const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), h, 0, 0));
+        return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+      };
+      return `${fmt(startHour)}–${fmt(endHour)}`;
+    } catch (e) {
+      return "";
+    }
+  }
+
   async function createServiceNowIncident({ summary, description, remediationId }, btn) {
     if (btn) btn.disabled = true;
     try {
@@ -4223,14 +4241,28 @@
                       const done = s.done || 0;
                       const errored = s.error || 0;
                       const pending = s.pending_approval || 0;
+                      const waiting = s.waiting_for_agent || 0;
+                      const verified = s.verified || 0;
+                      const verifFailed = s.verification_failed || 0;
+                      const verifPending = s.verification_pending || 0;
                       let rings = [];
                       try { rings = JSON.parse(c.rings_json || "[]"); } catch (e) { rings = []; }
                       const hasWindow = c.window_start_hour !== -1 && c.window_end_hour !== -1;
+                      const localWindow = hasWindow ? _utcHourRangeToLocal(c.window_start_hour, c.window_end_hour) : "";
+                      const statusCls =
+                        c.status === "completed"
+                          ? "status-done"
+                          : c.status === "completed_with_failures" || c.status === "halted"
+                          ? "status-error"
+                          : c.status === "canceled"
+                          ? "status-planned"
+                          : "status-planned";
+                      const statusLabel = (c.status || "").replace(/_/g, " ");
                       return `<tr>
-                        <td>${escapeHtml(c.name || "")}${rings.length > 1 ? `<div class="hint">${rings.length} rings</div>` : ""}${hasWindow ? `<div class="hint">window ${c.window_start_hour}:00–${c.window_end_hour}:00 UTC</div>` : ""}</td>
+                        <td>${escapeHtml(c.name || "")}${rings.length > 1 ? `<div class="hint">${rings.length} rings</div>` : ""}${hasWindow ? `<div class="hint">window ${c.window_start_hour}:00–${c.window_end_hour}:00 UTC${localWindow ? ` (${escapeHtml(localWindow)} your time)` : ""}</div>` : ""}</td>
                         <td><code>${escapeHtml(c.manager)} upgrade ${escapeHtml(c.package)}</code>${c.target_version ? ` <span class="hint">→ ${escapeHtml(c.target_version)}</span>` : ""}</td>
-                        <td class="hint">${done}/${total} done${errored ? ` · ${errored} failed` : ""}${pending ? ` · ${pending} awaiting approval` : ""}</td>
-                        <td>${escapeHtml(c.status)}</td>
+                        <td class="hint">${done}/${total} executed${errored ? ` · ${errored} failed` : ""}${pending ? ` · ${pending} awaiting approval` : ""}${waiting ? ` · ${waiting} waiting for agent` : ""}${done ? `<div>${verified} verified${verifFailed ? ` · ${verifFailed} not confirmed fixed` : ""}${verifPending ? ` · ${verifPending} verifying…` : ""}</div>` : ""}</td>
+                        <td><span class="auto-job-status ${statusCls}">${escapeHtml(statusLabel)}</span></td>
                         <td class="reports-dl-cell">
                           ${pending ? `<button type="button" class="btn-primary-cc agents-approve-campaign" data-id="${escapeHtml(c.id)}">Approve all</button><button type="button" class="btn-secondary agents-reject-campaign" data-id="${escapeHtml(c.id)}">Reject</button>` : ""}
                         </td>

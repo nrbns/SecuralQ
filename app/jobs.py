@@ -672,6 +672,74 @@ async def _job_software_version_refresh(payload: dict[str, Any]) -> dict[str, An
     }
 
 
+def _verify_patch_command(command_id: str) -> None:
+    """Decide whether a completed patch command actually fixed the target,
+    now that inventory + advisories have been re-synced. 'done' (agent
+    executed successfully) and 'verified' (the fix is confirmed present)
+    are different claims — this is what closes that gap. Best-effort: any
+    failure here should never surface as an error on the refresh job
+    itself, since a verification miss is informational, not a job failure.
+    """
+    from app.agents import get_agent, record_command_verification
+    from app.software.models import PATCH_UP_TO_DATE
+    from app.software.models import ensure_schema as ensure_software_schema
+    from app.software.patch_status import compare_versions
+
+    ensure_software_schema()
+    c = get_conn()
+    cmd = c.execute("SELECT * FROM securaiq_agent_commands WHERE id = ?", (command_id,)).fetchone()
+    if not cmd:
+        return
+    cmd = dict(cmd)
+    try:
+        payload_d = json.loads(cmd.get("payload_json") or "{}")
+    except Exception:
+        payload_d = {}
+    package = (payload_d.get("package") or "").strip()
+    target_version = (payload_d.get("target_version") or "").strip()
+    agent = get_agent(cmd.get("agent_id") or "")
+    asset_id = (agent or {}).get("asset_id") or ""
+    if not package or not asset_id:
+        record_command_verification(command_id, verified=None, detail="Missing package or asset linkage — cannot verify")
+        return
+
+    row = c.execute(
+        """
+        SELECT ps.status AS patch_status, i.version AS installed_version, p.name AS product_name
+        FROM software_installations i
+        JOIN software_products p ON p.id = i.software_product_id
+        LEFT JOIN patch_status ps ON ps.software_installation_id = i.id AND ps.user_id = i.user_id
+        WHERE i.user_id = ? AND i.asset_id = ? AND (LOWER(p.name) LIKE ? OR LOWER(p.canonical_id) LIKE ?)
+        ORDER BY i.updated_at DESC LIMIT 1
+        """,
+        (cmd.get("user_id") or "local", asset_id, f"%{package.lower()}%", f"%{package.lower()}%"),
+    ).fetchone()
+    if not row:
+        record_command_verification(
+            command_id, verified=None, detail=f"Package '{package}' not found in software inventory for this asset yet"
+        )
+        return
+    row = dict(row)
+    patch_status = row.get("patch_status") or ""
+    installed_version = row.get("installed_version") or ""
+
+    if patch_status == PATCH_UP_TO_DATE:
+        record_command_verification(command_id, verified=True, detail=f"Installed version {installed_version} confirmed up to date")
+        return
+    if target_version:
+        cmp = compare_versions(installed_version, target_version)
+        if cmp is not None and cmp >= 0:
+            record_command_verification(
+                command_id, verified=True, detail=f"Installed version {installed_version} meets target {target_version}"
+            )
+            return
+    record_command_verification(
+        command_id,
+        verified=False,
+        detail=f"Advisory still flags this installation after refresh (status={patch_status or 'unknown'}, installed={installed_version})",
+    )
+
+
 @register_job("software_advisory_refresh")
 async def _job_software_advisory_refresh(payload: dict[str, Any]) -> dict[str, Any]:
     """Refresh CVE/KEV advisory matches and recalculate patch priority."""
@@ -689,6 +757,12 @@ async def _job_software_advisory_refresh(payload: dict[str, Any]) -> dict[str, A
     refresh = refresh_advisories_for_user(uid, limit=int(payload.get("limit") or 80))
     publish_vulnerability_events(uid, refresh)
     sync_inventory(uid, publish=True)
+    command_id = payload.get("command_id") or ""
+    if command_id and payload.get("reason") == "patch_verify":
+        try:
+            _verify_patch_command(command_id)
+        except Exception:
+            pass
     return {"advisory_refresh": refresh, "duration_sec": round(time.time() - t0, 2)}
 
 
