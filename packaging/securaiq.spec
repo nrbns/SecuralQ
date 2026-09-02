@@ -1,5 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for SecuraIQ (Windows onedir + SecuraIQ.exe)."""
+"""PyInstaller spec for SecuraIQ — onedir build, one spec for all three OSes.
+
+PyInstaller does not cross-compile: run this spec ON the OS you want a
+binary for. It produces dist/SecuraIQ/SecuraIQ.exe on Windows (via
+scripts/build_exe.ps1 or build_exe.cmd) and dist/SecuraIQ/SecuraIQ
+(no extension) on Linux/macOS (via scripts/build_exe.sh or build_exe.sh).
+Nothing in this spec is Windows-specific — same datas/hiddenimports/excludes
+on every platform.
+"""
 
 from pathlib import Path
 

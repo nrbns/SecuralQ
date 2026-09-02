@@ -1,4 +1,5 @@
 # Build SecuraIQ.exe (Windows). Requires the project venv from run_proper.cmd / start.cmd.
+# Linux/macOS equivalent: scripts/build_exe.sh (same packaging/securaiq.spec).
 param(
     [switch]$OneFile
 )
