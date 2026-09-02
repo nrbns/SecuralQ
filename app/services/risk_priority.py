@@ -24,16 +24,10 @@ from app.db import get_conn, now
 from app.enterprise import list_assets, list_vulnerabilities
 from app.services.risk import compute_risk_score
 
-# asset_type values treated as internet-facing for exposure inference —
-# matches the same heuristic already used by app.services.investigation's
-# investigate_top_assets(), so a finding's exposure reads the same way
-# whether it surfaces there or here.
-_PUBLIC_ASSET_TYPES = {"domain", "url", "api", "public"}
-
-
 def _exposure_for_asset(asset: dict[str, Any] | None) -> float:
-    asset_type = ((asset or {}).get("asset_type") or "").lower()
-    return 0.8 if asset_type in _PUBLIC_ASSET_TYPES else 0.5
+    from app.asset_categories import is_internet_exposed_category
+
+    return 0.8 if is_internet_exposed_category((asset or {}).get("asset_type")) else 0.5
 
 
 def _kev_cves() -> set[str]:
@@ -280,10 +274,13 @@ def compute_risk_simulation(
     same deterministic formula, not a fabricated percentage — every number
     here is reproducible from compute_risk_score() on the current data.
 
-    Deliberately does NOT report an "attack paths disrupted" metric: this
-    product has no attack-path graph, and inventing one would violate the
-    "AI should explain this, not invent it" rule that governs risk scoring
-    here. Every field below is derived from real, already-computed data.
+    Each group also carries attack_paths_disrupted / business_critical_
+    paths_disrupted from app.services.attack_graph — how many currently
+    computed Internet -> ... -> asset routes include a vulnerability from
+    this group, and how many of those reach a business-critical target.
+    This is a real recomputation over the attack graph (declared + inferred
+    connects_to edges), not an invented count; if the graph build fails for
+    any reason this degrades to 0 rather than breaking the simulator.
     """
     scored = _scored_open_items(user_id, org_id=org_id, engagement_id=engagement_id)
     baseline_score = _mean_score(scored)
@@ -295,6 +292,8 @@ def compute_risk_simulation(
             "total_open": 0,
             "groups": [],
             "top3_combined_reduction_pct": 0.0,
+            "total_attack_paths": 0,
+            "business_critical_attack_paths": 0,
         }
 
     groups: dict[str, list[dict[str, Any]]] = {}
@@ -337,6 +336,37 @@ def compute_risk_simulation(
     top3_score = _score_excluding(top3_ids) if top3_ids else baseline_score
     top3_combined_reduction = round((baseline_score - top3_score) / baseline_score * 100, 1) if baseline_score else 0.0
 
+    total_attack_paths = 0
+    business_critical_attack_paths = 0
+    for g in top:
+        g["attack_paths_disrupted"] = 0
+        g["business_critical_paths_disrupted"] = 0
+    try:
+        from app.services.attack_graph import compute_attack_paths
+
+        ap_result = compute_attack_paths(user_id, org_id=org_id, engagement_id=engagement_id, max_depth=6, limit=1000)
+        total_attack_paths = ap_result["total_paths"]
+        keys_needing_counts = {g["group_key"] for g in top} | {g["group_key"] for g in group_results[:3]}
+        group_vuln_ids = {key: {i["vuln_id"] for i in groups[key]} for key in keys_needing_counts}
+        counts = {key: {"attack_paths_disrupted": 0, "business_critical_paths_disrupted": 0} for key in keys_needing_counts}
+        for path in ap_result["paths"]:
+            path_vuln_ids = {v.get("vuln_id") for v in path.get("vulnerabilities", []) if v.get("vuln_id")}
+            if not path_vuln_ids:
+                continue
+            target = path.get("target_asset") or {}
+            is_business_critical = str(target.get("business_criticality") or target.get("criticality") or "medium").lower() in ("critical", "high")
+            if is_business_critical:
+                business_critical_attack_paths += 1
+            for key, ids in group_vuln_ids.items():
+                if path_vuln_ids & ids:
+                    counts[key]["attack_paths_disrupted"] += 1
+                    if is_business_critical:
+                        counts[key]["business_critical_paths_disrupted"] += 1
+        for g in top:
+            g.update(counts.get(g["group_key"], {"attack_paths_disrupted": 0, "business_critical_paths_disrupted": 0}))
+    except Exception:
+        pass  # the attack graph is a real enhancement, but must never break the simulator
+
     return {
         "generated_at": now(),
         "baseline_score": baseline_score,
@@ -345,4 +375,6 @@ def compute_risk_simulation(
         "groups": top,
         "top3_combined_reduction_pct": max(0.0, top3_combined_reduction),
         "top3_group_titles": [g["title"] for g in group_results[:3]],
+        "total_attack_paths": total_attack_paths,
+        "business_critical_attack_paths": business_critical_attack_paths,
     }

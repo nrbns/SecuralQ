@@ -56,7 +56,9 @@ def investigate_top_assets(
         if not max_cvss and uniq:
             sev = (uniq[0].get("severity") or "medium").lower()
             max_cvss = {"critical": 9.5, "high": 8.0, "medium": 5.5, "low": 3.0, "info": 1.0}.get(sev, 5.0)
-        exposure = 0.8 if (a.get("asset_type") or "").lower() in {"domain", "url", "api", "public"} else 0.5
+        from app.asset_categories import is_internet_exposed_category
+
+        exposure = 0.8 if is_internet_exposed_category(a.get("asset_type")) else 0.5
         risk = compute_risk_score(
             cvss=max_cvss or None,
             exploitability=0.55 if uniq else 0.2,

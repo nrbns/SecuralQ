@@ -504,10 +504,59 @@ def _migrate_assets(c: Any) -> None:
     of these two diverging). Optional and blank by default — the risk engine
     falls back to `criticality` when it's unset rather than fabricating a
     number, so this is additive, not a behavior change for anyone who never
-    sets it."""
+    sets it.
+
+    service_accounts is the same pattern applied to attack-path Identity
+    nodes: there is no real IAM/AD/account-collection data source anywhere
+    in this product, so rather than fabricate one, this is an optional,
+    user-entered, explicitly-unverified free-text field (e.g. "svc-web-prod,
+    deploy-bot"). The attack graph only emits Identity nodes when a user has
+    actually filled this in, and always labels them as declared/unverified.
+    """
     cols = table_columns(c, "assets")
     if "business_criticality" not in cols:
         c.execute("ALTER TABLE assets ADD COLUMN business_criticality TEXT NOT NULL DEFAULT ''")
+    cols = table_columns(c, "assets")
+    if "service_accounts" not in cols:
+        c.execute("ALTER TABLE assets ADD COLUMN service_accounts TEXT NOT NULL DEFAULT ''")
+    c.commit()
+    _migrate_asset_dependencies(c)
+
+
+def _migrate_asset_dependencies(c: Any) -> None:
+    """The attack-path graph's connects_to edges. Nothing in this product
+    observes real network traffic or application architecture, so there is
+    no automatic source of truth for "WEB-01 talks to DB-01" — every edge
+    here is either `source='declared'` (a user said so, confidence 1.0) or
+    `source='inferred'` (a same-tenant heuristic guess — an internet-exposed
+    asset paired with a database-categorized asset, confidence well below
+    1.0, always rendered as "unconfirmed"). Declared edges always take
+    priority over an inferred edge between the same pair.
+    """
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS asset_dependencies (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            engagement_id TEXT,
+            org_id TEXT,
+            source_asset_id TEXT NOT NULL,
+            target_asset_id TEXT NOT NULL,
+            relationship TEXT NOT NULL DEFAULT 'connects_to',
+            source TEXT NOT NULL DEFAULT 'declared',
+            confidence REAL NOT NULL DEFAULT 1.0,
+            notes TEXT NOT NULL DEFAULT '',
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL
+        )
+        """
+    )
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_asset_deps_source ON asset_dependencies(user_id, source_asset_id)"
+    )
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_asset_deps_target ON asset_dependencies(user_id, target_asset_id)"
+    )
     c.commit()
 
 

@@ -66,6 +66,8 @@ _ALIASES: dict[str, str] = {
     "application": "web",
     "url": "web",
     "api": "web",
+    "domain": "web",
+    "public": "web",
     "saas": "cloud",
     "aws": "cloud",
     "azure": "cloud",
@@ -97,6 +99,22 @@ def normalize_asset_category(value: str | None) -> str:
         if key in t:
             return canon
     return "other"
+
+
+def is_internet_exposed_category(asset_type: str | None) -> bool:
+    """Is this asset's category inherently internet-facing?
+
+    Historically callers checked the RAW asset_type string against
+    {"domain","url","api","public"} — but every asset created through the
+    real API is normalized (normalize_asset_category()) before storage, and
+    url/api/application/domain/public all collapse to the canonical "web"
+    category. That meant the raw check never matched a normalized value and
+    every web-facing asset silently scored as non-exposed (0.5 exposure
+    instead of 0.8) everywhere that heuristic was used. This is the one
+    corrected, shared implementation — callers should use this instead of
+    re-deriving their own asset_type set.
+    """
+    return normalize_asset_category(asset_type) == "web"
 
 
 def category_label(category_id: str | None) -> str:

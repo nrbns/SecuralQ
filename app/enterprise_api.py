@@ -14,7 +14,11 @@ from app.rbac import require_perm
 from app.services.tenancy import resolve_request_org
 from app.services.assets import (
     create_asset,
+    create_asset_dependency,
     delete_asset,
+    delete_asset_dependency,
+    get_asset,
+    list_asset_dependencies,
     list_assets,
     update_asset,
 )
@@ -69,6 +73,10 @@ class AssetCreate(BaseModel):
     # business function/data this asset serves? Optional; the risk engine
     # falls back to `criticality` when this is left blank.
     business_criticality: str = ""
+    # Optional, user-entered, explicitly unverified — no IAM/AD data source
+    # exists in this product, so this is the only honest way to give the
+    # attack graph an Identity node. Free text, e.g. "svc-web-prod, deploy-bot".
+    service_accounts: str = ""
 
 
 class AssetUpdate(BaseModel):
@@ -79,6 +87,7 @@ class AssetUpdate(BaseModel):
     notes: str | None = None
     engagement_id: str | None = None
     business_criticality: str | None = None
+    service_accounts: str | None = None
 
 
 class RiskCreate(BaseModel):
@@ -820,6 +829,7 @@ async def assets_create(
         engagement_id=req.engagement_id,
         org_id=oid,
         business_criticality=req.business_criticality,
+        service_accounts=req.service_accounts,
     )
 
 
@@ -841,6 +851,46 @@ async def assets_update(asset_id: str, req: AssetUpdate, user: Annotated[AuthUse
 async def assets_delete(asset_id: str, user: Annotated[AuthUser, Depends(require_user)]):
     require_perm(user, "asset.write")
     if not delete_asset(user.id, asset_id):
+        raise HTTPException(status_code=404, detail="Not found")
+    return {"ok": True}
+
+
+class AssetDependencyCreate(BaseModel):
+    target_asset_id: str = Field(min_length=1)
+    relationship: str = "connects_to"
+    notes: str = ""
+
+
+@router.post("/assets/{asset_id}/dependencies")
+async def asset_dependency_create(
+    asset_id: str, req: AssetDependencyCreate, user: Annotated[AuthUser, Depends(require_user)]
+):
+    """Declare that this asset connects to another — the only honest source
+    of attack-path connects_to edges (no network flow capture exists)."""
+    require_perm(user, "asset.write")
+    if not get_asset(user.id, asset_id):
+        raise HTTPException(status_code=404, detail="Asset not found")
+    if not get_asset(user.id, req.target_asset_id):
+        raise HTTPException(status_code=404, detail="Target asset not found")
+    if req.target_asset_id == asset_id:
+        raise HTTPException(status_code=400, detail="An asset cannot depend on itself")
+    return create_asset_dependency(
+        user.id, asset_id, req.target_asset_id, relationship=req.relationship, notes=req.notes, source="declared", confidence=1.0
+    )
+
+
+@router.get("/assets/{asset_id}/dependencies")
+async def asset_dependency_list(asset_id: str, user: Annotated[AuthUser, Depends(require_user)]):
+    require_perm(user, "asset.read")
+    if not get_asset(user.id, asset_id):
+        raise HTTPException(status_code=404, detail="Asset not found")
+    return {"dependencies": list_asset_dependencies(user.id, asset_id=asset_id)}
+
+
+@router.delete("/asset-dependencies/{dependency_id}")
+async def asset_dependency_delete(dependency_id: str, user: Annotated[AuthUser, Depends(require_user)]):
+    require_perm(user, "asset.write")
+    if not delete_asset_dependency(user.id, dependency_id):
         raise HTTPException(status_code=404, detail="Not found")
     return {"ok": True}
 

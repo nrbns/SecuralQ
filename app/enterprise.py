@@ -49,6 +49,7 @@ def create_asset(
     engagement_id: str | None = None,
     org_id: str | None = None,
     business_criticality: str = "",
+    service_accounts: str = "",
 ) -> dict[str, Any]:
     from app.tenancy import ensure_tenant_schema, primary_org_id
 
@@ -60,10 +61,10 @@ def create_asset(
     c.execute(
         """
         INSERT INTO assets
-        (id, user_id, engagement_id, org_id, name, asset_type, criticality, owner, notes, business_criticality, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (id, user_id, engagement_id, org_id, name, asset_type, criticality, owner, notes, business_criticality, service_accounts, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (aid, user_id, engagement_id, oid, name.strip(), asset_type, criticality, owner, notes, business_criticality, ts, ts),
+        (aid, user_id, engagement_id, oid, name.strip(), asset_type, criticality, owner, notes, business_criticality, service_accounts, ts, ts),
     )
     c.commit()
     audit("asset_create", user_id, {"id": aid, "name": name, "org_id": oid})
@@ -355,7 +356,7 @@ def update_asset(user_id: str, asset_id: str, patch: dict[str, Any]) -> dict[str
     row = get_asset(user_id, asset_id)
     if not row:
         return None
-    allowed = {"name", "asset_type", "criticality", "owner", "notes", "engagement_id", "business_criticality"}
+    allowed = {"name", "asset_type", "criticality", "owner", "notes", "engagement_id", "business_criticality", "service_accounts"}
     data = {k: v for k, v in patch.items() if k in allowed and v is not None}
     if not data:
         return row
@@ -383,6 +384,100 @@ def delete_asset(user_id: str, asset_id: str) -> bool:
     get_conn().commit()
     if cur.rowcount:
         audit("asset_delete", user_id, {"id": asset_id})
+        return True
+    return False
+
+
+# --- Asset dependencies (attack-path connects_to edges) ---------------------
+#
+# There is no automatic source of truth for "this asset talks to that
+# asset" anywhere in this product (no network flow capture, no app
+# architecture input) — every row here is either a user's own declaration
+# (source='declared', confidence=1.0) or a same-tenant heuristic guess
+# (source='inferred', confidence<1.0, see app.services.attack_graph). Never
+# silently upgrade an inferred edge's confidence — that would misrepresent
+# a guess as a fact.
+
+
+def create_asset_dependency(
+    user_id: str,
+    source_asset_id: str,
+    target_asset_id: str,
+    *,
+    relationship: str = "connects_to",
+    notes: str = "",
+    engagement_id: str | None = None,
+    org_id: str | None = None,
+    source: str = "declared",
+    confidence: float = 1.0,
+) -> dict[str, Any]:
+    did = new_id()
+    ts = now()
+    c = get_conn()
+    c.execute(
+        """
+        INSERT INTO asset_dependencies
+        (id, user_id, engagement_id, org_id, source_asset_id, target_asset_id, relationship, source, confidence, notes, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (did, user_id, engagement_id, org_id, source_asset_id, target_asset_id, relationship, source, confidence, notes, ts, ts),
+    )
+    c.commit()
+    audit(
+        "asset_dependency_create",
+        user_id,
+        {"id": did, "source_asset_id": source_asset_id, "target_asset_id": target_asset_id, "relationship": relationship, "source": source},
+    )
+    return {
+        "id": did,
+        "user_id": user_id,
+        "engagement_id": engagement_id,
+        "org_id": org_id,
+        "source_asset_id": source_asset_id,
+        "target_asset_id": target_asset_id,
+        "relationship": relationship,
+        "source": source,
+        "confidence": confidence,
+        "notes": notes,
+        "created_at": ts,
+        "updated_at": ts,
+    }
+
+
+def list_asset_dependencies(
+    user_id: str,
+    *,
+    asset_id: str | None = None,
+    engagement_id: str | None = None,
+    org_id: str | None = None,
+) -> list[dict[str, Any]]:
+    from app.tenancy import ensure_tenant_schema, tenant_visibility_sql
+
+    ensure_tenant_schema()
+    c = get_conn()
+    where, args = tenant_visibility_sql(user_id, org_id=org_id)
+    q = f"SELECT * FROM asset_dependencies WHERE {where}"
+    if asset_id:
+        q += " AND (source_asset_id = ? OR target_asset_id = ?)"
+        args.extend([asset_id, asset_id])
+    if engagement_id:
+        q += " AND engagement_id = ?"
+        args.append(engagement_id)
+    q += " ORDER BY created_at DESC LIMIT 2000"
+    return [row_to_dict(r) for r in c.execute(q, args).fetchall()]  # type: ignore[misc]
+
+
+def delete_asset_dependency(user_id: str, dependency_id: str) -> bool:
+    c = get_conn()
+    row = c.execute(
+        "SELECT id FROM asset_dependencies WHERE id = ? AND user_id = ?", (dependency_id, user_id)
+    ).fetchone()
+    if not row:
+        return False
+    cur = c.execute("DELETE FROM asset_dependencies WHERE id = ?", (dependency_id,))
+    c.commit()
+    if cur.rowcount:
+        audit("asset_dependency_delete", user_id, {"id": dependency_id})
         return True
     return False
 

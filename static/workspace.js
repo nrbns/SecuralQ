@@ -4146,11 +4146,11 @@
       el.innerHTML = `
         <p class="hint" style="margin:0 0 8px">
           Baseline organizational risk: <span class="auto-job-status ${bandCls(orgData.band || data.baseline_band)}">${escapeHtml(String(orgData.score ?? data.baseline_score))}</span>
-          across ${escapeHtml(String(data.total_open))} open finding(s)${orgData.kev_count ? ` · ${orgData.kev_count} actively exploited (KEV)` : ""}.
+          across ${escapeHtml(String(data.total_open))} open finding(s)${orgData.kev_count ? ` · ${orgData.kev_count} actively exploited (KEV)` : ""}${data.total_attack_paths ? ` · ${data.total_attack_paths} attack path(s) from the internet${data.business_critical_attack_paths ? `, ${data.business_critical_attack_paths} reaching a business-critical asset` : ""}` : ""}.
         </p>
         ${headline}
         <div class="data-table-wrap"><table class="data-table">
-          <thead><tr><th>If fixed</th><th>Assets</th><th>Exposed</th><th>Vulns removed</th><th>Est. risk reduction</th></tr></thead>
+          <thead><tr><th>If fixed</th><th>Assets</th><th>Exposed</th><th>Vulns removed</th><th>Attack paths disrupted</th><th>Est. risk reduction</th></tr></thead>
           <tbody>${groups
             .map(
               (g) => `<tr>
@@ -4158,12 +4158,104 @@
                 <td class="hint">${Number(g.assets_affected)}</td>
                 <td class="hint">${Number(g.internet_exposed_assets)}</td>
                 <td class="hint">${Number(g.vulns_removed)}</td>
+                <td class="hint">${g.attack_paths_disrupted ? `${Number(g.attack_paths_disrupted)}${g.business_critical_paths_disrupted ? ` <span class="auto-job-status status-error">${Number(g.business_critical_paths_disrupted)} business-critical</span>` : ""}` : "—"}</td>
                 <td><span class="auto-job-status ${g.estimated_risk_reduction_pct > 0 ? "status-done" : "status-planned"}">${escapeHtml(String(g.estimated_risk_reduction_pct))}%</span></td>
               </tr>`
             )
             .join("")}</tbody></table></div>`;
     } catch (err) {
       el.innerHTML = `<p class="hint">Couldn't load the risk simulator right now. <span class="hint-sub">(${escapeHtml(err.message || String(err))})</span></p>`;
+    }
+  }
+
+  async function renderAttackPathsPanel() {
+    const el = qs("attackPathsBody");
+    if (!el) return;
+    try {
+      const [res, assetsRes] = await Promise.all([
+        fetch("/api/risk/attack-paths?limit=15", { headers: authHeaders() }),
+        fetch("/api/assets", { headers: authHeaders() }).catch(() => null),
+      ]);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+      const paths = data.paths || [];
+      const assetsData = assetsRes && assetsRes.ok ? await assetsRes.json().catch(() => ({})) : {};
+      const assets = assetsData.assets || [];
+      const bandCls = (band) =>
+        band === "critical" || band === "high" ? "status-error" : band === "medium" ? "status-planned" : "status-done";
+
+      const pathsHtml = paths.length
+        ? `<p class="hint" style="margin:0 0 8px">${data.total_paths} attack path(s) computed from real asset/software/vulnerability data, plus any declared or inferred asset connections. Declared connections are exact; inferred ones are low-confidence guesses and are labeled as such.</p>
+          <div class="attack-paths-list" style="display:flex;flex-direction:column;gap:8px;margin-bottom:12px">
+            ${paths
+              .map((p) => {
+                const route = p.nodes.map((n) => escapeHtml(n.label)).join(" &rarr; ");
+                const worst = p.worst_vulnerability;
+                const inferredHop = (p.edges || []).some((e) => e.source === "inferred");
+                return `<div class="attack-path-row" style="padding:8px 12px;border-radius:8px;background:var(--cc-surface-2,rgba(255,255,255,0.04))">
+                  <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+                    <div><span class="auto-job-status ${bandCls(p.band)}">${escapeHtml(String(p.risk_score))}</span> <span style="margin-left:6px">${route}</span></div>
+                    <span class="hint">${p.hops} hop(s)${inferredHop ? " · contains an inferred link (unconfirmed)" : ""}</span>
+                  </div>
+                  ${worst ? `<div class="hint" style="margin-top:4px">Driven by: <strong>${escapeHtml(worst.label || worst.cve || "")}</strong>${worst.cve ? ` <span class="hint">${escapeHtml(worst.cve)}</span>` : ""}${worst.kev ? ` <span class="auto-job-status status-error">KEV</span>` : ""} &middot; reaches <strong>${escapeHtml((p.target_asset || {}).label || "")}</strong>${(p.target_asset || {}).business_criticality ? ` <span class="hint">(${escapeHtml(p.target_asset.business_criticality)} business criticality)</span>` : ""}</div>` : ""}
+                </div>`;
+              })
+              .join("")}
+          </div>`
+        : `<p class="hint" style="margin:0 0 8px">No attack paths from the internet found yet. This needs at least one internet-facing asset with an open finding, optionally connecting onward to other assets below.</p>`;
+
+      const declareFormHtml =
+        assets.length >= 2
+          ? `<details class="attack-paths-declare" style="margin-top:4px">
+              <summary class="hint" style="cursor:pointer">Declare that one asset connects to another</summary>
+              <form id="declareDependencyForm" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
+                <select name="source_asset_id" required>
+                  <option value="">From asset…</option>
+                  ${assets.map((a) => `<option value="${escapeHtml(a.id)}">${escapeHtml(a.name || a.id)}</option>`).join("")}
+                </select>
+                <span class="hint">connects to</span>
+                <select name="target_asset_id" required>
+                  <option value="">Target asset…</option>
+                  ${assets.map((a) => `<option value="${escapeHtml(a.id)}">${escapeHtml(a.name || a.id)}</option>`).join("")}
+                </select>
+                <button type="submit" class="btn-secondary">Declare</button>
+              </form>
+              <p class="hint" style="margin-top:4px">There's no automatic way to detect this (no network flow capture) — declaring it here is what lets an attack path continue past this asset.</p>
+            </details>`
+          : "";
+
+      el.innerHTML = pathsHtml + declareFormHtml;
+
+      const form = qs("declareDependencyForm");
+      if (form) {
+        form.addEventListener("submit", async (ev) => {
+          ev.preventDefault();
+          const sourceId = form.source_asset_id.value;
+          const targetId = form.target_asset_id.value;
+          if (!sourceId || !targetId) return;
+          const btn = form.querySelector("button[type=submit]");
+          btn.disabled = true;
+          try {
+            const r = await fetch(`/api/assets/${encodeURIComponent(sourceId)}/dependencies`, {
+              method: "POST",
+              headers: authHeaders({ "Content-Type": "application/json" }),
+              body: JSON.stringify({ target_asset_id: targetId }),
+            });
+            if (!r.ok) {
+              const d = await r.json().catch(() => ({}));
+              throw new Error(d.detail || `HTTP ${r.status}`);
+            }
+            if (typeof notifyUser === "function") notifyUser("Connection declared — attack paths recalculated.");
+            renderAttackPathsPanel();
+            renderRiskSimulatorPanel();
+          } catch (err) {
+            alert(err.message || "Couldn't declare that connection");
+            btn.disabled = false;
+          }
+        });
+      }
+    } catch (err) {
+      el.innerHTML = `<p class="hint">Couldn't load attack paths right now. <span class="hint-sub">(${escapeHtml(err.message || String(err))})</span></p>`;
     }
   }
 
@@ -4865,6 +4957,10 @@
         <header><h2>Risk Reduction Simulator</h2></header>
         <div id="riskSimulatorBody"><p class="hint">Loading…</p></div>
       </section>
+      <section class="cc-panel" id="attackPathsPanel" style="margin-top:1rem">
+        <header><h2>Attack Paths</h2></header>
+        <div id="attackPathsBody"><p class="hint">Loading…</p></div>
+      </section>
       <div class="ws-grid-2" style="margin-top:1rem">
         <section class="cc-panel">
           <header><h2>Alerts</h2></header>
@@ -4919,6 +5015,7 @@
     body.dataset.socRendered = "1";
     renderRiskPriorityPanel();
     renderRiskSimulatorPanel();
+    renderAttackPathsPanel();
     renderAgentsPanel();
     renderXdrPanel();
     renderWazuhPanel();

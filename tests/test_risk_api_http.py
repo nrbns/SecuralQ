@@ -301,23 +301,136 @@ def test_simulate_groups_by_exact_cve_and_estimates_reduction(tmp_path, monkeypa
     assert "Log4Shell" in body["top3_group_titles"]
 
 
-def test_simulate_never_reports_attack_paths_field(tmp_path, monkeypatch):
-    """Deliberate honesty constraint: the product has no attack-path graph,
-    so the simulator must never fabricate an 'attack paths disrupted' metric
-    (unlike the illustrative example format some product docs use)."""
+def test_simulate_reports_real_attack_paths_disrupted(tmp_path, monkeypatch):
+    """attack_paths_disrupted is a real recomputation over app.services.
+    attack_graph, not a fabricated number — a finding on an asset with no
+    path from Internet (not exposed, nothing declared/inferred connecting
+    to it) must disrupt zero paths, since none exist to disrupt."""
     client, token, uid = _client_and_token(tmp_path, monkeypatch)
     from app.enterprise import create_asset, create_vulnerability
 
-    asset = create_asset(uid, "no-attack-path-host")
+    asset = create_asset(uid, "no-attack-path-host", asset_type="server", criticality="medium")
     create_vulnerability(
         uid,
         {"asset_id": asset["id"], "asset_name": "no-attack-path-host", "title": "Some finding", "severity": "high", "cvss": 7.0, "status": "open"},
     )
     res = client.get("/api/risk/simulate", headers=_auth(token))
     body = res.json()
+    assert "total_attack_paths" in body
+    assert "business_critical_attack_paths" in body
+    assert body["total_attack_paths"] == 0
     for g in body["groups"]:
-        assert "attack_paths" not in g
-        assert "attack_paths_disrupted" not in g
+        assert g["attack_paths_disrupted"] == 0
+        assert g["business_critical_paths_disrupted"] == 0
+
+
+def test_simulate_attack_paths_disrupted_reflects_real_graph(tmp_path, monkeypatch):
+    """The killer-feature case: a vulnerability on an internet-exposed web
+    asset that connects (declared) to a business-critical database must
+    show attack_paths_disrupted >= 2 (the direct path AND the path through
+    to the database) and business_critical_paths_disrupted >= 1."""
+    client, token, uid = _client_and_token(tmp_path, monkeypatch)
+    from app.enterprise import create_asset, create_asset_dependency, create_vulnerability
+
+    web = create_asset(uid, "WEB-01", asset_type="web", criticality="medium")
+    db = create_asset(uid, "DB-01", asset_type="database", criticality="high", business_criticality="critical")
+    create_vulnerability(
+        uid,
+        {"asset_id": web["id"], "asset_name": "WEB-01", "title": "Apache RCE", "cve": "CVE-2024-9999", "severity": "critical", "cvss": 9.8, "status": "open"},
+    )
+    create_asset_dependency(uid, web["id"], db["id"], relationship="connects_to")
+
+    res = client.get("/api/risk/simulate", headers=_auth(token))
+    body = res.json()
+    assert body["total_attack_paths"] >= 2
+    assert body["business_critical_attack_paths"] >= 1
+    group = next(g for g in body["groups"] if g["cve"] == "CVE-2024-9999")
+    assert group["attack_paths_disrupted"] >= 2
+    assert group["business_critical_paths_disrupted"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# /api/risk/attack-graph and /api/risk/attack-paths
+# ---------------------------------------------------------------------------
+
+
+def test_attack_graph_requires_auth(tmp_path, monkeypatch):
+    client, _token, _uid = _client_and_token(tmp_path, monkeypatch)
+    res = client.get("/api/risk/attack-graph")
+    assert res.status_code == 401
+
+
+def test_attack_graph_empty_state(tmp_path, monkeypatch):
+    client, token, _uid = _client_and_token(tmp_path, monkeypatch)
+    res = client.get("/api/risk/attack-graph", headers=_auth(token))
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["total_assets"] == 0
+    assert any(n["type"] == "internet" for n in body["nodes"])
+
+
+def test_attack_graph_reflects_real_assets_and_edges(tmp_path, monkeypatch):
+    client, token, uid = _client_and_token(tmp_path, monkeypatch)
+    from app.enterprise import create_asset
+
+    create_asset(uid, "WEB-01", asset_type="web")
+    res = client.get("/api/risk/attack-graph", headers=_auth(token))
+    body = res.json()
+    assert body["total_assets"] == 1
+    web_node = next(n for n in body["nodes"] if n["type"] == "application")
+    assert web_node["exposed"] is True
+    assert any(e["type"] == "exposed_to" for e in body["edges"])
+
+
+def test_attack_paths_requires_auth(tmp_path, monkeypatch):
+    client, _token, _uid = _client_and_token(tmp_path, monkeypatch)
+    res = client.get("/api/risk/attack-paths")
+    assert res.status_code == 401
+
+
+def test_attack_paths_empty_when_nothing_exposed(tmp_path, monkeypatch):
+    client, token, _uid = _client_and_token(tmp_path, monkeypatch)
+    res = client.get("/api/risk/attack-paths", headers=_auth(token))
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["total_paths"] == 0
+    assert body["paths"] == []
+
+
+def test_attack_paths_reports_real_route(tmp_path, monkeypatch):
+    client, token, uid = _client_and_token(tmp_path, monkeypatch)
+    from app.enterprise import create_asset, create_vulnerability
+
+    web = create_asset(uid, "WEB-01", asset_type="web", criticality="high")
+    create_vulnerability(
+        uid,
+        {"asset_id": web["id"], "asset_name": "WEB-01", "title": "Apache RCE", "cve": "CVE-2024-7777", "severity": "critical", "cvss": 9.8, "status": "open"},
+    )
+    res = client.get("/api/risk/attack-paths", headers=_auth(token))
+    body = res.json()
+    assert body["total_paths"] == 1
+    path = body["paths"][0]
+    assert path["target_asset"]["label"] == "WEB-01"
+    assert path["worst_vulnerability"]["cve"] == "CVE-2024-7777"
+    assert path["risk_score"] > 0
+
+
+def test_attack_paths_respects_max_depth_param(tmp_path, monkeypatch):
+    client, token, uid = _client_and_token(tmp_path, monkeypatch)
+    from app.enterprise import create_asset, create_asset_dependency, create_vulnerability
+
+    web = create_asset(uid, "WEB-01", asset_type="web")
+    mid = create_asset(uid, "MID-01", asset_type="server")
+    db = create_asset(uid, "DB-01", asset_type="database")
+    create_vulnerability(uid, {"asset_id": web["id"], "asset_name": "WEB-01", "title": "RCE", "severity": "critical", "cvss": 9.0, "status": "open"})
+    create_asset_dependency(uid, web["id"], mid["id"])
+    create_asset_dependency(uid, mid["id"], db["id"])
+
+    shallow = client.get("/api/risk/attack-paths?max_depth=1", headers=_auth(token)).json()
+    assert not any(p["target_asset"]["label"] == "DB-01" for p in shallow["paths"])
+
+    full = client.get("/api/risk/attack-paths?max_depth=4", headers=_auth(token)).json()
+    assert any(p["target_asset"]["label"] == "DB-01" for p in full["paths"])
 
 
 def test_simulate_respects_limit(tmp_path, monkeypatch):
