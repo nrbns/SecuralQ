@@ -58,10 +58,18 @@ async def test_execute_scan_zap_fixture_e2e(tmp_path, monkeypatch):
     user = register_user("zap_e2e", "password123", role="user")
     scan = create_scan(
         user_id=user.id,
-        target="http://192.168.56.101",
+        # A real public hostname, not a private/lab IP: app.scanners.zap's
+        # validate_target (called by execute_scan below, before execute()
+        # is invoked — and NOT covered by the execute() monkeypatch further
+        # down) now rejects loopback/RFC1918/link-local targets, since the
+        # Web Scanner is scoped to public web apps only (internal hosts go
+        # through the network/VAPT scanner instead). A private lab IP here
+        # would fail validate_target and the scan would never reach the
+        # fixture-execute path this test is actually exercising.
+        target="http://example.com",
         scanner="zap",
         profile="web",
-        scope=["192.168.56.0/24"],
+        scope=["example.com"],
         authorized=True,
     )
     sid = scan["id"]

@@ -15,6 +15,7 @@ from app.evidence_workflow import (
     missing_evidence_queue,
 )
 from app.gap_analysis import (
+    delete_assessment,
     ensure_gap_schema,
     export_gap_markdown,
     get_assessment,
@@ -54,6 +55,13 @@ async def gap_get(assessment_id: str, user: Annotated[AuthUser, Depends(require_
     if not data:
         raise HTTPException(status_code=404, detail="Not found")
     return data
+
+
+@router.delete("/gap/assessments/{assessment_id}")
+async def gap_delete(assessment_id: str, user: Annotated[AuthUser, Depends(require_user)]):
+    if not delete_assessment(user.id, assessment_id):
+        raise HTTPException(status_code=404, detail="Not found")
+    return {"ok": True}
 
 
 @router.get("/gap/assessments/{assessment_id}/export")

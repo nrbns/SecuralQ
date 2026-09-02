@@ -20,7 +20,7 @@ from app.scanners.base import (
     ScanContext,
     Scanner,
 )
-from app.scanners.constants import HOST_OR_IP
+from app.scanners.constants import HOST_OR_IP, internal_target_reason
 from app.scanners.nuclei import _hostname_from_target, to_nuclei_url
 from app.services.tool_policy import target_in_scope
 
@@ -134,6 +134,18 @@ class ZapScanner(Scanner):
         host = _hostname_from_target(t)
         if not host or not HOST_OR_IP.match(host):
             return False, "target must be hostname, IPv4, or http(s) URL"
+        # The Web Scanner is scoped to public-facing web apps — internal
+        # hosts (loopback, RFC1918/private IPs, link-local, .local/.internal
+        # names) belong to the network/VAPT scanner instead, and allowing
+        # them here would let this tool be pointed at internal services
+        # (SSRF) rather than the public web it's meant to assess.
+        blocked = internal_target_reason(host)
+        if blocked:
+            return (
+                False,
+                f"Web Scanner targets public web apps only ({blocked}). "
+                "Use a network/VAPT scan for internal hosts.",
+            )
         return True, to_nuclei_url(t)
 
     def validate_scope(self, target: str, scope: list[str]) -> tuple[bool, str]:

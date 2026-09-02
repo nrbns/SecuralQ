@@ -276,6 +276,33 @@ def get_assessment(user_id: str, assessment_id: str) -> dict[str, Any] | None:
     return data
 
 
+def delete_assessment(user_id: str, assessment_id: str) -> bool:
+    """Delete a gap assessment and cascade-clean its remediation tasks —
+    a remediation with no owning assessment is orphaned and would otherwise
+    linger in the Controls list forever."""
+    c = get_conn()
+    row = c.execute(
+        "SELECT id FROM gap_assessments WHERE id = ? AND user_id = ?", (assessment_id, user_id)
+    ).fetchone()
+    if not row:
+        return False
+    c.execute("DELETE FROM gap_remediations WHERE assessment_id = ? AND user_id = ?", (assessment_id, user_id))
+    cur = c.execute("DELETE FROM gap_assessments WHERE id = ? AND user_id = ?", (assessment_id, user_id))
+    c.commit()
+    if cur.rowcount:
+        from app.db import audit
+
+        audit("gap_assessment_delete", user_id, {"id": assessment_id})
+        try:
+            from app.realtime_bus import publish
+
+            publish(type="gap", id=assessment_id, user_id=user_id, action="delete")
+        except Exception:
+            pass
+        return True
+    return False
+
+
 def list_assessments(user_id: str, engagement_id: str | None = None) -> list[dict[str, Any]]:
     c = get_conn()
     if engagement_id:

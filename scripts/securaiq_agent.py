@@ -48,7 +48,7 @@ DEFAULT_SENTINEL_INTERVAL_SEC = 10
 # any NEW detection to the server immediately via POST /api/agents/threat —
 # that's what makes it "real time" rather than "eventually visible."
 #
-# It fuses three honest, install-free techniques rather than pretending to
+# It fuses four honest, install-free techniques rather than pretending to
 # be a full antivirus engine:
 #   1. Signature matching  — sha256 of files in watched dirs against a small
 #      bundled seed list (KNOWN_BAD_HASHES). Ships with the EICAR test file
@@ -63,6 +63,9 @@ DEFAULT_SENTINEL_INTERVAL_SEC = 10
 #   3. Host indicators — ransomware-pattern file activity (mass renames to
 #      known ransom extensions, ransom-note filenames appearing) and a
 #      coarse "many concurrent outbound connections" network heuristic.
+#   4. File-integrity monitoring — a real persisted baseline of every file
+#      under the watched directories, diffed on each scan to catch adds,
+#      modifications, and deletions (not a hardcoded empty stub).
 #
 # Every technique here is real and runs against real host data — but this is
 # intentionally scoped and will never claim the coverage of a commercial EDR
@@ -555,10 +558,141 @@ def _scan_network(threshold: int = 25) -> list[dict]:
     return []
 
 
+# ---------------------------------------------------------------------------
+# File-integrity monitoring (FIM) — real baseline + diff, not a stub.
+#
+# First scan on a fresh agent establishes a baseline silently (like Wazuh's
+# FIM: an initial inventory pass isn't itself a flood of "new file" alerts).
+# Every scan after that reports genuine added/modified/deleted events against
+# that baseline. The baseline persists to disk next to the agent script so a
+# process restart doesn't misreport the whole watched tree as "new".
+# ---------------------------------------------------------------------------
+
+_FIM_LOCK = threading.Lock()
+_FIM_BASELINE: dict[str, dict] = {}
+_FIM_BASELINE_LOADED = False
+_FIM_LAST_SUMMARY: dict = {
+    "tracked_files": 0, "baseline_established": False,
+    "added": 0, "modified": 0, "deleted": 0, "last_scan_ts": None,
+}
+_FIM_LAST_EVENTS: list[dict] = []
+_FIM_MAX_HASH_BYTES = 5_000_000
+
+
+def _fim_state_path() -> str:
+    try:
+        base = os.path.dirname(os.path.abspath(__file__))
+        if os.access(base, os.W_OK):
+            return os.path.join(base, ".securaiq_fim_baseline.json")
+    except Exception:
+        pass
+    import tempfile
+
+    return os.path.join(tempfile.gettempdir(), "securaiq_fim_baseline.json")
+
+
+def _fim_load_baseline() -> dict:
+    global _FIM_BASELINE, _FIM_BASELINE_LOADED
+    if _FIM_BASELINE_LOADED:
+        return _FIM_BASELINE
+    try:
+        with open(_fim_state_path(), "r", encoding="utf-8") as fh:
+            _FIM_BASELINE = json.load(fh)
+    except Exception:
+        _FIM_BASELINE = {}
+    _FIM_BASELINE_LOADED = True
+    return _FIM_BASELINE
+
+
+def _fim_save_baseline() -> None:
+    path = _fim_state_path()
+    try:
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(_FIM_BASELINE, fh)
+        os.replace(tmp, path)
+    except Exception:
+        pass  # best-effort persistence — a restart just re-baselines, no crash
+
+
+def _scan_file_integrity(watch_dirs: list[str], *, max_files: int = 2000) -> list[dict]:
+    """Real add/modify/delete diff against a persisted baseline. Returns
+    Sentinel detections for modified/deleted files (added files are recorded
+    for visibility but aren't inherently a threat, so they don't spawn a
+    finding/incident on their own)."""
+    global _FIM_LAST_SUMMARY, _FIM_LAST_EVENTS
+    detections: list[dict] = []
+    events: list[dict] = []
+    with _FIM_LOCK:
+        baseline = _fim_load_baseline()
+        first_run = not baseline
+        seen_paths: set[str] = set()
+        added = modified = deleted = 0
+        for path, _name, st in _iter_watch_files(watch_dirs, max_files=max_files):
+            seen_paths.add(path)
+            hashable = st.st_size <= _FIM_MAX_HASH_BYTES
+            digest = _sha256_file(path) if hashable else ""
+            prior = baseline.get(path)
+            if prior is None:
+                baseline[path] = {"hash": digest, "size": st.st_size, "mtime": st.st_mtime}
+                if not first_run:
+                    added += 1
+                    events.append({"path": path, "status": "added", "hash": digest})
+                continue
+            if hashable and prior.get("hash"):
+                changed = digest != prior.get("hash")
+            else:
+                # Large file we don't hash — coarse fallback via size/mtime.
+                changed = st.st_size != prior.get("size") or abs(st.st_mtime - float(prior.get("mtime") or 0)) > 1
+            if changed:
+                baseline[path] = {"hash": digest, "size": st.st_size, "mtime": st.st_mtime}
+                modified += 1
+                events.append({"path": path, "status": "modified", "hash": digest})
+                detections.append({
+                    "severity": "medium", "category": "file_integrity",
+                    "title": f"Monitored file modified: {os.path.basename(path)}",
+                    "detail": f"Path: {path}", "target": path, "hash": digest,
+                })
+            else:
+                baseline[path]["mtime"] = st.st_mtime
+        # Deletions: baseline paths still under a watch dir but no longer seen.
+        for path in list(baseline.keys()):
+            if path in seen_paths:
+                continue
+            if not any(path.startswith(d.rstrip(os.sep) + os.sep) for d in watch_dirs):
+                continue
+            if os.path.exists(path):
+                continue  # exists but wasn't re-visited this tick (size/count caps)
+            del baseline[path]
+            deleted += 1
+            events.append({"path": path, "status": "deleted"})
+            detections.append({
+                "severity": "medium", "category": "file_integrity",
+                "title": f"Monitored file deleted: {os.path.basename(path)}",
+                "detail": f"Path: {path}", "target": path,
+            })
+        _fim_save_baseline()
+        _FIM_LAST_SUMMARY = {
+            "tracked_files": len(baseline), "baseline_established": True,
+            "added": added, "modified": modified, "deleted": deleted,
+            "last_scan_ts": time.time(),
+        }
+        _FIM_LAST_EVENTS = events[-50:]
+    return detections
+
+
+def fim_recent_events() -> list[dict]:
+    """Real, current FIM event log for the telemetry check-in payload —
+    replaces the old hardcoded empty list. Empty until Sentinel has run at
+    least once (honest: no FIM data yet, not a fabricated result)."""
+    with _FIM_LOCK:
+        return list(_FIM_LAST_EVENTS)
+
+
 def sentinel_scan(watch_dirs: list[str], known_hashes: dict[str, str]) -> list[dict]:
-    """One full Sentinel pass: signature + behavioral + ransomware + network.
-    Returns a flat list of detection dicts, each already shaped for
-    POST /api/agents/threat."""
+    """One full Sentinel pass: signature + behavioral + ransomware + network +
+    file-integrity. Returns a flat list of detection dicts, each already
+    shaped for POST /api/agents/threat."""
     detections: list[dict] = []
     try:
         detections += _scan_signature(watch_dirs, known_hashes)
@@ -574,6 +708,10 @@ def sentinel_scan(watch_dirs: list[str], known_hashes: dict[str, str]) -> list[d
         pass
     try:
         detections += _scan_network()
+    except Exception:
+        pass
+    try:
+        detections += _scan_file_integrity(watch_dirs)
     except Exception:
         pass
     return detections
@@ -657,7 +795,7 @@ def collect_snapshot() -> dict:
         "listening_ports": _listening_ports(),
         "processes": _processes(),
         "packages": _packages(),
-        "file_integrity": [],  # reserved for --watch paths (see --watch flag)
+        "file_integrity": fim_recent_events(),  # real baseline-diff events from Sentinel's FIM pass
         "uptime_sec": uptime_sec,
     }
 

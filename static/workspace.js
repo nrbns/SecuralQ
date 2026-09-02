@@ -5396,6 +5396,7 @@
           <div class="cc-action-row">
             <button type="button" class="btn-secondary" id="fwExportAssessment">Export assessment</button>
             <button type="button" class="btn-secondary" id="fwExportAuditPack">Export audit pack</button>
+            <button type="button" class="btn-secondary" id="fwDeleteAssessment" data-id="${escapeHtml(aid)}">Delete assessment</button>
             <button type="button" class="btn-secondary" id="fwDetailClose">Close</button>
           </div>
         </header>
@@ -5472,6 +5473,23 @@
           }
         } catch (err) {
           alert(err.message || "Audit pack failed");
+        }
+      });
+      qs("fwDeleteAssessment")?.addEventListener("click", async () => {
+        if (!confirm("Delete this assessment and all its remediation tasks? This cannot be undone.")) return;
+        try {
+          const res = await fetch(`/api/gap/assessments/${aid}`, { method: "DELETE", headers: authHeaders() });
+          if (!res.ok) {
+            const d = await res.json().catch(() => ({}));
+            throw new Error(d.detail || `HTTP ${res.status}`);
+          }
+          if (typeof notifyUser === "function") notifyUser("**Assessment deleted.**");
+          detailEl.innerHTML = `<p class="hint">Select a framework to review controls.</p>`;
+          if (typeof renderFrameworksPage === "function") renderFrameworksPage();
+          if (typeof loadCommandCenter === "function") loadCommandCenter();
+        } catch (err) {
+          if (typeof notifyUser === "function") notifyUser(`**Delete failed:** ${err.message || err}`);
+          else alert(err.message || "Delete failed");
         }
       });
       detailEl.querySelectorAll(".fw-ctrl-ask").forEach((btn) => {
