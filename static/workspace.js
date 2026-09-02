@@ -4072,10 +4072,11 @@
     const el = qs("agentsPanelBody");
     if (!el) return;
     try {
-      const [res, threatsRes, pendingRes] = await Promise.all([
+      const [res, threatsRes, pendingRes, campaignsRes] = await Promise.all([
         fetch("/api/agents", { headers: authHeaders() }),
         fetch("/api/agents/threats?limit=50", { headers: authHeaders() }).catch(() => null),
         fetch("/api/agents/commands/pending?limit=100", { headers: authHeaders() }).catch(() => null),
+        fetch("/api/agents/campaigns?limit=50", { headers: authHeaders() }).catch(() => null),
       ]);
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
@@ -4084,6 +4085,8 @@
       const threats = threatsData.threats || [];
       const pendingData = pendingRes && pendingRes.ok ? await pendingRes.json().catch(() => ({})) : {};
       const pendingCommands = pendingData.commands || [];
+      const campaignsData = campaignsRes && campaignsRes.ok ? await campaignsRes.json().catch(() => ({})) : {};
+      const campaigns = campaignsData.campaigns || [];
       const threatsByAgent = {};
       threats.forEach((t) => {
         (threatsByAgent[t.agent_id] = threatsByAgent[t.agent_id] || []).push(t);
@@ -4173,7 +4176,73 @@
                     .join("")}</tbody></table></div>
               </div>`
             : ""
+        }
+        ${
+          campaigns.length
+            ? `<div class="agents-campaigns" style="margin-top:12px">
+                <h4 style="margin:0 0 6px">Patch campaigns</h4>
+                <div class="data-table-wrap"><table class="data-table">
+                  <thead><tr><th>Name</th><th>Package</th><th>Progress</th><th>Status</th><th></th></tr></thead>
+                  <tbody>${campaigns
+                    .map((c) => {
+                      const s = c.summary || {};
+                      const total = s.total || 0;
+                      const done = s.done || 0;
+                      const errored = s.error || 0;
+                      const pending = s.pending_approval || 0;
+                      return `<tr>
+                        <td>${escapeHtml(c.name || "")}</td>
+                        <td><code>${escapeHtml(c.manager)} upgrade ${escapeHtml(c.package)}</code>${c.target_version ? ` <span class="hint">→ ${escapeHtml(c.target_version)}</span>` : ""}</td>
+                        <td class="hint">${done}/${total} done${errored ? ` · ${errored} failed` : ""}${pending ? ` · ${pending} awaiting approval` : ""}</td>
+                        <td>${escapeHtml(c.status)}</td>
+                        <td class="reports-dl-cell">
+                          ${pending ? `<button type="button" class="btn-primary-cc agents-approve-campaign" data-id="${escapeHtml(c.id)}">Approve all</button><button type="button" class="btn-secondary agents-reject-campaign" data-id="${escapeHtml(c.id)}">Reject</button>` : ""}
+                        </td>
+                      </tr>`;
+                    })
+                    .join("")}</tbody></table></div>
+              </div>`
+            : ""
         }`;
+      el.querySelectorAll(".agents-approve-campaign").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const id = btn.getAttribute("data-id");
+          if (!confirm("Approve all pending items in this campaign? They will run on each agent's next check-in.")) return;
+          btn.disabled = true;
+          try {
+            const r = await fetch(`/api/agents/campaigns/${encodeURIComponent(id)}/approve`, {
+              method: "POST",
+              headers: authHeaders(),
+            });
+            if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.detail || `HTTP ${r.status}`); }
+            if (typeof notifyUser === "function") notifyUser("Campaign approved — items queued for delivery.");
+            renderAgentsPanel();
+          } catch (err) {
+            alert(err.message || "Approve failed");
+            btn.disabled = false;
+          }
+        });
+      });
+      el.querySelectorAll(".agents-reject-campaign").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const id = btn.getAttribute("data-id");
+          const reason = prompt("Reason for rejecting this campaign (optional):") || "";
+          btn.disabled = true;
+          try {
+            const r = await fetch(`/api/agents/campaigns/${encodeURIComponent(id)}/reject`, {
+              method: "POST",
+              headers: authHeaders({ "Content-Type": "application/json" }),
+              body: JSON.stringify({ reason }),
+            });
+            if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.detail || `HTTP ${r.status}`); }
+            if (typeof notifyUser === "function") notifyUser("Campaign rejected.");
+            renderAgentsPanel();
+          } catch (err) {
+            alert(err.message || "Reject failed");
+            btn.disabled = false;
+          }
+        });
+      });
       el.querySelectorAll(".agents-approve-cmd").forEach((btn) => {
         btn.addEventListener("click", async () => {
           const agentId = btn.getAttribute("data-agent-id");
@@ -4700,8 +4769,9 @@
         </section>
       </div>
       <section class="cc-panel" id="agentsPanel" style="margin-top:1rem">
-        <header><h2>SecuraIQ Agents</h2><button type="button" class="btn-secondary" id="agentsEnrollBtn">Enroll new agent</button></header>
+        <header><h2>SecuraIQ Agents</h2><div style="display:flex;gap:0.5rem"><button type="button" class="btn-secondary" id="agentsCampaignBtn">New patch campaign</button><button type="button" class="btn-secondary" id="agentsEnrollBtn">Enroll new agent</button></div></header>
         <div id="agentsEnrollResult"></div>
+        <div id="agentsCampaignForm"></div>
         <div id="agentsPanelBody"><p class="hint">Loading…</p></div>
       </section>
       <section class="cc-panel" id="xdrPanel" style="margin-top:1rem">
@@ -4754,6 +4824,85 @@
       } finally {
         if (btn) { btn.disabled = false; btn.textContent = "Enroll new agent"; }
       }
+    });
+    qs("agentsCampaignBtn")?.addEventListener("click", async () => {
+      const formEl = qs("agentsCampaignForm");
+      if (!formEl) return;
+      if (formEl.innerHTML) { formEl.innerHTML = ""; return; }
+      let agents = [];
+      try {
+        const r = await fetch("/api/agents", { headers: authHeaders() });
+        const d = await r.json().catch(() => ({}));
+        agents = (d.agents || []).filter((a) => !a.revoked);
+      } catch (e) {
+        agents = [];
+      }
+      if (!agents.length) {
+        if (typeof notifyUser === "function") notifyUser("No enrolled agents to target — enroll one first.");
+        return;
+      }
+      formEl.innerHTML = `
+        <div class="cc-panel" style="margin:0.75rem 0;background:var(--panel-2,rgba(255,255,255,0.03))">
+          <h4 style="margin:0 0 8px">New patch campaign</h4>
+          <form id="campaignForm" class="inline-form" style="flex-wrap:wrap">
+            <input id="campaignName" placeholder="Campaign name (optional)" style="min-width:220px" />
+            <select id="campaignManager">
+              <option value="apt">apt (Linux)</option>
+              <option value="winget">winget (Windows)</option>
+              <option value="brew">brew (macOS)</option>
+              <option value="pip">pip</option>
+            </select>
+            <input id="campaignPackage" placeholder="Package name" required style="min-width:160px" />
+            <input id="campaignTargetVersion" placeholder="Target version (optional)" style="min-width:160px" />
+            <button type="submit" class="btn-primary-cc">Create campaign</button>
+          </form>
+          <p class="hint" style="margin:8px 0 4px">Target agents:</p>
+          <div style="max-height:160px;overflow:auto;display:flex;flex-direction:column;gap:4px">
+            ${agents
+              .map(
+                (a) =>
+                  `<label class="hint" style="display:flex;align-items:center;gap:6px"><input type="checkbox" class="campaign-target" value="${escapeHtml(a.id)}" /> ${escapeHtml(a.hostname || a.name || a.id.slice(0, 8))}</label>`
+              )
+              .join("")}
+          </div>
+        </div>`;
+      qs("campaignForm")?.addEventListener("submit", async (ev) => {
+        ev.preventDefault();
+        const targets = Array.from(formEl.querySelectorAll(".campaign-target:checked")).map((el) => el.value);
+        if (!targets.length) {
+          if (typeof notifyUser === "function") notifyUser("Select at least one target agent for the campaign.");
+          return;
+        }
+        const manager = qs("campaignManager")?.value || "apt";
+        const pkg = (qs("campaignPackage")?.value || "").trim();
+        const targetVersion = (qs("campaignTargetVersion")?.value || "").trim();
+        const name = (qs("campaignName")?.value || "").trim();
+        if (!pkg) return;
+        if (
+          !confirm(
+            `Create a patch campaign requesting a real ${manager} upgrade of "${pkg}" across ${targets.length} agent(s)?\n\nEach target lands as a pending approval — nothing runs until approved.`
+          )
+        ) {
+          return;
+        }
+        try {
+          const res = await fetch("/api/agents/campaigns", {
+            method: "POST",
+            headers: authHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify({ name, manager, package: pkg, target_version: targetVersion, agent_ids: targets }),
+          });
+          const body = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(body.detail || `HTTP ${res.status}`);
+          if (typeof notifyUser === "function") {
+            notifyUser(`**Campaign created** · ${body.requested} target(s) pending approval.`);
+          }
+          formEl.innerHTML = "";
+          renderAgentsPanel();
+        } catch (err) {
+          if (typeof notifyUser === "function") notifyUser(`Campaign creation failed: ${err.message || err}`);
+          else alert(err.message || "Campaign creation failed");
+        }
+      });
     });
     qs("xdrSyncBtn")?.addEventListener("click", async () => {
       const btn = qs("xdrSyncBtn");

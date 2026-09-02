@@ -125,6 +125,7 @@ def ensure_schema() -> None:
             ("approved_at", "ALTER TABLE securaiq_agent_commands ADD COLUMN approved_at REAL NOT NULL DEFAULT 0"),
             ("rejected_reason", "ALTER TABLE securaiq_agent_commands ADD COLUMN rejected_reason TEXT NOT NULL DEFAULT ''"),
             ("campaign_id", "ALTER TABLE securaiq_agent_commands ADD COLUMN campaign_id TEXT NOT NULL DEFAULT ''"),
+            ("ring_index", "ALTER TABLE securaiq_agent_commands ADD COLUMN ring_index INTEGER NOT NULL DEFAULT 0"),
         ):
             if col not in cmd_cols:
                 c.execute(ddl)
@@ -135,6 +136,29 @@ def ensure_schema() -> None:
     )
     c.execute(
         "CREATE INDEX IF NOT EXISTS idx_agent_commands_campaign ON securaiq_agent_commands(campaign_id)"
+    )
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS securaiq_patch_campaigns (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL DEFAULT 'local',
+            name TEXT NOT NULL DEFAULT '',
+            manager TEXT NOT NULL DEFAULT '',
+            package TEXT NOT NULL DEFAULT '',
+            target_version TEXT NOT NULL DEFAULT '',
+            requested_by TEXT NOT NULL DEFAULT '',
+            rings_json TEXT NOT NULL DEFAULT '[]',
+            window_start_hour INTEGER NOT NULL DEFAULT -1,
+            window_end_hour INTEGER NOT NULL DEFAULT -1,
+            window_days_json TEXT NOT NULL DEFAULT '[]',
+            ring_threshold_pct REAL NOT NULL DEFAULT 100,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at REAL NOT NULL
+        )
+        """
+    )
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_patch_campaigns_user ON securaiq_patch_campaigns(user_id, created_at)"
     )
     c.commit()
 
@@ -546,6 +570,7 @@ def request_command(
     payload: dict[str, Any],
     requested_by: str = "",
     campaign_id: str = "",
+    ring_index: int = 0,
 ) -> dict[str, Any]:
     """Create a command request in 'pending_approval'. Raises ValueError for
     an unknown agent or an unsupported command kind — callers (the API layer)
@@ -564,10 +589,10 @@ def request_command(
     c.execute(
         """
         INSERT INTO securaiq_agent_commands
-        (id, agent_id, user_id, kind, payload_json, status, requested_by, campaign_id, created_at)
-        VALUES (?, ?, ?, ?, ?, 'pending_approval', ?, ?, ?)
+        (id, agent_id, user_id, kind, payload_json, status, requested_by, campaign_id, ring_index, created_at)
+        VALUES (?, ?, ?, ?, ?, 'pending_approval', ?, ?, ?, ?)
         """,
-        (cid, agent_id, user_id, kind, json.dumps(payload)[:4000], requested_by or user_id, campaign_id, now()),
+        (cid, agent_id, user_id, kind, json.dumps(payload)[:4000], requested_by or user_id, campaign_id, ring_index, now()),
     )
     c.commit()
     try:
@@ -669,6 +694,187 @@ def list_pending_commands(user_id: str, *, limit: int = 200) -> list[dict[str, A
             d["payload"] = {}
         out.append(d)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Patch campaigns — target the same package+manager upgrade at many agents
+# at once. A campaign is a thin grouping layer: it stores the shared intent
+# (name/manager/package/target_version) and stamps one securaiq_agent_commands
+# row per targeted agent with the same campaign_id, so every existing
+# per-command mechanic (approval, delivery, result reporting, verification)
+# is reused unchanged rather than duplicated. Rings/maintenance-windows
+# (ring_index, window_* columns) are plumbed into the schema now but not yet
+# enforced by dispatch — that's the next layer built on top of this one.
+# ---------------------------------------------------------------------------
+
+
+def create_campaign(
+    user_id: str,
+    *,
+    name: str,
+    manager: str,
+    package: str,
+    target_version: str = "",
+    agent_ids: list[str],
+    requested_by: str = "",
+) -> dict[str, Any]:
+    """Create a campaign and request one patch_package command per targeted
+    agent (each lands in 'pending_approval', same as a single ad-hoc patch
+    request). Raises ValueError if no valid, owned, non-revoked agents were
+    given — a campaign with zero real targets is refused rather than
+    silently created empty."""
+    ensure_schema()
+    if not agent_ids:
+        raise ValueError("At least one target agent is required")
+    cid = new_id()
+    ts = now()
+    c = get_conn()
+    c.execute(
+        """
+        INSERT INTO securaiq_patch_campaigns
+        (id, user_id, name, manager, package, target_version, requested_by, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (cid, user_id, name or f"{manager} upgrade {package}", manager, package, target_version, requested_by or user_id, ts),
+    )
+    c.commit()
+    items: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    for agent_id in agent_ids:
+        try:
+            result = request_command(
+                user_id,
+                agent_id,
+                kind="patch_package",
+                payload={"manager": manager, "package": package, "target_version": target_version},
+                requested_by=requested_by or user_id,
+                campaign_id=cid,
+            )
+            items.append({"agent_id": agent_id, **result})
+        except ValueError as exc:
+            errors.append({"agent_id": agent_id, "error": str(exc)})
+    if not items:
+        # every target was invalid (unowned/unknown/revoked) — refuse the
+        # whole campaign rather than leaving an empty, useless row behind.
+        c.execute("DELETE FROM securaiq_patch_campaigns WHERE id = ?", (cid,))
+        c.commit()
+        raise ValueError(f"No valid targets: {errors}")
+    audit(
+        "patch_campaign_create",
+        user_id,
+        {"campaign_id": cid, "name": name, "manager": manager, "package": package, "targets": len(agent_ids), "created": len(items)},
+    )
+    return {"id": cid, "status": "active", "requested": len(items), "failed_targets": errors}
+
+
+def _campaign_summary(user_id: str, campaign_id: str) -> dict[str, Any]:
+    rows = get_conn().execute(
+        "SELECT status, COUNT(*) as n FROM securaiq_agent_commands WHERE user_id = ? AND campaign_id = ? GROUP BY status",
+        (user_id, campaign_id),
+    ).fetchall()
+    counts = {r["status"]: r["n"] for r in rows}
+    total = sum(counts.values())
+    return {
+        "total": total,
+        "pending_approval": counts.get("pending_approval", 0),
+        "queued": counts.get("queued", 0),
+        "sent": counts.get("sent", 0),
+        "done": counts.get("done", 0),
+        "error": counts.get("error", 0),
+        "rejected": counts.get("rejected", 0),
+    }
+
+
+def list_campaigns(user_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
+    ensure_schema()
+    rows = get_conn().execute(
+        "SELECT * FROM securaiq_patch_campaigns WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
+        (user_id, max(1, min(limit, 300))),
+    ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["summary"] = _campaign_summary(user_id, d["id"])
+        out.append(d)
+    return out
+
+
+def get_campaign(user_id: str, campaign_id: str) -> dict[str, Any] | None:
+    ensure_schema()
+    row = get_conn().execute(
+        "SELECT * FROM securaiq_patch_campaigns WHERE id = ? AND user_id = ?", (campaign_id, user_id)
+    ).fetchone()
+    if not row:
+        return None
+    d = dict(row)
+    d["summary"] = _campaign_summary(user_id, campaign_id)
+    item_rows = get_conn().execute(
+        "SELECT * FROM securaiq_agent_commands WHERE campaign_id = ? AND user_id = ? ORDER BY created_at ASC",
+        (campaign_id, user_id),
+    ).fetchall()
+    items = []
+    for r in item_rows:
+        item = dict(r)
+        try:
+            item["payload"] = json.loads(item.get("payload_json") or "{}")
+            item["result"] = json.loads(item.get("result_json") or "{}")
+        except Exception:
+            item["payload"], item["result"] = {}, {}
+        items.append(item)
+    d["items"] = items
+    return d
+
+
+def approve_campaign(user_id: str, campaign_id: str, *, approver_id: str) -> dict[str, Any]:
+    """Approve every still-pending item in a campaign. Individual items that
+    already moved on (queued/sent/done/etc.) are left untouched — this is
+    additive, not a reset."""
+    ensure_schema()
+    row = get_conn().execute(
+        "SELECT id FROM securaiq_patch_campaigns WHERE id = ? AND user_id = ?", (campaign_id, user_id)
+    ).fetchone()
+    if not row:
+        raise ValueError("Campaign not found")
+    pending = get_conn().execute(
+        "SELECT id, agent_id FROM securaiq_agent_commands WHERE campaign_id = ? AND user_id = ? AND status = 'pending_approval'",
+        (campaign_id, user_id),
+    ).fetchall()
+    approved, failed = 0, 0
+    for r in pending:
+        try:
+            approve_command(user_id, r["agent_id"], r["id"], approver_id=approver_id)
+            approved += 1
+        except ValueError:
+            failed += 1
+    audit("patch_campaign_approve", user_id, {"campaign_id": campaign_id, "approved": approved, "failed": failed})
+    return {"id": campaign_id, "approved": approved, "failed": failed}
+
+
+def reject_campaign(user_id: str, campaign_id: str, *, approver_id: str, reason: str = "") -> dict[str, Any]:
+    """Reject every still-pending item in a campaign and mark the campaign
+    itself canceled."""
+    ensure_schema()
+    row = get_conn().execute(
+        "SELECT id FROM securaiq_patch_campaigns WHERE id = ? AND user_id = ?", (campaign_id, user_id)
+    ).fetchone()
+    if not row:
+        raise ValueError("Campaign not found")
+    pending = get_conn().execute(
+        "SELECT id, agent_id FROM securaiq_agent_commands WHERE campaign_id = ? AND user_id = ? AND status = 'pending_approval'",
+        (campaign_id, user_id),
+    ).fetchall()
+    rejected, failed = 0, 0
+    for r in pending:
+        try:
+            reject_command(user_id, r["agent_id"], r["id"], approver_id=approver_id, reason=reason)
+            rejected += 1
+        except ValueError:
+            failed += 1
+    c = get_conn()
+    c.execute("UPDATE securaiq_patch_campaigns SET status = 'canceled' WHERE id = ?", (campaign_id,))
+    c.commit()
+    audit("patch_campaign_reject", user_id, {"campaign_id": campaign_id, "rejected": rejected, "failed": failed, "reason": reason})
+    return {"id": campaign_id, "rejected": rejected, "failed": failed}
 
 
 def list_commands(user_id: str, agent_id: str, *, limit: int = 100) -> list[dict[str, Any]]:

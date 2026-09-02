@@ -12,17 +12,22 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
 from app.agents import (
+    approve_campaign,
     approve_command,
     authenticate_agent,
     checkin,
+    create_campaign,
     delete_agent,
     enroll_agent,
     get_agent,
+    get_campaign,
     list_agents,
+    list_campaigns,
     list_commands,
     list_pending_commands,
     list_threats,
     record_threat_detections,
+    reject_campaign,
     reject_command,
     report_command_result,
     request_command,
@@ -84,6 +89,14 @@ class CommandResultReport(BaseModel):
 
 class CommandReject(BaseModel):
     reason: str = ""
+
+
+class CampaignCreate(BaseModel):
+    name: str = Field(default="", max_length=160)
+    manager: str
+    package: str
+    target_version: str = ""
+    agent_ids: list[str] = Field(default_factory=list)
 
 
 class CheckinPayload(BaseModel):
@@ -185,6 +198,62 @@ async def api_list_all_threats(user: Annotated[AuthUser, Depends(require_user)],
 async def api_list_pending_commands(user: Annotated[AuthUser, Depends(require_user)], limit: int = 200):
     # Registered before /{agent_id} on purpose — same reason as /threats above.
     return {"commands": list_pending_commands(user.id, limit=limit)}
+
+
+@router.post("/campaigns")
+async def api_create_campaign(req: CampaignCreate, user: Annotated[AuthUser, Depends(require_user)]):
+    """Create a patch campaign targeting multiple agents with one shared
+    package+manager upgrade. Each targeted agent gets its own
+    'pending_approval' command — nothing is queued for delivery until those
+    are approved (individually or via /campaigns/{id}/approve)."""
+    try:
+        result = create_campaign(
+            user.id,
+            name=req.name,
+            manager=req.manager,
+            package=req.package,
+            target_version=req.target_version,
+            agent_ids=req.agent_ids,
+            requested_by=user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return result
+
+
+@router.get("/campaigns")
+async def api_list_campaigns(user: Annotated[AuthUser, Depends(require_user)], limit: int = 100):
+    return {"campaigns": list_campaigns(user.id, limit=limit)}
+
+
+@router.get("/campaigns/{campaign_id}")
+async def api_get_campaign(campaign_id: str, user: Annotated[AuthUser, Depends(require_user)]):
+    campaign = get_campaign(user.id, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return campaign
+
+
+@router.post("/campaigns/{campaign_id}/approve")
+async def api_approve_campaign(campaign_id: str, user: Annotated[AuthUser, Depends(require_user)]):
+    _require_admin_for_approval(user)
+    try:
+        result = approve_campaign(user.id, campaign_id, approver_id=user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return result
+
+
+@router.post("/campaigns/{campaign_id}/reject")
+async def api_reject_campaign(
+    campaign_id: str, req: CommandReject, user: Annotated[AuthUser, Depends(require_user)]
+):
+    _require_admin_for_approval(user)
+    try:
+        result = reject_campaign(user.id, campaign_id, approver_id=user.id, reason=req.reason)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return result
 
 
 @router.get("/{agent_id}")

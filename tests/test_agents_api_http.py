@@ -552,3 +552,171 @@ def test_commands_list_scoped_to_owning_user(tmp_path, monkeypatch):
 
     res = client.get(f"/api/agents/{agent_id}/commands", headers=_auth(token_b))
     assert res.status_code == 404
+
+
+# --- patch campaigns ----------------------------------------------------------
+
+
+def test_create_campaign_requires_auth(tmp_path, monkeypatch):
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    enroll = client.post("/api/agents/enroll", json={"name": "camp-01"}, headers=_auth(token))
+    agent_id = enroll.json()["agent_id"]
+    res = client.post(
+        "/api/agents/campaigns",
+        json={"manager": "apt", "package": "nginx", "agent_ids": [agent_id]},
+    )
+    assert res.status_code == 401
+
+
+def test_create_campaign_rejects_no_valid_targets(tmp_path, monkeypatch):
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    res = client.post(
+        "/api/agents/campaigns",
+        json={"manager": "apt", "package": "nginx", "agent_ids": ["does-not-exist"]},
+        headers=_auth(token),
+    )
+    assert res.status_code == 400
+
+
+def test_campaign_creates_one_pending_command_per_target(tmp_path, monkeypatch):
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    a1 = client.post("/api/agents/enroll", json={"name": "camp-a1"}, headers=_auth(token)).json()["agent_id"]
+    a2 = client.post("/api/agents/enroll", json={"name": "camp-a2"}, headers=_auth(token)).json()["agent_id"]
+    a3 = client.post("/api/agents/enroll", json={"name": "camp-a3"}, headers=_auth(token)).json()["agent_id"]
+
+    res = client.post(
+        "/api/agents/campaigns",
+        json={
+            "name": "Q3 OpenSSL rollout",
+            "manager": "apt",
+            "package": "openssl",
+            "target_version": "3.0.2",
+            "agent_ids": [a1, a2, a3],
+        },
+        headers=_auth(token),
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    campaign_id = body["id"]
+    assert body["requested"] == 3
+    assert body["failed_targets"] == []
+
+    # each agent has exactly one pending command
+    for aid in (a1, a2, a3):
+        cmds = client.get(f"/api/agents/{aid}/commands", headers=_auth(token)).json()["commands"]
+        assert len(cmds) == 1
+        assert cmds[0]["status"] == "pending_approval"
+        assert cmds[0]["campaign_id"] == campaign_id
+
+    listing = client.get("/api/agents/campaigns", headers=_auth(token)).json()["campaigns"]
+    assert len(listing) == 1
+    assert listing[0]["summary"]["total"] == 3
+    assert listing[0]["summary"]["pending_approval"] == 3
+
+    detail = client.get(f"/api/agents/campaigns/{campaign_id}", headers=_auth(token)).json()
+    assert detail["name"] == "Q3 OpenSSL rollout"
+    assert len(detail["items"]) == 3
+
+
+def test_campaign_partial_targets_reported_and_created(tmp_path, monkeypatch):
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    a1 = client.post("/api/agents/enroll", json={"name": "camp-p1"}, headers=_auth(token)).json()["agent_id"]
+
+    res = client.post(
+        "/api/agents/campaigns",
+        json={"manager": "apt", "package": "curl", "agent_ids": [a1, "bogus-agent"]},
+        headers=_auth(token),
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["requested"] == 1
+    assert len(body["failed_targets"]) == 1
+    assert body["failed_targets"][0]["agent_id"] == "bogus-agent"
+
+
+def test_campaign_approve_queues_all_pending_items(tmp_path, monkeypatch):
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    a1 = client.post("/api/agents/enroll", json={"name": "camp-q1"}, headers=_auth(token)).json()["agent_id"]
+    a2 = client.post("/api/agents/enroll", json={"name": "camp-q2"}, headers=_auth(token)).json()["agent_id"]
+
+    created = client.post(
+        "/api/agents/campaigns",
+        json={"manager": "winget", "package": "7zip", "agent_ids": [a1, a2]},
+        headers=_auth(token),
+    )
+    campaign_id = created.json()["id"]
+
+    res = client.post(f"/api/agents/campaigns/{campaign_id}/approve", headers=_auth(token))
+    assert res.status_code == 200, res.text
+    assert res.json()["approved"] == 2
+
+    detail = client.get(f"/api/agents/campaigns/{campaign_id}", headers=_auth(token)).json()
+    statuses = {item["status"] for item in detail["items"]}
+    assert statuses == {"queued"}
+    assert detail["summary"]["queued"] == 2
+    assert detail["summary"]["pending_approval"] == 0
+
+
+def test_campaign_approve_requires_admin_role_when_auth_enabled(tmp_path, monkeypatch):
+    client, admin_token = _client_and_token(tmp_path, monkeypatch, username="camp_admin")
+    from app.auth import login, register_user
+
+    register_user("camp_viewer", "password123", role="user")
+    _u, viewer_token = login("camp_viewer", "password123")
+
+    a1 = client.post("/api/agents/enroll", json={"name": "camp-r1"}, headers=_auth(admin_token)).json()["agent_id"]
+    created = client.post(
+        "/api/agents/campaigns",
+        json={"manager": "apt", "package": "vim", "agent_ids": [a1]},
+        headers=_auth(admin_token),
+    )
+    campaign_id = created.json()["id"]
+
+    res = client.post(f"/api/agents/campaigns/{campaign_id}/approve", headers=_auth(viewer_token))
+    assert res.status_code == 403
+
+
+def test_campaign_reject_marks_items_rejected_and_campaign_canceled(tmp_path, monkeypatch):
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    a1 = client.post("/api/agents/enroll", json={"name": "camp-x1"}, headers=_auth(token)).json()["agent_id"]
+
+    created = client.post(
+        "/api/agents/campaigns",
+        json={"manager": "apt", "package": "curl", "agent_ids": [a1]},
+        headers=_auth(token),
+    )
+    campaign_id = created.json()["id"]
+
+    res = client.post(
+        f"/api/agents/campaigns/{campaign_id}/reject",
+        json={"reason": "not this quarter"},
+        headers=_auth(token),
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["rejected"] == 1
+
+    detail = client.get(f"/api/agents/campaigns/{campaign_id}", headers=_auth(token)).json()
+    assert detail["status"] == "canceled"
+    assert detail["items"][0]["status"] == "rejected"
+
+
+def test_campaign_get_404_for_unknown_or_other_user(tmp_path, monkeypatch):
+    client, token_a = _client_and_token(tmp_path, monkeypatch, username="camp_owner_a")
+    from app.auth import login, register_user
+
+    register_user("camp_owner_b", "password123", role="admin")
+    _u, token_b = login("camp_owner_b", "password123")
+
+    a1 = client.post("/api/agents/enroll", json={"name": "camp-y1"}, headers=_auth(token_a)).json()["agent_id"]
+    created = client.post(
+        "/api/agents/campaigns",
+        json={"manager": "apt", "package": "curl", "agent_ids": [a1]},
+        headers=_auth(token_a),
+    )
+    campaign_id = created.json()["id"]
+
+    res_unknown = client.get("/api/agents/campaigns/does-not-exist", headers=_auth(token_a))
+    assert res_unknown.status_code == 404
+
+    res_cross_user = client.get(f"/api/agents/campaigns/{campaign_id}", headers=_auth(token_b))
+    assert res_cross_user.status_code == 404
