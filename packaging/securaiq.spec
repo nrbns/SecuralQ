@@ -1,12 +1,16 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for SecuraIQ (Windows onedir + SecuraIQ.exe).
+"""PyInstaller spec for SecuraIQ — single-file build: one SecuraIQ.exe in
+dist/, nothing else alongside it. Everything (app code, static UI, bundled
+frameworks/knowledge data, agent install scripts, the FastAPI/uvicorn stack,
+chromadb/sentence_transformers/torch) is packed into that one file.
 
-Onedir, not onefile: SecuraIQ.exe sits in dist/SecuraIQ/ alongside its
-support files (DLLs, bundled static/data). You still only ever double-click
-the one .exe — but onefile would re-extract the whole bundle (RAG/torch/
-chromadb, several hundred MB) to a temp folder on every single launch,
-turning a few-second startup into minutes. Build via scripts/build_exe.ps1
-or build_exe.cmd.
+Real tradeoff, not hidden: PyInstaller onefile re-extracts the whole bundle
+to a temp folder on every launch (nothing persists between runs), so first
+paint after double-clicking takes noticeably longer than a onedir build —
+several hundred MB of torch/chromadb has to unpack before uvicorn can even
+start. That's the deliberate choice here in exchange for "just one exe,
+nothing else to keep track of." Build via scripts/build_exe.ps1 or
+build_exe.cmd.
 """
 
 from pathlib import Path
@@ -141,28 +145,21 @@ pyz = PYZ(a.pure, a.zipped_data)
 exe = EXE(
     pyz,
     a.scripts,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
     [],
-    exclude_binaries=True,
     name="SecuraIQ",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
+    upx_exclude=[],
+    runtime_tmpdir=None,
     console=True,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-)
-
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
-    strip=False,
-    upx=False,
-    upx_exclude=[],
-    name="SecuraIQ",
 )

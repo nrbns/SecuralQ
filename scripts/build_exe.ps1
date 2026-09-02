@@ -1,8 +1,4 @@
-# Build SecuraIQ.exe (Windows). Requires the project venv from run_proper.cmd / start.cmd.
-param(
-    [switch]$OneFile
-)
-
+# Build SecuraIQ.exe (Windows) — single-file build, one exe in dist\, nothing else.
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 Set-Location $root
@@ -17,18 +13,16 @@ Write-Host "Installing PyInstaller..."
 if ($LASTEXITCODE -ne 0) { throw "pip install pyinstaller failed" }
 
 $spec = Join-Path $root "packaging\securaiq.spec"
-Write-Host "Building from $spec (this can take several minutes)..."
-$args = @("--noconfirm", "--clean", $spec)
-if ($OneFile) {
-    Write-Host "Note: -OneFile is not used; the spec is onedir so RAG/torch start in seconds, not minutes."
-}
-& $py -m PyInstaller @args
+Write-Host "Building from $spec (single-file — this can take several minutes)..."
+& $py -m PyInstaller --noconfirm --clean $spec
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
 
-$exe = Join-Path $root "dist\SecuraIQ\SecuraIQ.exe"
+$exe = Join-Path $root "dist\SecuraIQ.exe"
 if (-not (Test-Path $exe)) { throw "Build finished but $exe was not created." }
 
 Write-Host ""
 Write-Host "Built: $exe"
-Write-Host "Double-click SecuraIQ.exe (keep the whole dist\SecuraIQ folder together)."
-Write-Host "UI: http://127.0.0.1:8080  — data and .env are created next to the EXE."
+Write-Host "Double-click SecuraIQ.exe — it's the only file you need, nothing else to keep alongside it."
+Write-Host "First launch is slower than later ones: PyInstaller unpacks the whole bundle to a temp"
+Write-Host "folder every run before uvicorn can start (that's the real cost of a single-file exe)."
+Write-Host "UI: http://127.0.0.1:8080  — data and .env are created next to wherever you put the EXE."
