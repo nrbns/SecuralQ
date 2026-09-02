@@ -298,3 +298,148 @@ def test_delete_agent_requires_auth(tmp_path, monkeypatch):
 
     res = client.delete(f"/api/agents/{agent_id}")
     assert res.status_code == 401
+
+
+# --- command channel (patch execution + verification loop) ------------------
+
+
+def test_queue_command_requires_auth(tmp_path, monkeypatch):
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    enroll = client.post("/api/agents/enroll", json={"name": "srv-05"}, headers=_auth(token))
+    agent_id = enroll.json()["agent_id"]
+    res = client.post(f"/api/agents/{agent_id}/commands", json={"kind": "patch_package", "payload": {}})
+    assert res.status_code == 401
+
+
+def test_queue_command_rejects_unsupported_kind(tmp_path, monkeypatch):
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    enroll = client.post("/api/agents/enroll", json={"name": "srv-06"}, headers=_auth(token))
+    agent_id = enroll.json()["agent_id"]
+    res = client.post(
+        f"/api/agents/{agent_id}/commands",
+        json={"kind": "run_arbitrary_shell", "payload": {"cmd": "rm -rf /"}},
+        headers=_auth(token),
+    )
+    assert res.status_code == 400
+
+
+def test_queue_command_rejects_unknown_agent(tmp_path, monkeypatch):
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    res = client.post(
+        "/api/agents/does-not-exist/commands",
+        json={"kind": "patch_package", "payload": {"manager": "apt", "package": "nginx"}},
+        headers=_auth(token),
+    )
+    assert res.status_code == 400
+
+
+def test_command_delivered_on_next_checkin_and_result_reported(tmp_path, monkeypatch):
+    """The full loop through the HTTP layer: queue (user-authed) -> the next
+    check-in response carries it (agent-authed) -> the agent posts a result
+    (agent-authed) -> it shows up done in the user-authed history, with the
+    same command never re-delivered on a third check-in."""
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    enroll = client.post("/api/agents/enroll", json={"name": "srv-07"}, headers=_auth(token))
+    agent_id = enroll.json()["agent_id"]
+    agent_token = enroll.json()["agent_token"]
+
+    # first check-in: nothing queued yet
+    first = client.post(
+        "/api/agents/checkin",
+        json={"hostname": "srv-07.internal", "os": "linux"},
+        headers={"Authorization": f"Bearer {agent_token}"},
+    )
+    assert first.json()["commands"] == []
+
+    queued = client.post(
+        f"/api/agents/{agent_id}/commands",
+        json={"kind": "patch_package", "payload": {"manager": "apt", "package": "openssl"}},
+        headers=_auth(token),
+    )
+    assert queued.status_code == 200, queued.text
+    command_id = queued.json()["id"]
+    assert queued.json()["status"] == "queued"
+
+    # second check-in: the command is delivered
+    second = client.post(
+        "/api/agents/checkin",
+        json={"hostname": "srv-07.internal", "os": "linux"},
+        headers={"Authorization": f"Bearer {agent_token}"},
+    )
+    delivered = second.json()["commands"]
+    assert len(delivered) == 1
+    assert delivered[0]["id"] == command_id
+    assert delivered[0]["kind"] == "patch_package"
+    assert delivered[0]["payload"]["package"] == "openssl"
+
+    # third check-in: not redelivered — it's "sent", not "queued" anymore
+    third = client.post(
+        "/api/agents/checkin",
+        json={"hostname": "srv-07.internal", "os": "linux"},
+        headers={"Authorization": f"Bearer {agent_token}"},
+    )
+    assert third.json()["commands"] == []
+
+    # agent reports the outcome
+    result = client.post(
+        f"/api/agents/commands/{command_id}/result",
+        json={"status": "done", "result": {"ok": True, "old_version": "1.1.1", "new_version": "3.0.2"}},
+        headers={"Authorization": f"Bearer {agent_token}"},
+    )
+    assert result.status_code == 200, result.text
+    assert result.json()["status"] == "done"
+
+    history = client.get(f"/api/agents/{agent_id}/commands", headers=_auth(token)).json()["commands"]
+    assert len(history) == 1
+    assert history[0]["status"] == "done"
+    assert history[0]["result"]["new_version"] == "3.0.2"
+
+
+def test_command_result_requires_agent_token_not_user_token(tmp_path, monkeypatch):
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    enroll = client.post("/api/agents/enroll", json={"name": "srv-08"}, headers=_auth(token))
+    agent_id = enroll.json()["agent_id"]
+    agent_token = enroll.json()["agent_token"]
+    client.post(
+        "/api/agents/checkin", json={"hostname": "srv-08"}, headers={"Authorization": f"Bearer {agent_token}"}
+    )
+    queued = client.post(
+        f"/api/agents/{agent_id}/commands",
+        json={"kind": "patch_package", "payload": {"manager": "apt", "package": "curl"}},
+        headers=_auth(token),
+    )
+    command_id = queued.json()["id"]
+
+    # a user bearer token is not a valid agent token
+    res = client.post(
+        f"/api/agents/commands/{command_id}/result",
+        json={"status": "done", "result": {}},
+        headers=_auth(token),
+    )
+    assert res.status_code == 401
+
+
+def test_command_result_unknown_command_404(tmp_path, monkeypatch):
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    enroll = client.post("/api/agents/enroll", json={"name": "srv-09"}, headers=_auth(token))
+    agent_token = enroll.json()["agent_token"]
+    res = client.post(
+        "/api/agents/commands/does-not-exist/result",
+        json={"status": "done", "result": {}},
+        headers={"Authorization": f"Bearer {agent_token}"},
+    )
+    assert res.status_code == 404
+
+
+def test_commands_list_scoped_to_owning_user(tmp_path, monkeypatch):
+    client, token_a = _client_and_token(tmp_path, monkeypatch, username="cmd_owner_a")
+    from app.auth import login, register_user
+
+    register_user("cmd_owner_b", "password123", role="admin")
+    _u, token_b = login("cmd_owner_b", "password123")
+
+    enroll = client.post("/api/agents/enroll", json={"name": "srv-10"}, headers=_auth(token_a))
+    agent_id = enroll.json()["agent_id"]
+
+    res = client.get(f"/api/agents/{agent_id}/commands", headers=_auth(token_b))
+    assert res.status_code == 404

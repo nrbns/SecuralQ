@@ -96,6 +96,27 @@ def ensure_schema() -> None:
     c.execute(
         "CREATE INDEX IF NOT EXISTS idx_agent_threats_fp ON securaiq_agent_threats(agent_id, fingerprint)"
     )
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS securaiq_agent_commands (
+            id TEXT PRIMARY KEY,
+            agent_id TEXT NOT NULL,
+            user_id TEXT NOT NULL DEFAULT 'local',
+            kind TEXT NOT NULL,
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT 'queued',
+            requested_by TEXT NOT NULL DEFAULT '',
+            created_at REAL NOT NULL,
+            sent_at REAL NOT NULL DEFAULT 0,
+            completed_at REAL NOT NULL DEFAULT 0,
+            result_json TEXT NOT NULL DEFAULT '{}',
+            error TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_agent_commands_agent ON securaiq_agent_commands(agent_id, status)"
+    )
     c.commit()
 
 
@@ -251,7 +272,43 @@ def checkin(agent_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         publish(type="agent", id=agent_id, status="online", asset_id=asset_id)
     except Exception:
         pass
-    return {"ok": True, "asset_id": asset_id}
+    commands = _dispatch_queued_commands(agent_id)
+    return {"ok": True, "asset_id": asset_id, "commands": commands}
+
+
+def _dispatch_queued_commands(agent_id: str, *, limit: int = 5) -> list[dict[str, Any]]:
+    """Hand any queued commands to the agent on this check-in (the agent has
+    no inbound listener — check-in is the only pull channel — so this is
+    where server -> agent commands actually get delivered) and mark them
+    'sent' so the same command isn't handed out again on the next check-in
+    while the agent is still working on it."""
+    c = get_conn()
+    rows = c.execute(
+        "SELECT * FROM securaiq_agent_commands WHERE agent_id = ? AND status = 'queued' ORDER BY created_at ASC LIMIT ?",
+        (agent_id, max(1, limit)),
+    ).fetchall()
+    out: list[dict[str, Any]] = []
+    ts = now()
+    for r in rows:
+        d = dict(r)
+        c.execute(
+            "UPDATE securaiq_agent_commands SET status = 'sent', sent_at = ? WHERE id = ?",
+            (ts, d["id"]),
+        )
+        try:
+            payload = json.loads(d.get("payload_json") or "{}")
+        except Exception:
+            payload = {}
+        out.append({"id": d["id"], "kind": d["kind"], "payload": payload})
+    if rows:
+        c.commit()
+        try:
+            from app.realtime_bus import publish
+
+            publish(type="agent_command", agent_id=agent_id, status="sent", count=len(rows))
+        except Exception:
+            pass
+    return out
 
 
 # A repeat sighting of the same still-active threat (e.g. a persistent
@@ -431,3 +488,135 @@ def delete_agent(user_id: str, agent_id: str) -> bool:
     c.execute("DELETE FROM securaiq_agents WHERE id = ?", (agent_id,))
     c.commit()
     return True
+
+
+# ---------------------------------------------------------------------------
+# Agent command channel — the patch-execution + verification loop.
+#
+# The agent has no inbound listener (it only ever calls out to the server),
+# so a "command" is not pushed live: it is queued here, then handed to the
+# agent as part of its next regular check-in response (see
+# _dispatch_queued_commands above), and the agent reports the outcome back
+# via report_command_result(). This keeps the transport identical to the
+# existing check-in model — no new port, no new protocol — at the cost of
+# latency bounded by the agent's --interval (default 60s), which is an
+# honest tradeoff spelled out in the API docstrings rather than a silent one.
+#
+# `kind` is deliberately an allowlist, not free-form shell: the only command
+# an agent will currently execute is "patch_package" (an OS package-manager
+# upgrade of one named package), never an arbitrary command string. Queuing
+# one requires an authenticated user request (see agents_api.py), which is
+# this feature's approval gate — there is no autonomous/AI-initiated queuing
+# path in this MVP.
+# ---------------------------------------------------------------------------
+
+SUPPORTED_COMMAND_KINDS = {"patch_package"}
+
+
+def queue_command(
+    user_id: str, agent_id: str, *, kind: str, payload: dict[str, Any], requested_by: str = ""
+) -> dict[str, Any]:
+    """Queue a command for delivery on the agent's next check-in. Raises
+    ValueError for an unknown agent or an unsupported command kind — callers
+    (the API layer) turn that into a 4xx rather than silently no-op'ing."""
+    ensure_schema()
+    agent = get_agent(agent_id)
+    if not agent or agent.get("user_id") != user_id:
+        raise ValueError("Agent not found")
+    if agent.get("revoked"):
+        raise ValueError("Agent is revoked")
+    if kind not in SUPPORTED_COMMAND_KINDS:
+        raise ValueError(f"Unsupported command kind '{kind}'")
+    cid = new_id()
+    c = get_conn()
+    c.execute(
+        """
+        INSERT INTO securaiq_agent_commands
+        (id, agent_id, user_id, kind, payload_json, status, requested_by, created_at)
+        VALUES (?, ?, ?, ?, ?, 'queued', ?, ?)
+        """,
+        (cid, agent_id, user_id, kind, json.dumps(payload)[:4000], requested_by or user_id, now()),
+    )
+    c.commit()
+    try:
+        from app.realtime_bus import publish
+
+        publish(type="agent_command", agent_id=agent_id, id=cid, status="queued", kind=kind)
+    except Exception:
+        pass
+    return {"id": cid, "status": "queued"}
+
+
+def list_commands(user_id: str, agent_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
+    ensure_schema()
+    rows = get_conn().execute(
+        "SELECT * FROM securaiq_agent_commands WHERE user_id = ? AND agent_id = ? ORDER BY created_at DESC LIMIT ?",
+        (user_id, agent_id, max(1, min(limit, 300))),
+    ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        for key in ("payload_json", "result_json"):
+            try:
+                d[key[: -len("_json")]] = json.loads(d.get(key) or "{}")
+            except Exception:
+                d[key[: -len("_json")]] = {}
+        out.append(d)
+    return out
+
+
+def report_command_result(agent_id: str, command_id: str, *, status: str, result: dict[str, Any]) -> dict[str, Any]:
+    """Agent reports the outcome of a command it executed. Also kicks off
+    verification: a software-inventory refresh for this agent's asset, so
+    the patch-gap dashboard reflects the new version on the very next
+    check-in rather than waiting on the periodic sync schedule."""
+    ensure_schema()
+    c = get_conn()
+    row = c.execute(
+        "SELECT * FROM securaiq_agent_commands WHERE id = ? AND agent_id = ?", (command_id, agent_id)
+    ).fetchone()
+    if not row:
+        return {"ok": False, "error": "unknown command"}
+    status = status if status in ("done", "error") else "error"
+    ts = now()
+    c.execute(
+        "UPDATE securaiq_agent_commands SET status = ?, completed_at = ?, result_json = ?, error = ? WHERE id = ?",
+        (
+            status,
+            ts,
+            json.dumps(result)[:8000],
+            "" if status == "done" else str(result.get("error") or "")[:500],
+            command_id,
+        ),
+    )
+    c.commit()
+    agent = get_agent(agent_id)
+    asset_id = (agent or {}).get("asset_id") or ""
+    try:
+        from app.realtime_bus import publish
+
+        publish(
+            type="agent_command",
+            agent_id=agent_id,
+            id=command_id,
+            status=status,
+            asset_id=asset_id,
+        )
+    except Exception:
+        pass
+    if status == "done" and asset_id:
+        try:
+            from app.jobs import enqueue_job
+
+            enqueue_job(
+                "software_advisory_refresh",
+                {
+                    "user_id": (agent or {}).get("user_id") or "local",
+                    "asset_id": asset_id,
+                    "reason": "patch_verify",
+                    "command_id": command_id,
+                },
+            )
+        except Exception:
+            pass
+    return {"ok": True, "status": status}

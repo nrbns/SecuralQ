@@ -2687,6 +2687,7 @@ function startRealtimeFeed() {
 const REALTIME_LIVE_TYPES = new Set([
   "scan",
   "job",
+  "agent_command",
   "combo",
   "asset",
   "vuln",
@@ -2753,6 +2754,22 @@ function applyRealtimeWorkspaceRefresh(data, flags) {
     pulseToolFromPush(data.push);
   } else if ((pt === "intel" || pt === "intel_watch") && typeof refreshIntelStrip === "function") {
     refreshIntelStrip();
+  } else if (pt === "agent_command") {
+    const p = data.push || {};
+    if (p.status === "done" || p.status === "error") {
+      if (typeof notifyUser === "function") {
+        notifyUser(
+          p.status === "done"
+            ? `**Patch applied** — agent \`${(p.agent_id || "").slice(0, 8)}\` finished command \`${(p.id || "").slice(0, 8)}\`. Re-verifying software inventory…`
+            : `**Patch failed** — agent \`${(p.agent_id || "").slice(0, 8)}\` command \`${(p.id || "").slice(0, 8)}\` reported an error.`
+        );
+      }
+      if (view === "software" && typeof renderSoftwarePage === "function") renderSoftwarePage({ quiet: true });
+    }
+    // renderAgentsPanel() no-ops if its container isn't currently mounted
+    // (same null-guard pattern as every other panel renderer), so it's safe
+    // to call unconditionally rather than tracking panel visibility.
+    if (typeof renderAgentsPanel === "function") renderAgentsPanel();
   }
   const incremental = isSoftwarePushType(pt) || isToolPushType(pt);
   if (flags.pushRefresh && !incremental && typeof loadCommandCenter === "function") {

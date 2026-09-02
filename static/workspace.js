@@ -1005,22 +1005,102 @@
     wireSoftwareDetailActions();
   }
 
+  // OS -> package manager guess for the "Patch via Agent" action. This is a
+  // best-effort default, not a promise the exact package name resolves —
+  // the UI says so (see the hint text below) because the SecuraIQ Agent's
+  // installed-software list uses each OS's own display name, which doesn't
+  // always match the package manager's own package/ID naming.
+  function _guessPackageManager(osName) {
+    const os = String(osName || "").toLowerCase();
+    if (os.includes("win")) return "winget";
+    if (os.includes("darwin") || os.includes("mac")) return "brew";
+    if (os.includes("linux")) return "apt";
+    return "";
+  }
+
   async function openPatchDetail(installationId) {
     if (!installationId) return;
     openSoftwareDetailDrawer("Patch detail", `<p class="hint">Loading…</p>`);
     const data = await fetch(`/api/patches/${encodeURIComponent(installationId)}`, { headers: authHeaders() }).then((r) => r.json()).catch(() => ({}));
     const p = data.patch || {};
     const adv = (data.advisories || []).slice(0, 6).map((a) => `<li>${a.kev ? "KEV " : ""}${escapeHtml(a.cve_id || "?")}${a.fixed_version ? ` → ${escapeHtml(a.fixed_version)}` : ""}</li>`).join("");
+    // Only offer agent-executed patching when this asset actually has a
+    // live SecuraIQ Agent enrolled — there's no other channel to run the
+    // upgrade command on that host.
+    let agent = null;
+    if (p.asset_id) {
+      try {
+        const agentsData = await fetch("/api/agents", { headers: authHeaders() }).then((r) => r.json()).catch(() => ({}));
+        agent = (agentsData.agents || []).find((a) => a.asset_id === p.asset_id && a.status !== "revoked") || null;
+      } catch {
+        agent = null;
+      }
+    }
+    const manager = agent ? _guessPackageManager(agent.os) : "";
+    const patchAgentBtn =
+      agent && manager
+        ? `<button type="button" class="btn-primary-cc sw-detail-patch-agent" data-agent-id="${escapeHtml(
+            agent.id
+          )}" data-manager="${escapeHtml(manager)}" data-package="${escapeHtml(
+            p.product || ""
+          )}" data-target="${escapeHtml(p.target_version || "")}">Patch via Agent</button>`
+        : "";
     openSoftwareDetailDrawer(
       `${p.product || "Patch"} on ${p.asset_name || "host"}`,
       `<div class="sw-detail-section"><dl class="sw-detail-kv"><dt>Status</dt><dd>${escapeHtml(p.patch_label || p.patch_status || "?")}</dd><dt>Installed</dt><dd>${escapeHtml(p.installed_version || "—")}</dd><dt>Target</dt><dd>${p.target_version ? escapeHtml(p.target_version) : "Unknown"}</dd><dt>CVE</dt><dd>${escapeHtml(p.cve || "—")}</dd></dl><p class="hint">${escapeHtml(p.reason || p.detail || "")}</p></div>
       <div class="sw-detail-section"><h3>Advisories</h3><ul class="hint">${adv || "<li>None on record</li>"}</ul></div>
-      <div class="sw-detail-actions"><button type="button" class="btn-primary-cc sw-detail-verify" data-installation="${escapeHtml(installationId)}">Verify patch</button><button type="button" class="btn-secondary sw-detail-remediate" data-installation="${escapeHtml(installationId)}">Create remediation</button></div>`
+      ${
+        agent
+          ? `<p class="hint">${
+              manager
+                ? `SecuraIQ Agent online on this host — can run <code>${escapeHtml(manager)} upgrade ${escapeHtml(p.product || "")}</code>. Best-effort package-name match, not guaranteed to resolve.`
+                : "SecuraIQ Agent enrolled on this host, but its OS isn't recognized for agent-driven patching yet."
+            }</p>`
+          : `<p class="hint">No SecuraIQ Agent enrolled on this host — enroll one under Assets to enable agent-driven patching.</p>`
+      }
+      <div class="sw-detail-actions">${patchAgentBtn}<button type="button" class="btn-primary-cc sw-detail-verify" data-installation="${escapeHtml(installationId)}">Verify patch</button><button type="button" class="btn-secondary sw-detail-remediate" data-installation="${escapeHtml(installationId)}">Create remediation</button></div>`
     );
     wireSoftwareDetailActions();
   }
 
   function wireSoftwareDetailActions() {
+    qs("softwareDetailBody")?.querySelector(".sw-detail-patch-agent")?.addEventListener("click", async (ev) => {
+      const btn = ev.currentTarget;
+      const agentId = btn.getAttribute("data-agent-id");
+      const manager = btn.getAttribute("data-manager");
+      const pkg = btn.getAttribute("data-package");
+      const target = btn.getAttribute("data-target") || "";
+      if (
+        !confirm(
+          `Queue a real ${manager} upgrade of "${pkg}" on this host's SecuraIQ Agent?\n\n` +
+            `This runs on the agent's next check-in (up to its check-in interval, default 60s) and actually changes installed software on that machine.`
+        )
+      ) {
+        return;
+      }
+      btn.disabled = true;
+      btn.textContent = "Queuing…";
+      try {
+        const res = await fetch(`/api/agents/${encodeURIComponent(agentId)}/commands`, {
+          method: "POST",
+          headers: authHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify({
+            kind: "patch_package",
+            payload: { manager, package: pkg, target_version: target },
+          }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body.detail || `HTTP ${res.status}`);
+        if (typeof notifyUser === "function") {
+          notifyUser(`**Patch queued** · \`${manager} upgrade ${pkg}\` — will run on the agent's next check-in and auto-verify.`);
+        }
+        btn.textContent = "Queued";
+      } catch (e) {
+        if (typeof notifyUser === "function") notifyUser(`Patch queue failed: ${e.message || e}`);
+        btn.disabled = false;
+        btn.textContent = "Patch via Agent";
+      }
+    });
     qs("softwareDetailBody")?.querySelector(".sw-detail-verify")?.addEventListener("click", async (ev) => {
       const btn = ev.currentTarget;
       const iid = btn.getAttribute("data-installation");
@@ -4099,6 +4179,7 @@
       el.innerHTML = `<p class="hint">Couldn't load agents right now — try refreshing this page. <span class="hint-sub">(${escapeHtml(err.message || String(err))})</span></p>`;
     }
   }
+  window.renderAgentsPanel = renderAgentsPanel;
 
   async function renderTheHivePanel() {
     const el = qs("thehivePanelBody");

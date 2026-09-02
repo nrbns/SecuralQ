@@ -800,6 +800,153 @@ def collect_snapshot() -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Patch command execution — the agent side of the patch + verify loop.
+#
+# The server never sends an arbitrary shell string: a command is always
+# {"kind": "patch_package", "payload": {"manager": ..., "package": ...}},
+# and only the four package managers below are ever invoked, each with the
+# package name passed as a single subprocess argument (never interpolated
+# into a shell string), so a compromised/malicious server response still
+# can't achieve arbitrary command execution here.
+# ---------------------------------------------------------------------------
+
+_PACKAGE_MANAGER_UPGRADE_CMD = {
+    # (installed-version lookup, upgrade command) — both real subprocess
+    # argv lists, no shell=True anywhere in this file.
+    "apt": {
+        "version": lambda pkg: ["dpkg-query", "-W", "-f=${Version}", pkg],
+        "upgrade": lambda pkg: ["apt-get", "install", "--only-upgrade", "-y", pkg],
+        "needs_root": True,
+    },
+    "winget": {
+        "version": None,  # winget's list output isn't reliably single-line parseable; see below
+        "upgrade": lambda pkg: [
+            "winget", "upgrade", "--id", pkg, "-e", "--silent",
+            "--accept-package-agreements", "--accept-source-agreements",
+        ],
+        "needs_root": False,
+    },
+    "brew": {
+        "version": lambda pkg: ["brew", "list", "--versions", pkg],
+        "upgrade": lambda pkg: ["brew", "upgrade", pkg],
+        "needs_root": False,
+    },
+    "pip": {
+        "version": lambda pkg: [sys.executable, "-m", "pip", "show", pkg],
+        "upgrade": lambda pkg: [sys.executable, "-m", "pip", "install", "--upgrade", pkg],
+        "needs_root": False,
+    },
+}
+
+_PACKAGE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+\-]{0,199}$")
+
+
+def _pkg_version(manager: str, package: str) -> str:
+    """Best-effort installed-version lookup for the 'before' snapshot in the
+    result report. Returns "" (not a guess) when the manager doesn't expose
+    a simply-parseable version, or the package isn't found."""
+    import subprocess
+
+    spec = _PACKAGE_MANAGER_UPGRADE_CMD.get(manager) or {}
+    getter = spec.get("version")
+    if not getter:
+        return ""
+    try:
+        out = subprocess.run(getter(package), capture_output=True, text=True, timeout=15)
+    except Exception:
+        return ""
+    if out.returncode != 0:
+        return ""
+    text = (out.stdout or "").strip()
+    if manager == "pip":
+        for line in text.splitlines():
+            if line.lower().startswith("version:"):
+                return line.split(":", 1)[1].strip()
+        return ""
+    return text.splitlines()[0].strip() if text else ""
+
+
+def execute_patch_package(payload: dict) -> dict:
+    """Run one package-manager upgrade. Always returns a result dict — never
+    raises — so the check-in loop can report failure honestly back to the
+    server instead of crashing the whole agent process."""
+    import subprocess
+
+    manager = str(payload.get("manager") or "").strip().lower()
+    package = str(payload.get("package") or "").strip()
+    spec = _PACKAGE_MANAGER_UPGRADE_CMD.get(manager)
+    if not spec:
+        return {"ok": False, "error": f"Unsupported package manager '{manager}'. Supported: {sorted(_PACKAGE_MANAGER_UPGRADE_CMD)}"}
+    if not package or not _PACKAGE_NAME_RE.match(package):
+        return {"ok": False, "error": "Invalid or missing package name"}
+    import shutil
+
+    binary = spec["upgrade"](package)[0]
+    if shutil.which(binary) is None:
+        return {"ok": False, "error": f"'{binary}' not found on this host — is {manager} installed?"}
+    if spec.get("needs_root") and hasattr(os, "geteuid") and os.geteuid() != 0:
+        return {"ok": False, "error": f"{manager} upgrades need root/sudo — agent is not running as root"}
+    old_version = _pkg_version(manager, package)
+    try:
+        out = subprocess.run(spec["upgrade"](package), capture_output=True, text=True, timeout=600)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "Upgrade command timed out after 600s", "old_version": old_version}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "old_version": old_version}
+    new_version = _pkg_version(manager, package)
+    ok = out.returncode == 0
+    return {
+        "ok": ok,
+        "manager": manager,
+        "package": package,
+        "old_version": old_version,
+        "new_version": new_version,
+        "exit_code": out.returncode,
+        "output": ((out.stdout or "") + "\n" + (out.stderr or ""))[-4000:],
+        **({} if ok else {"error": f"exit code {out.returncode}"}),
+    }
+
+
+def send_command_result(server: str, token: str, command_id: str, status: str, result: dict, *, insecure: bool = False, timeout: float = 15.0) -> dict:
+    url = server.rstrip("/") + f"/api/agents/commands/{command_id}/result"
+    data = json.dumps({"status": status, "result": result}).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=data, method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+            "User-Agent": f"SecuraIQ-Agent/{AGENT_VERSION}",
+        },
+    )
+    ctx = None
+    if url.startswith("https://") and insecure:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def run_commands(server: str, token: str, commands: list, *, insecure: bool = False) -> None:
+    for cmd in commands or []:
+        kind = cmd.get("kind")
+        cid = cmd.get("id")
+        if not cid:
+            continue
+        if kind != "patch_package":
+            send_command_result(server, token, cid, "error", {"error": f"Unknown command kind '{kind}'"}, insecure=insecure)
+            continue
+        print(f"[securaiq-agent] running command {cid}: patch_package {cmd.get('payload')}")
+        result = execute_patch_package(cmd.get("payload") or {})
+        status = "done" if result.get("ok") else "error"
+        try:
+            send_command_result(server, token, cid, status, result, insecure=insecure)
+            print(f"[securaiq-agent] command {cid} {status}: {result.get('old_version', '?')} -> {result.get('new_version', '?')}")
+        except Exception as exc:
+            print(f"[securaiq-agent] could not report result for command {cid}: {exc}", file=sys.stderr)
+
+
 def send_checkin(server: str, token: str, payload: dict, *, insecure: bool = False, timeout: float = 15.0) -> dict:
     url = server.rstrip("/") + "/api/agents/checkin"
     data = json.dumps(payload).encode("utf-8")
@@ -882,6 +1029,9 @@ def main() -> int:
                 f"host={snapshot['hostname']} ports={len(snapshot['listening_ports'])} "
                 f"packages={len(snapshot['packages'])} asset_id={result.get('asset_id', '')}"
             )
+            commands = result.get("commands") or []
+            if commands:
+                run_commands(args.server, args.token, commands, insecure=args.insecure)
             return ok
         except urllib.error.HTTPError as exc:
             body = ""

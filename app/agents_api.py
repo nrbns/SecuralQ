@@ -18,8 +18,11 @@ from app.agents import (
     enroll_agent,
     get_agent,
     list_agents,
+    list_commands,
     list_threats,
+    queue_command,
     record_threat_detections,
+    report_command_result,
     revoke_agent,
 )
 from app.auth import AuthUser
@@ -61,6 +64,18 @@ class ThreatDetection(BaseModel):
 
 class ThreatReport(BaseModel):
     detections: list[ThreatDetection] = Field(default_factory=list)
+
+
+class CommandCreate(BaseModel):
+    # patch_package payload shape: {"manager": "apt|winget|brew|pip",
+    # "package": "<name>", "target_version": "<optional>"}
+    kind: str = "patch_package"
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class CommandResultReport(BaseModel):
+    status: str = "done"
+    result: dict[str, Any] = Field(default_factory=dict)
 
 
 class CheckinPayload(BaseModel):
@@ -231,3 +246,49 @@ async def api_list_agent_threats(
     if not agent or agent.get("user_id") != user.id:
         raise HTTPException(status_code=404, detail="Agent not found")
     return {"threats": list_threats(user.id, agent_id=agent_id, limit=limit)}
+
+
+@router.post("/{agent_id}/commands")
+async def api_queue_agent_command(
+    agent_id: str, req: CommandCreate, user: Annotated[AuthUser, Depends(require_user)]
+):
+    """Queue a command for this agent's next check-in. This IS the approval
+    gate for patch execution — only a logged-in user can call this, there is
+    no autonomous/unattended path that reaches it."""
+    try:
+        result = queue_command(user.id, agent_id, kind=req.kind, payload=req.payload, requested_by=user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    audit("agent_command_queue", user.id, {"agent_id": agent_id, "kind": req.kind, "payload": req.payload})
+    return result
+
+
+@router.get("/{agent_id}/commands")
+async def api_list_agent_commands(
+    agent_id: str, user: Annotated[AuthUser, Depends(require_user)], limit: int = 100
+):
+    agent = get_agent(agent_id)
+    if not agent or agent.get("user_id") != user.id:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return {"commands": list_commands(user.id, agent_id, limit=limit)}
+
+
+@router.post("/commands/{command_id}/result")
+async def api_report_command_result(
+    command_id: str,
+    req: CommandResultReport,
+    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
+):
+    """Agent reports the outcome of a command it executed — agent-token auth
+    only, same as /checkin and /threat (this runs unattended, no user
+    session)."""
+    agent_id, raw_key = _parse_agent_bearer(authorization)
+    if not agent_id or not raw_key:
+        raise HTTPException(status_code=401, detail="Missing or malformed agent token")
+    agent = authenticate_agent(agent_id, raw_key)
+    if not agent:
+        raise HTTPException(status_code=401, detail="Invalid or revoked agent token")
+    result = report_command_result(agent_id, command_id, status=req.status, result=req.result)
+    if not result.get("ok"):
+        raise HTTPException(status_code=404, detail=result.get("error") or "Unknown command")
+    return result
