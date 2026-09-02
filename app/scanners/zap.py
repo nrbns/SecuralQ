@@ -6,7 +6,6 @@ Optional enhancement when ``ZAP_PREFER_API=true`` and a ZAP daemon is reachable.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 import shutil

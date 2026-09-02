@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile

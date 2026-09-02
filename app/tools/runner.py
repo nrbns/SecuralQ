@@ -21,7 +21,6 @@ from app.tools.registry import (
     AWARENESS_AUTO_TOOLS,
     ENGINE_TOOLS,
     EXTERNAL_FALLBACKS,
-    PT_PACK_TOOLS,
     TOOL_CATALOG,
     is_available,
     resolve_binary,
@@ -826,7 +825,6 @@ Always: written scope, rate limits, detection notes, remediation owners.
 
 
 from app.exposure import (
-    HIGH_RISK_PORTS as _HIGH_RISK_PORTS,
     RISKY_PORT_NOTES as _RISKY_PORTS,
     extract_port as _extract_port,
     network_scope as _target_network_scope,

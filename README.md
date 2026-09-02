@@ -57,7 +57,7 @@ From a machine that already has the venv (after `.\run_proper.cmd` once):
 .\build_exe.cmd
 ```
 
-That writes **`dist\SecuraIQ\SecuraIQ.exe`**. Copy the whole `dist\SecuraIQ` folder (not just the EXE). Double-click `SecuraIQ.exe` — it opens the browser at http://127.0.0.1:8080 and stores `data\` and `.env` next to the EXE.
+That writes a single **`dist\SecuraIQ.exe`** — one file, nothing else to copy alongside it. Double-click it — it opens the browser at http://127.0.0.1:8080 and stores `data\` and `.env` next to wherever you put the EXE. First launch is slower than later ones: a single-file build unpacks its whole bundle (torch/chromadb included) to a temp folder on every run before it can start.
 
 ### Works everywhere
 
@@ -288,6 +288,7 @@ Full OpenAPI: http://127.0.0.1:8080/docs
 | [`docs/commercial-roadmap.md`](docs/commercial-roadmap.md) | Product roadmap |
 | [`docs/launch-readiness.md`](docs/launch-readiness.md) | Ship checklist |
 | [`docs/cursor-local-models.md`](docs/cursor-local-models.md) | Local models in Cursor |
+| [`docs/backup-dr.md`](docs/backup-dr.md) | Backup / restore (`scripts/backup.*`, `scripts/restore.sh`) |
 
 ---
 

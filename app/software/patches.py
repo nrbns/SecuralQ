@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.db import get_conn, now
+from app.db import get_conn
 from app.software.models import PATCH_LABELS, ensure_schema
-from app.software.patch_status import compare_versions, compute_patch_status
+from app.software.patch_status import compare_versions
 from app.software.service import legacy_row_from_normalized, list_legacy_from_engine, list_normalized_rows
 
 

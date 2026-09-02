@@ -9,7 +9,6 @@ single in-process worker cannot deadlock waiting on ``scan_execute``.
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 from app.enterprise import triage_vulnerability

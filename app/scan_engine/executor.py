@@ -8,7 +8,6 @@ from typing import Any
 
 from app.enterprise import ensure_asset_for_target, upsert_vulnerability
 from app.scan_engine.models import (
-    create_scan,
     evidence_root,
     get_scan,
     set_progress,

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from app.auth import AuthUser
 from app.commercial_api import require_user

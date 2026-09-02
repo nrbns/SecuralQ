@@ -8,9 +8,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from app.auth import AuthUser
-from app.billing import PLANS, get_user_plan, set_user_plan, usage_snapshot
+from app.billing import PLANS, set_user_plan, usage_snapshot
 from app.commercial_api import require_user
-from app.config import settings
 
 router = APIRouter(prefix="/api/billing", tags=["billing"])
 

@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 
-from app.db import audit, get_conn, new_id, now, row_to_dict
+from app.db import audit, get_conn, new_id, now
 from app.ops import add_intel_watch, list_intel_watch
 
 KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"

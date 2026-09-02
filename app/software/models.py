@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.db import get_conn, new_id, now
+from app.db import get_conn
 
 # Patch posture labels (never guess latest version — UNKNOWN when unresolved)
 PATCH_UP_TO_DATE = "up_to_date"

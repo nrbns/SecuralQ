@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Annotated, Any
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, Response, UploadFile
 from fastapi.responses import JSONResponse, PlainTextResponse

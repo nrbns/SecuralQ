@@ -8,7 +8,6 @@ from typing import Any
 from app.config import settings
 from app.connectors import openaudit as oa_conn
 from app.db import get_conn, new_id, now
-from app.enterprise import create_asset, list_assets
 
 
 def status() -> dict[str, Any]:

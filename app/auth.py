@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.config import settings
-from app.db import audit, get_conn, new_id, now, row_to_dict
+from app.db import audit, get_conn, new_id, now
 
 SESSION_DAYS = 14  # fallback; prefer settings.session_days
 
