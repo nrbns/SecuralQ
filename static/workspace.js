@@ -4068,6 +4068,39 @@
     }
   }
 
+  async function renderRiskPriorityPanel() {
+    const el = qs("riskPriorityBody");
+    if (!el) return;
+    try {
+      const res = await fetch("/api/risk/priority?limit=10", { headers: authHeaders() });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+      const items = data.items || [];
+      if (!items.length) {
+        el.innerHTML = `<p class="hint">No open findings to rank${data.total_open ? "" : " — nothing open right now"}.</p>`;
+        return;
+      }
+      const bandCls = (band) =>
+        band === "critical" || band === "high" ? "status-error" : band === "medium" ? "status-planned" : "status-done";
+      el.innerHTML = `
+        <p class="hint" style="margin:0 0 8px">Ranked from ${data.total_open} open finding(s)${data.kev_count ? ` · ${data.kev_count} actively exploited (KEV)` : ""}${data.quick_win_count ? ` · ${data.quick_win_count} quick win(s) with a patch already ready` : ""}.</p>
+        <div class="data-table-wrap"><table class="data-table">
+          <thead><tr><th>Score</th><th>Finding</th><th>Asset</th><th>Why</th></tr></thead>
+          <tbody>${items
+            .map(
+              (i) => `<tr>
+                <td><span class="auto-job-status ${bandCls(i.band)}">${escapeHtml(String(i.score))}</span></td>
+                <td><strong>${escapeHtml(i.title || i.cve || "Untitled finding")}</strong>${i.cve ? ` <span class="hint">${escapeHtml(i.cve)}</span>` : ""}</td>
+                <td class="hint">${escapeHtml(i.asset_name || "—")}</td>
+                <td class="hint">${i.reasons.map((r) => escapeHtml(r)).join(" · ")}</td>
+              </tr>`
+            )
+            .join("")}</tbody></table></div>`;
+    } catch (err) {
+      el.innerHTML = `<p class="hint">Couldn't load the priority list right now. <span class="hint-sub">(${escapeHtml(err.message || String(err))})</span></p>`;
+    }
+  }
+
   async function renderAgentsPanel() {
     const el = qs("agentsPanelBody");
     if (!el) return;
@@ -4738,6 +4771,10 @@
         <article class="cc-kpi"><span>Critical/high vulns</span><strong>${data.critical_vulns || 0}</strong></article>
         <article class="cc-kpi"><span>Playbooks</span><strong>${data.playbooks || 0}</strong></article>
       </div>
+      <section class="cc-panel" id="riskPriorityPanel" style="margin-top:1rem">
+        <header><h2>What to fix first</h2></header>
+        <div id="riskPriorityBody"><p class="hint">Loading…</p></div>
+      </section>
       <div class="ws-grid-2" style="margin-top:1rem">
         <section class="cc-panel">
           <header><h2>Alerts</h2></header>
@@ -4790,6 +4827,7 @@
         <div id="thehivePanelBody"><p class="hint">Loading…</p></div>
       </section>`;
     body.dataset.socRendered = "1";
+    renderRiskPriorityPanel();
     renderAgentsPanel();
     renderXdrPanel();
     renderWazuhPanel();
