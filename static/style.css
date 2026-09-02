@@ -7403,7 +7403,6 @@ html[data-theme="dark"] .sw-view-tab {
   color: var(--muted);
   margin-top: 0.05rem;
 }
-.sq-stat-legacy { display: none !important; }
 .sq-hero-grid {
   display: grid;
   grid-template-columns: 1.1fr 0.9fr;
@@ -7645,7 +7644,6 @@ html[data-theme="dark"] .sw-view-tab {
   margin-top: 0.65rem;
 }
 .sq-wf-bar { margin-bottom: 0.65rem; }
-.sq-legacy-panels { display: none !important; }
 #viewCommand:not(.mc-is-empty) .mc-context { display: none; }
 @media (max-width: 1200px) {
   .sq-hero-grid, .sq-mid-grid, .sq-bottom-grid, .sq-ops-grid { grid-template-columns: 1fr 1fr; }
