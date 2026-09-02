@@ -3605,7 +3605,7 @@ async function renderToolsPalette() {
       }/${data.third_party_count || 0} · Auth + owned target`;
     }
   } catch (err) {
-    toolsPaletteGridEl.innerHTML = `<p class="hint">Tools unavailable: ${escapeHtml(err.message)}</p>`;
+    toolsPaletteGridEl.innerHTML = `<p class="hint">Couldn't load tools — try refreshing. <span class="hint-sub">(${escapeHtml(err.message)})</span></p>`;
   }
 }
 
@@ -4538,7 +4538,7 @@ async function loadCommandCenter() {
     await renderRiskHeatMap();
   } catch (err) {
     if (scoreEl) scoreEl.textContent = "--";
-    if (fwEl) fwEl.innerHTML = `<li class="hint">Dashboard unavailable: ${escapeHtml(err.message)}</li>`;
+    if (fwEl) fwEl.innerHTML = `<li class="hint">Couldn't load the dashboard — try refreshing. <span class="hint-sub">(${escapeHtml(err.message)})</span></li>`;
   } finally {
     clearTimeout(window.__securaiqCcLockTimer);
     window.__securaiqCcLoading = false;

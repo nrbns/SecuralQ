@@ -393,10 +393,15 @@
     const ip = a.ip || "";
     const title = displayAssetLabel(a);
     const scanSt = (a.last_scan_status || "").toLowerCase();
+    const isBlocked = scanSt === "blocked";
     const scanChip = scanSt
       ? `<span class="auto-job-status ${
-          scanSt === "completed" ? "status-done" : /fail|block/.test(scanSt) ? "status-error" : "status-running"
-        }">${escapeHtml(scanSt)}</span>`
+          scanSt === "completed" ? "status-done" : isBlocked ? "status-planned" : /fail/.test(scanSt) ? "status-error" : "status-running"
+        }"${
+          isBlocked
+            ? ` title="Scan not run — this host isn't marked authorized. Use Scan and confirm ownership to run a vulnerability scan against it."`
+            : ""
+        }>${escapeHtml(scanSt)}</span>`
       : `<span class="hint">idle</span>`;
     const scanTarget = ip || a.name;
     const metaBits = [a.os, a.mac].filter(Boolean);
@@ -421,7 +426,7 @@
     const canEdit = !!a.id && !a._oaOnly;
     return `<tr>
         <td><strong>${escapeHtml(title || "—")}</strong>${extra}${shareHint}</td>
-        <td>${ip ? `<code>${escapeHtml(ip)}</code>` : "—"}</td>
+        <td>${ip && ip !== title ? `<code>${escapeHtml(ip)}</code>` : `<span class="hint">—</span>`}</td>
         <td>${categoryChipHtml(a)}</td>
         <td><span class="inventory-source inventory-source-${inventorySourceKind(a)}">${escapeHtml(
           inventoryLiveLabel(a)
@@ -1739,14 +1744,14 @@
         ${v.cve ? `<p class="entity-detail-cve">${escapeHtml(v.cve)}</p>` : ""}
       </header>
       <dl class="entity-meta">
-        <div><dt>CVSS</dt><dd>${escapeHtml(v.cvss != null ? v.cvss : "—")}</dd></div>
+        ${v.cvss != null ? `<div><dt>CVSS</dt><dd>${escapeHtml(v.cvss)}</dd></div>` : ""}
         <div><dt>Asset</dt><dd>${assetBtn}</dd></div>
         <div><dt>Owner</dt><dd>${escapeHtml(v.owner || "Unassigned")}</dd></div>
         <div><dt>Status</dt><dd>${escapeHtml(v.status || "open")}</dd></div>
-        <div><dt>SLA</dt><dd>${escapeHtml(v.sla_due || "—")}</dd></div>
-        <div><dt>Age</dt><dd>${age == null ? "—" : age + "d"}</dd></div>
+        ${v.sla_due ? `<div><dt>SLA</dt><dd>${escapeHtml(v.sla_due)}</dd></div>` : ""}
+        ${age != null ? `<div><dt>Age</dt><dd>${age}d</dd></div>` : ""}
         <div><dt>Scanner</dt><dd>${escapeHtml(src)}</dd></div>
-        <div><dt>Exposure</dt><dd>${escapeHtml(scope || (v.cve ? "Check KEV / advisory" : "—"))}</dd></div>
+        ${scope ? `<div><dt>Exposure</dt><dd>${escapeHtml(scope)}</dd></div>` : v.cve ? `<div><dt>Exposure</dt><dd>Check KEV / advisory</dd></div>` : ""}
       </dl>
       ${
         guidance
@@ -2179,8 +2184,11 @@
         </p>
         ${
           !installed
-            ? `<p class="hint">Install module, then audit this Windows lab host:</p>
-               <code class="hk-setup-code">.\\scripts\\use_hardeningkitty.cmd -Download</code>`
+            ? `<p class="hint">Not installed on this host yet.</p>
+               <details class="hk-setup-advanced">
+                 <summary>Advanced: install manually</summary>
+                 <code class="hk-setup-code">.\\scripts\\use_hardeningkitty.cmd -Download</code>
+               </details>`
             : auditDone
               ? `<p class="hint">Last score ${hk.last_score != null ? escapeHtml(String(hk.last_score)) : "—"} · failed ${hk.last_failed || 0} · imported ${hk.last_imported || 0}</p>`
               : `<p class="hint">${Number(st.finding_lists) || 0} CIS lists ready — run Audit to populate findings.</p>`
@@ -2199,7 +2207,7 @@
             : ""
         }`;
     } catch (err) {
-      el.innerHTML = `<p class="hint">Hardening panel unavailable: ${escapeHtml(err.message)}</p>`;
+      el.innerHTML = `<p class="hint">Couldn't load the hardening panel — try refreshing. <span class="hint-sub">(${escapeHtml(err.message)})</span></p>`;
     }
   }
 
@@ -2276,7 +2284,7 @@
             : "Path + Auth → Scan folder. Findings stream into the register. Optional engine Sync in Settings."
         }</p>`;
     } catch (err) {
-      el.innerHTML = `<p class="hint">SecuraIQ Code panel unavailable: ${escapeHtml(err.message)}</p>`;
+      el.innerHTML = `<p class="hint">Couldn't load the code scan panel — try refreshing. <span class="hint-sub">(${escapeHtml(err.message)})</span></p>`;
     }
   }
 
@@ -2521,7 +2529,7 @@
         <ul class="cc-list">${findingsHtml}</ul>
         <p class="hint">Settings → Cloud posture to connect Security Hub / Defender / SCC.</p>`;
     } catch (err) {
-      el.innerHTML = `<p class="hint">Cloud posture panel unavailable: ${escapeHtml(err.message)}</p>`;
+      el.innerHTML = `<p class="hint">Couldn't load cloud posture — try refreshing. <span class="hint-sub">(${escapeHtml(err.message)})</span></p>`;
     }
   }
 
@@ -3813,7 +3821,7 @@
         syncLiveTimer();
       }
     } catch (err) {
-      el.innerHTML = `<p class="hint">XDR panel unavailable: ${escapeHtml(err.message)}</p>`;
+      el.innerHTML = `<p class="hint">Couldn't load XDR — try refreshing. <span class="hint-sub">(${escapeHtml(err.message)})</span></p>`;
     }
   }
 
@@ -3975,7 +3983,7 @@
           Webhook ingest: <code>/api/siem/webhook</code>. Sync pulls agents and alerts into your SOC.
         </p>`;
     } catch (err) {
-      el.innerHTML = `<p class="hint">SecuraIQ SIEM panel unavailable: ${escapeHtml(err.message)}</p>`;
+      el.innerHTML = `<p class="hint">Couldn't load SIEM data — try refreshing. <span class="hint-sub">(${escapeHtml(err.message)})</span></p>`;
     }
   }
 
@@ -4088,7 +4096,7 @@
         });
       });
     } catch (err) {
-      el.innerHTML = `<p class="hint">Agents unavailable: ${escapeHtml(err.message || String(err))}</p>`;
+      el.innerHTML = `<p class="hint">Couldn't load agents right now — try refreshing this page. <span class="hint-sub">(${escapeHtml(err.message || String(err))})</span></p>`;
     }
   }
 
@@ -4134,7 +4142,7 @@
         <ul class="cc-list">${casesHtml}</ul>
         <p class="hint">Settings → TheHive. Authorized IR labs only.</p>`;
     } catch (err) {
-      el.innerHTML = `<p class="hint">TheHive panel unavailable: ${escapeHtml(err.message)}</p>`;
+      el.innerHTML = `<p class="hint">Couldn't load TheHive — try refreshing. <span class="hint-sub">(${escapeHtml(err.message)})</span></p>`;
     }
   }
 
@@ -5141,9 +5149,15 @@
         ${
           !st.installed
             ? `<div class="hk-setup-block">
-                <p class="hint">Install on this Windows lab host (repo root, PowerShell):</p>
-                <code class="hk-setup-code">.\\scripts\\use_hardeningkitty.cmd -Download</code>
-                <p class="hint">Restart SecuraIQ, then click <strong>HardeningKitty audit</strong> above.</p>
+                <p class="hint">Windows hardening checks aren't installed on this host yet.</p>
+                <details class="hk-setup-advanced">
+                  <summary>Advanced: install manually</summary>
+                  <p class="hint">Run this in PowerShell from the SecuraIQ folder, then restart and click <strong>HardeningKitty audit</strong> above.</p>
+                  <div class="hk-setup-cmd-row">
+                    <code class="hk-setup-code" id="hkSetupCmd">.\\scripts\\use_hardeningkitty.cmd -Download</code>
+                    <button type="button" class="btn-secondary" id="hkCopySetup">Copy</button>
+                  </div>
+                </details>
               </div>`
             : !auditDone
               ? `<p class="hint">Module is installed — run <strong>Audit</strong> to baseline CIS checks on this host.</p>`
@@ -5181,6 +5195,15 @@
           <button type="button" class="btn-secondary" id="hkImportBtn">Import report CSV</button>
           <input type="file" id="hkImportFile" accept=".csv,text/csv" class="hidden" />
         </div>`;
+      qs("hkCopySetup")?.addEventListener("click", async () => {
+        const cmd = qs("hkSetupCmd")?.textContent || ".\\scripts\\use_hardeningkitty.cmd -Download";
+        try {
+          await navigator.clipboard.writeText(cmd);
+          if (typeof notifyUser === "function") notifyUser("**Copied** setup command to clipboard.");
+        } catch {
+          if (typeof notifyUser === "function") notifyUser(`**Setup command:** \`${cmd}\``);
+        }
+      });
       qs("hkImportBtn")?.addEventListener("click", () => qs("hkImportFile")?.click());
       qs("hkImportFile")?.addEventListener("change", async (e) => {
         const file = e.target.files?.[0];
@@ -5206,7 +5229,7 @@
         e.target.value = "";
       });
     } catch (err) {
-      el.innerHTML = `<p class="hint">Hardening panel unavailable: ${escapeHtml(err.message)}</p>`;
+      el.innerHTML = `<p class="hint">Couldn't load the hardening panel — try refreshing. <span class="hint-sub">(${escapeHtml(err.message)})</span></p>`;
     }
   }
 
@@ -5936,7 +5959,7 @@
           wireConnectButtons(quick);
         }
       } catch (err) {
-        const msg = `<p class="hint">Catalog unavailable: ${escapeHtml(err.message || String(err))}</p>`;
+        const msg = `<p class="hint">Couldn't load the catalog — try refreshing. <span class="hint-sub">(${escapeHtml(err.message || String(err))})</span></p>`;
         // Real bug found in audit: only integMvp was updated on failure, so
         // integCatalog/integAgents/integEnterprise stayed stuck on "Loading…"
         // forever with no indication anything went wrong.

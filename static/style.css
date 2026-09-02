@@ -3728,6 +3728,32 @@ button.cc-kpi:hover {
 .hk-setup-block {
   margin: 0.5rem 0;
 }
+.hk-setup-advanced {
+  margin-top: 0.35rem;
+}
+.hk-setup-advanced summary {
+  cursor: pointer;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+.hk-setup-advanced summary:hover {
+  color: var(--text, inherit);
+}
+.hk-setup-cmd-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.hk-setup-cmd-row .hk-setup-code {
+  flex: 1;
+  margin: 0.35rem 0;
+}
+.hint-sub {
+  display: block;
+  margin-top: 0.2rem;
+  font-size: 0.75rem;
+  opacity: 0.65;
+}
 .hk-setup-code {
   display: block;
   margin: 0.35rem 0 0.5rem;
