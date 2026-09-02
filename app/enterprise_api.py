@@ -65,6 +65,10 @@ class AssetCreate(BaseModel):
     owner: str = ""
     notes: str = ""
     engagement_id: str | None = None
+    # Distinct from `criticality` (infrastructure) — how critical is the
+    # business function/data this asset serves? Optional; the risk engine
+    # falls back to `criticality` when this is left blank.
+    business_criticality: str = ""
 
 
 class AssetUpdate(BaseModel):
@@ -74,6 +78,7 @@ class AssetUpdate(BaseModel):
     owner: str | None = None
     notes: str | None = None
     engagement_id: str | None = None
+    business_criticality: str | None = None
 
 
 class RiskCreate(BaseModel):
@@ -691,6 +696,13 @@ class RiskScoreRequest(BaseModel):
     asset_criticality: str | None = "medium"
     threat_intel: float | None = None
     confidence: float | None = None
+    # 0 (none known) - 1 (fully mitigated) — e.g. active EDR/monitoring
+    # coverage on the affected asset. Reduces the score when present.
+    compensating_controls: float | None = None
+    # Distinct from asset_criticality — how critical is the business
+    # function/data at risk, not just the infrastructure. Falls back to
+    # asset_criticality when omitted.
+    business_criticality: str | None = None
 
 
 @router.get("/assets/categories")
@@ -781,6 +793,8 @@ async def risk_score_compute(req: RiskScoreRequest, user: Annotated[AuthUser, De
         asset_criticality=req.asset_criticality,
         threat_intel=req.threat_intel,
         confidence=req.confidence,
+        compensating_controls=req.compensating_controls,
+        business_criticality=req.business_criticality,
     )
     result["explanation"] = explain_risk_score(result)
     return result
@@ -805,6 +819,7 @@ async def assets_create(
         notes=req.notes,
         engagement_id=req.engagement_id,
         org_id=oid,
+        business_criticality=req.business_criticality,
     )
 
 

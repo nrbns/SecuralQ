@@ -46,6 +46,21 @@ def _kev_cves() -> set[str]:
         return set()
 
 
+def _agent_monitored_asset_ids(user_id: str) -> set[str]:
+    """Asset IDs with an actively checked-in SecuraIQ agent right now — a
+    real, existing signal (not fabricated) that stands in for "compensating
+    controls": continuous telemetry/monitoring genuinely reduces effective
+    risk (faster detection, shorter dwell time) even though it doesn't
+    patch anything. An offline or never-enrolled agent contributes nothing —
+    only currently-online coverage counts, so this can't go stale silently."""
+    try:
+        from app.agents import list_agents
+
+        return {a["asset_id"] for a in list_agents(user_id) if a.get("status") == "online" and a.get("asset_id")}
+    except Exception:
+        return set()
+
+
 def _patchable_cves(user_id: str) -> set[str]:
     """CVEs for which the software-inventory pipeline already has a target
     fix version recorded somewhere in this user's installations — a cheap,
@@ -95,6 +110,7 @@ def _scored_open_items(
     assets_by_id = {a.get("id"): a for a in assets if a.get("id")}
     kev_cves = _kev_cves()
     patchable = _patchable_cves(user_id)
+    monitored_asset_ids = _agent_monitored_asset_ids(user_id)
 
     scored: list[dict[str, Any]] = []
     for v in vulns:
@@ -106,11 +122,18 @@ def _scored_open_items(
         exploitability = 0.95 if is_kev else _SEVERITY_EXPLOITABILITY.get(severity, 0.35)
         exposure = _exposure_for_asset(asset)
         asset_criticality = (asset or {}).get("criticality") or "medium"
+        business_criticality = ((asset or {}).get("business_criticality") or "").strip().lower()
         threat_intel = 0.9 if is_kev else 0.3
         age_days = max(0.0, (now() - float(v.get("created_at") or now())) / 86400.0)
         # long-open findings nudge confidence up slightly — they've survived
         # re-scans, so they're not a transient/false-positive blip.
         confidence = 0.85 if age_days > 14 else 0.7
+        # a currently-online SecuraIQ agent is a real, existing compensating
+        # control signal (continuous monitoring/telemetry) — see
+        # _agent_monitored_asset_ids(). 0.5, not 1.0: monitoring detects
+        # faster, it doesn't remediate, so it's a partial mitigation only.
+        is_monitored = bool(v.get("asset_id")) and v.get("asset_id") in monitored_asset_ids
+        compensating_controls = 0.5 if is_monitored else 0.0
 
         result = compute_risk_score(
             cvss=v.get("cvss"),
@@ -119,6 +142,8 @@ def _scored_open_items(
             asset_criticality=asset_criticality,
             threat_intel=threat_intel,
             confidence=confidence,
+            compensating_controls=compensating_controls,
+            business_criticality=business_criticality or None,
         )
         reasons: list[str] = []
         if is_kev:
@@ -127,12 +152,16 @@ def _scored_open_items(
             reasons.append("Internet-facing asset")
         if asset_criticality in ("critical", "high"):
             reasons.append(f"{asset_criticality.title()}-criticality asset")
+        if business_criticality in ("critical", "high") and business_criticality != asset_criticality:
+            reasons.append(f"{business_criticality.title()}-criticality business function")
         if has_patch:
             reasons.append("Patch already available — quick win")
         if age_days > 30:
             reasons.append(f"Open {int(age_days)} days")
         if not reasons:
             reasons.append(f"{severity.title()} severity finding")
+        if is_monitored:
+            reasons.append("Partially offset by active agent monitoring")
 
         scored.append(
             {
@@ -143,7 +172,10 @@ def _scored_open_items(
                 "asset_id": v.get("asset_id") or "",
                 "asset_name": v.get("asset_name") or (asset or {}).get("name") or "",
                 "asset_criticality": asset_criticality,
+                "business_criticality": business_criticality or asset_criticality,
                 "exposure": exposure,
+                "compensating_controls": compensating_controls,
+                "monitored": is_monitored,
                 "score": result["score"],
                 "band": result["band"],
                 "factors": result["factors"],

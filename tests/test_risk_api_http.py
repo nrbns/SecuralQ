@@ -338,3 +338,74 @@ def test_simulate_respects_limit(tmp_path, monkeypatch):
     body = res.json()
     assert body["total_open"] == 5
     assert len(body["groups"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# Risk Engine hardening — compensating_controls (agent monitoring) and
+# business_criticality (distinct from asset_criticality) wired into the
+# actual priority list, not just the standalone scoring function.
+# ---------------------------------------------------------------------------
+
+
+def test_priority_list_ranks_business_critical_low_infra_asset_higher(tmp_path, monkeypatch):
+    """The canonical divergence case: a low-criticality box holding a
+    business-critical function must outrank an identical low-criticality
+    box with no elevated business function."""
+    client, token, uid = _client_and_token(tmp_path, monkeypatch)
+    from app.enterprise import create_asset, create_vulnerability
+
+    plain_low = create_asset(uid, "forgotten-test-box", asset_type="server", criticality="low")
+    biz_critical_low = create_asset(
+        uid, "forgotten-db-box", asset_type="server", criticality="low", business_criticality="critical"
+    )
+
+    v_plain = create_vulnerability(
+        uid,
+        {"asset_id": plain_low["id"], "asset_name": "forgotten-test-box", "title": "Outdated OpenSSL", "severity": "high", "cvss": 7.5, "status": "open"},
+    )
+    v_biz = create_vulnerability(
+        uid,
+        {"asset_id": biz_critical_low["id"], "asset_name": "forgotten-db-box", "title": "Outdated OpenSSL", "severity": "high", "cvss": 7.5, "status": "open"},
+    )
+
+    res = client.get("/api/risk/priority", headers=_auth(token))
+    items = {i["vuln_id"]: i for i in res.json()["items"]}
+    assert items[v_biz["id"]]["score"] > items[v_plain["id"]]["score"]
+    assert "business function" in " ".join(items[v_biz["id"]]["reasons"]).lower()
+
+
+def test_priority_list_lowers_score_for_actively_monitored_asset(tmp_path, monkeypatch):
+    """A finding on an asset with a currently-online SecuraIQ agent (a real
+    compensating control — active monitoring) must score lower than an
+    identical finding on an unmonitored asset."""
+    client, token, uid = _client_and_token(tmp_path, monkeypatch)
+    from app.agents import enroll_agent, checkin
+    from app.enterprise import create_asset, create_vulnerability
+
+    unmonitored_asset = create_asset(uid, "unmonitored-host", asset_type="server", criticality="high")
+
+    enrolled = enroll_agent(uid, name="monitored-host")
+    agent_id = enrolled["agent_id"]
+    ci = checkin(agent_id, {"hostname": "monitored-host", "os": "linux"})
+    monitored_asset_id = ci["asset_id"]
+    # give the monitored asset the same technical criticality so the only
+    # difference between the two findings is monitoring coverage
+    from app.enterprise import update_asset
+
+    update_asset(uid, monitored_asset_id, {"criticality": "high"})
+
+    v_unmonitored = create_vulnerability(
+        uid,
+        {"asset_id": unmonitored_asset["id"], "asset_name": "unmonitored-host", "title": "Vulnerable curl", "severity": "high", "cvss": 8.0, "status": "open"},
+    )
+    v_monitored = create_vulnerability(
+        uid,
+        {"asset_id": monitored_asset_id, "asset_name": "monitored-host", "title": "Vulnerable curl", "severity": "high", "cvss": 8.0, "status": "open"},
+    )
+
+    res = client.get("/api/risk/priority", headers=_auth(token))
+    items = {i["vuln_id"]: i for i in res.json()["items"]}
+    assert items[v_monitored["id"]]["score"] < items[v_unmonitored["id"]]["score"]
+    assert items[v_monitored["id"]]["factors"]["compensating_controls"] > 0
+    assert items[v_unmonitored["id"]]["factors"]["compensating_controls"] == 0
+    assert any("monitoring" in r.lower() for r in items[v_monitored["id"]]["reasons"])

@@ -445,6 +445,7 @@ def init_schema(conn: Any | None = None) -> None:
     c.commit()
     _migrate_users(c)
     _migrate_engagements(c)
+    _migrate_assets(c)
 
 
 def _migrate_users(c: Any) -> None:
@@ -491,6 +492,22 @@ def _migrate_engagements(c: Any) -> None:
     cols = table_columns(c, "engagements")
     if "scope_json" not in cols:
         c.execute("ALTER TABLE engagements ADD COLUMN scope_json TEXT NOT NULL DEFAULT '[]'")
+    c.commit()
+
+
+def _migrate_assets(c: Any) -> None:
+    """business_criticality is a distinct signal from the existing
+    `criticality` column: `criticality` describes how critical the piece of
+    infrastructure is (can it be rebuilt easily?), while business_criticality
+    describes how critical the business function/data it serves is (a
+    forgotten low-spec box holding the customer database is a real example
+    of these two diverging). Optional and blank by default — the risk engine
+    falls back to `criticality` when it's unset rather than fabricating a
+    number, so this is additive, not a behavior change for anyone who never
+    sets it."""
+    cols = table_columns(c, "assets")
+    if "business_criticality" not in cols:
+        c.execute("ALTER TABLE assets ADD COLUMN business_criticality TEXT NOT NULL DEFAULT ''")
     c.commit()
 
 

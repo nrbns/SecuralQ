@@ -48,6 +48,7 @@ def create_asset(
     notes: str = "",
     engagement_id: str | None = None,
     org_id: str | None = None,
+    business_criticality: str = "",
 ) -> dict[str, Any]:
     from app.tenancy import ensure_tenant_schema, primary_org_id
 
@@ -59,10 +60,10 @@ def create_asset(
     c.execute(
         """
         INSERT INTO assets
-        (id, user_id, engagement_id, org_id, name, asset_type, criticality, owner, notes, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (id, user_id, engagement_id, org_id, name, asset_type, criticality, owner, notes, business_criticality, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (aid, user_id, engagement_id, oid, name.strip(), asset_type, criticality, owner, notes, ts, ts),
+        (aid, user_id, engagement_id, oid, name.strip(), asset_type, criticality, owner, notes, business_criticality, ts, ts),
     )
     c.commit()
     audit("asset_create", user_id, {"id": aid, "name": name, "org_id": oid})
@@ -354,7 +355,7 @@ def update_asset(user_id: str, asset_id: str, patch: dict[str, Any]) -> dict[str
     row = get_asset(user_id, asset_id)
     if not row:
         return None
-    allowed = {"name", "asset_type", "criticality", "owner", "notes", "engagement_id"}
+    allowed = {"name", "asset_type", "criticality", "owner", "notes", "engagement_id", "business_criticality"}
     data = {k: v for k, v in patch.items() if k in allowed and v is not None}
     if not data:
         return row
