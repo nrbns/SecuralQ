@@ -720,3 +720,180 @@ def test_campaign_get_404_for_unknown_or_other_user(tmp_path, monkeypatch):
 
     res_cross_user = client.get(f"/api/agents/campaigns/{campaign_id}", headers=_auth(token_b))
     assert res_cross_user.status_code == 404
+
+
+# --- patch rings + maintenance windows ---------------------------------------
+
+
+def _run_command_to_done(client, token, agent_id, agent_token, command_id, *, status="done"):
+    """Approve a command, deliver it via check-in, and report its result —
+    the same sequence a real ring item goes through."""
+    approved = client.post(f"/api/agents/{agent_id}/commands/{command_id}/approve", headers=_auth(token))
+    assert approved.status_code == 200, approved.text
+    checkin = client.post(
+        "/api/agents/checkin",
+        json={"hostname": "ring-host", "os": "linux"},
+        headers={"Authorization": f"Bearer {agent_token}"},
+    )
+    delivered = checkin.json()["commands"]
+    assert any(c["id"] == command_id for c in delivered), f"command {command_id} not delivered: {delivered}"
+    result = client.post(
+        f"/api/agents/commands/{command_id}/result",
+        json={"status": status, "result": {"ok": status == "done"}},
+        headers={"Authorization": f"Bearer {agent_token}"},
+    )
+    assert result.status_code == 200, result.text
+
+
+def test_campaign_rings_created_only_one_at_a_time(tmp_path, monkeypatch):
+    """A ringed campaign only creates ring 0's commands up front — ring 1
+    doesn't exist as a command until ring 0 resolves."""
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    enroll1 = client.post("/api/agents/enroll", json={"name": "ring-a1"}, headers=_auth(token))
+    a1, a1_tok = enroll1.json()["agent_id"], enroll1.json()["agent_token"]
+    enroll2 = client.post("/api/agents/enroll", json={"name": "ring-a2"}, headers=_auth(token))
+    a2 = enroll2.json()["agent_id"]
+
+    created = client.post(
+        "/api/agents/campaigns",
+        json={"manager": "apt", "package": "nginx", "rings": [[a1], [a2]]},
+        headers=_auth(token),
+    )
+    assert created.status_code == 200, created.text
+    assert created.json()["rings"] == 2
+    assert created.json()["requested"] == 1  # only ring 0
+
+    ring1_cmds = client.get(f"/api/agents/{a2}/commands", headers=_auth(token)).json()["commands"]
+    assert ring1_cmds == []  # ring 1 not created yet
+
+
+def test_campaign_ring_advances_on_success(tmp_path, monkeypatch):
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    enroll1 = client.post("/api/agents/enroll", json={"name": "ring-b1"}, headers=_auth(token))
+    a1, a1_tok = enroll1.json()["agent_id"], enroll1.json()["agent_token"]
+    enroll2 = client.post("/api/agents/enroll", json={"name": "ring-b2"}, headers=_auth(token))
+    a2, a2_tok = enroll2.json()["agent_id"], enroll2.json()["agent_token"]
+
+    created = client.post(
+        "/api/agents/campaigns",
+        json={"manager": "apt", "package": "curl", "rings": [[a1], [a2]], "ring_threshold_pct": 100},
+        headers=_auth(token),
+    )
+    campaign_id = created.json()["id"]
+    ring0_cmd = client.get(f"/api/agents/{a1}/commands", headers=_auth(token)).json()["commands"][0]
+
+    _run_command_to_done(client, token, a1, a1_tok, ring0_cmd["id"], status="done")
+
+    # ring 1 should now exist, pending approval
+    ring1_cmds = client.get(f"/api/agents/{a2}/commands", headers=_auth(token)).json()["commands"]
+    assert len(ring1_cmds) == 1
+    assert ring1_cmds[0]["status"] == "pending_approval"
+    assert ring1_cmds[0]["campaign_id"] == campaign_id
+
+    _run_command_to_done(client, token, a2, a2_tok, ring1_cmds[0]["id"], status="done")
+
+    detail = client.get(f"/api/agents/campaigns/{campaign_id}", headers=_auth(token)).json()
+    assert detail["status"] == "completed"
+    assert len(detail["items"]) == 2
+
+
+def test_campaign_ring_halts_on_failure_below_threshold(tmp_path, monkeypatch):
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    enroll1 = client.post("/api/agents/enroll", json={"name": "ring-c1"}, headers=_auth(token))
+    a1, a1_tok = enroll1.json()["agent_id"], enroll1.json()["agent_token"]
+    enroll2 = client.post("/api/agents/enroll", json={"name": "ring-c2"}, headers=_auth(token))
+    a2 = enroll2.json()["agent_id"]
+
+    created = client.post(
+        "/api/agents/campaigns",
+        json={"manager": "apt", "package": "curl", "rings": [[a1], [a2]], "ring_threshold_pct": 100},
+        headers=_auth(token),
+    )
+    campaign_id = created.json()["id"]
+    ring0_cmd = client.get(f"/api/agents/{a1}/commands", headers=_auth(token)).json()["commands"][0]
+
+    _run_command_to_done(client, token, a1, a1_tok, ring0_cmd["id"], status="error")
+
+    detail = client.get(f"/api/agents/campaigns/{campaign_id}", headers=_auth(token)).json()
+    assert detail["status"] == "halted"
+    # ring 1 was never created
+    ring1_cmds = client.get(f"/api/agents/{a2}/commands", headers=_auth(token)).json()["commands"]
+    assert ring1_cmds == []
+
+
+def test_campaign_maintenance_window_holds_delivery(tmp_path, monkeypatch):
+    """A command that's approved and queued is still not handed to the agent
+    outside the campaign's maintenance window — it stays queued."""
+    import datetime as _dt
+
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    enroll = client.post("/api/agents/enroll", json={"name": "window-a1"}, headers=_auth(token))
+    agent_id, agent_token = enroll.json()["agent_id"], enroll.json()["agent_token"]
+
+    now_h = _dt.datetime.now(_dt.timezone.utc).hour
+    excluded_start = (now_h + 2) % 24
+    excluded_end = (now_h + 3) % 24
+
+    created = client.post(
+        "/api/agents/campaigns",
+        json={
+            "manager": "apt",
+            "package": "curl",
+            "agent_ids": [agent_id],
+            "window_start_hour": excluded_start,
+            "window_end_hour": excluded_end,
+        },
+        headers=_auth(token),
+    )
+    campaign_id = created.json()["id"]
+    cmd = client.get(f"/api/agents/{agent_id}/commands", headers=_auth(token)).json()["commands"][0]
+
+    approved = client.post(f"/api/agents/{agent_id}/commands/{cmd['id']}/approve", headers=_auth(token))
+    assert approved.status_code == 200
+    assert approved.json()["status"] == "queued"
+
+    checkin = client.post(
+        "/api/agents/checkin",
+        json={"hostname": "window-a1"},
+        headers={"Authorization": f"Bearer {agent_token}"},
+    )
+    assert checkin.json()["commands"] == []  # held — outside the window
+
+    # still queued, not lost
+    cmds = client.get(f"/api/agents/{agent_id}/commands", headers=_auth(token)).json()["commands"]
+    assert cmds[0]["status"] == "queued"
+    detail = client.get(f"/api/agents/campaigns/{campaign_id}", headers=_auth(token)).json()
+    assert detail["window_start_hour"] == excluded_start
+    assert detail["window_end_hour"] == excluded_end
+
+
+def test_campaign_maintenance_window_allows_delivery_when_inside(tmp_path, monkeypatch):
+    import datetime as _dt
+
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    enroll = client.post("/api/agents/enroll", json={"name": "window-b1"}, headers=_auth(token))
+    agent_id, agent_token = enroll.json()["agent_id"], enroll.json()["agent_token"]
+
+    now_h = _dt.datetime.now(_dt.timezone.utc).hour
+
+    created = client.post(
+        "/api/agents/campaigns",
+        json={
+            "manager": "apt",
+            "package": "curl",
+            "agent_ids": [agent_id],
+            "window_start_hour": now_h,
+            "window_end_hour": now_h,  # equal start/end == all day, always inside
+        },
+        headers=_auth(token),
+    )
+    cmd = client.get(f"/api/agents/{agent_id}/commands", headers=_auth(token)).json()["commands"][0]
+    client.post(f"/api/agents/{agent_id}/commands/{cmd['id']}/approve", headers=_auth(token))
+
+    checkin = client.post(
+        "/api/agents/checkin",
+        json={"hostname": "window-b1"},
+        headers={"Authorization": f"Bearer {agent_token}"},
+    )
+    assert len(checkin.json()["commands"]) == 1
+    _ = created

@@ -23,6 +23,7 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
+from datetime import datetime, timezone
 from typing import Any
 
 from app.db import audit, get_conn, new_id, now
@@ -324,16 +325,32 @@ def _dispatch_queued_commands(agent_id: str, *, limit: int = 5) -> list[dict[str
     no inbound listener — check-in is the only pull channel — so this is
     where server -> agent commands actually get delivered) and mark them
     'sent' so the same command isn't handed out again on the next check-in
-    while the agent is still working on it."""
+    while the agent is still working on it.
+
+    A command tied to a campaign with a maintenance window is approved and
+    queued the same as any other, but is held back here — not delivered —
+    until the current time falls inside that campaign's window. It stays
+    'queued' and is simply reconsidered on the agent's next check-in."""
     c = get_conn()
     rows = c.execute(
         "SELECT * FROM securaiq_agent_commands WHERE agent_id = ? AND status = 'queued' ORDER BY created_at ASC LIMIT ?",
-        (agent_id, max(1, limit)),
+        (agent_id, max(1, limit * 3)),
     ).fetchall()
+    campaign_cache: dict[str, dict[str, Any] | None] = {}
     out: list[dict[str, Any]] = []
     ts = now()
     for r in rows:
+        if len(out) >= limit:
+            break
         d = dict(r)
+        cid = d.get("campaign_id") or ""
+        if cid:
+            if cid not in campaign_cache:
+                crow = c.execute("SELECT * FROM securaiq_patch_campaigns WHERE id = ?", (cid,)).fetchone()
+                campaign_cache[cid] = dict(crow) if crow else None
+            campaign = campaign_cache[cid]
+            if campaign and not _in_maintenance_window(campaign):
+                continue  # held for the next check-in, still 'queued'
         c.execute(
             "UPDATE securaiq_agent_commands SET status = 'sent', sent_at = ? WHERE id = ?",
             (ts, d["id"]),
@@ -343,12 +360,12 @@ def _dispatch_queued_commands(agent_id: str, *, limit: int = 5) -> list[dict[str
         except Exception:
             payload = {}
         out.append({"id": d["id"], "kind": d["kind"], "payload": payload})
-    if rows:
+    if out:
         c.commit()
         try:
             from app.realtime_bus import publish
 
-            publish(type="agent_command", agent_id=agent_id, status="sent", count=len(rows))
+            publish(type="agent_command", agent_id=agent_id, status="sent", count=len(out))
         except Exception:
             pass
     return out
@@ -715,32 +732,52 @@ def create_campaign(
     manager: str,
     package: str,
     target_version: str = "",
-    agent_ids: list[str],
+    agent_ids: list[str] | None = None,
+    rings: list[list[str]] | None = None,
+    window_start_hour: int = -1,
+    window_end_hour: int = -1,
+    window_days: list[int] | None = None,
+    ring_threshold_pct: float = 100,
     requested_by: str = "",
 ) -> dict[str, Any]:
     """Create a campaign and request one patch_package command per targeted
-    agent (each lands in 'pending_approval', same as a single ad-hoc patch
-    request). Raises ValueError if no valid, owned, non-revoked agents were
-    given — a campaign with zero real targets is refused rather than
+    agent in the FIRST ring only (each lands in 'pending_approval', same as
+    a single ad-hoc patch request). Later rings are not created yet — they
+    are held in rings_json and only materialized once the prior ring clears
+    ring_threshold_pct (see _maybe_advance_campaign_ring, called from
+    report_command_result). A flat `agent_ids` list (no rings) behaves as a
+    single-ring campaign — identical to the pre-rings behavior. Raises
+    ValueError if no valid, owned, non-revoked agents were given in the
+    first ring — a campaign with zero real targets is refused rather than
     silently created empty."""
     ensure_schema()
-    if not agent_ids:
+    ring_list: list[list[str]] = [list(r) for r in rings] if rings else ([list(agent_ids)] if agent_ids else [])
+    if not ring_list or not ring_list[0]:
         raise ValueError("At least one target agent is required")
+    if window_start_hour != -1 and not (0 <= window_start_hour <= 23):
+        raise ValueError("window_start_hour must be 0-23 (or -1 for no window)")
+    if window_end_hour != -1 and not (0 <= window_end_hour <= 23):
+        raise ValueError("window_end_hour must be 0-23 (or -1 for no window)")
     cid = new_id()
     ts = now()
     c = get_conn()
     c.execute(
         """
         INSERT INTO securaiq_patch_campaigns
-        (id, user_id, name, manager, package, target_version, requested_by, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        (id, user_id, name, manager, package, target_version, requested_by,
+         rings_json, window_start_hour, window_end_hour, window_days_json, ring_threshold_pct, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (cid, user_id, name or f"{manager} upgrade {package}", manager, package, target_version, requested_by or user_id, ts),
+        (
+            cid, user_id, name or f"{manager} upgrade {package}", manager, package, target_version, requested_by or user_id,
+            json.dumps(ring_list), window_start_hour, window_end_hour, json.dumps(window_days or []),
+            max(0.0, min(100.0, ring_threshold_pct)), ts,
+        ),
     )
     c.commit()
     items: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
-    for agent_id in agent_ids:
+    for agent_id in ring_list[0]:
         try:
             result = request_command(
                 user_id,
@@ -749,6 +786,7 @@ def create_campaign(
                 payload={"manager": manager, "package": package, "target_version": target_version},
                 requested_by=requested_by or user_id,
                 campaign_id=cid,
+                ring_index=0,
             )
             items.append({"agent_id": agent_id, **result})
         except ValueError as exc:
@@ -762,9 +800,112 @@ def create_campaign(
     audit(
         "patch_campaign_create",
         user_id,
-        {"campaign_id": cid, "name": name, "manager": manager, "package": package, "targets": len(agent_ids), "created": len(items)},
+        {
+            "campaign_id": cid, "name": name, "manager": manager, "package": package,
+            "rings": len(ring_list), "ring0_targets": len(ring_list[0]), "created": len(items),
+        },
     )
-    return {"id": cid, "status": "active", "requested": len(items), "failed_targets": errors}
+    return {"id": cid, "status": "active", "requested": len(items), "failed_targets": errors, "rings": len(ring_list)}
+
+
+def _in_maintenance_window(campaign: dict[str, Any]) -> bool:
+    """No window configured (window_start_hour == -1) means always eligible
+    — maintenance windows are opt-in, not a default restriction. Hours are
+    UTC; window_days uses Python's Monday=0..Sunday=6, empty = every day.
+    A window that wraps midnight (start > end) is supported."""
+    start_h = campaign.get("window_start_hour", -1)
+    end_h = campaign.get("window_end_hour", -1)
+    if start_h == -1 or end_h == -1:
+        return True
+    try:
+        days = json.loads(campaign.get("window_days_json") or "[]")
+    except Exception:
+        days = []
+    nowdt = datetime.now(timezone.utc)
+    if days and nowdt.weekday() not in days:
+        return False
+    h = nowdt.hour
+    if start_h == end_h:
+        return True  # equal start/end reads as "all day", not a zero-width window
+    if start_h < end_h:
+        return start_h <= h < end_h
+    return h >= start_h or h < end_h  # wraps past midnight
+
+
+def _maybe_advance_campaign_ring(campaign_id: str, user_id: str) -> None:
+    """Called after a command's result is reported. If that command was the
+    last unresolved item in its ring, decide whether to auto-stop the
+    campaign (ring failed below threshold) or materialize the next ring's
+    commands (ring passed). No-op for campaigns with no further rings, or
+    if the ring still has unresolved (pending/queued/sent) items."""
+    c = get_conn()
+    campaign = c.execute(
+        "SELECT * FROM securaiq_patch_campaigns WHERE id = ?", (campaign_id,)
+    ).fetchone()
+    if not campaign:
+        return
+    campaign = dict(campaign)
+    if campaign.get("status") not in ("active",):
+        return
+    try:
+        ring_list = json.loads(campaign.get("rings_json") or "[]")
+    except Exception:
+        ring_list = []
+    ring_rows = c.execute(
+        "SELECT ring_index, status FROM securaiq_agent_commands WHERE campaign_id = ?", (campaign_id,)
+    ).fetchall()
+    if not ring_rows:
+        return
+    max_created_ring = max(r["ring_index"] for r in ring_rows)
+    current_ring_rows = [r for r in ring_rows if r["ring_index"] == max_created_ring]
+    unresolved = {"pending_approval", "queued", "sent"}
+    if any(r["status"] in unresolved for r in current_ring_rows):
+        return  # current ring still in flight
+    total = len(current_ring_rows)
+    done = sum(1 for r in current_ring_rows if r["status"] == "done")
+    success_pct = (done / total * 100) if total else 0
+    threshold = campaign.get("ring_threshold_pct", 100)
+    next_ring_index = max_created_ring + 1
+    if success_pct < threshold:
+        c.execute(
+            "UPDATE securaiq_patch_campaigns SET status = 'halted' WHERE id = ?", (campaign_id,)
+        )
+        c.commit()
+        audit(
+            "patch_campaign_ring_halted", user_id,
+            {"campaign_id": campaign_id, "ring": max_created_ring, "success_pct": success_pct, "threshold": threshold},
+        )
+        return
+    if next_ring_index >= len(ring_list):
+        c.execute(
+            "UPDATE securaiq_patch_campaigns SET status = 'completed' WHERE id = ?", (campaign_id,)
+        )
+        c.commit()
+        audit("patch_campaign_completed", user_id, {"campaign_id": campaign_id, "rings": len(ring_list)})
+        return
+    # ring passed and there's a next ring — materialize it (pending_approval,
+    # same as ring 0; a human still approves each ring's dispatch).
+    next_targets = ring_list[next_ring_index] or []
+    manager, package, target_version = campaign.get("manager", ""), campaign.get("package", ""), campaign.get("target_version", "")
+    created = 0
+    for agent_id in next_targets:
+        try:
+            request_command(
+                campaign.get("user_id") or user_id,
+                agent_id,
+                kind="patch_package",
+                payload={"manager": manager, "package": package, "target_version": target_version},
+                requested_by=campaign.get("requested_by") or user_id,
+                campaign_id=campaign_id,
+                ring_index=next_ring_index,
+            )
+            created += 1
+        except ValueError:
+            continue
+    audit(
+        "patch_campaign_ring_advanced", user_id,
+        {"campaign_id": campaign_id, "ring": next_ring_index, "targets": len(next_targets), "created": created},
+    )
 
 
 def _campaign_summary(user_id: str, campaign_id: str) -> dict[str, Any]:
@@ -947,6 +1088,12 @@ def report_command_result(agent_id: str, command_id: str, *, status: str, result
                     "command_id": command_id,
                 },
             )
+        except Exception:
+            pass
+    campaign_id = dict(row).get("campaign_id") or ""
+    if campaign_id:
+        try:
+            _maybe_advance_campaign_ring(campaign_id, (agent or {}).get("user_id") or "local")
         except Exception:
             pass
     return {"ok": True, "status": status}

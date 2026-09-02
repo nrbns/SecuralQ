@@ -96,7 +96,21 @@ class CampaignCreate(BaseModel):
     manager: str
     package: str
     target_version: str = ""
+    # Flat list = single-ring campaign (all targets in ring 0). For a phased
+    # rollout (lab -> staging -> production), pass `rings` instead: an
+    # ordered list of agent-id lists. Ring 0 is requested immediately; each
+    # later ring is only created once the prior ring's success rate clears
+    # ring_threshold_pct (see app.agents._maybe_advance_campaign_ring).
     agent_ids: list[str] = Field(default_factory=list)
+    rings: list[list[str]] | None = None
+    ring_threshold_pct: float = 100
+    # Maintenance window: an approved+queued command still won't be handed
+    # to its agent outside this window. Hours are UTC, 0-23; -1 means "no
+    # window" (always eligible). window_days uses Python weekday() (Mon=0..
+    # Sun=6); empty means every day.
+    window_start_hour: int = -1
+    window_end_hour: int = -1
+    window_days: list[int] = Field(default_factory=list)
 
 
 class CheckinPayload(BaseModel):
@@ -214,6 +228,11 @@ async def api_create_campaign(req: CampaignCreate, user: Annotated[AuthUser, Dep
             package=req.package,
             target_version=req.target_version,
             agent_ids=req.agent_ids,
+            rings=req.rings,
+            ring_threshold_pct=req.ring_threshold_pct,
+            window_start_hour=req.window_start_hour,
+            window_end_hour=req.window_end_hour,
+            window_days=req.window_days,
             requested_by=user.id,
         )
     except ValueError as exc:

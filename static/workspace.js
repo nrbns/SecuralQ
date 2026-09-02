@@ -4190,8 +4190,11 @@
                       const done = s.done || 0;
                       const errored = s.error || 0;
                       const pending = s.pending_approval || 0;
+                      let rings = [];
+                      try { rings = JSON.parse(c.rings_json || "[]"); } catch (e) { rings = []; }
+                      const hasWindow = c.window_start_hour !== -1 && c.window_end_hour !== -1;
                       return `<tr>
-                        <td>${escapeHtml(c.name || "")}</td>
+                        <td>${escapeHtml(c.name || "")}${rings.length > 1 ? `<div class="hint">${rings.length} rings</div>` : ""}${hasWindow ? `<div class="hint">window ${c.window_start_hour}:00–${c.window_end_hour}:00 UTC</div>` : ""}</td>
                         <td><code>${escapeHtml(c.manager)} upgrade ${escapeHtml(c.package)}</code>${c.target_version ? ` <span class="hint">→ ${escapeHtml(c.target_version)}</span>` : ""}</td>
                         <td class="hint">${done}/${total} done${errored ? ` · ${errored} failed` : ""}${pending ? ` · ${pending} awaiting approval` : ""}</td>
                         <td>${escapeHtml(c.status)}</td>
@@ -4856,20 +4859,29 @@
             <input id="campaignTargetVersion" placeholder="Target version (optional)" style="min-width:160px" />
             <button type="submit" class="btn-primary-cc">Create campaign</button>
           </form>
-          <p class="hint" style="margin:8px 0 4px">Target agents:</p>
+          <p class="hint" style="margin:8px 0 4px">Target agents (optional ring # for a phased rollout — 0 goes first, higher rings only dispatch once the prior ring succeeds):</p>
           <div style="max-height:160px;overflow:auto;display:flex;flex-direction:column;gap:4px">
             ${agents
               .map(
                 (a) =>
-                  `<label class="hint" style="display:flex;align-items:center;gap:6px"><input type="checkbox" class="campaign-target" value="${escapeHtml(a.id)}" /> ${escapeHtml(a.hostname || a.name || a.id.slice(0, 8))}</label>`
+                  `<label class="hint" style="display:flex;align-items:center;gap:6px"><input type="checkbox" class="campaign-target" value="${escapeHtml(a.id)}" /> ${escapeHtml(a.hostname || a.name || a.id.slice(0, 8))} <span style="margin-left:auto">ring <input type="number" class="campaign-target-ring" data-agent-id="${escapeHtml(a.id)}" min="0" value="0" style="width:48px" /></span></label>`
               )
               .join("")}
           </div>
+          <details class="hk-setup-advanced" style="margin-top:8px">
+            <summary class="hint">Advanced: ring threshold + maintenance window</summary>
+            <div class="inline-form" style="flex-wrap:wrap;margin-top:6px">
+              <label class="hint">Ring success threshold % <input id="campaignRingThreshold" type="number" min="0" max="100" value="100" style="width:64px" /></label>
+              <label class="hint">Window start hour (UTC) <input id="campaignWindowStart" type="number" min="0" max="23" placeholder="none" style="width:64px" /></label>
+              <label class="hint">Window end hour (UTC) <input id="campaignWindowEnd" type="number" min="0" max="23" placeholder="none" style="width:64px" /></label>
+            </div>
+            <p class="hint" style="margin:4px 0 0">Leave window fields blank for no restriction. A command still won't be delivered to its agent outside the window, even once approved.</p>
+          </details>
         </div>`;
       qs("campaignForm")?.addEventListener("submit", async (ev) => {
         ev.preventDefault();
-        const targets = Array.from(formEl.querySelectorAll(".campaign-target:checked")).map((el) => el.value);
-        if (!targets.length) {
+        const checked = Array.from(formEl.querySelectorAll(".campaign-target:checked"));
+        if (!checked.length) {
           if (typeof notifyUser === "function") notifyUser("Select at least one target agent for the campaign.");
           return;
         }
@@ -4878,18 +4890,53 @@
         const targetVersion = (qs("campaignTargetVersion")?.value || "").trim();
         const name = (qs("campaignName")?.value || "").trim();
         if (!pkg) return;
+
+        // group targets by ring number into an ordered rings array
+        const byRing = {};
+        checked.forEach((cb) => {
+          const ringInput = formEl.querySelector(`.campaign-target-ring[data-agent-id="${cb.value}"]`);
+          const ring = Math.max(0, parseInt((ringInput && ringInput.value) || "0", 10) || 0);
+          (byRing[ring] = byRing[ring] || []).push(cb.value);
+        });
+        const ringNumbers = Object.keys(byRing).map(Number).sort((a, b) => a - b);
+        const rings = ringNumbers.map((r) => byRing[r]);
+        const usesRings = ringNumbers.length > 1 || ringNumbers[0] !== 0;
+        const totalTargets = checked.length;
+
+        const thresholdVal = parseFloat(qs("campaignRingThreshold")?.value || "100");
+        const startVal = (qs("campaignWindowStart")?.value || "").trim();
+        const endVal = (qs("campaignWindowEnd")?.value || "").trim();
+        const windowStartHour = startVal === "" ? -1 : parseInt(startVal, 10);
+        const windowEndHour = endVal === "" ? -1 : parseInt(endVal, 10);
+
         if (
           !confirm(
-            `Create a patch campaign requesting a real ${manager} upgrade of "${pkg}" across ${targets.length} agent(s)?\n\nEach target lands as a pending approval — nothing runs until approved.`
+            `Create a patch campaign requesting a real ${manager} upgrade of "${pkg}" across ${totalTargets} agent(s)` +
+              (rings.length > 1 ? ` in ${rings.length} rings` : "") +
+              `?\n\nEach target lands as a pending approval — nothing runs until approved.`
           )
         ) {
           return;
         }
         try {
+          const payload = {
+            name,
+            manager,
+            package: pkg,
+            target_version: targetVersion,
+            ring_threshold_pct: Number.isFinite(thresholdVal) ? thresholdVal : 100,
+            window_start_hour: Number.isFinite(windowStartHour) ? windowStartHour : -1,
+            window_end_hour: Number.isFinite(windowEndHour) ? windowEndHour : -1,
+          };
+          if (usesRings) {
+            payload.rings = rings;
+          } else {
+            payload.agent_ids = rings[0] || [];
+          }
           const res = await fetch("/api/agents/campaigns", {
             method: "POST",
             headers: authHeaders({ "Content-Type": "application/json" }),
-            body: JSON.stringify({ name, manager, package: pkg, target_version: targetVersion, agent_ids: targets }),
+            body: JSON.stringify(payload),
           });
           const body = await res.json().catch(() => ({}));
           if (!res.ok) throw new Error(body.detail || `HTTP ${res.status}`);
