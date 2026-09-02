@@ -4119,6 +4119,54 @@
     }
   }
 
+  async function renderRiskSimulatorPanel() {
+    const el = qs("riskSimulatorBody");
+    if (!el) return;
+    try {
+      const [simRes, orgRes] = await Promise.all([
+        fetch("/api/risk/simulate?limit=8", { headers: authHeaders() }),
+        fetch("/api/risk/organizational-score", { headers: authHeaders() }).catch(() => null),
+      ]);
+      const data = await simRes.json().catch(() => ({}));
+      if (!simRes.ok) throw new Error(data.detail || `HTTP ${simRes.status}`);
+      const orgData = orgRes && orgRes.ok ? await orgRes.json().catch(() => ({})) : {};
+      const groups = data.groups || [];
+      const bandCls = (band) =>
+        band === "critical" || band === "high" ? "status-error" : band === "medium" ? "status-planned" : "status-done";
+      if (!groups.length) {
+        el.innerHTML = `<p class="hint">No open findings to simulate against${data.total_open ? "" : " — nothing open right now"}.</p>`;
+        return;
+      }
+      const headline = data.top3_combined_reduction_pct > 0
+        ? `<div class="risk-sim-headline" style="margin:0 0 10px;padding:10px 14px;border-radius:8px;background:var(--cc-surface-2,rgba(255,255,255,0.04))">
+            <strong style="font-size:1.1em">Fixing the top ${Math.min(3, data.top3_group_titles.length)} could reduce organizational exposure by ${escapeHtml(String(data.top3_combined_reduction_pct))}%.</strong>
+            <div class="hint" style="margin-top:4px">${(data.top3_group_titles || []).map((t) => escapeHtml(t)).join(" · ")}</div>
+          </div>`
+        : "";
+      el.innerHTML = `
+        <p class="hint" style="margin:0 0 8px">
+          Baseline organizational risk: <span class="auto-job-status ${bandCls(orgData.band || data.baseline_band)}">${escapeHtml(String(orgData.score ?? data.baseline_score))}</span>
+          across ${escapeHtml(String(data.total_open))} open finding(s)${orgData.kev_count ? ` · ${orgData.kev_count} actively exploited (KEV)` : ""}.
+        </p>
+        ${headline}
+        <div class="data-table-wrap"><table class="data-table">
+          <thead><tr><th>If fixed</th><th>Assets</th><th>Exposed</th><th>Vulns removed</th><th>Est. risk reduction</th></tr></thead>
+          <tbody>${groups
+            .map(
+              (g) => `<tr>
+                <td><strong>${escapeHtml(g.title || g.cve || "Untitled finding")}</strong>${g.cve ? ` <span class="hint">${escapeHtml(g.cve)}</span>` : ""}${g.kev ? ` <span class="auto-job-status status-error">KEV</span>` : ""}${g.quick_win ? ` <span class="auto-job-status status-done">quick win</span>` : ""}</td>
+                <td class="hint">${Number(g.assets_affected)}</td>
+                <td class="hint">${Number(g.internet_exposed_assets)}</td>
+                <td class="hint">${Number(g.vulns_removed)}</td>
+                <td><span class="auto-job-status ${g.estimated_risk_reduction_pct > 0 ? "status-done" : "status-planned"}">${escapeHtml(String(g.estimated_risk_reduction_pct))}%</span></td>
+              </tr>`
+            )
+            .join("")}</tbody></table></div>`;
+    } catch (err) {
+      el.innerHTML = `<p class="hint">Couldn't load the risk simulator right now. <span class="hint-sub">(${escapeHtml(err.message || String(err))})</span></p>`;
+    }
+  }
+
   async function renderAgentsPanel() {
     const el = qs("agentsPanelBody");
     if (!el) return;
@@ -4258,10 +4306,16 @@
                           ? "status-planned"
                           : "status-planned";
                       const statusLabel = (c.status || "").replace(/_/g, " ");
+                      const hasDelta = c.risk_before != null && c.risk_after != null;
+                      const riskLine = hasDelta
+                        ? `<div class="hint">Risk ${escapeHtml(String(c.risk_before))} → ${escapeHtml(String(c.risk_after))}${c.risk_reduction_pct != null ? ` <span class="auto-job-status ${c.risk_reduction_pct > 0 ? "status-done" : "status-planned"}">${c.risk_reduction_pct > 0 ? "−" : ""}${escapeHtml(String(Math.abs(c.risk_reduction_pct)))}%</span>` : ""}</div>`
+                        : c.risk_before != null
+                        ? `<div class="hint">Baseline risk ${escapeHtml(String(c.risk_before))} · recalculating after verification…</div>`
+                        : "";
                       return `<tr>
                         <td>${escapeHtml(c.name || "")}${rings.length > 1 ? `<div class="hint">${rings.length} rings</div>` : ""}${hasWindow ? `<div class="hint">window ${c.window_start_hour}:00–${c.window_end_hour}:00 UTC${localWindow ? ` (${escapeHtml(localWindow)} your time)` : ""}</div>` : ""}</td>
                         <td><code>${escapeHtml(c.manager)} upgrade ${escapeHtml(c.package)}</code>${c.target_version ? ` <span class="hint">→ ${escapeHtml(c.target_version)}</span>` : ""}</td>
-                        <td class="hint">${done}/${total} executed${errored ? ` · ${errored} failed` : ""}${pending ? ` · ${pending} awaiting approval` : ""}${waiting ? ` · ${waiting} waiting for agent` : ""}${done ? `<div>${verified} verified${verifFailed ? ` · ${verifFailed} not confirmed fixed` : ""}${verifPending ? ` · ${verifPending} verifying…` : ""}</div>` : ""}</td>
+                        <td class="hint">${done}/${total} executed${errored ? ` · ${errored} failed` : ""}${pending ? ` · ${pending} awaiting approval` : ""}${waiting ? ` · ${waiting} waiting for agent` : ""}${done ? `<div>${verified} verified${verifFailed ? ` · ${verifFailed} not confirmed fixed` : ""}${verifPending ? ` · ${verifPending} verifying…` : ""}</div>` : ""}${riskLine}</td>
                         <td><span class="auto-job-status ${statusCls}">${escapeHtml(statusLabel)}</span></td>
                         <td class="reports-dl-cell">
                           ${pending ? `<button type="button" class="btn-primary-cc agents-approve-campaign" data-id="${escapeHtml(c.id)}">Approve all</button><button type="button" class="btn-secondary agents-reject-campaign" data-id="${escapeHtml(c.id)}">Reject</button>` : ""}
@@ -4807,6 +4861,10 @@
         <header><h2>What to fix first</h2></header>
         <div id="riskPriorityBody"><p class="hint">Loading…</p></div>
       </section>
+      <section class="cc-panel" id="riskSimulatorPanel" style="margin-top:1rem">
+        <header><h2>Risk Reduction Simulator</h2></header>
+        <div id="riskSimulatorBody"><p class="hint">Loading…</p></div>
+      </section>
       <div class="ws-grid-2" style="margin-top:1rem">
         <section class="cc-panel">
           <header><h2>Alerts</h2></header>
@@ -4860,6 +4918,7 @@
       </section>`;
     body.dataset.socRendered = "1";
     renderRiskPriorityPanel();
+    renderRiskSimulatorPanel();
     renderAgentsPanel();
     renderXdrPanel();
     renderWazuhPanel();

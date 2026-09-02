@@ -1209,3 +1209,202 @@ def test_campaign_summary_reports_verification_breakdown(tmp_path, monkeypatch):
     detail2 = client.get(f"/api/agents/campaigns/{campaign_id}", headers=_auth(token)).json()
     assert detail2["summary"]["verified"] == 1
     assert detail2["summary"]["verification_pending"] == 0
+
+
+# --- risk snapshots + campaign risk delta (feedback loop) --------------------
+
+
+def _seed_advisory(user_id, product_id, *, cve_id, fixed_version):
+    """Directly seed a software_advisories row — the exact-CVE link that
+    _resolve_vulnerabilities_for_verified_patch reads to auto-close findings."""
+    from app.db import get_conn, new_id, now
+
+    c = get_conn()
+    ts = now()
+    c.execute(
+        "INSERT INTO software_advisories "
+        "(id, user_id, software_product_id, cve_id, fixed_version, severity, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (new_id(), user_id, product_id, cve_id, fixed_version, "high", ts),
+    )
+    c.commit()
+
+
+def _seed_installation_with_product_id(user_id, asset_id, *, product_name, installed_version, patch_status):
+    """Like _seed_installation but also returns the product_id, needed to
+    link a software_advisories row to the same product."""
+    from app.db import get_conn, new_id, now
+    from app.software.models import ensure_schema as ensure_software_schema
+
+    ensure_software_schema()
+    c = get_conn()
+    ts = now()
+    product_id = new_id()
+    c.execute(
+        "INSERT INTO software_products (id, user_id, name, normalized_name, canonical_id, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (product_id, user_id, product_name, product_name.lower(), product_name.lower(), ts, ts),
+    )
+    installation_id = new_id()
+    c.execute(
+        "INSERT INTO software_installations "
+        "(id, user_id, asset_id, asset_name, software_product_id, version, first_seen, last_seen, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (installation_id, user_id, asset_id, "seeded-host", product_id, installed_version, ts, ts, ts),
+    )
+    patch_status_id = new_id()
+    c.execute(
+        "INSERT INTO patch_status (id, user_id, asset_id, software_installation_id, current_version, status, checked_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (patch_status_id, user_id, asset_id, installation_id, installed_version, patch_status, ts),
+    )
+    c.commit()
+    return installation_id, product_id
+
+
+def test_campaign_create_snapshots_before_risk(tmp_path, monkeypatch):
+    """Creating a campaign should take a 'before' risk snapshot immediately —
+    the baseline half of the before/after remediation feedback loop."""
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    enroll = client.post("/api/agents/enroll", json={"name": "snap-before-1"}, headers=_auth(token))
+    agent_id = enroll.json()["agent_id"]
+
+    from app.agents import get_agent
+    from app.enterprise import create_asset, create_vulnerability
+
+    agent = get_agent(agent_id)
+    uid = agent["user_id"]
+    asset = create_asset(uid, "snap-asset-1", asset_type="server", criticality="high")
+    create_vulnerability(
+        uid,
+        {"asset_id": asset["id"], "asset_name": "snap-asset-1", "title": "Pre-existing risk", "severity": "high", "cvss": 7.0, "status": "open"},
+    )
+
+    created = client.post(
+        "/api/agents/campaigns",
+        json={"manager": "apt", "package": "curl", "agent_ids": [agent_id]},
+        headers=_auth(token),
+    )
+    campaign_id = created.json()["id"]
+
+    detail = client.get(f"/api/agents/campaigns/{campaign_id}", headers=_auth(token)).json()
+    assert detail.get("risk_before") is not None
+    assert detail["risk_before"] > 0
+    # campaign is still active — no 'after' snapshot should exist yet
+    assert detail.get("risk_after") is None
+    assert detail.get("risk_reduction_pct") is None
+
+    listing = client.get("/api/agents/campaigns", headers=_auth(token)).json()["campaigns"]
+    row = next(c for c in listing if c["id"] == campaign_id)
+    assert row.get("risk_before") == detail["risk_before"]
+
+
+def test_campaign_after_snapshot_waits_for_verification_to_settle(tmp_path, monkeypatch):
+    """A campaign reaching 'completed' with an unresolved (pending) patch
+    verification must NOT get an 'after' snapshot yet — only once every
+    'done' command's verification has settled does the risk delta appear."""
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    enroll = client.post("/api/agents/enroll", json={"name": "snap-after-1"}, headers=_auth(token))
+    agent_id, agent_token = enroll.json()["agent_id"], enroll.json()["agent_token"]
+
+    from app.agents import get_agent
+    from app.enterprise import create_asset, create_vulnerability
+
+    agent = get_agent(agent_id)
+    uid = agent["user_id"]
+    asset = create_asset(uid, "snap-asset-2", asset_type="server", criticality="high")
+    create_vulnerability(
+        uid,
+        {"asset_id": asset["id"], "asset_name": "snap-asset-2", "title": "Pre-existing risk 2", "severity": "high", "cvss": 7.0, "status": "open"},
+    )
+
+    created = client.post(
+        "/api/agents/campaigns",
+        json={"manager": "apt", "package": "curl", "agent_ids": [agent_id]},
+        headers=_auth(token),
+    )
+    campaign_id = created.json()["id"]
+    cmd = client.get(f"/api/agents/{agent_id}/commands", headers=_auth(token)).json()["commands"][0]
+
+    _run_command_to_done(client, token, agent_id, agent_token, cmd["id"], status="done")
+
+    # campaign is now 'completed' (single ring, single item, done) but
+    # verification is still 'pending' — after-snapshot must be withheld
+    detail = client.get(f"/api/agents/campaigns/{campaign_id}", headers=_auth(token)).json()
+    assert detail["status"] == "completed"
+    assert detail.get("risk_after") is None
+    assert detail.get("risk_reduction_pct") is None
+
+    real_asset_id = client.get(f"/api/agents/{agent_id}", headers=_auth(token)).json()["asset_id"]
+    _seed_installation_with_product_id(uid, real_asset_id, product_name="curl", installed_version="9.9.9", patch_status="up_to_date")
+
+    from app.jobs import _verify_patch_command
+
+    _verify_patch_command(cmd["id"])
+
+    detail2 = client.get(f"/api/agents/campaigns/{campaign_id}", headers=_auth(token)).json()
+    assert detail2.get("risk_after") is not None
+    assert detail2.get("risk_reduction_pct") is not None
+
+
+def test_verified_patch_auto_resolves_matching_cve_vulnerability(tmp_path, monkeypatch):
+    """The exact-CVE auto-resolve loop: a verified patch that satisfies an
+    advisory's fixed_version must close any open vulnerability sharing that
+    exact CVE on the same asset."""
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    command_id, asset_id, agent_id = _prepare_done_command_with_asset(client, token, "autoresolve-pos-1")
+
+    from app.agents import get_agent
+    from app.enterprise import create_vulnerability, list_vulnerabilities
+
+    agent = get_agent(agent_id)
+    uid = agent["user_id"]
+
+    _installation_id, product_id = _seed_installation_with_product_id(
+        uid, asset_id, product_name="curl", installed_version="9.9.9", patch_status="up_to_date"
+    )
+    _seed_advisory(uid, product_id, cve_id="CVE-2024-5555", fixed_version="9.0.0")
+
+    open_vuln = create_vulnerability(
+        uid,
+        {"asset_id": asset_id, "asset_name": "seeded-host", "title": "Old curl CVE", "cve": "CVE-2024-5555", "severity": "high", "status": "open"},
+    )
+
+    from app.jobs import _verify_patch_command
+
+    _verify_patch_command(command_id)
+
+    remaining_open = [v["id"] for v in list_vulnerabilities(uid, status="open")]
+    assert open_vuln["id"] not in remaining_open
+
+    resolved = [v for v in list_vulnerabilities(uid, status="resolved") if v["id"] == open_vuln["id"]]
+    assert len(resolved) == 1
+
+
+def test_verified_patch_does_not_resolve_vulnerability_without_cve_match(tmp_path, monkeypatch):
+    """Negative case for the auto-resolve loop: no exact-CVE advisory link
+    means the finding must stay open — never fuzzy-matched by title."""
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    command_id, asset_id, agent_id = _prepare_done_command_with_asset(client, token, "autoresolve-neg-1")
+
+    from app.agents import get_agent
+    from app.enterprise import create_vulnerability, list_vulnerabilities
+
+    agent = get_agent(agent_id)
+    uid = agent["user_id"]
+
+    # installation verified up to date, but no software_advisories row at
+    # all — there is no CVE-level linkage for _resolve_vulnerabilities_for_verified_patch to use
+    _seed_installation_with_product_id(uid, asset_id, product_name="curl", installed_version="9.9.9", patch_status="up_to_date")
+
+    open_vuln = create_vulnerability(
+        uid,
+        {"asset_id": asset_id, "asset_name": "seeded-host", "title": "Unrelated curl CVE", "cve": "CVE-2099-0001", "severity": "high", "status": "open"},
+    )
+
+    from app.jobs import _verify_patch_command
+
+    _verify_patch_command(command_id)
+
+    remaining_open = [v["id"] for v in list_vulnerabilities(uid, status="open")]
+    assert open_vuln["id"] in remaining_open

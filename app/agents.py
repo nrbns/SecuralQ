@@ -815,6 +815,12 @@ def create_campaign(
             "rings": len(ring_list), "ring0_targets": len(ring_list[0]), "created": len(items),
         },
     )
+    try:
+        from app.services.risk_snapshots import snapshot_risk
+
+        snapshot_risk(user_id, campaign_id=cid, label="before")
+    except Exception:
+        pass  # a scoring hiccup must never block campaign creation
     return {"id": cid, "status": "active", "requested": len(items), "failed_targets": errors, "rings": len(ring_list)}
 
 
@@ -840,6 +846,55 @@ def _in_maintenance_window(campaign: dict[str, Any]) -> bool:
     if start_h < end_h:
         return start_h <= h < end_h
     return h >= start_h or h < end_h  # wraps past midnight
+
+
+_CAMPAIGN_TERMINAL_STATUSES = {"halted", "completed", "completed_with_failures"}
+
+
+def _maybe_snapshot_campaign_after(campaign_id: str, user_id: str) -> None:
+    """Capture the campaign's 'after' risk snapshot — but only once the
+    picture is actually settled: the campaign must be in a terminal
+    execution state, every 'done' command's verification must have
+    resolved (verified/verification_failed/unknown — anything but still
+    '' or 'pending'), and no 'after' snapshot must exist yet. Recalculating
+    while verification is still in flight would understate the real
+    reduction (or overstate it, if resolved vulnerabilities haven't been
+    marked yet) — this is what keeps 'Risk 82 -> 61' an honest number tied
+    to confirmed outcomes rather than raw execution counts. Called both
+    right after a campaign reaches a terminal state (covers the all-error
+    case, where there's nothing to wait on) and again whenever a
+    verification result lands (covers the common case where verification
+    settles after the campaign already finished)."""
+    try:
+        from app.services.risk_snapshots import ensure_schema as ensure_risk_snapshot_schema
+
+        ensure_risk_snapshot_schema()
+    except Exception:
+        return
+    c = get_conn()
+    campaign = c.execute(
+        "SELECT status FROM securaiq_patch_campaigns WHERE id = ?", (campaign_id,)
+    ).fetchone()
+    if not campaign or campaign["status"] not in _CAMPAIGN_TERMINAL_STATUSES:
+        return
+    already = c.execute(
+        "SELECT 1 FROM securaiq_risk_snapshots WHERE campaign_id = ? AND label = 'after' LIMIT 1", (campaign_id,)
+    ).fetchone()
+    if already:
+        return
+    unresolved = c.execute(
+        "SELECT 1 FROM securaiq_agent_commands WHERE campaign_id = ? AND status = 'done' "
+        "AND verification_status IN ('', 'pending') LIMIT 1",
+        (campaign_id,),
+    ).fetchone()
+    if unresolved:
+        return  # still waiting on verification for at least one executed item
+    try:
+        from app.services.risk_snapshots import snapshot_risk
+
+        snapshot_risk(user_id, campaign_id=campaign_id, label="after")
+    except Exception:
+        pass
 
 
 def _maybe_advance_campaign_ring(campaign_id: str, user_id: str) -> None:
@@ -905,6 +960,7 @@ def _maybe_advance_campaign_ring(campaign_id: str, user_id: str) -> None:
             "patch_campaign_ring_halted", user_id,
             {"campaign_id": campaign_id, "ring": max_created_ring, "success_pct": success_pct, "threshold": threshold},
         )
+        _maybe_snapshot_campaign_after(campaign_id, user_id)
         return
     if next_ring_index >= len(ring_list):
         # Ring passed its threshold, but "passed >= threshold" and "zero
@@ -925,6 +981,7 @@ def _maybe_advance_campaign_ring(campaign_id: str, user_id: str) -> None:
             "patch_campaign_completed", user_id,
             {"campaign_id": campaign_id, "rings": len(ring_list), "status": final_status},
         )
+        _maybe_snapshot_campaign_after(campaign_id, user_id)
         return
     # ring passed and there's a next ring — materialize it (pending_approval,
     # same as ring 0; a human still approves each ring's dispatch). Guarded
@@ -1011,6 +1068,14 @@ def list_campaigns(user_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
     for r in rows:
         d = dict(r)
         d["summary"] = _campaign_summary(user_id, d["id"])
+        try:
+            from app.services.risk_snapshots import get_campaign_risk_delta
+
+            delta = get_campaign_risk_delta(user_id, d["id"])
+            if delta:
+                d.update(delta)
+        except Exception:
+            pass
         out.append(d)
     return out
 
@@ -1039,6 +1104,14 @@ def get_campaign(user_id: str, campaign_id: str) -> dict[str, Any] | None:
         items.append(item)
     _annotate_waiting_for_agent(items)
     d["items"] = items
+    try:
+        from app.services.risk_snapshots import get_campaign_risk_delta
+
+        delta = get_campaign_risk_delta(user_id, campaign_id)
+        if delta:
+            d.update(delta)
+    except Exception:
+        pass
     return d
 
 
@@ -1218,6 +1291,92 @@ def report_command_result(agent_id: str, command_id: str, *, status: str, result
     return {"ok": True, "status": status}
 
 
+def _resolve_vulnerabilities_for_verified_patch(command_id: str, command_row: dict[str, Any]) -> int:
+    """Once a patch is verified, close the loop on the `vulnerabilities`
+    table too — but ONLY via an exact CVE match, never a fuzzy title guess.
+    A patched product's advisories name the CVEs their fixed_version
+    resolves; if the now-installed version satisfies an advisory's
+    fixed_version, that CVE is genuinely fixed. Any open vulnerabilities
+    row on the same asset carrying that exact CVE id is marked resolved.
+    No match found -> nothing is touched, silently and correctly (a
+    scanner-only finding with no corresponding advisory CVE is real and
+    stays open until something actually resolves it)."""
+    from app.software.patch_status import compare_versions
+
+    user_id = command_row.get("user_id") or "local"
+    agent = get_agent(command_row.get("agent_id") or "")
+    asset_id = (agent or {}).get("asset_id") or ""
+    if not asset_id:
+        return 0
+    try:
+        payload = json.loads(command_row.get("payload_json") or "{}")
+    except Exception:
+        payload = {}
+    package = (payload.get("package") or "").strip()
+    if not package:
+        return 0
+
+    c = get_conn()
+    installations = c.execute(
+        """
+        SELECT i.version AS installed_version, p.id AS product_id
+        FROM software_installations i
+        JOIN software_products p ON p.id = i.software_product_id
+        WHERE i.user_id = ? AND i.asset_id = ? AND LOWER(p.name) LIKE ?
+        ORDER BY i.updated_at DESC LIMIT 1
+        """,
+        (user_id, asset_id, f"%{package.lower()}%"),
+    ).fetchone()
+    if not installations:
+        return 0
+    installations = dict(installations)
+    installed_version = installations.get("installed_version") or ""
+    product_id = installations.get("product_id") or ""
+    if not installed_version or not product_id:
+        return 0
+
+    advisories = c.execute(
+        "SELECT cve_id, fixed_version FROM software_advisories WHERE user_id = ? AND software_product_id = ? "
+        "AND fixed_version != '' AND cve_id != ''",
+        (user_id, product_id),
+    ).fetchall()
+    fixed_cves: set[str] = set()
+    for a in advisories:
+        a = dict(a)
+        cmp = compare_versions(installed_version, a.get("fixed_version") or "")
+        if cmp is not None and cmp >= 0:
+            fixed_cves.add((a.get("cve_id") or "").strip().upper())
+    fixed_cves.discard("")
+    if not fixed_cves:
+        return 0
+
+    placeholders = ",".join("?" for _ in fixed_cves)
+    rows = c.execute(
+        f"SELECT id, cve FROM vulnerabilities WHERE user_id = ? AND asset_id = ? AND status = 'open' "
+        f"AND UPPER(cve) IN ({placeholders})",
+        (user_id, asset_id, *fixed_cves),
+    ).fetchall()
+    if not rows:
+        return 0
+    ts = now()
+    resolved_ids = [dict(r)["id"] for r in rows]
+    for vid in resolved_ids:
+        c.execute("UPDATE vulnerabilities SET status = 'resolved', updated_at = ? WHERE id = ?", (ts, vid))
+    c.commit()
+    audit(
+        "vuln_auto_resolved_by_patch_verification",
+        user_id,
+        {"command_id": command_id, "asset_id": asset_id, "package": package, "resolved_vuln_ids": resolved_ids},
+    )
+    try:
+        from app.realtime_bus import publish
+
+        publish(type="vuln", user_id=user_id, asset_id=asset_id, count=len(resolved_ids), reason="patch_verified")
+    except Exception:
+        pass
+    return len(resolved_ids)
+
+
 def record_command_verification(command_id: str, *, verified: bool | None, detail: str = "") -> dict[str, Any]:
     """Called by the software_advisory_refresh job once it's re-synced
     inventory and re-run CVE/advisory correlation for a completed patch
@@ -1227,13 +1386,26 @@ def record_command_verification(command_id: str, *, verified: bool | None, detai
     dropped as if nothing happened)."""
     ensure_schema()
     c = get_conn()
-    row = c.execute("SELECT id, agent_id, status FROM securaiq_agent_commands WHERE id = ?", (command_id,)).fetchone()
+    row = c.execute(
+        "SELECT id, agent_id, user_id, status, campaign_id, payload_json FROM securaiq_agent_commands WHERE id = ?",
+        (command_id,),
+    ).fetchone()
     if not row:
         return {"ok": False, "error": "unknown command"}
+    row = dict(row)
     v_status = "verified" if verified is True else "verification_failed" if verified is False else "unknown"
+    resolved_findings = 0
+    if verified is True:
+        try:
+            resolved_findings = _resolve_vulnerabilities_for_verified_patch(command_id, row)
+        except Exception:
+            resolved_findings = 0
+    detail_text = str(detail or "")[:460]
+    if resolved_findings:
+        detail_text = f"{detail_text} — closed {resolved_findings} linked finding(s)".strip(" —")
     c.execute(
         "UPDATE securaiq_agent_commands SET verification_status = ?, verification_detail = ?, verified_at = ? WHERE id = ?",
-        (v_status, str(detail or "")[:500], now(), command_id),
+        (v_status, detail_text[:500], now(), command_id),
     )
     c.commit()
     try:
@@ -1242,4 +1414,10 @@ def record_command_verification(command_id: str, *, verified: bool | None, detai
         publish(type="agent_command", agent_id=row["agent_id"], id=command_id, status=row["status"], verification_status=v_status)
     except Exception:
         pass
-    return {"ok": True, "verification_status": v_status}
+    campaign_id = row.get("campaign_id") or ""
+    if campaign_id:
+        try:
+            _maybe_snapshot_campaign_after(campaign_id, row.get("user_id") or "local")
+        except Exception:
+            pass
+    return {"ok": True, "verification_status": v_status, "resolved_findings": resolved_findings}
