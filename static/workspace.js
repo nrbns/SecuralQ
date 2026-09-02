@@ -1072,14 +1072,14 @@
       const target = btn.getAttribute("data-target") || "";
       if (
         !confirm(
-          `Queue a real ${manager} upgrade of "${pkg}" on this host's SecuraIQ Agent?\n\n` +
-            `This runs on the agent's next check-in (up to its check-in interval, default 60s) and actually changes installed software on that machine.`
+          `Request a real ${manager} upgrade of "${pkg}" on this host's SecuraIQ Agent?\n\n` +
+            `This creates a pending approval request. Once approved (see Agents → Pending Approvals), it runs on the agent's next check-in and actually changes installed software on that machine.`
         )
       ) {
         return;
       }
       btn.disabled = true;
-      btn.textContent = "Queuing…";
+      btn.textContent = "Requesting…";
       try {
         const res = await fetch(`/api/agents/${encodeURIComponent(agentId)}/commands`, {
           method: "POST",
@@ -1092,11 +1092,12 @@
         const body = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(body.detail || `HTTP ${res.status}`);
         if (typeof notifyUser === "function") {
-          notifyUser(`**Patch queued** · \`${manager} upgrade ${pkg}\` — will run on the agent's next check-in and auto-verify.`);
+          notifyUser(`**Patch requested** · \`${manager} upgrade ${pkg}\` — awaiting approval (Agents → Pending Approvals) before it runs.`);
         }
-        btn.textContent = "Queued";
+        btn.textContent = "Pending approval";
+        if (typeof window.renderAgentsPanel === "function") window.renderAgentsPanel();
       } catch (e) {
-        if (typeof notifyUser === "function") notifyUser(`Patch queue failed: ${e.message || e}`);
+        if (typeof notifyUser === "function") notifyUser(`Patch request failed: ${e.message || e}`);
         btn.disabled = false;
         btn.textContent = "Patch via Agent";
       }
@@ -4071,15 +4072,18 @@
     const el = qs("agentsPanelBody");
     if (!el) return;
     try {
-      const [res, threatsRes] = await Promise.all([
+      const [res, threatsRes, pendingRes] = await Promise.all([
         fetch("/api/agents", { headers: authHeaders() }),
         fetch("/api/agents/threats?limit=50", { headers: authHeaders() }).catch(() => null),
+        fetch("/api/agents/commands/pending?limit=100", { headers: authHeaders() }).catch(() => null),
       ]);
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
       const agents = data.agents || [];
       const threatsData = threatsRes && threatsRes.ok ? await threatsRes.json().catch(() => ({})) : {};
       const threats = threatsData.threats || [];
+      const pendingData = pendingRes && pendingRes.ok ? await pendingRes.json().catch(() => ({})) : {};
+      const pendingCommands = pendingData.commands || [];
       const threatsByAgent = {};
       threats.forEach((t) => {
         (threatsByAgent[t.agent_id] = threatsByAgent[t.agent_id] || []).push(t);
@@ -4144,7 +4148,73 @@
                 </ul>
               </div>`
             : ""
+        }
+        ${
+          pendingCommands.length
+            ? `<div class="agents-pending-approvals" style="margin-top:12px">
+                <h4 style="margin:0 0 6px">Pending approvals</h4>
+                <p class="hint" style="margin:0 0 6px">Patch commands requested via "Patch via Agent" wait here until approved — nothing runs on a host until you approve it.</p>
+                <div class="data-table-wrap"><table class="data-table">
+                  <thead><tr><th>Host</th><th>Command</th><th>Requested</th><th></th></tr></thead>
+                  <tbody>${pendingCommands
+                    .map((cmd) => {
+                      const agent = agents.find((a) => a.id === cmd.agent_id);
+                      const p = cmd.payload || {};
+                      return `<tr>
+                        <td>${escapeHtml((agent && (agent.hostname || agent.name)) || cmd.agent_id.slice(0, 8))}</td>
+                        <td><code>${escapeHtml(p.manager || "")} upgrade ${escapeHtml(p.package || "")}</code></td>
+                        <td class="hint">${escapeHtml(fmtWhen(cmd.created_at))}</td>
+                        <td class="reports-dl-cell">
+                          <button type="button" class="btn-primary-cc agents-approve-cmd" data-agent-id="${escapeHtml(cmd.agent_id)}" data-cmd-id="${escapeHtml(cmd.id)}">Approve</button>
+                          <button type="button" class="btn-secondary agents-reject-cmd" data-agent-id="${escapeHtml(cmd.agent_id)}" data-cmd-id="${escapeHtml(cmd.id)}">Reject</button>
+                        </td>
+                      </tr>`;
+                    })
+                    .join("")}</tbody></table></div>
+              </div>`
+            : ""
         }`;
+      el.querySelectorAll(".agents-approve-cmd").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const agentId = btn.getAttribute("data-agent-id");
+          const cmdId = btn.getAttribute("data-cmd-id");
+          if (!confirm("Approve this patch command? It will run on the agent's next check-in.")) return;
+          btn.disabled = true;
+          try {
+            const r = await fetch(`/api/agents/${encodeURIComponent(agentId)}/commands/${encodeURIComponent(cmdId)}/approve`, {
+              method: "POST",
+              headers: authHeaders(),
+            });
+            if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.detail || `HTTP ${r.status}`); }
+            if (typeof notifyUser === "function") notifyUser("Patch command approved — queued for delivery.");
+            renderAgentsPanel();
+          } catch (err) {
+            alert(err.message || "Approve failed");
+            btn.disabled = false;
+          }
+        });
+      });
+      el.querySelectorAll(".agents-reject-cmd").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const agentId = btn.getAttribute("data-agent-id");
+          const cmdId = btn.getAttribute("data-cmd-id");
+          const reason = prompt("Reason for rejecting this patch request (optional):") || "";
+          btn.disabled = true;
+          try {
+            const r = await fetch(`/api/agents/${encodeURIComponent(agentId)}/commands/${encodeURIComponent(cmdId)}/reject`, {
+              method: "POST",
+              headers: authHeaders({ "Content-Type": "application/json" }),
+              body: JSON.stringify({ reason }),
+            });
+            if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.detail || `HTTP ${r.status}`); }
+            if (typeof notifyUser === "function") notifyUser("Patch command rejected.");
+            renderAgentsPanel();
+          } catch (err) {
+            alert(err.message || "Reject failed");
+            btn.disabled = false;
+          }
+        });
+      });
       el.querySelectorAll(".agents-view-asset").forEach((btn) => {
         btn.addEventListener("click", () => {
           window.showWorkspace?.("assets");

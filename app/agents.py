@@ -25,7 +25,7 @@ import json
 import secrets
 from typing import Any
 
-from app.db import get_conn, new_id, now
+from app.db import audit, get_conn, new_id, now
 
 # An agent is considered offline once this many seconds pass with no
 # check-in. Real agents check in every 60s by default (see
@@ -104,8 +104,12 @@ def ensure_schema() -> None:
             user_id TEXT NOT NULL DEFAULT 'local',
             kind TEXT NOT NULL,
             payload_json TEXT NOT NULL DEFAULT '{}',
-            status TEXT NOT NULL DEFAULT 'queued',
+            status TEXT NOT NULL DEFAULT 'pending_approval',
             requested_by TEXT NOT NULL DEFAULT '',
+            approved_by TEXT NOT NULL DEFAULT '',
+            approved_at REAL NOT NULL DEFAULT 0,
+            rejected_reason TEXT NOT NULL DEFAULT '',
+            campaign_id TEXT NOT NULL DEFAULT '',
             created_at REAL NOT NULL,
             sent_at REAL NOT NULL DEFAULT 0,
             completed_at REAL NOT NULL DEFAULT 0,
@@ -114,8 +118,23 @@ def ensure_schema() -> None:
         )
         """
     )
+    try:
+        cmd_cols = table_columns(c, "securaiq_agent_commands")
+        for col, ddl in (
+            ("approved_by", "ALTER TABLE securaiq_agent_commands ADD COLUMN approved_by TEXT NOT NULL DEFAULT ''"),
+            ("approved_at", "ALTER TABLE securaiq_agent_commands ADD COLUMN approved_at REAL NOT NULL DEFAULT 0"),
+            ("rejected_reason", "ALTER TABLE securaiq_agent_commands ADD COLUMN rejected_reason TEXT NOT NULL DEFAULT ''"),
+            ("campaign_id", "ALTER TABLE securaiq_agent_commands ADD COLUMN campaign_id TEXT NOT NULL DEFAULT ''"),
+        ):
+            if col not in cmd_cols:
+                c.execute(ddl)
+    except Exception:
+        pass
     c.execute(
         "CREATE INDEX IF NOT EXISTS idx_agent_commands_agent ON securaiq_agent_commands(agent_id, status)"
+    )
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_agent_commands_campaign ON securaiq_agent_commands(campaign_id)"
     )
     c.commit()
 
@@ -504,21 +523,34 @@ def delete_agent(user_id: str, agent_id: str) -> bool:
 #
 # `kind` is deliberately an allowlist, not free-form shell: the only command
 # an agent will currently execute is "patch_package" (an OS package-manager
-# upgrade of one named package), never an arbitrary command string. Queuing
-# one requires an authenticated user request (see agents_api.py), which is
-# this feature's approval gate — there is no autonomous/AI-initiated queuing
-# path in this MVP.
+# upgrade of one named package), never an arbitrary command string.
+#
+# Requesting a command never queues it for delivery directly. It lands in
+# 'pending_approval'; a second, distinct actor (an admin, when auth/RBAC is
+# turned on) must call approve_command() before it flips to 'queued' and can
+# be picked up by _dispatch_queued_commands() on the agent's next check-in.
+# In local/lab mode (auth disabled) the synthetic local user is already
+# role="admin", so this doesn't block solo usage — but the two-step state
+# machine is real and is what a patch campaign's per-item commands ride on.
 # ---------------------------------------------------------------------------
 
 SUPPORTED_COMMAND_KINDS = {"patch_package"}
+COMMAND_STATUSES = {"pending_approval", "queued", "sent", "done", "error", "rejected"}
 
 
-def queue_command(
-    user_id: str, agent_id: str, *, kind: str, payload: dict[str, Any], requested_by: str = ""
+def request_command(
+    user_id: str,
+    agent_id: str,
+    *,
+    kind: str,
+    payload: dict[str, Any],
+    requested_by: str = "",
+    campaign_id: str = "",
 ) -> dict[str, Any]:
-    """Queue a command for delivery on the agent's next check-in. Raises
-    ValueError for an unknown agent or an unsupported command kind — callers
-    (the API layer) turn that into a 4xx rather than silently no-op'ing."""
+    """Create a command request in 'pending_approval'. Raises ValueError for
+    an unknown agent or an unsupported command kind — callers (the API layer)
+    turn that into a 4xx rather than silently no-op'ing. Does NOT queue the
+    command for delivery — see approve_command()."""
     ensure_schema()
     agent = get_agent(agent_id)
     if not agent or agent.get("user_id") != user_id:
@@ -532,19 +564,111 @@ def queue_command(
     c.execute(
         """
         INSERT INTO securaiq_agent_commands
-        (id, agent_id, user_id, kind, payload_json, status, requested_by, created_at)
-        VALUES (?, ?, ?, ?, ?, 'queued', ?, ?)
+        (id, agent_id, user_id, kind, payload_json, status, requested_by, campaign_id, created_at)
+        VALUES (?, ?, ?, ?, ?, 'pending_approval', ?, ?, ?)
         """,
-        (cid, agent_id, user_id, kind, json.dumps(payload)[:4000], requested_by or user_id, now()),
+        (cid, agent_id, user_id, kind, json.dumps(payload)[:4000], requested_by or user_id, campaign_id, now()),
     )
     c.commit()
     try:
         from app.realtime_bus import publish
 
-        publish(type="agent_command", agent_id=agent_id, id=cid, status="queued", kind=kind)
+        publish(type="agent_command", agent_id=agent_id, id=cid, status="pending_approval", kind=kind)
     except Exception:
         pass
-    return {"id": cid, "status": "queued"}
+    return {"id": cid, "status": "pending_approval"}
+
+
+# Backwards-compatible alias: older callers/tests may still say "queue_command"
+# meaning "request one". It no longer queues for delivery directly — approval
+# is required first.
+queue_command = request_command
+
+
+def _get_command_row(user_id: str, agent_id: str, command_id: str):
+    c = get_conn()
+    row = c.execute(
+        "SELECT * FROM securaiq_agent_commands WHERE id = ? AND agent_id = ?", (command_id, agent_id)
+    ).fetchone()
+    if not row:
+        return None
+    d = dict(row)
+    if d.get("user_id") != user_id:
+        return None
+    return d
+
+
+def approve_command(user_id: str, agent_id: str, command_id: str, *, approver_id: str) -> dict[str, Any]:
+    """Transition a command from 'pending_approval' to 'queued', making it
+    eligible for delivery on the agent's next check-in. Raises ValueError if
+    the command doesn't exist, isn't owned by user_id, or isn't currently
+    pending approval."""
+    ensure_schema()
+    row = _get_command_row(user_id, agent_id, command_id)
+    if not row:
+        raise ValueError("Command not found")
+    if row.get("status") != "pending_approval":
+        raise ValueError(f"Command is not pending approval (status: {row.get('status')})")
+    c = get_conn()
+    ts = now()
+    c.execute(
+        "UPDATE securaiq_agent_commands SET status = 'queued', approved_by = ?, approved_at = ? WHERE id = ?",
+        (approver_id, ts, command_id),
+    )
+    c.commit()
+    audit("agent_command_approve", user_id, {"agent_id": agent_id, "command_id": command_id, "approver_id": approver_id})
+    try:
+        from app.realtime_bus import publish
+
+        publish(type="agent_command", agent_id=agent_id, id=command_id, status="queued")
+    except Exception:
+        pass
+    return {"id": command_id, "status": "queued"}
+
+
+def reject_command(user_id: str, agent_id: str, command_id: str, *, approver_id: str, reason: str = "") -> dict[str, Any]:
+    """Transition a command from 'pending_approval' to 'rejected'. The agent
+    never sees a rejected command — it is simply never dispatched."""
+    ensure_schema()
+    row = _get_command_row(user_id, agent_id, command_id)
+    if not row:
+        raise ValueError("Command not found")
+    if row.get("status") != "pending_approval":
+        raise ValueError(f"Command is not pending approval (status: {row.get('status')})")
+    c = get_conn()
+    ts = now()
+    c.execute(
+        "UPDATE securaiq_agent_commands SET status = 'rejected', approved_by = ?, approved_at = ?, rejected_reason = ? WHERE id = ?",
+        (approver_id, ts, str(reason or "")[:500], command_id),
+    )
+    c.commit()
+    audit("agent_command_reject", user_id, {"agent_id": agent_id, "command_id": command_id, "approver_id": approver_id, "reason": reason})
+    try:
+        from app.realtime_bus import publish
+
+        publish(type="agent_command", agent_id=agent_id, id=command_id, status="rejected")
+    except Exception:
+        pass
+    return {"id": command_id, "status": "rejected"}
+
+
+def list_pending_commands(user_id: str, *, limit: int = 200) -> list[dict[str, Any]]:
+    """All commands awaiting approval across all of this user's agents —
+    backs the approvals UI/queue view."""
+    ensure_schema()
+    rows = get_conn().execute(
+        "SELECT * FROM securaiq_agent_commands WHERE user_id = ? AND status = 'pending_approval' ORDER BY created_at ASC LIMIT ?",
+        (user_id, max(1, min(limit, 500))),
+    ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["payload"] = json.loads(d.get("payload_json") or "{}")
+        except Exception:
+            d["payload"] = {}
+        out.append(d)
+    return out
 
 
 def list_commands(user_id: str, agent_id: str, *, limit: int = 100) -> list[dict[str, Any]]:

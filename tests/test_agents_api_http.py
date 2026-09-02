@@ -333,11 +333,116 @@ def test_queue_command_rejects_unknown_agent(tmp_path, monkeypatch):
     assert res.status_code == 400
 
 
+def test_queued_command_not_delivered_until_approved(tmp_path, monkeypatch):
+    """A freshly requested command sits in 'pending_approval' and is NOT
+    handed to the agent on check-in — only after an explicit approve call."""
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    enroll = client.post("/api/agents/enroll", json={"name": "srv-11"}, headers=_auth(token))
+    agent_id = enroll.json()["agent_id"]
+    agent_token = enroll.json()["agent_token"]
+
+    requested = client.post(
+        f"/api/agents/{agent_id}/commands",
+        json={"kind": "patch_package", "payload": {"manager": "apt", "package": "nginx"}},
+        headers=_auth(token),
+    )
+    assert requested.status_code == 200, requested.text
+    assert requested.json()["status"] == "pending_approval"
+
+    checkin = client.post(
+        "/api/agents/checkin",
+        json={"hostname": "srv-11.internal", "os": "linux"},
+        headers={"Authorization": f"Bearer {agent_token}"},
+    )
+    assert checkin.json()["commands"] == []
+
+    pending = client.get("/api/agents/commands/pending", headers=_auth(token)).json()["commands"]
+    assert len(pending) == 1
+    assert pending[0]["id"] == requested.json()["id"]
+
+
+def test_approve_command_requires_auth(tmp_path, monkeypatch):
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    enroll = client.post("/api/agents/enroll", json={"name": "srv-12"}, headers=_auth(token))
+    agent_id = enroll.json()["agent_id"]
+    requested = client.post(
+        f"/api/agents/{agent_id}/commands",
+        json={"kind": "patch_package", "payload": {"manager": "apt", "package": "curl"}},
+        headers=_auth(token),
+    )
+    command_id = requested.json()["id"]
+    res = client.post(f"/api/agents/{agent_id}/commands/{command_id}/approve")
+    assert res.status_code == 401
+
+
+def test_approve_command_requires_admin_role_when_auth_enabled(tmp_path, monkeypatch):
+    client, admin_token = _client_and_token(tmp_path, monkeypatch, username="approver_admin")
+    from app.auth import login, register_user
+
+    register_user("approver_viewer", "password123", role="user")
+    _u, viewer_token = login("approver_viewer", "password123")
+
+    enroll = client.post("/api/agents/enroll", json={"name": "srv-13"}, headers=_auth(admin_token))
+    agent_id = enroll.json()["agent_id"]
+    requested = client.post(
+        f"/api/agents/{agent_id}/commands",
+        json={"kind": "patch_package", "payload": {"manager": "apt", "package": "curl"}},
+        headers=_auth(admin_token),
+    )
+    command_id = requested.json()["id"]
+
+    # a non-admin cannot approve
+    res = client.post(
+        f"/api/agents/{agent_id}/commands/{command_id}/approve", headers=_auth(viewer_token)
+    )
+    assert res.status_code == 403
+
+    # the admin can
+    res2 = client.post(
+        f"/api/agents/{agent_id}/commands/{command_id}/approve", headers=_auth(admin_token)
+    )
+    assert res2.status_code == 200, res2.text
+    assert res2.json()["status"] == "queued"
+
+
+def test_reject_command_marks_rejected_and_never_delivered(tmp_path, monkeypatch):
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    enroll = client.post("/api/agents/enroll", json={"name": "srv-14"}, headers=_auth(token))
+    agent_id = enroll.json()["agent_id"]
+    agent_token = enroll.json()["agent_token"]
+    requested = client.post(
+        f"/api/agents/{agent_id}/commands",
+        json={"kind": "patch_package", "payload": {"manager": "apt", "package": "curl"}},
+        headers=_auth(token),
+    )
+    command_id = requested.json()["id"]
+
+    res = client.post(
+        f"/api/agents/{agent_id}/commands/{command_id}/reject",
+        json={"reason": "not needed"},
+        headers=_auth(token),
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["status"] == "rejected"
+
+    checkin = client.post(
+        "/api/agents/checkin",
+        json={"hostname": "srv-14.internal", "os": "linux"},
+        headers={"Authorization": f"Bearer {agent_token}"},
+    )
+    assert checkin.json()["commands"] == []
+
+    # approving an already-rejected command is rejected (not pending anymore)
+    res2 = client.post(f"/api/agents/{agent_id}/commands/{command_id}/approve", headers=_auth(token))
+    assert res2.status_code == 400
+
+
 def test_command_delivered_on_next_checkin_and_result_reported(tmp_path, monkeypatch):
-    """The full loop through the HTTP layer: queue (user-authed) -> the next
-    check-in response carries it (agent-authed) -> the agent posts a result
-    (agent-authed) -> it shows up done in the user-authed history, with the
-    same command never re-delivered on a third check-in."""
+    """The full loop through the HTTP layer: request (user-authed) -> approve
+    (user-authed, admin) -> the next check-in response carries it
+    (agent-authed) -> the agent posts a result (agent-authed) -> it shows up
+    done in the user-authed history, with the same command never
+    re-delivered on a third check-in."""
     client, token = _client_and_token(tmp_path, monkeypatch)
     enroll = client.post("/api/agents/enroll", json={"name": "srv-07"}, headers=_auth(token))
     agent_id = enroll.json()["agent_id"]
@@ -351,14 +456,18 @@ def test_command_delivered_on_next_checkin_and_result_reported(tmp_path, monkeyp
     )
     assert first.json()["commands"] == []
 
-    queued = client.post(
+    requested = client.post(
         f"/api/agents/{agent_id}/commands",
         json={"kind": "patch_package", "payload": {"manager": "apt", "package": "openssl"}},
         headers=_auth(token),
     )
-    assert queued.status_code == 200, queued.text
-    command_id = queued.json()["id"]
-    assert queued.json()["status"] == "queued"
+    assert requested.status_code == 200, requested.text
+    command_id = requested.json()["id"]
+    assert requested.json()["status"] == "pending_approval"
+
+    approved = client.post(f"/api/agents/{agent_id}/commands/{command_id}/approve", headers=_auth(token))
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["status"] == "queued"
 
     # second check-in: the command is delivered
     second = client.post(

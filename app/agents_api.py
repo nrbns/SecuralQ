@@ -12,6 +12,7 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
 from app.agents import (
+    approve_command,
     authenticate_agent,
     checkin,
     delete_agent,
@@ -19,14 +20,17 @@ from app.agents import (
     get_agent,
     list_agents,
     list_commands,
+    list_pending_commands,
     list_threats,
-    queue_command,
     record_threat_detections,
+    reject_command,
     report_command_result,
+    request_command,
     revoke_agent,
 )
 from app.auth import AuthUser
 from app.commercial_api import require_user
+from app.config import settings
 from app.db import audit
 from app.paths import resource_root
 
@@ -76,6 +80,10 @@ class CommandCreate(BaseModel):
 class CommandResultReport(BaseModel):
     status: str = "done"
     result: dict[str, Any] = Field(default_factory=dict)
+
+
+class CommandReject(BaseModel):
+    reason: str = ""
 
 
 class CheckinPayload(BaseModel):
@@ -173,6 +181,12 @@ async def api_list_all_threats(user: Annotated[AuthUser, Depends(require_user)],
     return {"threats": list_threats(user.id, limit=limit)}
 
 
+@router.get("/commands/pending")
+async def api_list_pending_commands(user: Annotated[AuthUser, Depends(require_user)], limit: int = 200):
+    # Registered before /{agent_id} on purpose — same reason as /threats above.
+    return {"commands": list_pending_commands(user.id, limit=limit)}
+
+
 @router.get("/{agent_id}")
 async def api_get_agent(agent_id: str, user: Annotated[AuthUser, Depends(require_user)]):
     agent = get_agent(agent_id)
@@ -252,14 +266,14 @@ async def api_list_agent_threats(
 async def api_queue_agent_command(
     agent_id: str, req: CommandCreate, user: Annotated[AuthUser, Depends(require_user)]
 ):
-    """Queue a command for this agent's next check-in. This IS the approval
-    gate for patch execution — only a logged-in user can call this, there is
-    no autonomous/unattended path that reaches it."""
+    """Request a command for this agent — lands in 'pending_approval', not
+    delivered yet. A second call to the approve endpoint is required before
+    it is ever handed to the agent (see api_approve_agent_command below)."""
     try:
-        result = queue_command(user.id, agent_id, kind=req.kind, payload=req.payload, requested_by=user.id)
+        result = request_command(user.id, agent_id, kind=req.kind, payload=req.payload, requested_by=user.id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    audit("agent_command_queue", user.id, {"agent_id": agent_id, "kind": req.kind, "payload": req.payload})
+    audit("agent_command_request", user.id, {"agent_id": agent_id, "kind": req.kind, "payload": req.payload})
     return result
 
 
@@ -271,6 +285,41 @@ async def api_list_agent_commands(
     if not agent or agent.get("user_id") != user.id:
         raise HTTPException(status_code=404, detail="Agent not found")
     return {"commands": list_commands(user.id, agent_id, limit=limit)}
+
+
+def _require_admin_for_approval(user: AuthUser) -> None:
+    """Approving/rejecting a queued OS-package-manager command is the real
+    approval gate for patch execution, so once RBAC/auth is turned on it is
+    restricted to admins — same inline-check convention as the rest of the
+    codebase (e.g. app/commercial_api.py). In local/lab mode (auth disabled)
+    the synthetic local user is already role="admin", so this never blocks
+    normal solo-operator usage."""
+    if settings.auth_enabled and user.role != "admin" and user.id != "local":
+        raise HTTPException(status_code=403, detail="Admin role required to approve or reject agent commands")
+
+
+@router.post("/{agent_id}/commands/{command_id}/approve")
+async def api_approve_agent_command(
+    agent_id: str, command_id: str, user: Annotated[AuthUser, Depends(require_user)]
+):
+    _require_admin_for_approval(user)
+    try:
+        result = approve_command(user.id, agent_id, command_id, approver_id=user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return result
+
+
+@router.post("/{agent_id}/commands/{command_id}/reject")
+async def api_reject_agent_command(
+    agent_id: str, command_id: str, req: CommandReject, user: Annotated[AuthUser, Depends(require_user)]
+):
+    _require_admin_for_approval(user)
+    try:
+        result = reject_command(user.id, agent_id, command_id, approver_id=user.id, reason=req.reason)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return result
 
 
 @router.post("/commands/{command_id}/result")
