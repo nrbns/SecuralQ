@@ -1,12 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for SecuraIQ — onedir build, one spec for all three OSes.
+"""PyInstaller spec for SecuraIQ (Windows onedir + SecuraIQ.exe).
 
-PyInstaller does not cross-compile: run this spec ON the OS you want a
-binary for. It produces dist/SecuraIQ/SecuraIQ.exe on Windows (via
-scripts/build_exe.ps1 or build_exe.cmd) and dist/SecuraIQ/SecuraIQ
-(no extension) on Linux/macOS (via scripts/build_exe.sh or build_exe.sh).
-Nothing in this spec is Windows-specific — same datas/hiddenimports/excludes
-on every platform.
+Onedir, not onefile: SecuraIQ.exe sits in dist/SecuraIQ/ alongside its
+support files (DLLs, bundled static/data). You still only ever double-click
+the one .exe — but onefile would re-extract the whole bundle (RAG/torch/
+chromadb, several hundred MB) to a temp folder on every single launch,
+turning a few-second startup into minutes. Build via scripts/build_exe.ps1
+or build_exe.cmd.
 """
 
 from pathlib import Path
