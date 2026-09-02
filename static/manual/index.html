@@ -171,11 +171,12 @@
       <a href="#pillars">2. Five pillars</a>
       <a href="#ai">3. AI Assistant</a>
       <a href="#golden">4. Golden path</a>
-      <a href="#modules">5. Modules</a>
-      <a href="#tools">6. Tools &amp; probing</a>
-      <a href="#account">7. Account &amp; settings</a>
-      <a href="#safety">8. Safety</a>
-      <a href="#fix">9. Troubleshooting</a>
+      <a href="#agents">5. Native agents &amp; Sentinel</a>
+      <a href="#modules">6. Modules</a>
+      <a href="#tools">7. Tools &amp; probing</a>
+      <a href="#account">8. Account &amp; settings</a>
+      <a href="#safety">9. Safety</a>
+      <a href="#fix">10. Troubleshooting</a>
     </nav>
 
     <h2 id="start">1. Start</h2>
@@ -222,22 +223,34 @@ Linux/macOS: bash scripts/run_proper.sh</pre>
       <li>Export from Reports · check Mission Control counters</li>
     </ol>
 
-    <h2 id="modules">5. Modules</h2>
+    <h2 id="agents">5. Native agents &amp; SecuraIQ Sentinel</h2>
+    <p>Continuous host monitoring like Wazuh/EDR, built in — no external product needed.</p>
+    <ul>
+      <li><strong>Security Operations → Agents → Enroll agent</strong> gives you a one-time install command/token</li>
+      <li>Install as a <strong>persistent service</strong>: systemd (Linux), launchd (macOS), or a startup Scheduled Task (Windows) — starts on boot, restarts on crash</li>
+      <li>Check-ins report real telemetry (hostname, OS, ports, packages) and keep the agent's online/offline status honest</li>
+      <li><strong>Sentinel</strong> runs independently every ~10s, fusing signature matching, behavioral heuristics, ransomware indicators, and file-integrity monitoring (persisted baseline, real add/modify/delete diffs)</li>
+      <li>A detection creates a linked finding, opens an incident for critical/high severity, and pushes live to every open browser — no refresh needed</li>
+    </ul>
+
+    <h2 id="modules">6. Modules</h2>
     <h3>Vulnerabilities</h3>
-    <p>Filters (severity, status, scanner, owner, search) · table with CVSS/SLA/age · right panel for AI, references, triage.</p>
+    <p>Filters (severity, status, scanner, owner, search) · table with CVSS/SLA/age · right panel for AI, references, triage, delete.</p>
+    <h3>Web URL Scan</h3>
+    <p>A dedicated page for scanning public web apps (headers, TLS, cookies, sensitive paths, CORS) — install-free. It only accepts public targets: loopback/private/link-local/internal-suffix hosts are rejected before scanning, so it can't be pointed at internal infrastructure. Use a network/VAPT scan from New scan for your own internal hosts.</p>
     <h3>Compliance</h3>
-    <p>KPI strip (implemented / partial / missing / coverage / evidence / maturity) · framework cards · Open controls · Run gap.</p>
+    <p>KPI strip (implemented / partial / missing / coverage / evidence / maturity) · framework cards · Open controls · Run gap · delete an assessment (cascades to its remediation tasks).</p>
     <h3>Assets</h3>
-    <p>Class tiles (server → API) plus inventory table.</p>
+    <p>Class tiles (server → API) plus inventory table, kept current by scans and native-agent check-ins.</p>
     <h3>Automation</h3>
     <p>Visual Trigger → … → Close pipeline, jobs, webhook pointers into Integrations.</p>
-    <h3>Integrations &amp; Reports</h3>
-    <p>Connect scanners/Jira/Slack paths that open real import or settings. Export executive/technical reports from Reports.</p>
+    <h3>XDR/EDR, Integrations &amp; Reports</h3>
+    <p>Live/near-real-time feeds from CrowdStrike, Sophos, SentinelOne, and Defender land in the same SOC views. Connect scanners/Jira/Slack paths that open real import or settings. Export executive/technical reports from Reports.</p>
 
-    <h2 id="tools">6. Tools &amp; probing</h2>
+    <h2 id="tools">7. Tools &amp; probing</h2>
     <p>Open Tools in the assistant. Set a <strong>lab/owned</strong> target and check <strong>Auth</strong> before probe tools. Built-ins (DNS, ports, HTTP, headers) work without extra installs.</p>
 
-    <h2 id="account">7. Account &amp; settings</h2>
+    <h2 id="account">8. Account &amp; settings</h2>
     <table>
       <thead><tr><th>Topic</th><th>Where</th></tr></thead>
       <tbody>
@@ -249,25 +262,27 @@ Linux/macOS: bash scripts/run_proper.sh</pre>
       </tbody>
     </table>
 
-    <h2 id="safety">8. Safety</h2>
+    <h2 id="safety">9. Safety</h2>
     <div class="warn">
       Use only on authorized labs, CTF ranges, PortSwigger-style training, and systems you own or have written permission to test. No malware, credential theft, or C2 workflows.
     </div>
-    <p>AI output can be wrong — verify remediations before production changes. See <a href="/legal/">Legal</a>.</p>
+    <p>The Web URL Scan tool refuses internal/private targets by design (see Modules above). AI output can be wrong — verify remediations before production changes. See <a href="/legal/">Legal</a>.</p>
 
-    <h2 id="fix">9. Troubleshooting</h2>
+    <h2 id="fix">10. Troubleshooting</h2>
     <table>
       <thead><tr><th>Issue</th><th>Fix</th></tr></thead>
       <tbody>
         <tr><td>UI looks outdated</td><td>Hard refresh (<kbd>Ctrl</kbd>+<kbd>F5</kbd>)</td></tr>
         <tr><td>Chat errors</td><td>Start Ollama/LM Studio · check Settings model</td></tr>
-        <tr><td>Empty dashboard</td><td>Import a scan or run gap analysis</td></tr>
+        <tr><td>Empty dashboard</td><td>Import a scan, run gap analysis, or enroll an agent</td></tr>
         <tr><td>Jira fails</td><td>Configure Jira in Settings; triage without Jira first</td></tr>
+        <tr><td>Web scan rejects target</td><td>Public web targets only by design — use a network/VAPT scan for internal hosts</td></tr>
+        <tr><td>Agent shows offline</td><td>No check-in for ~3 intervals; confirm the service is running and the token/server URL are correct</td></tr>
       </tbody>
     </table>
 
     <footer>
-      Full markdown: <code>docs/user-manual.md</code> in the repo · Private alpha — not enterprise launch-ready.
+      Full markdown: <code>docs/user-manual.md</code> in the repo · Closed-beta hardening in progress.
     </footer>
   </div>
 </body>
