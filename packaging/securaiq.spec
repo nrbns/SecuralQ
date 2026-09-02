@@ -12,6 +12,17 @@ datas = [
     (str(ROOT / ".env.example"), "."),
     (str(ROOT / "data" / "knowledge"), "data/knowledge"),
     (str(ROOT / "data" / "frameworks"), "data/frameworks"),
+    # Only these four — not the whole scripts/ dir, which also holds dev-only
+    # tooling (backups, migrations, use_*.ps1 config helpers) that has no
+    # business shipping inside the exe. These four are served at runtime by
+    # app/agents_api.py's /api/agents/install-script[/{platform}] routes
+    # (the native-agent "install as a persistent service" download), so
+    # without them that feature 404s in a packaged build even though it
+    # works fine running from source.
+    (str(ROOT / "scripts" / "securaiq_agent.py"), "scripts"),
+    (str(ROOT / "scripts" / "install_agent_linux.sh"), "scripts"),
+    (str(ROOT / "scripts" / "install_agent_macos.sh"), "scripts"),
+    (str(ROOT / "scripts" / "install_agent_windows.ps1"), "scripts"),
 ]
 binaries = []
 hiddenimports = [

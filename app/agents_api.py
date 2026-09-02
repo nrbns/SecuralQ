@@ -5,7 +5,6 @@ Mounted at /api/agents.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -26,10 +25,19 @@ from app.agents import (
 from app.auth import AuthUser
 from app.commercial_api import require_user
 from app.db import audit
+from app.paths import resource_root
 
 router = APIRouter(prefix="/api/agents", tags=["securaiq-agent"])
 
-_SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
+# resource_root() (not Path(__file__).parent.parent) so this also resolves
+# correctly in a packaged .exe: PyInstaller archives this module's source
+# inside the bundle rather than leaving it as a real file next to a real
+# "scripts" folder, so __file__-relative lookup silently 404'd the install
+# scripts in a built EXE even though it worked when run from source. The
+# packaging spec (packaging/securaiq.spec) bundles exactly these four
+# files under "scripts/" in the onedir output; resource_root() points at
+# that same bundled root in a frozen build and at the repo root otherwise.
+_SCRIPTS_DIR = resource_root() / "scripts"
 _AGENT_SCRIPT_PATH = _SCRIPTS_DIR / "securaiq_agent.py"
 _INSTALLER_PATHS = {
     "linux": (_SCRIPTS_DIR / "install_agent_linux.sh", "text/x-shellscript", "install_agent_linux.sh"),
