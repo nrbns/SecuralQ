@@ -859,14 +859,22 @@ class AssetDependencyCreate(BaseModel):
     target_asset_id: str = Field(min_length=1)
     relationship: str = "connects_to"
     notes: str = ""
+    # True when the user is confirming a connection SecuraIQ had only
+    # inferred (a security-inference heuristic, never a fact) — the
+    # resulting row is still full-confidence and "verified", but keeps a
+    # distinct source="confirmed" so the evidence trail can say "confirmed
+    # by an administrator, originally an automated suggestion" instead of
+    # implying it was a from-scratch declaration.
+    confirmed_from_inference: bool = False
 
 
 @router.post("/assets/{asset_id}/dependencies")
 async def asset_dependency_create(
     asset_id: str, req: AssetDependencyCreate, user: Annotated[AuthUser, Depends(require_user)]
 ):
-    """Declare that this asset connects to another — the only honest source
-    of attack-path connects_to edges (no network flow capture exists)."""
+    """Declare (or confirm an inferred) connection from this asset to
+    another — the only honest source of attack-path connects_to edges (no
+    network flow capture exists in this product)."""
     require_perm(user, "asset.write")
     if not get_asset(user.id, asset_id):
         raise HTTPException(status_code=404, detail="Asset not found")
@@ -875,7 +883,13 @@ async def asset_dependency_create(
     if req.target_asset_id == asset_id:
         raise HTTPException(status_code=400, detail="An asset cannot depend on itself")
     return create_asset_dependency(
-        user.id, asset_id, req.target_asset_id, relationship=req.relationship, notes=req.notes, source="declared", confidence=1.0
+        user.id,
+        asset_id,
+        req.target_asset_id,
+        relationship=req.relationship,
+        notes=req.notes,
+        source="confirmed" if req.confirmed_from_inference else "declared",
+        confidence=1.0,
     )
 
 

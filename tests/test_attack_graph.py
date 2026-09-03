@@ -144,7 +144,13 @@ def test_build_graph_identity_nodes_only_when_service_accounts_set(tmp_path, mon
     assert len(identity_nodes) == 2
     labels = {n["label"] for n in identity_nodes}
     assert labels == {"svc-web-prod", "deploy-bot"}
-    assert all(n["source"] == "declared" and n["confidence"] == "unverified" for n in identity_nodes)
+    assert all(
+        n["source"] == "declared"
+        and n["confidence"] == 0.0
+        and n["verified"] is False
+        and n["verification_status"] == "unverified"
+        for n in identity_nodes
+    )
 
 
 def test_build_graph_declared_dependency_edge(tmp_path, monkeypatch):
@@ -191,6 +197,67 @@ def test_build_graph_declared_edge_suppresses_inferred_for_same_pair(tmp_path, m
     connects_edges = [e for e in graph["edges"] if e["type"] == "connects_to" and e["from"] == web["id"] and e["to"] == db["id"]]
     assert len(connects_edges) == 1
     assert connects_edges[0]["source"] == "declared"
+
+
+def test_build_graph_edges_carry_the_evidence_metadata_contract(tmp_path, monkeypatch):
+    """Every edge type emitted by build_graph must carry the permanent
+    evidence contract: source, confidence, verified, first_seen, last_seen,
+    evidence. verified must always be derived from source, never independent."""
+    from app.enterprise import create_asset, create_asset_dependency, create_vulnerability
+    from app.services.attack_graph import build_graph
+
+    uid = _setup(monkeypatch, tmp_path)
+    web = create_asset(uid, "WEB-01", asset_type="web", service_accounts="svc-web")
+    db = create_asset(uid, "DB-01", asset_type="database")
+    create_vulnerability(uid, {"asset_id": web["id"], "asset_name": "WEB-01", "title": "Apache RCE", "cve": "CVE-2024-1111", "severity": "critical", "cvss": 9.8, "status": "open"})
+    create_asset_dependency(uid, web["id"], db["id"])
+
+    graph = build_graph(uid)
+    required_keys = {"source", "confidence", "verified", "first_seen", "last_seen", "evidence"}
+    assert graph["edges"], "expected at least one edge to check"
+    for e in graph["edges"]:
+        missing = required_keys - set(e.keys())
+        assert not missing, f"edge {e.get('type')} missing metadata keys: {missing}"
+        # verified must always agree with source -- never an independently stored fact
+        assert e["verified"] == (e["source"] in ("declared", "confirmed"))
+
+
+def test_build_graph_inferred_edge_is_unverified_low_confidence(tmp_path, monkeypatch):
+    from app.enterprise import create_asset
+    from app.services.attack_graph import build_graph
+
+    uid = _setup(monkeypatch, tmp_path)
+    web = create_asset(uid, "WEB-01", asset_type="web")
+    db = create_asset(uid, "DB-01", asset_type="database")
+
+    graph = build_graph(uid)
+    edge = next(e for e in graph["edges"] if e["type"] == "connects_to")
+    assert edge["from"] == web["id"] and edge["to"] == db["id"]
+    assert edge["source"] == "inferred"
+    assert edge["verified"] is False
+    assert 0 < edge["confidence"] < 1.0
+    assert edge["evidence"]  # never blank -- an unverified edge must explain itself
+
+
+def test_build_graph_confirmed_dependency_is_verified_full_confidence(tmp_path, monkeypatch):
+    """A dependency declared with source='confirmed' (the confirm-connection
+    flow, converting a prior inference into an administrator-backed fact)
+    must show up in the graph as verified, full-confidence, and its evidence
+    text must note that it originated as an inference."""
+    from app.enterprise import create_asset, create_asset_dependency
+    from app.services.attack_graph import build_graph
+
+    uid = _setup(monkeypatch, tmp_path)
+    web = create_asset(uid, "WEB-01", asset_type="web")
+    db = create_asset(uid, "DB-01", asset_type="database")
+    create_asset_dependency(uid, web["id"], db["id"], source="confirmed", confidence=1.0)
+
+    graph = build_graph(uid)
+    edge = next(e for e in graph["edges"] if e["type"] == "connects_to")
+    assert edge["source"] == "confirmed"
+    assert edge["confidence"] == 1.0
+    assert edge["verified"] is True
+    assert "confirmed" in edge["evidence"].lower() or "originally" in edge["evidence"].lower()
 
 
 def test_build_graph_no_dependencies_between_unrelated_assets(tmp_path, monkeypatch):

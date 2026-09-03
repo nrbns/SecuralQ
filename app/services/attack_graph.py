@@ -20,18 +20,32 @@ fabricated one. Every node and edge below traces back to a real row:
     Business Criticality <- a node ATTRIBUTE (asset.business_criticality or
                           .criticality), not a satellite node — same reasoning.
     Identity          <- ONLY emitted when a user has filled in
-                          asset.service_accounts. There is no IAM/AD/account
-                          data source anywhere in this product. Every
-                          Identity node is tagged source="declared",
-                          confidence="unverified" — never presented as fact.
-    connects_to edges <- from asset_dependencies: either a user's own
-                          declaration (source="declared", confidence=1.0) or
+                          asset.service_accounts. There is no IAM/AD/Entra/
+                          LDAP/Okta/IAM data source anywhere in this product
+                          yet. Every Identity node/edge is source="declared",
+                          confidence=0.0, verified=False — never presented
+                          as fact. Adding a real IAM connector later would
+                          let this move declared -> observed -> verified.
+    connects_to edges <- from asset_dependencies: a user's own declaration
+                          or confirmation of a suggestion (source="declared"
+                          or "confirmed", confidence=1.0, verified=True), or
                           a same-tenant heuristic guess (source="inferred",
-                          confidence well below 1.0 — an internet-exposed
-                          asset paired with a database-categorized asset,
-                          see _infer_dependencies). No network flow capture
-                          or app-architecture input exists, so inferred
-                          edges are guesses and are always labeled as such.
+                          confidence 0.3, verified=False — an internet-
+                          exposed asset paired with a database-categorized
+                          asset, see _infer_dependencies). No network flow
+                          capture or app-architecture input exists yet, so
+                          inferred edges are guesses and are always labeled
+                          as such — never asserted as fact.
+
+Every edge carries a permanent evidence contract (see _edge_meta): source,
+confidence, verified, first_seen, last_seen, evidence. `verified` is always
+derived from `source` (declared/confirmed = a human vouched for it,
+inferred = a guess, however confident) rather than stored separately, so
+it can never drift out of sync with what actually backs the edge. Any AI
+narration built on this graph should read `verified` before asserting a
+relationship as fact — e.g. "SecuraIQ inferred a likely connection... with
+30% confidence... confirm it to use it for high-confidence decisions",
+never "X definitely connects to Y" for an unverified edge.
 
 Attack path risk = vuln_risk x exposure_confidence x business_impact x
 path_length_factor. See _compute_path_risk for the exact formula.
@@ -54,6 +68,25 @@ _MAX_RAW_PATHS = 3000  # guardrail against runaway recursion in dense declared-d
 
 def _is_database_asset(asset: dict[str, Any]) -> bool:
     return normalize_asset_category(asset.get("asset_type")) == _DB_CATEGORY
+
+
+def _edge_meta(*, source: str, confidence: float, evidence: str, first_seen: float, last_seen: float) -> dict[str, Any]:
+    """The evidence contract every edge in this graph carries, permanently:
+    source, confidence, verified, first_seen, last_seen, evidence. `verified`
+    is derived from `source` rather than stored separately — "declared" and
+    "confirmed" are both a human vouching for the relationship (verified),
+    "inferred" never is, no matter how high its confidence gets. This is
+    what lets the UI (and any future AI narration) say "SecuraIQ inferred a
+    likely connection... confirm to use it for high-confidence decisions"
+    instead of quietly asserting a guess as fact."""
+    return {
+        "source": source,
+        "confidence": confidence,
+        "verified": source in ("declared", "confirmed"),
+        "first_seen": first_seen,
+        "last_seen": last_seen,
+        "evidence": evidence,
+    }
 
 
 def _split_accounts(raw: str) -> list[str]:
@@ -93,12 +126,16 @@ def _advisory_cves_for_products(user_id: str, product_ids: list[str]) -> dict[st
     return out
 
 
-def _infer_dependencies(assets: list[dict[str, Any]], declared_pairs: set[tuple[str, str]]) -> list[dict[str, Any]]:
+def _infer_dependencies(assets: list[dict[str, Any]], declared_pairs: set[tuple[str, str]], *, computed_at: float) -> list[dict[str, Any]]:
     """A low-confidence guess, never a fact: pair every internet-exposed
     asset with every database-categorized asset in the same tenant that
-    doesn't already have a declared edge between them. Capped to avoid
-    O(n^2) blowup on large inventories — beyond that size, declared edges
-    (or a smaller engagement scope) are required."""
+    doesn't already have a declared (or confirmed) edge between them.
+    Capped to avoid O(n^2) blowup on large inventories — beyond that size,
+    declared edges (or a smaller engagement scope) are required.
+
+    Not persisted — recomputed fresh on every graph build, so its
+    first_seen/last_seen are both "now": an inference has no history, only
+    a moment it was last suggested."""
     if len(assets) > _MAX_ASSETS_FOR_INFERENCE:
         return []
     exposed = [a for a in assets if is_internet_exposed_category(a.get("asset_type"))]
@@ -113,9 +150,13 @@ def _infer_dependencies(assets: list[dict[str, Any]], declared_pairs: set[tuple[
                     "from": e["id"],
                     "to": d["id"],
                     "type": "connects_to",
-                    "source": "inferred",
-                    "confidence": _INFERRED_CONFIDENCE,
-                    "basis": "internet-exposed asset + database asset, same tenant, no declared link",
+                    **_edge_meta(
+                        source="inferred",
+                        confidence=_INFERRED_CONFIDENCE,
+                        evidence="Internet-exposed asset paired with a database-categorized asset in the same tenant, with no declared or confirmed link — a security-inference heuristic, not an observation.",
+                        first_seen=computed_at,
+                        last_seen=computed_at,
+                    ),
                 }
             )
     return out
@@ -150,6 +191,7 @@ def build_graph(
 
     declared = list_asset_dependencies(user_id, engagement_id=engagement_id, org_id=org_id)
 
+    computed_at = now()
     nodes: list[dict[str, Any]] = [{"id": "internet", "type": "internet", "label": "Internet"}]
     edges: list[dict[str, Any]] = []
 
@@ -171,7 +213,20 @@ def build_graph(
             }
         )
         if exposed:
-            edges.append({"from": "internet", "to": aid, "type": "exposed_to", "source": "derived", "confidence": 1.0})
+            edges.append(
+                {
+                    "from": "internet",
+                    "to": aid,
+                    "type": "exposed_to",
+                    **_edge_meta(
+                        source="derived",
+                        confidence=1.0,
+                        evidence=f"Asset category '{asset.get('asset_type') or 'other'}' is treated as internet-facing.",
+                        first_seen=computed_at,
+                        last_seen=computed_at,
+                    ),
+                }
+            )
 
         products = _installed_products_for_asset(user_id, aid)
         product_ids = [p["product_id"] for p in products]
@@ -186,7 +241,20 @@ def build_graph(
                     "asset_id": aid,
                 }
             )
-            edges.append({"from": aid, "to": sw_node_id, "type": "runs", "source": "derived", "confidence": 1.0})
+            edges.append(
+                {
+                    "from": aid,
+                    "to": sw_node_id,
+                    "type": "runs",
+                    **_edge_meta(
+                        source="derived",
+                        confidence=1.0,
+                        evidence="Software installation record (agent inventory or scan).",
+                        first_seen=computed_at,
+                        last_seen=computed_at,
+                    ),
+                }
+            )
 
         for v in vulns_by_asset.get(aid, []):
             vuln_node_id = f"vuln:{v['vuln_id']}"
@@ -209,10 +277,36 @@ def build_graph(
                 for p in products:
                     if cve_upper in advisories.get(p["product_id"], set()):
                         sw_node_id = f"sw:{p['product_id']}:{aid}"
-                        edges.append({"from": sw_node_id, "to": vuln_node_id, "type": "affected_by", "source": "derived", "confidence": 1.0})
+                        edges.append(
+                            {
+                                "from": sw_node_id,
+                                "to": vuln_node_id,
+                                "type": "affected_by",
+                                **_edge_meta(
+                                    source="derived",
+                                    confidence=1.0,
+                                    evidence=f"Advisory match: installed {p['product_name']} {p['version']} against a known {cve_upper} advisory.",
+                                    first_seen=computed_at,
+                                    last_seen=computed_at,
+                                ),
+                            }
+                        )
                         attached_to_software = True
             if not attached_to_software:
-                edges.append({"from": aid, "to": vuln_node_id, "type": "affected_by", "source": "derived", "confidence": 1.0})
+                edges.append(
+                    {
+                        "from": aid,
+                        "to": vuln_node_id,
+                        "type": "affected_by",
+                        **_edge_meta(
+                            source="derived",
+                            confidence=1.0,
+                            evidence="Open finding recorded directly against this asset (no matching software installation to attach it to).",
+                            first_seen=computed_at,
+                            last_seen=computed_at,
+                        ),
+                    }
+                )
 
         service_accounts = (asset.get("service_accounts") or "").strip()
         for idx, account_name in enumerate(_split_accounts(service_accounts)):
@@ -223,30 +317,57 @@ def build_graph(
                     "type": "identity",
                     "label": account_name,
                     "source": "declared",
-                    "confidence": "unverified",
+                    "confidence": 0.0,
+                    "verified": False,
+                    "verification_status": "unverified",
                 }
             )
-            edges.append({"from": aid, "to": identity_id, "type": "has_identity", "source": "declared", "confidence": "unverified"})
+            edges.append(
+                {
+                    "from": aid,
+                    "to": identity_id,
+                    "type": "has_identity",
+                    **_edge_meta(
+                        source="declared",
+                        confidence=0.0,
+                        evidence="User-supplied service account name — no AD/Entra/LDAP/Okta/IAM verification performed.",
+                        first_seen=computed_at,
+                        last_seen=computed_at,
+                    ),
+                    "verification_status": "unverified",
+                }
+            )
 
     declared_pairs: set[tuple[str, str]] = set()
     for d in declared:
         src, tgt = d.get("source_asset_id"), d.get("target_asset_id")
         if src in assets_by_id and tgt in assets_by_id:
+            row_source = d.get("source") or "declared"
+            evidence = d.get("notes") or (
+                "Administrator declaration." if row_source in ("declared", "confirmed") else "Security inference."
+            )
+            if row_source == "confirmed":
+                evidence = f"Confirmed by an administrator (originally an automated suggestion). {evidence}".strip()
             edges.append(
                 {
                     "from": src,
                     "to": tgt,
                     "type": d.get("relationship") or "connects_to",
-                    "source": d.get("source") or "declared",
-                    "confidence": d.get("confidence", 1.0),
+                    **_edge_meta(
+                        source=row_source,
+                        confidence=float(d.get("confidence", 1.0)),
+                        evidence=evidence,
+                        first_seen=float(d.get("created_at") or computed_at),
+                        last_seen=float(d.get("updated_at") or computed_at),
+                    ),
                     "notes": d.get("notes") or "",
                 }
             )
             declared_pairs.add((src, tgt))
 
-    edges.extend(_infer_dependencies(assets, declared_pairs))
+    edges.extend(_infer_dependencies(assets, declared_pairs, computed_at=computed_at))
 
-    return {"generated_at": now(), "nodes": nodes, "edges": edges, "total_assets": len(assets)}
+    return {"generated_at": computed_at, "nodes": nodes, "edges": edges, "total_assets": len(assets)}
 
 
 def _compute_path_risk(path_edges: list[dict[str, Any]], target_node: dict[str, Any], target_vulns: list[dict[str, Any]]) -> dict[str, Any]:

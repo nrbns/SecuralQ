@@ -63,6 +63,27 @@ def test_declare_dependency_success(tmp_path, monkeypatch):
     assert body["notes"] == "app tier to db tier"
 
 
+def test_confirm_inferred_dependency_marks_source_confirmed(tmp_path, monkeypatch):
+    """The confirm-connection flow: a security team member confirms a
+    previously-inferred connects_to edge. It reuses this same create route
+    with confirmed_from_inference=True rather than a separate endpoint, and
+    the resulting row must read source='confirmed' (not 'declared') so the
+    evidence trail still shows it originated as an inference."""
+    client, token, _uid = _client_and_token(tmp_path, monkeypatch)
+    a = client.post("/api/assets", json={"name": "web"}, headers=_auth(token)).json()
+    b = client.post("/api/assets", json={"name": "db"}, headers=_auth(token)).json()
+
+    res = client.post(
+        f"/api/assets/{a['id']}/dependencies",
+        json={"target_asset_id": b["id"], "confirmed_from_inference": True},
+        headers=_auth(token),
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["source"] == "confirmed"
+    assert body["confidence"] == 1.0
+
+
 def test_declare_dependency_rejects_unknown_source_or_target(tmp_path, monkeypatch):
     client, token, _uid = _client_and_token(tmp_path, monkeypatch)
     a = client.post("/api/assets", json={"name": "web"}, headers=_auth(token)).json()

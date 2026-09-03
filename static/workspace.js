@@ -4184,20 +4184,34 @@
       const bandCls = (band) =>
         band === "critical" || band === "high" ? "status-error" : band === "medium" ? "status-planned" : "status-done";
 
+      const assetLabel = (id) => {
+        const a = assets.find((x) => x.id === id);
+        return (a && (a.name || a.id)) || id;
+      };
+
       const pathsHtml = paths.length
-        ? `<p class="hint" style="margin:0 0 8px">${data.total_paths} attack path(s) computed from real asset/software/vulnerability data, plus any declared or inferred asset connections. Declared connections are exact; inferred ones are low-confidence guesses and are labeled as such.</p>
+        ? `<p class="hint" style="margin:0 0 8px">${data.total_paths} attack path(s) computed from real asset/software/vulnerability data, plus any declared or inferred asset connections. Declared and confirmed connections are treated as fact; inferred ones are unverified guesses SecuraIQ makes from asset characteristics alone, shown at their real confidence, until someone confirms them.</p>
           <div class="attack-paths-list" style="display:flex;flex-direction:column;gap:8px;margin-bottom:12px">
             ${paths
-              .map((p) => {
+              .map((p, pi) => {
                 const route = p.nodes.map((n) => escapeHtml(n.label)).join(" &rarr; ");
                 const worst = p.worst_vulnerability;
-                const inferredHop = (p.edges || []).some((e) => e.source === "inferred");
+                const inferredEdges = (p.edges || []).filter((e) => e.source === "inferred" && e.type === "connects_to");
                 return `<div class="attack-path-row" style="padding:8px 12px;border-radius:8px;background:var(--cc-surface-2,rgba(255,255,255,0.04))">
                   <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
                     <div><span class="auto-job-status ${bandCls(p.band)}">${escapeHtml(String(p.risk_score))}</span> <span style="margin-left:6px">${route}</span></div>
-                    <span class="hint">${p.hops} hop(s)${inferredHop ? " · contains an inferred link (unconfirmed)" : ""}</span>
+                    <span class="hint">${p.hops} hop(s)</span>
                   </div>
                   ${worst ? `<div class="hint" style="margin-top:4px">Driven by: <strong>${escapeHtml(worst.label || worst.cve || "")}</strong>${worst.cve ? ` <span class="hint">${escapeHtml(worst.cve)}</span>` : ""}${worst.kev ? ` <span class="auto-job-status status-error">KEV</span>` : ""} &middot; reaches <strong>${escapeHtml((p.target_asset || {}).label || "")}</strong>${(p.target_asset || {}).business_criticality ? ` <span class="hint">(${escapeHtml(p.target_asset.business_criticality)} business criticality)</span>` : ""}</div>` : ""}
+                  ${inferredEdges
+                    .map((e, ei) => {
+                      const pct = Math.round((e.confidence || 0) * 100);
+                      return `<div class="hint" style="margin-top:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                        <span>SecuraIQ inferred a likely connection between <strong>${escapeHtml(assetLabel(e.from))}</strong> and <strong>${escapeHtml(assetLabel(e.to))}</strong> with ${pct}% confidence, based on asset characteristics alone — not an observed connection. Confirm it to use this path for high-confidence decisions.</span>
+                        <button type="button" class="btn-secondary attack-path-confirm-edge" data-from="${escapeHtml(e.from)}" data-to="${escapeHtml(e.to)}" data-path="${pi}" data-edge="${ei}">Confirm connection</button>
+                      </div>`;
+                    })
+                    .join("")}
                 </div>`;
               })
               .join("")}
@@ -4225,6 +4239,33 @@
           : "";
 
       el.innerHTML = pathsHtml + declareFormHtml;
+
+      el.querySelectorAll(".attack-path-confirm-edge").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const fromId = btn.getAttribute("data-from");
+          const toId = btn.getAttribute("data-to");
+          btn.disabled = true;
+          btn.textContent = "Confirming…";
+          try {
+            const r = await fetch(`/api/assets/${encodeURIComponent(fromId)}/dependencies`, {
+              method: "POST",
+              headers: authHeaders({ "Content-Type": "application/json" }),
+              body: JSON.stringify({ target_asset_id: toId, confirmed_from_inference: true }),
+            });
+            if (!r.ok) {
+              const d = await r.json().catch(() => ({}));
+              throw new Error(d.detail || `HTTP ${r.status}`);
+            }
+            if (typeof notifyUser === "function") notifyUser("Connection confirmed — this path is now backed by a verified relationship.");
+            renderAttackPathsPanel();
+            renderRiskSimulatorPanel();
+          } catch (err) {
+            alert(err.message || "Couldn't confirm that connection");
+            btn.disabled = false;
+            btn.textContent = "Confirm connection";
+          }
+        });
+      });
 
       const form = qs("declareDependencyForm");
       if (form) {
