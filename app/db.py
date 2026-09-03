@@ -446,6 +446,7 @@ def init_schema(conn: Any | None = None) -> None:
     _migrate_users(c)
     _migrate_engagements(c)
     _migrate_assets(c)
+    _migrate_remediation_plans(c)
 
 
 def _migrate_users(c: Any) -> None:
@@ -557,6 +558,71 @@ def _migrate_asset_dependencies(c: Any) -> None:
     c.execute(
         "CREATE INDEX IF NOT EXISTS idx_asset_deps_target ON asset_dependencies(user_id, target_asset_id)"
     )
+    c.commit()
+
+
+def _migrate_remediation_plans(c: Any) -> None:
+    """A Remediation Plan is a frozen snapshot of one Risk Reduction
+    Simulator group (see app.services.risk_priority.compute_risk_simulation)
+    at the moment it was created -- title/cve, how many findings and assets
+    it covers, its estimated risk-reduction %, and its real attack-path
+    disruption counts from app.services.attack_graph. Snapshotting matters
+    because the underlying open-findings set changes over time (new scans,
+    resolved vulns); a plan should keep showing what it targeted when a
+    security team compared and approved it, not silently drift.
+
+    disruption_band/explanation are DERIVED at creation time from real
+    fields only (asset count, business-criticality of affected assets,
+    how many have an online, currently-patchable SecuraIQ agent) -- see
+    app.services.remediation for the exact, documented formula. Nothing
+    here is a model-invented estimate.
+
+    campaign_id links a plan to a real securaiq_patch_campaigns row once
+    one exists for it (see app.agents.create_campaign) -- a plan can only
+    reach status='executing' once a real campaign is linked; there is no
+    automatic multi-asset campaign fabrication here, since campaigns today
+    can only represent a package-manager upgrade (SUPPORTED_COMMAND_KINDS
+    in app.agents), and guessing that safely across many assets at once is
+    not something this product does blindly.
+    """
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS remediation_plans (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            engagement_id TEXT,
+            org_id TEXT,
+            group_key TEXT NOT NULL,
+            title TEXT NOT NULL DEFAULT '',
+            cve TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'draft',
+            vulns_removed INTEGER NOT NULL DEFAULT 0,
+            assets_affected INTEGER NOT NULL DEFAULT 0,
+            asset_ids_json TEXT NOT NULL DEFAULT '[]',
+            internet_exposed_assets INTEGER NOT NULL DEFAULT 0,
+            business_critical_assets INTEGER NOT NULL DEFAULT 0,
+            agent_patchable_assets INTEGER NOT NULL DEFAULT 0,
+            kev INTEGER NOT NULL DEFAULT 0,
+            quick_win INTEGER NOT NULL DEFAULT 0,
+            critical_high_count INTEGER NOT NULL DEFAULT 0,
+            estimated_risk_reduction_pct REAL NOT NULL DEFAULT 0.0,
+            attack_paths_disrupted INTEGER NOT NULL DEFAULT 0,
+            business_critical_paths_disrupted INTEGER NOT NULL DEFAULT 0,
+            disruption_band TEXT NOT NULL DEFAULT 'low',
+            explanation TEXT NOT NULL DEFAULT '',
+            campaign_id TEXT,
+            risk_before REAL,
+            risk_after REAL,
+            approved_at REAL,
+            approved_by TEXT NOT NULL DEFAULT '',
+            measured_at REAL,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL
+        )
+        """
+    )
+    c.execute("CREATE INDEX IF NOT EXISTS idx_remediation_plans_user ON remediation_plans(user_id, created_at DESC)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_remediation_plans_group ON remediation_plans(user_id, group_key)")
     c.commit()
 
 

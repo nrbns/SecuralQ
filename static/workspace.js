@@ -4150,7 +4150,7 @@
         </p>
         ${headline}
         <div class="data-table-wrap"><table class="data-table">
-          <thead><tr><th>If fixed</th><th>Assets</th><th>Exposed</th><th>Vulns removed</th><th>Attack paths disrupted</th><th>Est. risk reduction</th></tr></thead>
+          <thead><tr><th>If fixed</th><th>Assets</th><th>Exposed</th><th>Vulns removed</th><th>Attack paths disrupted</th><th>Est. risk reduction</th><th></th></tr></thead>
           <tbody>${groups
             .map(
               (g) => `<tr>
@@ -4160,11 +4160,146 @@
                 <td class="hint">${Number(g.vulns_removed)}</td>
                 <td class="hint">${g.attack_paths_disrupted ? `${Number(g.attack_paths_disrupted)}${g.business_critical_paths_disrupted ? ` <span class="auto-job-status status-error">${Number(g.business_critical_paths_disrupted)} business-critical</span>` : ""}` : "—"}</td>
                 <td><span class="auto-job-status ${g.estimated_risk_reduction_pct > 0 ? "status-done" : "status-planned"}">${escapeHtml(String(g.estimated_risk_reduction_pct))}%</span></td>
+                <td><button type="button" class="btn-secondary sim-create-plan" data-group-key="${escapeHtml(g.group_key)}">Create Remediation Plan</button></td>
               </tr>`
             )
             .join("")}</tbody></table></div>`;
+
+      el.querySelectorAll(".sim-create-plan").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const groupKey = btn.getAttribute("data-group-key");
+          btn.disabled = true;
+          btn.textContent = "Creating…";
+          try {
+            const r = await fetch("/api/risk/remediation-plans", {
+              method: "POST",
+              headers: authHeaders({ "Content-Type": "application/json" }),
+              body: JSON.stringify({ group_key: groupKey }),
+            });
+            if (!r.ok) {
+              const d = await r.json().catch(() => ({}));
+              throw new Error(d.detail || `HTTP ${r.status}`);
+            }
+            if (typeof notifyUser === "function") notifyUser("Remediation plan created — see Remediation Plans below.");
+            btn.textContent = "Plan created";
+            if (typeof renderRemediationPlansPanel === "function") renderRemediationPlansPanel();
+          } catch (err) {
+            alert(err.message || "Couldn't create a remediation plan");
+            btn.disabled = false;
+            btn.textContent = "Create Remediation Plan";
+          }
+        });
+      });
     } catch (err) {
       el.innerHTML = `<p class="hint">Couldn't load the risk simulator right now. <span class="hint-sub">(${escapeHtml(err.message || String(err))})</span></p>`;
+    }
+  }
+
+  async function renderRemediationPlansPanel() {
+    const el = qs("remediationPlansBody");
+    if (!el) return;
+    try {
+      const res = await fetch("/api/risk/remediation-plans", { headers: authHeaders() });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+      const plans = (data.plans || []).filter((p) => p.status !== "rejected");
+      if (!plans.length) {
+        el.innerHTML = `<p class="hint">No remediation plans yet. Click <strong>Create Remediation Plan</strong> on a row in the Risk Reduction Simulator above to compare candidate fixes side by side.</p>`;
+        return;
+      }
+      const bandCls = (band) => (band === "high" ? "status-error" : band === "medium" ? "status-planned" : "status-done");
+      const statusCls = (st) =>
+        st === "measured" || st === "verified"
+          ? "status-done"
+          : st === "executing" || st === "approved"
+          ? "status-planned"
+          : "status-planned";
+      el.innerHTML = `<p class="hint" style="margin:0 0 8px">Compare candidate fixes before committing to one. Approving a plan doesn't patch anything by itself -- it still routes through the same agent approval workflow as any other patch.</p>
+        <div class="data-table-wrap"><table class="data-table">
+          <thead><tr><th>Plan</th><th>Risk reduction</th><th>Attack paths</th><th>Disruption</th><th>Status</th><th></th></tr></thead>
+          <tbody>${plans
+            .map(
+              (p) => `<tr>
+                <td><strong>${escapeHtml(p.title || p.cve || "Untitled finding")}</strong>${p.cve ? ` <span class="hint">${escapeHtml(p.cve)}</span>` : ""}
+                  <div class="hint" style="margin-top:2px;max-width:420px">${escapeHtml(p.explanation || "")}</div>
+                </td>
+                <td><span class="auto-job-status ${p.estimated_risk_reduction_pct > 0 ? "status-done" : "status-planned"}">${escapeHtml(String(p.estimated_risk_reduction_pct))}%</span></td>
+                <td class="hint">${p.attack_paths_disrupted ? `${Number(p.attack_paths_disrupted)}${p.business_critical_paths_disrupted ? ` <span class="auto-job-status status-error">${Number(p.business_critical_paths_disrupted)} biz-critical</span>` : ""}` : "—"}</td>
+                <td><span class="auto-job-status ${bandCls(p.disruption_band)}">${escapeHtml(p.disruption_band)}</span></td>
+                <td><span class="auto-job-status ${statusCls(p.status)}">${escapeHtml(p.status)}</span>${p.risk_after != null ? `<div class="hint" style="margin-top:2px">${escapeHtml(String(p.risk_before))} &rarr; ${escapeHtml(String(p.risk_after))}</div>` : ""}</td>
+                <td class="reports-dl-cell">
+                  ${p.status === "draft" ? `<button type="button" class="btn-primary-cc plan-approve" data-id="${escapeHtml(p.id)}">Approve</button><button type="button" class="btn-secondary plan-reject" data-id="${escapeHtml(p.id)}">Reject</button>` : ""}
+                  ${p.status === "approved" ? `<span class="hint">Link a Patch Campaign via "Patch via Agent" on the affected finding(s), then use its ID here.</span>` : ""}
+                  ${p.status === "executing" || p.status === "verified" ? `<button type="button" class="btn-secondary plan-remeasure" data-id="${escapeHtml(p.id)}">Remeasure risk</button>` : ""}
+                  <button type="button" class="btn-secondary plan-delete" data-id="${escapeHtml(p.id)}">Delete</button>
+                </td>
+              </tr>`
+            )
+            .join("")}</tbody></table></div>`;
+
+      el.querySelectorAll(".plan-approve").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const id = btn.getAttribute("data-id");
+          btn.disabled = true;
+          try {
+            const r = await fetch(`/api/risk/remediation-plans/${encodeURIComponent(id)}/approve`, { method: "POST", headers: authHeaders() });
+            if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.detail || `HTTP ${r.status}`); }
+            if (typeof notifyUser === "function") notifyUser("Remediation plan approved.");
+            renderRemediationPlansPanel();
+          } catch (err) {
+            alert(err.message || "Approve failed");
+            btn.disabled = false;
+          }
+        });
+      });
+      el.querySelectorAll(".plan-reject").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const id = btn.getAttribute("data-id");
+          btn.disabled = true;
+          try {
+            const r = await fetch(`/api/risk/remediation-plans/${encodeURIComponent(id)}/reject`, { method: "POST", headers: authHeaders() });
+            if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.detail || `HTTP ${r.status}`); }
+            renderRemediationPlansPanel();
+          } catch (err) {
+            alert(err.message || "Reject failed");
+            btn.disabled = false;
+          }
+        });
+      });
+      el.querySelectorAll(".plan-remeasure").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const id = btn.getAttribute("data-id");
+          btn.disabled = true;
+          btn.textContent = "Remeasuring…";
+          try {
+            const r = await fetch(`/api/risk/remediation-plans/${encodeURIComponent(id)}/remeasure`, { method: "POST", headers: authHeaders() });
+            if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.detail || `HTTP ${r.status}`); }
+            if (typeof notifyUser === "function") notifyUser("Risk remeasured against current data.");
+            renderRemediationPlansPanel();
+          } catch (err) {
+            alert(err.message || "Remeasure failed");
+            btn.disabled = false;
+            btn.textContent = "Remeasure risk";
+          }
+        });
+      });
+      el.querySelectorAll(".plan-delete").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const id = btn.getAttribute("data-id");
+          if (!confirm("Delete this remediation plan? This doesn't affect any linked campaign.")) return;
+          btn.disabled = true;
+          try {
+            const r = await fetch(`/api/risk/remediation-plans/${encodeURIComponent(id)}`, { method: "DELETE", headers: authHeaders() });
+            if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.detail || `HTTP ${r.status}`); }
+            renderRemediationPlansPanel();
+          } catch (err) {
+            alert(err.message || "Delete failed");
+            btn.disabled = false;
+          }
+        });
+      });
+    } catch (err) {
+      el.innerHTML = `<p class="hint">Couldn't load remediation plans right now. <span class="hint-sub">(${escapeHtml(err.message || String(err))})</span></p>`;
     }
   }
 
@@ -4998,6 +5133,10 @@
         <header><h2>Risk Reduction Simulator</h2></header>
         <div id="riskSimulatorBody"><p class="hint">Loading…</p></div>
       </section>
+      <section class="cc-panel" id="remediationPlansPanel" style="margin-top:1rem">
+        <header><h2>Remediation Plans</h2></header>
+        <div id="remediationPlansBody"><p class="hint">Loading…</p></div>
+      </section>
       <section class="cc-panel" id="attackPathsPanel" style="margin-top:1rem">
         <header><h2>Attack Paths</h2></header>
         <div id="attackPathsBody"><p class="hint">Loading…</p></div>
@@ -5056,6 +5195,7 @@
     body.dataset.socRendered = "1";
     renderRiskPriorityPanel();
     renderRiskSimulatorPanel();
+    renderRemediationPlansPanel();
     renderAttackPathsPanel();
     renderAgentsPanel();
     renderXdrPanel();
