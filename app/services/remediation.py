@@ -31,9 +31,19 @@ product) and are computed, not invented:
   with the plan's own real fields (KEV, attack paths disrupted,
   business-criticality, quick-win, risk-reduction %). It never asserts
   anything the data doesn't support, and it never treats an unverified
-  attack-graph edge as fact -- attack_paths_disrupted already only counts
-  paths computed from the current graph (declared + confirmed + inferred
-  connects_to edges all included, same as the simulator itself).
+  attack-graph edge as fact: attack_paths_disrupted counts every path
+  computed from the current graph (declared + confirmed + inferred
+  connects_to edges all included, same as the simulator itself), but
+  verified_attack_paths_disrupted separately counts only the paths that do
+  NOT cross an inferred (guessed) connects_to hop. A single-hop
+  Internet -> vulnerable-asset path counts as confirmed even though its
+  exposed_to edge is technically source="derived" rather than "declared"
+  -- it's computed straight from real category/inventory data, not a
+  guess. Only source="inferred" (the same category the "Confirm
+  connection" UI flow targets) makes a path unconfirmed. The explanation
+  text always splits "N confirmed, M relying on an unconfirmed link"
+  rather than reporting one combined number that would quietly launder an
+  inference into a fact.
 
 A plan can only reach status='executing' once a REAL Patch Campaign is
 linked to it (see `link_campaign`). This module never fabricates a
@@ -127,9 +137,13 @@ def _explain(group: dict[str, Any], *, business_critical_assets: int, agent_patc
     paths = group.get("attack_paths_disrupted", 0)
     if paths:
         biz_paths = group.get("business_critical_paths_disrupted", 0)
+        verified_paths = group.get("verified_attack_paths_disrupted", 0)
+        unverified_paths = paths - verified_paths
         parts.append(
             f"Disrupts {paths} attack path{'s' if paths != 1 else ''} in the current graph"
-            f"{f' ({biz_paths} reaching a business-critical target)' if biz_paths else ''}."
+            f"{f' ({biz_paths} reaching a business-critical target)' if biz_paths else ''}"
+            f" -- {verified_paths} confirmed"
+            f"{f', {unverified_paths} relying on at least one unconfirmed inferred connection' if unverified_paths else ''}."
         )
     pct = group.get("estimated_risk_reduction_pct", 0)
     if pct:
@@ -179,6 +193,7 @@ def _find_group(user_id: str, group_key: str, *, org_id: str | None, engagement_
         "estimated_risk_reduction_pct": max(0.0, reduction_pct),
         "attack_paths_disrupted": 0,
         "business_critical_paths_disrupted": 0,
+        "verified_attack_paths_disrupted": 0,
     }
 
     try:
@@ -188,6 +203,7 @@ def _find_group(user_id: str, group_key: str, *, org_id: str | None, engagement_
         vuln_id_set = group_ids
         disrupted = 0
         biz_disrupted = 0
+        verified_disrupted = 0
         for path in ap_result["paths"]:
             path_vuln_ids = {v.get("vuln_id") for v in path.get("vulnerabilities", []) if v.get("vuln_id")}
             if not (path_vuln_ids & vuln_id_set):
@@ -196,8 +212,24 @@ def _find_group(user_id: str, group_key: str, *, org_id: str | None, engagement_
             target = path.get("target_asset") or {}
             if str(target.get("business_criticality") or target.get("criticality") or "medium").lower() in ("critical", "high"):
                 biz_disrupted += 1
+            # A path is "confirmed" if it does NOT rely on an inferred
+            # (guessed, low-confidence) connects_to hop anywhere along the
+            # route. This is deliberately narrower than the edge-level
+            # `verified` flag: exposed_to/runs/affected_by edges carry
+            # source="derived" (computed straight from real inventory/
+            # category data -- not a human attestation, but not a guess
+            # either), so a single-hop Internet -> vulnerable-asset path is
+            # real evidence, not a hypothesis, even though none of its
+            # edges are literally "declared". Only source="inferred" --
+            # the one genuinely speculative category, the same one the
+            # "Confirm connection" UI flow targets -- makes a path
+            # unconfirmed. Never let a path that crosses a guessed link
+            # silently count as confirmed.
+            if not any(e.get("source") == "inferred" for e in path.get("edges", [])):
+                verified_disrupted += 1
         group["attack_paths_disrupted"] = disrupted
         group["business_critical_paths_disrupted"] = biz_disrupted
+        group["verified_attack_paths_disrupted"] = verified_disrupted
     except Exception:
         pass  # real enhancement only -- a plan can still be created without it
 
@@ -242,10 +274,11 @@ def create_plan(
             vulns_removed, assets_affected, asset_ids_json, internet_exposed_assets,
             business_critical_assets, agent_patchable_assets, kev, quick_win,
             critical_high_count, estimated_risk_reduction_pct, attack_paths_disrupted,
-            business_critical_paths_disrupted, disruption_band, explanation,
+            business_critical_paths_disrupted, verified_attack_paths_disrupted,
+            disruption_band, explanation,
             campaign_id, risk_before, risk_after, approved_at, approved_by, measured_at,
             created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, NULL, '', NULL, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, NULL, '', NULL, ?, ?)
         """,
         (
             pid, user_id, engagement_id, org_id, group_key, group["title"], group["cve"],
@@ -253,7 +286,8 @@ def create_plan(
             group["internet_exposed_assets"], len(biz_critical_ids), len(patchable_ids),
             1 if group["kev"] else 0, 1 if group["quick_win"] else 0, group["critical_high_count"],
             group["estimated_risk_reduction_pct"], group["attack_paths_disrupted"],
-            group["business_critical_paths_disrupted"], band, explanation,
+            group["business_critical_paths_disrupted"], group["verified_attack_paths_disrupted"],
+            band, explanation,
             baseline_score, ts, ts,
         ),
     )

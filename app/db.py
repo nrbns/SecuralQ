@@ -608,6 +608,7 @@ def _migrate_remediation_plans(c: Any) -> None:
             estimated_risk_reduction_pct REAL NOT NULL DEFAULT 0.0,
             attack_paths_disrupted INTEGER NOT NULL DEFAULT 0,
             business_critical_paths_disrupted INTEGER NOT NULL DEFAULT 0,
+            verified_attack_paths_disrupted INTEGER NOT NULL DEFAULT 0,
             disruption_band TEXT NOT NULL DEFAULT 'low',
             explanation TEXT NOT NULL DEFAULT '',
             campaign_id TEXT,
@@ -623,6 +624,14 @@ def _migrate_remediation_plans(c: Any) -> None:
     )
     c.execute("CREATE INDEX IF NOT EXISTS idx_remediation_plans_user ON remediation_plans(user_id, created_at DESC)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_remediation_plans_group ON remediation_plans(user_id, group_key)")
+    cols = table_columns(c, "remediation_plans")
+    if "verified_attack_paths_disrupted" not in cols:
+        # Added after the initial table: how many of attack_paths_disrupted
+        # have EVERY edge verified (declared/confirmed) -- a path with even
+        # one inferred hop is not "confirmed", per the graph's evidence
+        # contract. Existing rows default to 0 (unknown at the time they
+        # were created) rather than silently claiming confirmation.
+        c.execute("ALTER TABLE remediation_plans ADD COLUMN verified_attack_paths_disrupted INTEGER NOT NULL DEFAULT 0")
     c.commit()
 
 

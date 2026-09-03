@@ -63,6 +63,39 @@ def test_create_plan_snapshots_a_real_simulator_group(tmp_path, monkeypatch):
     assert plan["disruption_band"] in ("low", "medium", "high")
 
 
+def test_plan_splits_confirmed_from_unconfirmed_attack_paths(tmp_path, monkeypatch):
+    """A path that never crosses an inferred connects_to hop (a direct
+    Internet -> vulnerable-asset route) must count as confirmed, even
+    though its exposed_to edge is source='derived' rather than 'declared'.
+    A path that DOES cross an inferred connects_to hop must not be counted
+    as confirmed -- the explanation text must say so explicitly, per the
+    rule that an inference can never silently become a fact."""
+    from app.enterprise import create_asset, create_vulnerability
+    from app.services.remediation import create_plan
+
+    uid = _setup(monkeypatch, tmp_path)
+    cve = "CVE-2024-4321"
+    web1 = create_asset(uid, "WEB-01", asset_type="web")
+    web2 = create_asset(uid, "WEB-02", asset_type="web")
+    create_asset(uid, "DB-01", asset_type="database")  # pairs with WEB-02 via inference
+    for a in (web1, web2):
+        create_vulnerability(
+            uid,
+            {"asset_id": a["id"], "asset_name": a["name"], "title": "Apache RCE", "cve": cve, "severity": "critical", "cvss": 9.8, "status": "open"},
+        )
+
+    plan = create_plan(uid, f"cve:{cve}")
+    # 4 paths total: Internet->WEB-01, Internet->WEB-01->DB-01,
+    # Internet->WEB-02, Internet->WEB-02->DB-01 (the inference heuristic
+    # pairs every exposed asset with every database asset in the tenant)
+    assert plan["attack_paths_disrupted"] == 4
+    # only the 2 direct single-hop paths are confirmed; the 2 crossing an
+    # inferred *->DB-01 hop are not
+    assert plan["verified_attack_paths_disrupted"] == 2
+    assert "2 confirmed" in plan["explanation"]
+    assert "2 relying on at least one unconfirmed inferred connection" in plan["explanation"]
+
+
 def test_create_plan_rejects_unknown_or_already_resolved_group(tmp_path, monkeypatch):
     from app.services.remediation import create_plan
 
