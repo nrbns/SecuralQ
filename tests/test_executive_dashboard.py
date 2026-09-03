@@ -36,6 +36,9 @@ def test_empty_state_reports_none_rather_than_fabricated_numbers(tmp_path, monke
     assert result["verified_remediation"]["verified_pct"] is None  # nothing executed yet
     assert result["active_campaigns"] == 0
     assert result["top_remaining_risks"] == []
+    assert result["active_threats"] == {"critical": 0, "high": 0, "medium": 0, "low": 0, "total": 0}
+    assert result["asset_health"] == {"healthy": 0, "at_risk": 0, "compromised": 0, "offline": 0, "total": 0}
+    assert result["ai_priority_queue"] == []
 
 
 def test_dashboard_reflects_real_open_findings_and_risk(tmp_path, monkeypatch):
@@ -144,3 +147,85 @@ def test_verified_remediation_and_active_campaigns_from_real_campaign_activity(t
     assert result_after["verified_remediation"]["total_done"] == 1
     assert result_after["verified_remediation"]["verified"] == 1
     assert result_after["verified_remediation"]["verified_pct"] == 100.0
+
+
+# --- active threats, asset health, AI priority queue (Command Center rebuild) -
+
+
+def test_active_threats_counts_only_active_by_severity(tmp_path, monkeypatch):
+    from app.agents import enroll_agent, record_threat_detections
+    from app.services.executive_dashboard import compute_executive_dashboard
+
+    uid = _setup(monkeypatch, tmp_path)
+    agent = enroll_agent(uid, name="threat-dash-agent")
+    record_threat_detections(
+        agent["agent_id"],
+        [
+            {"severity": "critical", "category": "ransomware", "title": "Ransomware indicator", "target": "/var/x"},
+            {"severity": "medium", "category": "behavioral", "title": "Odd process", "target": "/tmp/y"},
+        ],
+    )
+
+    result = compute_executive_dashboard(uid)
+    assert result["active_threats"]["critical"] == 1
+    assert result["active_threats"]["medium"] == 1
+    assert result["active_threats"]["total"] == 2
+
+
+def test_asset_health_categorizes_by_real_signals(tmp_path, monkeypatch):
+    from app.agents import enroll_agent, record_threat_detections
+    from app.enterprise import create_asset, create_vulnerability
+    from app.services.executive_dashboard import compute_executive_dashboard
+
+    uid = _setup(monkeypatch, tmp_path)
+
+    healthy = create_asset(uid, "HEALTHY-01", asset_type="web")
+
+    at_risk = create_asset(uid, "ATRISK-01", asset_type="web")
+    create_vulnerability(
+        uid, {"asset_id": at_risk["id"], "asset_name": "ATRISK-01", "title": "Old bug", "severity": "high", "status": "open"}
+    )
+
+    compromised = create_asset(uid, "COMPROMISED-01", asset_type="web")
+    agent = enroll_agent(uid, name="compromised-agent")
+    # link the agent to the compromised asset directly (bypassing the
+    # hostname-matching heuristic in checkin() -- this test only cares
+    # about asset_health reading agent.asset_id correctly)
+    from app.db import get_conn
+
+    c = get_conn()
+    c.execute("UPDATE securaiq_agents SET asset_id = ? WHERE id = ?", (compromised["id"], agent["agent_id"]))
+    c.commit()
+    record_threat_detections(
+        agent["agent_id"], [{"severity": "critical", "category": "ransomware", "title": "Active ransomware", "target": "/x"}]
+    )
+
+    result = compute_executive_dashboard(uid)
+    health = result["asset_health"]
+    assert health["total"] == 3
+    assert health["compromised"] == 1
+    assert health["at_risk"] == 1
+    assert health["healthy"] == 1
+    _ = healthy
+
+
+def test_ai_priority_queue_ranks_and_enriches_with_attack_paths(tmp_path, monkeypatch):
+    from app.enterprise import create_asset, create_vulnerability
+    from app.services.executive_dashboard import compute_executive_dashboard
+
+    uid = _setup(monkeypatch, tmp_path)
+    a = create_asset(uid, "PRIORITY-01", asset_type="web", business_criticality="critical")
+    create_vulnerability(
+        uid,
+        {"asset_id": a["id"], "asset_name": "PRIORITY-01", "title": "Apache RCE", "cve": "CVE-2024-9999", "severity": "critical", "cvss": 9.8, "status": "open"},
+    )
+
+    result = compute_executive_dashboard(uid)
+    queue = result["ai_priority_queue"]
+    assert len(queue) == 1
+    item = queue[0]
+    assert item["cve"] == "CVE-2024-9999"
+    assert item["group_key"] == "cve:CVE-2024-9999"
+    assert "verified_attack_paths_disrupted" in item
+    assert item["asset_names"] == ["PRIORITY-01"]
+    assert item["estimated_risk_reduction_pct"] >= 0

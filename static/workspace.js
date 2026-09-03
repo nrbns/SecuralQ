@@ -4481,6 +4481,9 @@
       const mttr = data.mean_remediation_time || {};
       const verified = data.verified_remediation || {};
       const topRisks = data.top_remaining_risks || [];
+      const activeThreats = data.active_threats || { critical: 0, high: 0, medium: 0, low: 0, total: 0 };
+      const assetHealth = data.asset_health || { healthy: 0, at_risk: 0, compromised: 0, offline: 0, total: 0 };
+      const priorityQueue = data.ai_priority_queue || [];
 
       const findingsChangeText =
         findings.change_since_earliest_snapshot === null || findings.change_since_earliest_snapshot === undefined
@@ -4492,13 +4495,69 @@
               return `<span class="auto-job-status ${cls}">${arrow} ${escapeHtml(String(Math.abs(c)))}</span>`;
             })();
 
+      const pathsBadge = (item) => {
+        const total = Number(item.attack_paths_disrupted || 0);
+        if (!total) return "";
+        const conf = Number(item.verified_attack_paths_disrupted || 0);
+        const unconf = total - conf;
+        return `<div class="hint" style="margin-top:2px">
+          ${total} attack path${total !== 1 ? "s" : ""} disrupted --
+          <span class="auto-job-status status-done" title="Confirmed: no inferred/guessed hop in the route">${conf} confirmed</span>
+          ${unconf ? ` <span class="auto-job-status status-planned" title="Relies on at least one unconfirmed inferred connection">${unconf} unconfirmed</span>` : ""}
+          ${item.business_critical_paths_disrupted ? ` <span class="auto-job-status status-error">${Number(item.business_critical_paths_disrupted)} reach a business-critical target</span>` : ""}
+        </div>`;
+      };
+
       el.innerHTML = `
         <p class="hint" style="margin:0 0 12px">A management view of real, measured outcomes -- not a projection. Every number here is either the current organizational risk score, a real count from open findings/inventory/campaigns, or an aggregate over actual status-change timestamps.</p>
+
+        <section class="cc-panel" style="margin-bottom:1rem">
+          <header><h2>What should I fix first?</h2></header>
+          ${
+            priorityQueue.length
+              ? `<div style="display:flex;flex-direction:column;gap:10px">
+                  ${priorityQueue
+                    .map(
+                      (item, i) => `<article class="cc-kpi" style="align-items:flex-start;text-align:left">
+                        <div style="display:flex;justify-content:space-between;width:100%;gap:12px;flex-wrap:wrap">
+                          <div>
+                            <span>#${i + 1} ${item.asset_names && item.asset_names.length ? escapeHtml(item.asset_names.join(", ")) + (item.assets_affected > item.asset_names.length ? ` +${item.assets_affected - item.asset_names.length} more` : "") : `${Number(item.assets_affected)} asset(s)`}</span>
+                            <strong style="font-size:1.05rem">${escapeHtml(item.title || item.cve || "Untitled finding")}</strong>
+                            ${item.cve ? ` <span class="hint">${escapeHtml(item.cve)}</span>` : ""}
+                            ${item.kev ? ` <span class="auto-job-status status-error">KEV</span>` : ""}
+                            ${item.quick_win ? ` <span class="auto-job-status status-done">quick win</span>` : ""}
+                            ${item.internet_exposed_assets ? ` <span class="auto-job-status status-error">internet exposed</span>` : ""}
+                          </div>
+                          <div style="text-align:right">
+                            <span class="hint">Estimated impact</span><br/>
+                            <span class="auto-job-status ${item.estimated_risk_reduction_pct > 0 ? "status-done" : "status-planned"}" style="font-size:1rem">↓ ${escapeHtml(String(item.estimated_risk_reduction_pct))}% org exposure</span>
+                          </div>
+                        </div>
+                        ${pathsBadge(item)}
+                        <button type="button" class="btn-primary-cc cc-priority-create-plan" data-group-key="${escapeHtml(item.group_key)}" style="margin-top:8px">Create remediation plan</button>
+                      </article>`
+                    )
+                    .join("")}
+                </div>`
+              : `<p class="hint">No open findings right now.</p>`
+          }
+        </section>
+
         <div class="cc-kpi-grid">
           <article class="cc-kpi">
             <span>Security exposure</span>
             <strong><span class="auto-job-status ${bandCls(exposure.band)}">${escapeHtml(String(exposure.current_score ?? 0))}</span></strong>
             <em class="hint">${changeBadge(exposure.change_pct)} over last 90d</em>
+          </article>
+          <article class="cc-kpi">
+            <span>Active threats</span>
+            <strong>${escapeHtml(String(activeThreats.total ?? 0))}</strong>
+            <em class="hint">${escapeHtml(String(activeThreats.critical ?? 0))} critical &middot; ${escapeHtml(String(activeThreats.high ?? 0))} high &middot; ${escapeHtml(String(activeThreats.medium ?? 0))} medium</em>
+          </article>
+          <article class="cc-kpi ${assetHealth.compromised ? "" : "cc-kpi-ok"}">
+            <span>Assets</span>
+            <strong>${escapeHtml(String(assetHealth.healthy ?? 0))} <span class="hint" style="font-size:0.7em">healthy</span></strong>
+            <em class="hint">${escapeHtml(String(assetHealth.at_risk ?? 0))} at risk &middot; ${escapeHtml(String(assetHealth.compromised ?? 0))} compromised &middot; ${escapeHtml(String(assetHealth.offline ?? 0))} offline</em>
           </article>
           <article class="cc-kpi">
             <span>Critical findings</span>
@@ -4556,6 +4615,31 @@
               : `<p class="hint">No open findings right now.</p>`
           }
         </section>`;
+
+      el.querySelectorAll(".cc-priority-create-plan").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const groupKey = btn.getAttribute("data-group-key");
+          btn.disabled = true;
+          btn.textContent = "Creating…";
+          try {
+            const r = await fetch("/api/risk/remediation-plans", {
+              method: "POST",
+              headers: authHeaders({ "Content-Type": "application/json" }),
+              body: JSON.stringify({ group_key: groupKey }),
+            });
+            if (!r.ok) {
+              const d = await r.json().catch(() => ({}));
+              throw new Error(d.detail || `HTTP ${r.status}`);
+            }
+            if (typeof notifyUser === "function") notifyUser("Remediation plan created — see Remediation Plans on the Risk Simulator page.");
+            btn.textContent = "Plan created";
+          } catch (err) {
+            alert(err.message || "Couldn't create a remediation plan");
+            btn.disabled = false;
+            btn.textContent = "Create remediation plan";
+          }
+        });
+      });
     } catch (err) {
       el.innerHTML = `<p class="hint">Couldn't load the executive dashboard right now. <span class="hint-sub">(${escapeHtml(err.message || String(err))})</span></p>`;
     }

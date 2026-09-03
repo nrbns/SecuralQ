@@ -131,6 +131,128 @@ def _active_campaigns_count(user_id: str) -> int:
         return 0
 
 
+def _active_threats(user_id: str) -> dict[str, Any]:
+    """Real, currently-active Sentinel detections (agents.securaiq_agent_
+    threats with status='active'), grouped by severity -- the same rows the
+    Agents panel's threat feed reads from, just counted here."""
+    from app.agents import list_threats
+
+    try:
+        threats = [t for t in list_threats(user_id, limit=500) if (t.get("status") or "") == "active"]
+    except Exception:
+        threats = []
+    counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+    for t in threats:
+        sev = (t.get("severity") or "medium").lower()
+        if sev in counts:
+            counts[sev] += 1
+    counts["total"] = len(threats)
+    return counts
+
+
+def _asset_health(user_id: str, *, org_id: str | None, engagement_id: str | None) -> dict[str, Any]:
+    """Every asset bucketed into exactly one real state, checked in this
+    priority order: compromised (an active critical/high Sentinel threat on
+    that asset) > offline (a linked SecuraIQ agent that's currently offline
+    or stale) > at_risk (an open critical/high vulnerability) > healthy.
+    Never a fabricated "healthy" default -- an asset only lands there after
+    failing every real check above."""
+    from app.agents import list_agents, list_threats
+    from app.enterprise import list_assets
+    from app.services.risk_priority import _scored_open_items
+
+    try:
+        assets = list_assets(user_id, engagement_id=engagement_id, org_id=org_id)
+    except Exception:
+        assets = []
+    if not assets:
+        return {"healthy": 0, "at_risk": 0, "compromised": 0, "offline": 0, "total": 0}
+
+    compromised_assets: set[str] = set()
+    try:
+        for t in list_threats(user_id, limit=500):
+            if (t.get("status") or "") == "active" and (t.get("severity") or "").lower() in ("critical", "high"):
+                aid = t.get("asset_id") or ""
+                if aid:
+                    compromised_assets.add(aid)
+    except Exception:
+        pass
+
+    offline_assets: set[str] = set()
+    try:
+        for a in list_agents(user_id):
+            aid = a.get("asset_id") or ""
+            if aid and a.get("status") in ("offline", "stale"):
+                offline_assets.add(aid)
+    except Exception:
+        pass
+
+    at_risk_assets: set[str] = set()
+    try:
+        for item in _scored_open_items(user_id, org_id=org_id, engagement_id=engagement_id):
+            if item.get("severity") in ("critical", "high") and item.get("asset_id"):
+                at_risk_assets.add(item["asset_id"])
+    except Exception:
+        pass
+
+    counts = {"healthy": 0, "at_risk": 0, "compromised": 0, "offline": 0}
+    for a in assets:
+        aid = a.get("id") or ""
+        if aid in compromised_assets:
+            counts["compromised"] += 1
+        elif aid in offline_assets:
+            counts["offline"] += 1
+        elif aid in at_risk_assets:
+            counts["at_risk"] += 1
+        else:
+            counts["healthy"] += 1
+    counts["total"] = len(assets)
+    return counts
+
+
+def _ai_priority_queue(user_id: str, *, org_id: str | None, engagement_id: str | None, limit: int = 5) -> list[dict[str, Any]]:
+    """"What should I fix first?" -- the hero feature. Reuses the Risk
+    Reduction Simulator's grouping/ranking (compute_risk_simulation) so the
+    ranking here is identical to the Simulator page, then enriches the top
+    N with the same confirmed/unconfirmed attack-path split and asset names
+    a Remediation Plan would show (via remediation._find_group -- the exact
+    function create_plan() itself calls), so "Create remediation plan" from
+    this queue produces a plan whose numbers already matched what was shown
+    here. Never a separate, parallel ranking model."""
+    from app.enterprise import list_assets
+    from app.services.remediation import _find_group
+    from app.services.risk_priority import compute_risk_simulation
+
+    try:
+        sim = compute_risk_simulation(user_id, org_id=org_id, engagement_id=engagement_id, limit=limit)
+    except Exception:
+        return []
+    groups = sim.get("groups", [])[:limit]
+    if not groups:
+        return []
+
+    try:
+        assets_by_id = {a["id"]: a for a in list_assets(user_id, engagement_id=engagement_id, org_id=org_id)}
+    except Exception:
+        assets_by_id = {}
+
+    queue = []
+    for g in groups:
+        enriched = dict(g)
+        try:
+            full_group, asset_ids = _find_group(user_id, g["group_key"], org_id=org_id, engagement_id=engagement_id)
+        except Exception:
+            full_group, asset_ids = None, set()
+        if full_group:
+            enriched["verified_attack_paths_disrupted"] = full_group.get("verified_attack_paths_disrupted", 0)
+        else:
+            enriched["verified_attack_paths_disrupted"] = 0
+        names = [assets_by_id[a]["name"] for a in sorted(asset_ids) if a in assets_by_id and assets_by_id[a].get("name")]
+        enriched["asset_names"] = names[:3]
+        queue.append(enriched)
+    return queue
+
+
 def compute_executive_dashboard(
     user_id: str,
     *,
@@ -145,6 +267,9 @@ def compute_executive_dashboard(
     mttr = _mean_remediation_time_days(user_id, org_id=org_id, engagement_id=engagement_id)
     verified = _verified_remediation(user_id)
     active_campaigns = _active_campaigns_count(user_id)
+    active_threats = _active_threats(user_id)
+    asset_health = _asset_health(user_id, org_id=org_id, engagement_id=engagement_id)
+    priority_queue = _ai_priority_queue(user_id, org_id=org_id, engagement_id=engagement_id, limit=5)
 
     top_risks = []
     try:
@@ -161,5 +286,8 @@ def compute_executive_dashboard(
         "mean_remediation_time": mttr,
         "verified_remediation": verified,
         "active_campaigns": active_campaigns,
+        "active_threats": active_threats,
+        "asset_health": asset_health,
+        "ai_priority_queue": priority_queue,
         "top_remaining_risks": top_risks,
     }
