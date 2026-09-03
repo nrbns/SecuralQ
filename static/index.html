@@ -66,41 +66,54 @@
         <button id="newChatBtn" type="button" class="nav-subaction">+ New chat</button>
       </nav>
 
-      <nav class="side-nav nav-group" aria-label="Security" data-nav-group>
-        <button type="button" class="nav-group-toggle" aria-expanded="true"><span class="nav-ico" data-ico="sec" aria-hidden="true"></span> Security</button>
+      <nav class="side-nav nav-group" aria-label="Security Operations" data-nav-group>
+        <button type="button" class="nav-group-toggle" aria-expanded="true"><span class="nav-ico" data-ico="sec" aria-hidden="true"></span> Security Operations</button>
         <div class="nav-group-body">
           <button type="button" class="nav-link" id="assetBtn" data-workspace="assets"><span class="nav-ico sm" data-ico="asset" aria-hidden="true"></span> Assets</button>
-          <button type="button" class="nav-link" data-workspace="reports"><span class="nav-ico sm" data-ico="rep" aria-hidden="true"></span> Scans</button>
-          <button type="button" class="nav-link" id="webscanBtn" data-workspace="webscan"><span class="nav-ico sm" data-ico="web" aria-hidden="true"></span> Web Scan</button>
-          <button type="button" class="nav-link" id="vulnBtn" data-workspace="vulns"><span class="nav-ico sm" data-ico="vuln" aria-hidden="true"></span> Findings</button>
+          <button type="button" class="nav-link" id="softwareBtn" data-workspace="software"><span class="nav-ico sm" data-ico="fw" aria-hidden="true"></span> Software &amp; patches</button>
+          <button type="button" class="nav-link" id="vulnBtn" data-workspace="vulns"><span class="nav-ico sm" data-ico="vuln" aria-hidden="true"></span> Vulnerabilities</button>
           <button type="button" class="nav-link" data-workspace="soc"><span class="nav-ico sm" data-ico="soc" aria-hidden="true"></span> Incidents</button>
           <button type="button" class="nav-link" data-workspace="intel"><span class="nav-ico sm" data-ico="intel" aria-hidden="true"></span> Threat intelligence</button>
-          <button type="button" class="nav-link" id="softwareBtn" data-workspace="software"><span class="nav-ico sm" data-ico="fw" aria-hidden="true"></span> Software &amp; patches</button>
+          <button type="button" class="nav-link" id="webscanBtn" data-workspace="webscan"><span class="nav-ico sm" data-ico="web" aria-hidden="true"></span> Web Scan</button>
+          <button type="button" class="nav-link" data-workspace="reports"><span class="nav-ico sm" data-ico="rep" aria-hidden="true"></span> Scans</button>
         </div>
       </nav>
 
-      <nav class="side-nav nav-group" aria-label="AI" data-nav-group>
-        <button type="button" class="nav-group-toggle" aria-expanded="true"><span class="nav-ico" data-ico="ai" aria-hidden="true"></span> AI</button>
+      <nav class="side-nav nav-group" aria-label="Investigation" data-nav-group>
+        <button type="button" class="nav-group-toggle" aria-expanded="true"><span class="nav-ico" data-ico="soc" aria-hidden="true"></span> Investigation</button>
         <div class="nav-group-body">
-          <button type="button" class="nav-link" data-view="chat"><span class="nav-ico sm" data-ico="ai" aria-hidden="true"></span> AI Analyst</button>
-          <button type="button" class="nav-link" data-view="chat" data-mode="threat_hunt" data-prompt="Investigate our top critical findings: what happened, why it matters, and prioritized remediation steps"><span class="nav-ico sm" data-ico="soc" aria-hidden="true"></span> Investigations</button>
+          <button type="button" class="nav-link" data-view="chat" data-mode="threat_hunt" data-prompt="Investigate our top critical findings: what happened, why it matters, and prioritized remediation steps"><span class="nav-ico sm" data-ico="soc" aria-hidden="true"></span> AI Investigation</button>
+          <button type="button" class="nav-link" id="navEvidence" data-workspace="evidence"><span class="nav-ico sm" data-ico="ev" aria-hidden="true"></span> Evidence</button>
+          <button type="button" class="nav-link" data-workspace="graph"><span class="nav-ico sm" data-ico="graph" aria-hidden="true"></span> Knowledge graph</button>
+        </div>
+      </nav>
+
+      <nav class="side-nav nav-group" aria-label="Response" data-nav-group>
+        <button type="button" class="nav-group-toggle" aria-expanded="true"><span class="nav-ico" data-ico="pb" aria-hidden="true"></span> Response</button>
+        <div class="nav-group-body">
+          <button type="button" class="nav-link" id="remBtn" data-workspace="remediations"><span class="nav-ico sm" data-ico="ctrl" aria-hidden="true"></span> Remediation</button>
           <button type="button" class="nav-link" id="playbookBtn" data-workspace="playbooks"><span class="nav-ico sm" data-ico="pb" aria-hidden="true"></span> Playbooks</button>
           <button type="button" class="nav-link" id="campaignBtn" data-workspace="campaigns"><span class="nav-ico sm" data-ico="camp" aria-hidden="true"></span> Campaigns</button>
         </div>
       </nav>
 
-      <nav class="side-nav nav-group" aria-label="Compliance" data-nav-group>
-        <button type="button" class="nav-group-toggle" aria-expanded="true"><span class="nav-ico" data-ico="comp" aria-hidden="true"></span> Compliance</button>
+      <nav class="side-nav nav-group" aria-label="Compliance &amp; Governance" data-nav-group>
+        <button type="button" class="nav-group-toggle" aria-expanded="true"><span class="nav-ico" data-ico="comp" aria-hidden="true"></span> Compliance &amp; Governance</button>
         <div class="nav-group-body">
           <button type="button" class="nav-link" id="complianceCenterBtn" data-workspace="compliance_center"><span class="nav-ico sm" data-ico="comp" aria-hidden="true"></span> Compliance Center</button>
-          <button type="button" class="nav-link" id="frameworksBtn" data-workspace="frameworks"><span class="nav-ico sm" data-ico="fw" aria-hidden="true"></span> Frameworks</button>
-          <button type="button" class="nav-link" id="remBtn" data-workspace="remediations"><span class="nav-ico sm" data-ico="ctrl" aria-hidden="true"></span> Controls</button>
-          <button type="button" class="nav-link" id="navEvidence" data-workspace="evidence"><span class="nav-ico sm" data-ico="ev" aria-hidden="true"></span> Evidence</button>
+          <button type="button" class="nav-link" id="frameworksBtn" data-workspace="frameworks"><span class="nav-ico sm" data-ico="fw" aria-hidden="true"></span> Frameworks &amp; control testing</button>
+          <button type="button" class="nav-link" id="gapBtn"><span class="nav-ico sm" data-ico="gap" aria-hidden="true"></span> Gap analysis</button>
           <button type="button" class="nav-link" id="exceptionsBtn" data-workspace="exceptions"><span class="nav-ico sm" data-ico="ev" aria-hidden="true"></span> Exceptions</button>
+          <button type="button" class="nav-link" id="riskBtn" data-workspace="risks"><span class="nav-ico sm" data-ico="reg" aria-hidden="true"></span> Risk register</button>
           <button type="button" class="nav-link" id="auditCenterBtn" data-workspace="audit_center"><span class="nav-ico sm" data-ico="rep" aria-hidden="true"></span> Audit Center</button>
           <button type="button" class="nav-link" id="reportsBtn" data-workspace="reports"><span class="nav-ico sm" data-ico="rep" aria-hidden="true"></span> Reports</button>
-          <button type="button" class="nav-link" id="riskBtn" data-workspace="risks"><span class="nav-ico sm" data-ico="reg" aria-hidden="true"></span> Risk register</button>
-          <button type="button" class="nav-link" id="gapBtn"><span class="nav-ico sm" data-ico="gap" aria-hidden="true"></span> Gap analysis</button>
+        </div>
+      </nav>
+
+      <nav class="side-nav nav-group" aria-label="Automation" data-nav-group>
+        <button type="button" class="nav-group-toggle" aria-expanded="true"><span class="nav-ico" data-ico="auto" aria-hidden="true"></span> Automation</button>
+        <div class="nav-group-body">
+          <button type="button" class="nav-link" data-workspace="automation"><span class="nav-ico sm" data-ico="auto" aria-hidden="true"></span> Workflows</button>
         </div>
       </nav>
 
@@ -108,13 +121,11 @@
         <button type="button" class="nav-group-toggle" aria-expanded="false"><span class="nav-ico" data-ico="adm" aria-hidden="true"></span> Administration</button>
         <div class="nav-group-body">
           <button type="button" class="nav-link" data-workspace="integrations"><span class="nav-ico sm" data-ico="plug" aria-hidden="true"></span> Integrations</button>
-          <button type="button" class="nav-link" id="orgsBtn" data-workspace="orgs">Team &amp; orgs</button>
+          <button type="button" class="nav-link" id="orgsBtn" data-workspace="orgs">Organizations</button>
           <button type="button" class="nav-link" id="authBtnNav" data-open-auth>Users / RBAC</button>
           <button type="button" class="nav-link" data-workspace="billing">Billing</button>
           <button type="button" class="nav-link" id="settingsBtnNav" data-open-settings><span class="nav-ico sm" data-ico="set" aria-hidden="true"></span> Settings</button>
           <button type="button" class="nav-link" id="uploadBtnNav" data-open-upload>Upload evidence</button>
-          <button type="button" class="nav-link" data-workspace="graph"><span class="nav-ico sm" data-ico="graph" aria-hidden="true"></span> Knowledge graph</button>
-          <button type="button" class="nav-link" data-workspace="automation"><span class="nav-ico sm" data-ico="auto" aria-hidden="true"></span> Automation</button>
           <button type="button" class="nav-link hidden" id="exportMdBtn" title="Export current chat as Markdown">Export chat</button>
           <button type="button" class="nav-link hidden" id="dashboardBtn" data-view="command">Dashboard</button>
           <button type="button" class="nav-link hidden" id="riskMatrixBtn" data-view="command" data-scroll="ccHeatMap">Risk matrix</button>
