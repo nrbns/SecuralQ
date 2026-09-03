@@ -79,6 +79,24 @@ def test_compliance_overview_includes_exception_summary(tmp_path, monkeypatch):
     assert overview["exceptions"]["total"] == 1
 
 
+def test_compliance_overview_includes_top_gaps_and_disclaimer(tmp_path, monkeypatch):
+    from app.gap_analysis import run_gap_analysis
+    from app.services.compliance_center import compliance_overview
+
+    uid = _setup(monkeypatch, tmp_path)
+    run_gap_analysis(framework_id="cis_controls", evidence="", user_id=uid, title="t")
+
+    overview = compliance_overview(uid)
+    assert overview["top_gaps"]
+    assert overview["highest_impact_gap"]["status"] == "missing"
+    assert overview["highest_impact_gap"]["control_id"]
+    assert overview["highest_impact_gap"]["framework_id"] == "cis_controls"
+    assert "certification" in (overview.get("disclaimer") or "").lower()
+    assert overview["hierarchy"][0] == "framework"
+    assert overview["hierarchy"][-1] == "verification"
+    assert "Live control tests" in overview["methodology"] or "live" in overview["methodology"].lower()
+
+
 def test_audit_center_overview_empty_account(tmp_path, monkeypatch):
     from app.services.compliance_center import audit_center_overview
 

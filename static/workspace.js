@@ -6495,9 +6495,10 @@
             <h2>${escapeHtml(data.framework_name || frameworkId)}</h2>
             <p class="hint">${data.control_count || rows.length} controls · ${Number(
               data.compliance_percent || 0
-            )}% · ${counts.implemented || 0} implemented · ${counts.partial || 0} partial · ${
+            )}% heuristic · ${counts.implemented || 0} implemented · ${counts.partial || 0} partial · ${
               counts.missing || 0
             } missing${covLabel}</p>
+            <p class="hint">Flow: control → evidence / live test → gap → remediation. Live tests are telemetry signals, separate from the pasted-evidence score.</p>
           </div>
           <div class="cc-action-row">
             <button type="button" class="btn-secondary" id="fwExportAssessment">Export assessment</button>
@@ -6667,7 +6668,7 @@
                       <strong>${c.partial || 0}</strong> partial ·
                       <strong>${c.missing || 0}</strong> missing</p>
                     <div class="cc-bar"><i style="width:${pct != null ? pct : 0}%"></i></div>
-                    <p class="fw-score">${pct != null ? "Live assessment score" : "Not assessed — run gap analysis"}</p>
+                    <p class="fw-score">${pct != null ? "Heuristic assessment score (not certification)" : "Not assessed — run gap analysis"}</p>
                     <div class="cc-action-row">
                       <button type="button" class="btn-primary-cc fw-open-controls" data-id="${escapeHtml(
                         f.id
@@ -6706,12 +6707,52 @@
     const counts = data.counts || {};
     const exc = data.exceptions || {};
     const expiring = data.evidence_expiring_soon || [];
+    const topGaps = data.top_gaps || [];
+    const highest = data.highest_impact_gap || topGaps[0] || null;
+    const hierarchy = data.hierarchy || [
+      "framework",
+      "requirement",
+      "control",
+      "control_test",
+      "evidence",
+      "finding",
+      "remediation",
+      "verification",
+    ];
+    const hierarchyLabels = {
+      framework: "Framework",
+      requirement: "Requirement",
+      control: "Control",
+      control_test: "Control test",
+      evidence: "Evidence",
+      finding: "Finding",
+      remediation: "Remediation",
+      verification: "Verification",
+    };
+    const liveWorstBadge = (worst) => {
+      if (worst === "fail") return `<span class="wq-badge pri-high">live fail</span>`;
+      if (worst === "partial") return `<span class="wq-badge pri-medium">live partial</span>`;
+      return `<span class="hint">—</span>`;
+    };
     body.innerHTML = `
+      <nav class="cc-flow-strip" aria-label="Compliance evidence flow" style="display:flex;flex-wrap:wrap;gap:0.35rem;align-items:center;margin:0 0 1rem;font-size:0.85rem">
+        ${hierarchy
+          .map((h, i) => {
+            const label = hierarchyLabels[h] || h;
+            const sep = i < hierarchy.length - 1 ? `<span class="hint" aria-hidden="true">→</span>` : "";
+            return `<span class="wq-badge pri-medium" style="font-weight:500">${escapeHtml(label)}</span>${sep}`;
+          })
+          .join(" ")}
+      </nav>
+      <p class="hint" style="margin:0 0 0.75rem">${escapeHtml(
+        data.disclaimer ||
+          "Scores help assess control requirements — not a claim that you are certified compliant."
+      )}</p>
       <div class="fw-hero">
         <div class="fw-hero-score">
-          <span class="fw-hero-label">Overall compliance</span>
+          <span class="fw-hero-label">Assessed posture</span>
           <strong>${data.overall_compliance_percent != null ? `${data.overall_compliance_percent}%` : "—"}</strong>
-          <em class="hint">${data.frameworks_assessed || 0} of ${data.frameworks_total || 0} frameworks assessed</em>
+          <em class="hint">${data.frameworks_assessed || 0} of ${data.frameworks_total || 0} frameworks assessed · heuristic score</em>
         </div>
         <ul class="fw-hero-stats">
           <li><span>Implemented</span><strong>${counts.implemented || 0}</strong></li>
@@ -6720,10 +6761,61 @@
           <li><span>Active exceptions</span><strong>${exc.active_coverage || 0}</strong></li>
         </ul>
       </div>
+      <div class="cc-action-row" style="margin:0.75rem 0;flex-wrap:wrap;gap:0.5rem">
+        ${
+          highest
+            ? `<button type="button" class="btn-primary-cc" id="ccFixTopGap"
+                data-fw="${escapeHtml(highest.framework_id || "")}"
+                data-aid="${escapeHtml(highest.assessment_id || "")}"
+                data-cid="${escapeHtml(highest.control_id || "")}"
+                data-rem="${escapeHtml(highest.open_remediation_id || "")}">
+                Fix highest-impact gap${highest.control_id ? ` (${escapeHtml(highest.control_id)})` : ""}</button>`
+            : ""
+        }
+        <button type="button" class="btn-secondary" data-workspace="frameworks">Open frameworks &amp; live tests</button>
+        <button type="button" class="btn-secondary" data-workspace="evidence">Evidence locker</button>
+        ${
+          data.evidence_queue_count
+            ? `<button type="button" class="btn-secondary" data-workspace="evidence">Collect missing evidence (${data.evidence_queue_count})</button>`
+            : ""
+        }
+      </div>
+      <div class="cc-panel" style="margin-top:0.5rem">
+        <header><h2>Top compliance gaps</h2></header>
+        <p class="hint">Missing before partial; live-test failures ranked higher. Control status and live tests are separate signals.</p>
+        ${
+          topGaps.length
+            ? `<div class="data-table-wrap"><table class="data-table"><thead><tr>
+                <th>Framework</th><th>Control</th><th>Status</th><th>Live test</th><th>Next</th><th></th>
+              </tr></thead><tbody>${topGaps
+                .map((g) => {
+                  const statusRisk = g.status === "missing" ? "high" : "medium";
+                  const next = g.open_remediation_title
+                    ? escapeHtml((g.open_remediation_title || "").slice(0, 80))
+                    : escapeHtml((g.recommendation || "Collect evidence / remediate").slice(0, 100));
+                  return `<tr>
+                    <td>${escapeHtml(g.framework_name || g.framework_id || "")}</td>
+                    <td><strong>${escapeHtml(g.control_id || "")}</strong>
+                      <div class="hint">${escapeHtml(g.title || "")}</div></td>
+                    <td><span class="wq-badge pri-${statusRisk}">${escapeHtml(g.status || "")}</span></td>
+                    <td>${liveWorstBadge(g.live_test_worst)}</td>
+                    <td class="hint">${next}</td>
+                    <td class="ws-actions">
+                      <button type="button" class="btn-secondary cc-gap-open"
+                        data-fw="${escapeHtml(g.framework_id || "")}"
+                        data-aid="${escapeHtml(g.assessment_id || "")}"
+                        data-rem="${escapeHtml(g.open_remediation_id || "")}">Open</button>
+                    </td>
+                  </tr>`;
+                })
+                .join("")}</tbody></table></div>`
+            : `<p class="hint">No assessed gaps yet — run gap analysis from Frameworks, then return here.</p>`
+        }
+      </div>
       <p class="hint" style="margin:0.75rem 0">${escapeHtml(data.methodology || "")}</p>
       <div class="data-table-wrap">
         <table class="data-table">
-          <thead><tr><th>Framework</th><th>Status</th><th>Compliance</th><th>Implemented</th><th>Partial</th><th>Missing</th><th>Live-tested controls</th></tr></thead>
+          <thead><tr><th>Framework</th><th>Status</th><th>Posture</th><th>Implemented</th><th>Partial</th><th>Missing</th><th>Live-tested controls</th><th></th></tr></thead>
           <tbody>
             ${
               fws.length
@@ -6737,10 +6829,19 @@
                         <td>${f.counts?.partial || 0}</td>
                         <td>${f.counts?.missing || 0}</td>
                         <td>${f.live_tested_controls || 0}</td>
+                        <td>${
+                          f.assessed
+                            ? `<button type="button" class="btn-secondary cc-fw-open" data-fw="${escapeHtml(
+                                f.framework_id
+                              )}" data-aid="${escapeHtml(f.assessment_id || "")}">Controls</button>`
+                            : `<button type="button" class="btn-secondary cc-fw-gap" data-fw="${escapeHtml(
+                                f.framework_id
+                              )}">Run gap</button>`
+                        }</td>
                       </tr>`
                     )
                     .join("")
-                : `<tr><td colspan="7" class="hint">No frameworks loaded</td></tr>`
+                : `<tr><td colspan="8" class="hint">No frameworks loaded</td></tr>`
             }
           </tbody>
         </table>
@@ -6759,10 +6860,64 @@
         }
       </div>
       <div class="cc-panel" style="margin-top:1rem">
-        <header><h2>Exceptions</h2></header>
-        <p class="hint">${exc.total || 0} total · ${exc.by_status?.pending_approval || 0} pending approval · ${exc.active_coverage || 0} active · ${exc.expiring_soon_30d || 0} expiring within 30 days</p>
-        <button type="button" class="btn-secondary" data-workspace="exceptions">Open Exceptions</button>
+        <header><h2>Exceptions</h2><button type="button" class="btn-secondary" data-workspace="exceptions">Open Exceptions</button></header>
+        <ul class="fw-hero-stats" style="margin-top:0.5rem">
+          <li><span>Total on file</span><strong>${exc.total || 0}</strong></li>
+          <li><span>Pending approval</span><strong>${exc.by_status?.pending_approval || 0}</strong></li>
+          <li><span>Active coverage</span><strong>${exc.active_coverage || 0}</strong></li>
+          <li><span>Expiring in 30d</span><strong>${exc.expiring_soon_30d || 0}</strong></li>
+        </ul>
       </div>`;
+
+    const goFixGap = (fw, aid, remId) => {
+      if (remId) {
+        showWorkspace("remediations");
+        return;
+      }
+      showWorkspace("frameworks");
+      // Open control center after frameworks page paints
+      setTimeout(() => {
+        if (typeof window.renderFrameworksPage === "function") {
+          /* page render is triggered by showWorkspace */
+        }
+        const tryOpen = () => {
+          const btn = document.querySelector(
+            `.fw-open-controls[data-id="${CSS.escape(fw || "")}"]`
+          );
+          if (btn) btn.click();
+          else if (fw && typeof openGap === "function" && !aid) openGap(fw);
+        };
+        setTimeout(tryOpen, 400);
+      }, 50);
+    };
+
+    qs("ccFixTopGap")?.addEventListener("click", () => {
+      const btn = qs("ccFixTopGap");
+      goFixGap(
+        btn?.getAttribute("data-fw"),
+        btn?.getAttribute("data-aid"),
+        btn?.getAttribute("data-rem")
+      );
+    });
+    body.querySelectorAll(".cc-gap-open").forEach((btn) => {
+      btn.addEventListener("click", () =>
+        goFixGap(
+          btn.getAttribute("data-fw"),
+          btn.getAttribute("data-aid"),
+          btn.getAttribute("data-rem")
+        )
+      );
+    });
+    body.querySelectorAll(".cc-fw-open").forEach((btn) => {
+      btn.addEventListener("click", () =>
+        goFixGap(btn.getAttribute("data-fw"), btn.getAttribute("data-aid"), "")
+      );
+    });
+    body.querySelectorAll(".cc-fw-gap").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        if (typeof openGap === "function") openGap(btn.getAttribute("data-fw"));
+      });
+    });
     body.querySelectorAll("[data-workspace]").forEach((el) => {
       el.addEventListener("click", (e) => {
         e.preventDefault();
@@ -6784,6 +6939,10 @@
     const fws = data.frameworks || [];
     const t = data.totals || {};
     body.innerHTML = `
+      <p class="hint" style="margin:0 0 0.75rem">${escapeHtml(
+        data.disclaimer ||
+          "Audit packs assemble security evidence supporting assessed controls — not a certification."
+      )}</p>
       <div class="fw-hero">
         <div class="fw-hero-score">
           <span class="fw-hero-label">Controls tracked</span>
@@ -6823,7 +6982,12 @@
           </tbody>
         </table>
       </div>
-      <p class="hint" style="margin-top:0.75rem">${data.exceptions?.total || 0} compliance exceptions on file · ${data.exceptions?.active_coverage || 0} currently active.</p>`;
+      <p class="hint" style="margin-top:0.75rem">${data.exceptions?.total || 0} compliance exceptions on file · ${data.exceptions?.active_coverage || 0} currently active.</p>
+      <div class="cc-action-row" style="margin-top:0.75rem">
+        <button type="button" class="btn-secondary" data-workspace="compliance_center">Compliance Center</button>
+        <button type="button" class="btn-secondary" data-workspace="frameworks">Frameworks &amp; live tests</button>
+        <button type="button" class="btn-secondary" data-workspace="evidence">Evidence locker</button>
+      </div>`;
     body.querySelectorAll(".ac-export").forEach((btn) => {
       btn.addEventListener("click", async () => {
         try {
@@ -6835,6 +6999,12 @@
         } catch (err) {
           alert(err.message || "Export failed");
         }
+      });
+    });
+    body.querySelectorAll("[data-workspace]").forEach((el) => {
+      el.addEventListener("click", (e) => {
+        e.preventDefault();
+        showWorkspace(el.getAttribute("data-workspace"));
       });
     });
   }

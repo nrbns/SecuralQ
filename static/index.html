@@ -383,8 +383,8 @@
               <div id="sqExposureMap" class="sq-exposure-map"><p class="hint">Run a scan to map internet-facing assets.</p></div>
             </section>
             <section class="sq-card sq-compliance-mini">
-              <header class="sq-card-head"><h3>Compliance</h3>
-                <button type="button" class="btn-secondary" data-workspace="frameworks">View</button>
+              <header class="sq-card-head"><h3>Compliance evidence</h3>
+                <button type="button" class="btn-secondary" data-workspace="compliance_center">Center</button>
               </header>
               <ul id="ccFrameworks" class="sq-fw-list"><li class="hint">—</li></ul>
               <p class="hint sq-fw-evidence" id="sqComplianceEvidence">—</p>
@@ -413,7 +413,15 @@
             </section>
           </div>
 
-          <details class="sq-ops-panel">
+          <section class="sq-card sq-risk-heat" id="ccHeatMap">
+            <header class="sq-card-head"><h3>Risk heat map</h3>
+              <button type="button" class="btn-secondary" data-workspace="risks">Open risk register</button>
+            </header>
+            <p class="hint" style="margin:0 0 0.25rem">Open risks plotted by impact × likelihood — from your real risk register, not a mockup.</p>
+            <div id="ccRiskHeat" class="risk-heat"><p class="hint">Loading…</p></div>
+          </section>
+
+          <details class="sq-ops-panel" open>
             <summary>Operations · work queue · patch posture · SIEM agents</summary>
             <div class="mc-workflow-progress sq-wf-bar" id="mcWorkflowProgress" aria-label="Finding lifecycle">
               <div class="mc-wf-step" data-wf="imported"><span>Findings</span><strong id="wfImported">0</strong></div>
@@ -709,8 +717,8 @@
           <div class="fw-page">
             <div class="page-head">
               <div>
-                <h1>Frameworks</h1>
-                <p class="page-intro hint" style="margin:0.35rem 0 0">Live compliance from your gap assessments — score, gaps, remediations.</p>
+                <h1>Frameworks &amp; control testing</h1>
+                <p class="page-intro hint" style="margin:0.35rem 0 0">Assessed controls, linked evidence, live tests from product telemetry, and remediations — helps assess requirements; not a certification.</p>
               </div>
               <div class="page-head-actions">
                 <button type="button" class="btn-secondary" id="hkAuditBtn">HardeningKitty audit</button>
@@ -719,9 +727,9 @@
             </div>
             <div class="fw-hero" id="fwHero">
               <div class="fw-hero-score">
-                <span class="fw-hero-label">Compliance</span>
+                <span class="fw-hero-label">Assessed posture</span>
                 <strong id="fwHeroPct">0%</strong>
-                <em id="fwHeroMaturity" class="hint">Ad hoc</em>
+                <em id="fwHeroMaturity" class="hint">Ad hoc · heuristic score</em>
               </div>
               <ul class="fw-hero-stats" id="fwHeroStats">
                 <li><span>Implemented</span><strong id="fwStatImpl">0</strong></li>
@@ -749,7 +757,7 @@
           <div class="page-head">
             <div>
               <h1>Compliance Center</h1>
-              <p class="page-intro hint" style="margin:0.35rem 0 0">Overall compliance across every assessed framework — only frameworks you've actually scored count toward the total.</p>
+              <p class="page-intro hint" style="margin:0.35rem 0 0">Security evidence across frameworks you've assessed — control → test → evidence → gap → fix. Heuristic scores help assess requirements; they are not a certification.</p>
             </div>
           </div>
           <div id="complianceCenterPageBody"><p class="hint">Loading…</p></div>
@@ -786,7 +794,7 @@
           <div class="page-head">
             <div>
               <h1>Audit Center</h1>
-              <p class="page-intro hint" style="margin:0.35rem 0 0">Evidence requested vs. supplied and control pass/fail/pending, rolled up across every framework's latest assessment.</p>
+              <p class="page-intro hint" style="margin:0.35rem 0 0">Evidence requested vs supplied and control pass/fail/pending for assessed frameworks. Export packs support audits — they do not certify compliance.</p>
             </div>
           </div>
           <div id="auditCenterPageBody"><p class="hint">Loading…</p></div>
@@ -1762,7 +1770,7 @@
         <h2 id="gapHeading">Gap analysis</h2>
         <button type="button" class="btn-secondary" data-close-gap>Close</button>
       </div>
-      <p class="hint">Paste policies, interview notes, or evidence. Maps current frameworks (ISO 27001:2022, NIST CSF 2.0, CIS v8.1, SOC 2, PCI 4.0.1, ASVS 5.0, and more) into a score + 30/60/90 roadmap.</p>
+      <p class="hint">Paste policies, interview notes, or evidence. Maps catalog frameworks (ISO 27001:2022, NIST CSF 2.0, CIS v8.1, SOC 2, PCI 4.0.1, ASVS 5.0, and more) into a heuristic score + 30/60/90 roadmap — not an auditor attestation.</p>
       <form id="gapForm" class="settings-form">
         <label>Framework
           <select id="gapFramework">
@@ -2080,7 +2088,7 @@
     </div>
   </div>
 
-  <script src="/app.js?v=191"></script>
+  <script src="/app.js?v=192"></script>
   <script src="/workspace.js?v=182"></script>
 </body>
 </html>

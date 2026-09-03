@@ -3057,7 +3057,11 @@ html[data-theme="dark"] .ai-tab.active {
   padding: 0 1.5rem 2.5rem;
   min-height: 100%;
 }
-#viewFrameworks .fw-hero {
+/* .fw-hero* is a shared "posture hero" component -- used by Frameworks,
+   Compliance Center, and Audit Center. Intentionally NOT scoped to
+   #viewFrameworks (it used to be, which silently left it unstyled on the
+   other two pages -- a real bug, not a design choice). */
+.fw-hero {
   display: flex;
   flex-wrap: wrap;
   align-items: stretch;
@@ -3067,15 +3071,15 @@ html[data-theme="dark"] .ai-tab.active {
   border-radius: 1rem;
   background: color-mix(in srgb, var(--panel) 88%, var(--bg));
 }
-#viewFrameworks .fw-hero-score {
+.fw-hero-score {
   display: flex;
   flex-direction: column;
   justify-content: center;
   min-width: 8rem;
 }
-#viewFrameworks .fw-hero-label { font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
-#viewFrameworks .fw-hero-score strong { font-size: 2.4rem; line-height: 1.1; }
-#viewFrameworks .fw-hero-stats {
+.fw-hero-label { font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.fw-hero-score strong { font-size: 2.4rem; line-height: 1.1; }
+.fw-hero-stats {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -3084,7 +3088,7 @@ html[data-theme="dark"] .ai-tab.active {
   gap: 0.75rem;
   flex: 1;
 }
-#viewFrameworks .fw-hero-stats li {
+.fw-hero-stats li {
   display: flex;
   flex-direction: column;
   gap: 0.2rem;
@@ -3093,8 +3097,11 @@ html[data-theme="dark"] .ai-tab.active {
   border: 1px solid var(--border);
   background: var(--bg);
 }
-#viewFrameworks .fw-hero-stats span { font-size: 0.72rem; color: var(--muted); }
-#viewFrameworks .fw-hero-stats strong { font-size: 1.15rem; }
+.fw-hero-stats span { font-size: 0.72rem; color: var(--muted); }
+.fw-hero-stats strong { font-size: 1.15rem; }
+@media (max-width: 960px) {
+  .fw-hero-stats { grid-template-columns: repeat(2, 1fr); }
+}
 #viewFrameworks .fw-page-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.4fr) minmax(16rem, 0.9fr);
@@ -3141,7 +3148,6 @@ html[data-theme="dark"] .ai-tab.active {
 @media (max-width: 960px) {
   #viewFrameworks .fw-page-grid { grid-template-columns: 1fr; }
   #viewFrameworks .fw-side { position: static; }
-  #viewFrameworks .fw-hero-stats { grid-template-columns: repeat(2, 1fr); }
 }
 
 /* Live scan bar inside tools palette ? Target + Auth + engine + Run */

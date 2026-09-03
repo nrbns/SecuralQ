@@ -51,6 +51,9 @@ def test_compliance_overview_over_http(tmp_path, monkeypatch):
     body = res.json()
     assert body["frameworks_assessed"] == 1
     assert body["overall_compliance_percent"] is not None
+    assert body["top_gaps"]
+    assert body["highest_impact_gap"]["control_id"]
+    assert "certification" in (body.get("disclaimer") or "").lower()
 
 
 def test_audit_center_over_http(tmp_path, monkeypatch):
@@ -63,6 +66,7 @@ def test_audit_center_over_http(tmp_path, monkeypatch):
     body = res.json()
     assert body["assessments_included"] == 1
     assert body["totals"]["controls_total"] > 0
+    assert "certification" in (body.get("disclaimer") or "").lower()
 
 
 def test_compliance_overview_scoped_to_owning_user(tmp_path, monkeypatch):

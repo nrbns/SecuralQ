@@ -191,7 +191,7 @@ async function openNewScanModal() {
           }),
         ];
         sel.innerHTML = opts.join("");
-        // Prefer combo workflow; fall back to nmap / securaiq.
+        // Prefer combo for Discovery; Web profile → SecuraIQ Web Scanner.
         const preferCombo = true;
         if (preferCombo) {
           sel.value = "combo";
@@ -204,12 +204,23 @@ async function openNewScanModal() {
             enabled.find((s) => s.available);
           sel.value = prefer ? prefer.id : "all";
         }
+        // If user already picked Web, force zap (built-in DAST).
+        const currentProf =
+          document.querySelector('input[name="scanProfile"]:checked')?.value || "";
+        if (currentProf === "web") {
+          const zapOpt = enabled.find((s) => s.id === "zap");
+          if (zapOpt) sel.value = "zap";
+        }
+        syncNewScanProfileHint();
         const hint = document.getElementById("newScanScannerHint");
         const prof =
           document.querySelector('input[name="scanProfile"]:checked')?.value || "vulnerability";
         if (hint) {
           if (sel.value === "combo") {
             refreshComboScannerHint(prof);
+          } else if (sel.value === "zap" || prof === "web") {
+            hint.textContent =
+              "SecuraIQ Web Scanner (built-in DAST) — headers, paths, cookies, CORS on one host/URL. Labs/LAN OK when authorized.";
           } else {
             const nmap = enabled.find((s) => s.id === "nmap");
             if (nmap && !nmap.available && /npcap/i.test(String(nmap.detail || ""))) {
@@ -226,10 +237,12 @@ async function openNewScanModal() {
           window.__securaiqComboHintBound = true;
           sel?.addEventListener("change", () => {
             const p = document.querySelector('input[name="scanProfile"]:checked')?.value || "discovery";
-            refreshComboScannerHint(p);
+            if (sel.value === "combo") refreshComboScannerHint(p);
+            else syncNewScanProfileHint();
           });
           document.querySelectorAll('input[name="scanProfile"]').forEach((el) => {
             el.addEventListener("change", () => {
+              syncNewScanProfileHint();
               if (document.getElementById("newScanScanner")?.value === "combo") {
                 refreshComboScannerHint(el.value);
               }
@@ -243,6 +256,24 @@ async function openNewScanModal() {
   }
 }
 window.openNewScanModal = openNewScanModal;
+
+function syncNewScanProfileHint() {
+  const sel = document.getElementById("newScanScanner");
+  const hint = document.getElementById("newScanScannerHint");
+  const profile =
+    document.querySelector('input[name="scanProfile"]:checked')?.value || "discovery";
+  if (!sel) return;
+  if (profile === "web") {
+    const hasZap = [...sel.options].some((o) => o.value === "zap" && !o.disabled);
+    if (hasZap) sel.value = "zap";
+    if (hint) {
+      hint.textContent =
+        "Web profile → SecuraIQ Web Scanner. Use a single host or http(s) URL (CIDR becomes the host, e.g. 192.168.0.1/24 → 192.168.0.1).";
+    }
+  } else if (profile === "discovery" && sel.value === "zap") {
+    sel.value = "combo";
+  }
+}
 
 function wireNewScanTargetScopeOnce() {
   if (window.__securaiqNewScanScopeWired) return;
@@ -1178,7 +1209,7 @@ async function submitNewScan(ev) {
     if (targetEl && target) targetEl.value = target;
   }
   const authorized = !!authEl?.checked;
-  const scanner = document.getElementById("newScanScanner")?.value || "securaiq";
+  let scanner = document.getElementById("newScanScanner")?.value || "securaiq";
   const profile =
     document.querySelector('input[name="scanProfile"]:checked')?.value || "discovery";
   const scope = scopeRaw
@@ -1195,6 +1226,18 @@ async function submitNewScan(ev) {
     authEl?.focus();
     return;
   }
+  // Web DAST: prefer zap engine; reduce CIDR to host for clearer UX.
+  if (profile === "web") {
+    const sel = document.getElementById("newScanScanner");
+    if (sel && [...sel.options].some((o) => o.value === "zap")) {
+      sel.value = "zap";
+    }
+    if (/^\d{1,3}(?:\.\d{1,3}){3}\/\d{1,2}$/.test(target)) {
+      target = target.split("/")[0];
+      if (targetEl) targetEl.value = target;
+    }
+  }
+  scanner = document.getElementById("newScanScanner")?.value || scanner;
   const needsScope =
     scanner === "combo" ||
     scanner === "nmap" ||
@@ -1202,7 +1245,8 @@ async function submitNewScan(ev) {
     scanner === "zap" ||
     scanner === "all" ||
     profile === "vulnerability" ||
-    profile === "full";
+    profile === "full" ||
+    profile === "web";
   if (needsScope && !scope.length) {
     alert("Add at least one host/IP/CIDR in Scope (or put it in Target).");
     scopeEl?.focus();
@@ -5631,8 +5675,8 @@ function renderSqNeedsAttention(data) {
   const evEl = document.getElementById("sqComplianceEvidence");
   if (evEl) {
     evEl.textContent = missingEvidence
-      ? `${missingEvidence} control${missingEvidence === 1 ? "" : "s"} need evidence`
-      : "Evidence collection on track";
+      ? `${missingEvidence} control${missingEvidence === 1 ? "" : "s"} need evidence (helps assess — not certified)`
+      : "Evidence collection on track (assessment support, not certification)";
   }
 }
 

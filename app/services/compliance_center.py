@@ -61,11 +61,84 @@ def _evidence_expiring_soon(user_id: str, *, within_days: int = 30) -> list[dict
     return out[:50]
 
 
+def _top_gaps_from_assessments(
+    user_id: str, latest_by_fw: dict[str, dict[str, Any]], *, limit: int = 8
+) -> list[dict[str, Any]]:
+    """Highest-impact open gaps across latest assessments per framework.
+
+    Priority: missing before partial; live-test fail/partial before none;
+    then control_id for stability. Never invents gaps -- only assessment rows.
+    """
+    from app.enterprise import list_remediations
+    from app.gap_analysis import get_assessment
+
+    rem_by_control: dict[str, dict[str, Any]] = {}
+    try:
+        for rem in list_remediations(user_id):
+            if (rem.get("status") or "").lower() == "done":
+                continue
+            cid = (rem.get("control_id") or "").strip().upper()
+            if cid and cid not in rem_by_control:
+                rem_by_control[cid] = rem
+    except Exception:
+        rem_by_control = {}
+
+    candidates: list[dict[str, Any]] = []
+    for fid, row in latest_by_fw.items():
+        full = get_assessment(user_id, row["id"])
+        if not full:
+            continue
+        gaps = full.get("top_gaps") or [
+            r
+            for r in (full.get("results") or [])
+            if (r.get("status") or "").lower() in {"missing", "partial"}
+        ]
+        for g in gaps:
+            status = (g.get("status") or "").lower()
+            if status not in {"missing", "partial"}:
+                continue
+            live = g.get("live_tests") or []
+            live_worst = "none"
+            for t in live:
+                st = (t.get("status") or "").lower()
+                if st == "fail":
+                    live_worst = "fail"
+                    break
+                if st == "partial" and live_worst != "fail":
+                    live_worst = "partial"
+            cid = str(g.get("control_id") or "").strip()
+            rem = rem_by_control.get(cid.upper()) if cid else None
+            candidates.append(
+                {
+                    "framework_id": full.get("framework_id") or fid,
+                    "framework_name": full.get("framework_name") or fid,
+                    "assessment_id": row["id"],
+                    "control_id": cid,
+                    "title": g.get("title") or "",
+                    "status": status,
+                    "recommendation": (g.get("recommendation") or "")[:400],
+                    "live_tests": live,
+                    "live_test_worst": live_worst,
+                    "open_remediation_id": rem.get("id") if rem else None,
+                    "open_remediation_title": rem.get("title") if rem else None,
+                }
+            )
+
+    def _sort_key(item: dict[str, Any]) -> tuple:
+        status_rank = 0 if item["status"] == "missing" else 1
+        live_rank = {"fail": 0, "partial": 1, "none": 2}.get(item["live_test_worst"], 3)
+        return (status_rank, live_rank, item["framework_id"], item["control_id"])
+
+    candidates.sort(key=_sort_key)
+    return candidates[: max(1, min(limit, 25))]
+
+
 def compliance_overview(user_id: str, *, org_id: str | None = None) -> dict[str, Any]:
     """Overall %, per-framework breakdown, evidence expiring soon, and
     exception coverage -- only for frameworks this tenant has actually
     assessed. Never blends in an un-assessed framework's control count as
     if it were scored."""
+    from app.evidence_workflow import missing_evidence_queue
     from app.gap_analysis import get_assessment, list_frameworks
     from app.services.control_testing import controls_with_live_tests
     from app.services.exceptions import exceptions_summary
@@ -103,19 +176,46 @@ def compliance_overview(user_id: str, *, org_id: str | None = None) -> dict[str,
                 pct_n += 1
         fw_rows.append(entry)
 
+    top_gaps = _top_gaps_from_assessments(user_id, latest_by_fw)
+    evidence_queue: dict[str, Any] = {"count": 0, "items": []}
+    try:
+        evidence_queue = missing_evidence_queue(user_id, limit=5)
+    except Exception:
+        pass
+
     return {
         "overall_compliance_percent": round(pct_sum / pct_n, 1) if pct_n else None,
         "frameworks_assessed": pct_n,
         "frameworks_total": len(catalog),
         "counts": totals,
         "frameworks": fw_rows,
+        "top_gaps": top_gaps,
+        "highest_impact_gap": top_gaps[0] if top_gaps else None,
+        "evidence_queue_preview": evidence_queue.get("items") or [],
+        "evidence_queue_count": int(evidence_queue.get("count") or 0),
         "evidence_expiring_soon": _evidence_expiring_soon(user_id),
         "exceptions": exceptions_summary(user_id, org_id=org_id),
+        "hierarchy": [
+            "framework",
+            "requirement",
+            "control",
+            "control_test",
+            "evidence",
+            "finding",
+            "remediation",
+            "verification",
+        ],
+        "disclaimer": (
+            "Scores and packs are security evidence that help assess control requirements — "
+            "not a certification that you are ISO/SOC/PCI compliant."
+        ),
         "methodology": (
             "compliance_percent per framework is the pasted-evidence gap-analysis score "
             "(see app.gap_analysis.SCORING_METHODOLOGY, a keyword heuristic -- not an audit "
-            "or certification). Only assessed frameworks count toward the overall percentage; "
-            "frameworks never assessed are listed with assessed=false and excluded from it."
+            "or certification). Live control tests are a separate telemetry signal and are "
+            "not blended into this percentage. Only assessed frameworks count toward the "
+            "overall percentage; frameworks never assessed are listed with assessed=false "
+            "and excluded from it."
         ),
     }
 
@@ -181,4 +281,8 @@ def audit_center_overview(user_id: str, *, org_id: str | None = None) -> dict[st
         "totals": totals,
         "exceptions": exceptions_summary(user_id, org_id=org_id),
         "assessments_included": len(frameworks_out),
+        "disclaimer": (
+            "Audit packs assemble security evidence supporting assessed controls — "
+            "not a claim of certification or auditor attestation."
+        ),
     }
