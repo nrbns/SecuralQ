@@ -162,6 +162,11 @@ def run_gap_analysis(
     controls = fw.get("controls") or []
     overrides = {k.upper(): v for k, v in (overrides or {}).items()}
 
+    try:
+        from app.services.control_testing import run_live_tests_for_control
+    except Exception:
+        run_live_tests_for_control = None  # type: ignore[assignment]
+
     results = []
     for c in controls:
         scored = score_control_against_evidence(c, evidence)
@@ -170,12 +175,26 @@ def run_gap_analysis(
             scored["status"] = ov
             scored["confidence"] = 1.0
             scored["recommendation"] = scored["recommendation"] + f" (manual status: {ov})"
+        # Live tests (app.services.control_testing) are a SEPARATE, additive
+        # signal computed straight from real product data -- never blended
+        # into the pasted-evidence status/confidence above. A control's
+        # declared status can disagree with its live test result; showing
+        # both, rather than letting one silently override the other, is the
+        # honest behavior (same principle as attack-graph declared vs
+        # inferred edges).
+        live_tests: list[dict[str, Any]] = []
+        if run_live_tests_for_control is not None:
+            try:
+                live_tests = run_live_tests_for_control(user_id, fw["id"], c["id"])
+            except Exception:
+                live_tests = []
         results.append(
             {
                 "control_id": c["id"],
                 "title": c["title"],
                 "domain": c.get("domain", ""),
                 **scored,
+                "live_tests": live_tests,
             }
         )
 

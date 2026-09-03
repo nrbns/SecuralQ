@@ -23,6 +23,7 @@ from app.gap_analysis import (
     list_frameworks,
     load_framework,
 )
+from app.services.control_testing import controls_with_live_tests, run_live_tests_for_framework
 
 router = APIRouter(prefix="/api", tags=["gap-analysis"])
 
@@ -95,6 +96,25 @@ async def gap_audit_pack(assessment_id: str, user: Annotated[AuthUser, Depends(r
             "Content-Disposition": f'attachment; filename="securaiq-audit-pack-{assessment_id[:12]}.zip"'
         },
     )
+
+
+@router.get("/gap/live-tests/{framework_id}")
+async def gap_live_tests(framework_id: str, user: Annotated[AuthUser, Depends(require_user)]):
+    """Control status computed directly from real product data (assets,
+    vulnerabilities, patch inventory) -- no pasted evidence text required.
+    Only controls with an explicit, hand-curated live test mapping (see
+    app.services.control_testing._CONTROL_TEST_MAP) are included; every
+    other control in the framework simply has no live test yet. Each
+    result is also recorded to the Evidence Store."""
+    try:
+        load_framework(framework_id)  # 404s on an unknown framework id/alias
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {
+        "framework_id": framework_id,
+        "tested_control_ids": sorted(controls_with_live_tests(framework_id)),
+        "results": run_live_tests_for_framework(user.id, framework_id),
+    }
 
 
 @router.get("/gap/evidence-queue")

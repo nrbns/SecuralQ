@@ -6388,6 +6388,40 @@
       const detailEl = qs("fwControlDetail");
       if (!detailEl) return;
       detailEl.innerHTML = `<p class="hint">Loading controls…</p>`;
+      // Live Control Testing: status computed straight from real product data
+      // (assets/vulnerabilities/patch inventory), independent of and additive
+      // to the pasted-evidence assessment below. Best-effort -- a failure here
+      // must never block the rest of the control center from rendering.
+      let liveByControlUpper = {};
+      let liveTestedIds = [];
+      try {
+        const liveRes = await fetch(`/api/gap/live-tests/${encodeURIComponent(frameworkId)}`, {
+          headers: authHeaders(),
+        });
+        if (liveRes.ok) {
+          const liveData = await liveRes.json().catch(() => ({}));
+          liveTestedIds = liveData.tested_control_ids || [];
+          Object.entries(liveData.results || {}).forEach(([cid, tests]) => {
+            liveByControlUpper[(cid || "").toUpperCase()] = tests;
+          });
+        }
+      } catch {
+        /* live tests are a supplemental signal -- optional */
+      }
+      const liveStatusRisk = (status) =>
+        status === "pass" ? "low" : status === "partial" ? "medium" : "high";
+      const renderLiveBadges = (cid) => {
+        const tests = liveByControlUpper[(cid || "").toUpperCase()] || [];
+        if (!tests.length) return "";
+        return tests
+          .map(
+            (t) =>
+              `<span class="wq-badge pri-${liveStatusRisk(t.status)}" title="${escapeHtml(
+                t.summary || ""
+              )}">${escapeHtml((t.test || "").replace(/_/g, " "))}: ${escapeHtml(t.status)}</span>`
+          )
+          .join(" ");
+      };
       let aid = assessmentId;
       if (!aid) {
         const listRes = await fetch("/api/gap/assessments", { headers: authHeaders() });
@@ -6401,6 +6435,18 @@
         const controls = catalog.controls || [];
         detailEl.innerHTML = `<p class="hint">No assessment for this framework yet — run gap analysis to score controls.</p>
           <button type="button" class="cc-action fw-run-gap" data-id="${escapeHtml(frameworkId)}">Run gap</button>
+          ${
+            liveTestedIds.length
+              ? `<div class="cc-panel" style="margin-top:1rem"><header><h3 style="margin:0">Live control tests</h3></header>
+                 <p class="hint">Computed directly from real product data (assets, vulnerabilities, patch inventory) — no pasted evidence needed. Only the controls below have a live test mapped today.</p>
+                 <div class="data-table-wrap"><table class="data-table"><thead><tr><th>Control</th><th>Result</th></tr></thead><tbody>${liveTestedIds
+                   .map(
+                     (cid) =>
+                       `<tr><td><strong>${escapeHtml(cid)}</strong></td><td>${renderLiveBadges(cid) || `<span class="hint">No result</span>`}</td></tr>`
+                   )
+                   .join("")}</tbody></table></div></div>`
+              : ""
+          }
           ${
             controls.length
               ? `<div class="data-table-wrap" style="margin-top:1rem"><table class="data-table"><thead><tr><th>Control</th><th>Domain</th><th>Title</th></tr></thead><tbody>${controls
@@ -6460,6 +6506,7 @@
                 <th>Owner</th>
                 <th>Risk</th>
                 <th>Status</th>
+                <th>Live test</th>
                 <th></th>
               </tr>
             </thead>
@@ -6474,6 +6521,12 @@
                         const status = r.status || "missing";
                         const risk =
                           status === "missing" ? "high" : status === "partial" ? "medium" : "low";
+                        const liveCell = renderLiveBadges(cid) || (r.live_tests || []).map(
+                          (t) =>
+                            `<span class="wq-badge pri-${liveStatusRisk(t.status)}" title="${escapeHtml(
+                              t.summary || ""
+                            )}">${escapeHtml((t.test || "").replace(/_/g, " "))}: ${escapeHtml(t.status)}</span>`
+                        ).join(" ");
                         return `<tr>
                           <td><strong>${escapeHtml(cid)}</strong>
                             <div class="hint">${escapeHtml(r.title || "")}</div></td>
@@ -6489,6 +6542,7 @@
                           <td><span class="wq-badge pri-${
                             status === "implemented" ? "low" : status === "partial" ? "medium" : "high"
                           }">${escapeHtml(status)}</span></td>
+                          <td>${liveCell || `<span class="hint">Not live-tested</span>`}</td>
                           <td>
                             <button type="button" class="btn-secondary fw-ctrl-ask"
                               data-id="${escapeHtml(cid)}" data-title="${escapeHtml(r.title || "")}">Ask AI</button>
@@ -6497,7 +6551,7 @@
                         </tr>`;
                       })
                       .join("")
-                  : `<tr><td colspan="6" class="hint">No control results</td></tr>`
+                  : `<tr><td colspan="7" class="hint">No control results</td></tr>`
               }
             </tbody>
           </table>
