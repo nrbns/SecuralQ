@@ -562,6 +562,25 @@ def record_threat_detections(agent_id: str, detections: list[dict[str, Any]]) ->
         )
         c.commit()
 
+        try:
+            from app.services.evidence import record_evidence
+
+            record_evidence(
+                user_id,
+                entity_type="threat",
+                entity_id=tid,
+                source="observed",
+                # A real-time watcher signal, directly observed on the host --
+                # not a guess, but not human-confirmed either until an
+                # analyst reviews it, hence "observed" rather than "declared".
+                confidence=0.7,
+                summary=f"{category}: {title} on {hostname}",
+                detail={"agent_id": agent_id, "hostname": hostname, "severity": severity, "raw": det},
+                created_by=f"agent:{agent_id}",
+            )
+        except Exception:
+            pass  # evidence recording is best-effort — never block threat ingestion
+
         payload = {
             "id": tid,
             "agent_id": agent_id,

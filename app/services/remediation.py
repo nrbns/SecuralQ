@@ -293,6 +293,34 @@ def create_plan(
     )
     c.commit()
     audit("remediation_plan_create", user_id, {"id": pid, "group_key": group_key, "title": group["title"]})
+    try:
+        from app.services.evidence import record_evidence
+
+        record_evidence(
+            user_id,
+            entity_type="remediation_plan",
+            entity_id=pid,
+            # The disruption band and risk-reduction estimate are computed
+            # from real inventory/graph data (asset counts, business
+            # criticality, agent coverage) -- "derived", not a human
+            # attestation and not a guess.
+            source="derived",
+            confidence=0.8,
+            summary=f"{band} disruption band for '{group['title']}': "
+            f"{group['assets_affected']} assets, {len(biz_critical_ids)} business-critical, "
+            f"{len(patchable_ids)} agent-patchable",
+            detail={
+                "disruption_band": band,
+                "assets_affected": group["assets_affected"],
+                "business_critical_assets": len(biz_critical_ids),
+                "agent_patchable_assets": len(patchable_ids),
+                "attack_paths_disrupted": group["attack_paths_disrupted"],
+                "verified_attack_paths_disrupted": group["verified_attack_paths_disrupted"],
+                "estimated_risk_reduction_pct": group["estimated_risk_reduction_pct"],
+            },
+        )
+    except Exception:
+        pass  # evidence recording is best-effort — never block plan creation
     return get_plan(user_id, pid)
 
 

@@ -428,6 +428,23 @@ def create_asset_dependency(
         user_id,
         {"id": did, "source_asset_id": source_asset_id, "target_asset_id": target_asset_id, "relationship": relationship, "source": source},
     )
+    try:
+        from app.services.evidence import record_evidence
+
+        record_evidence(
+            user_id,
+            entity_type="asset_dependency",
+            entity_id=did,
+            source=source if source in ("declared", "inferred") else "derived",
+            summary=f"{relationship} declared from {source_asset_id} to {target_asset_id}"
+            if source == "declared"
+            else f"{relationship} suggested from {source_asset_id} to {target_asset_id}",
+            confidence=confidence,
+            detail={"source_asset_id": source_asset_id, "target_asset_id": target_asset_id, "relationship": relationship, "notes": notes},
+            created_by=user_id if source == "declared" else "system",
+        )
+    except Exception:
+        pass  # evidence recording is best-effort — never block the real write
     return {
         "id": did,
         "user_id": user_id,
