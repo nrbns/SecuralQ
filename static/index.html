@@ -55,6 +55,10 @@
           <span class="nav-ico" data-ico="mc" aria-hidden="true"></span>
           <span class="nav-item-label">Overview</span>
         </button>
+        <button type="button" class="nav-item" data-view="executive" id="navExecutive">
+          <span class="nav-ico" data-ico="rep" aria-hidden="true"></span>
+          <span class="nav-item-label">Executive Dashboard</span>
+        </button>
         <button type="button" class="nav-item active" data-view="chat" id="navChat">
           <span class="nav-ico" data-ico="ai" aria-hidden="true"></span>
           <span class="nav-item-label">AI Analyst</span>
@@ -669,6 +673,15 @@
         <section id="viewSoc" class="workspace-view hidden" data-module-page data-view-panel="soc">
           <div class="page-head"><h1>Security operations</h1></div>
           <div id="socPageBody"></div>
+        </section>
+        <section id="viewExecutive" class="workspace-view hidden" data-module-page data-view-panel="executive">
+          <div class="page-head">
+            <div>
+              <h1>Executive Dashboard</h1>
+              <p class="page-intro hint" style="margin:0.35rem 0 0">Real, measured security outcomes for leadership -- separate from the technical operations view.</p>
+            </div>
+          </div>
+          <div id="executivePageBody"></div>
         </section>
         <section id="viewEvidence" class="workspace-view hidden" data-module-page data-view-panel="evidence">
           <div class="page-head"><h1>Evidence locker</h1><button type="button" class="btn-secondary" id="evidenceUploadBtn">Upload</button></div>

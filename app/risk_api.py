@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 from app.auth import AuthUser
 from app.commercial_api import require_user
 from app.services.attack_graph import build_graph, compute_attack_paths
+from app.services.executive_dashboard import compute_executive_dashboard
 from app.services.remediation import (
     approve_plan,
     create_plan,
@@ -170,3 +171,14 @@ async def remediation_plan_delete(plan_id: str, user: Annotated[AuthUser, Depend
     if not delete_plan(user.id, plan_id):
         raise HTTPException(status_code=404, detail="Remediation plan not found")
     return {"ok": True}
+
+
+@router.get("/executive-dashboard")
+async def get_executive_dashboard(user: Annotated[AuthUser, Depends(require_user)]):
+    """Management-facing view, separate from the technical SOC page: real
+    security-exposure trend, critical findings, patch compliance, mean
+    remediation time, verified-remediation %, active campaigns, and top
+    remaining risks -- see app/services/executive_dashboard.py for exactly
+    what each number is computed from (nothing here is projected or
+    invented)."""
+    return compute_executive_dashboard(user.id)

@@ -3322,8 +3322,10 @@ function wireCommandCenterUi() {
   window.__securaiqCcWired = true;
   const navCmd = document.getElementById("navCommand");
   const navAi = document.getElementById("navChat");
+  const navExec = document.getElementById("navExecutive");
   on(navCmd, "click", () => showView("command"));
   on(navAi, "click", () => showView("chat"));
+  on(navExec, "click", () => showView("executive"));
   document.getElementById("riskMatrixBtn")?.addEventListener("click", () => {
     showView("command");
     setTimeout(() => document.getElementById("ccHeatMap")?.scrollIntoView({ behavior: "smooth", block: "start" }), 80);
@@ -3991,6 +3993,7 @@ function showView(view, opts = {}) {
     "assets", "risks", "vulns", "remediations", "playbooks", "campaigns",
     "intel", "reports", "soc", "evidence", "orgs", "frameworks",
     "integrations", "billing", "graph", "automation", "webscan", "software",
+    "executive",
   ]);
   if (moduleViews.has(view) && typeof window.showWorkspace === "function") {
     window.showWorkspace(view, opts);

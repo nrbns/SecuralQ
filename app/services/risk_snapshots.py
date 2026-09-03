@@ -72,6 +72,46 @@ def snapshot_risk(user_id: str, *, campaign_id: str = "", label: str = "") -> di
     return {"id": sid, "campaign_id": campaign_id, "label": label, "created_at": ts, **result}
 
 
+_PERIODIC_MIN_INTERVAL_SEC = 24 * 3600  # at most one 'periodic' snapshot per day per user
+
+
+def maybe_snapshot_periodic(user_id: str) -> dict[str, Any] | None:
+    """Take a label='periodic' snapshot of the CURRENT real org risk score,
+    but only if the most recent snapshot of any label is more than 24h old
+    (or none exists yet). This is what gives the executive dashboard a
+    trend line even for tenants with no patch-campaign activity -- without
+    it, score_history would only ever have points where a campaign
+    happened to run. Throttled to avoid unbounded row growth from every
+    dashboard page load; best-effort, like snapshot_risk itself."""
+    ensure_schema()
+    c = get_conn()
+    last = c.execute(
+        "SELECT created_at FROM securaiq_risk_snapshots WHERE user_id = ? ORDER BY created_at DESC LIMIT 1",
+        (user_id,),
+    ).fetchone()
+    if last and (now() - float(last["created_at"])) < _PERIODIC_MIN_INTERVAL_SEC:
+        return None
+    return snapshot_risk(user_id, label="periodic")
+
+
+def get_score_history(user_id: str, *, days: int = 90, limit: int = 200) -> list[dict[str, Any]]:
+    """Every snapshot (any label -- 'before'/'after' from campaigns and
+    'periodic' from maybe_snapshot_periodic) in the last `days`, oldest
+    first. This is real, reproducible history -- each point is an actual
+    compute_org_risk_score() result at the time it was taken, not an
+    interpolated or synthetic value. Sparse history (few or zero campaigns,
+    dashboard not opened in a while) means a sparse or empty list; callers
+    must not fabricate points to fill gaps."""
+    ensure_schema()
+    c = get_conn()
+    cutoff = now() - days * 86400
+    rows = c.execute(
+        "SELECT * FROM securaiq_risk_snapshots WHERE user_id = ? AND created_at >= ? ORDER BY created_at ASC LIMIT ?",
+        (user_id, cutoff, max(1, min(limit, 1000))),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def get_campaign_risk_delta(user_id: str, campaign_id: str) -> dict[str, Any] | None:
     """Returns {risk_before, risk_after, risk_reduction_pct, ...} for a
     campaign that has both a 'before' and 'after' snapshot, or None fields

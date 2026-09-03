@@ -1058,6 +1058,34 @@ def _campaign_summary(user_id: str, campaign_id: str) -> dict[str, Any]:
     }
 
 
+def fleet_verification_summary(user_id: str) -> dict[str, Any]:
+    """The same 'done' -> verification_status breakdown as _campaign_summary,
+    aggregated across every campaign this user has ever run -- the real
+    number behind an executive dashboard's "verified remediation %". Only
+    counts commands that actually executed (status='done'); a command still
+    pending approval or queued isn't a remediation attempt yet, so it's
+    excluded from the denominator rather than silently counted as
+    unverified."""
+    ensure_schema()
+    rows = get_conn().execute(
+        "SELECT verification_status, COUNT(*) as n FROM securaiq_agent_commands "
+        "WHERE user_id = ? AND status = 'done' GROUP BY verification_status",
+        (user_id,),
+    ).fetchall()
+    counts = {r["verification_status"]: r["n"] for r in rows}
+    verified = counts.get("verified", 0)
+    failed = counts.get("verification_failed", 0)
+    pending = counts.get("pending", 0)
+    total_done = verified + failed + pending
+    return {
+        "total_done": total_done,
+        "verified": verified,
+        "verification_failed": failed,
+        "verification_pending": pending,
+        "verified_pct": round(verified / total_done * 100, 1) if total_done else None,
+    }
+
+
 def list_campaigns(user_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
     ensure_schema()
     rows = get_conn().execute(

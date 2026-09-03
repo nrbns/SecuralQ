@@ -180,6 +180,7 @@
       billing: "viewBilling",
       graph: "viewGraph",
       automation: "viewAutomation",
+      executive: "viewExecutive",
     };
     const id = map[view] || "viewCommand";
     const panel = qs(id);
@@ -219,6 +220,7 @@
         billing: "Billing",
         graph: "Knowledge Graph",
         automation: "Automation",
+        executive: "Executive Dashboard",
       };
       title.textContent = labels[view] || "SecuraIQ";
     }
@@ -246,6 +248,7 @@
     if (view === "billing") renderBillingPage();
     if (view === "graph") renderGraphPage();
     if (view === "automation") renderAutomationPage();
+    if (view === "executive") renderExecutiveDashboardPage();
     if (typeof closeSidebar === "function") closeSidebar();
   };
 
@@ -4435,6 +4438,129 @@
     }
   }
 
+  function _sparklineSvg(points, { width = 320, height = 56, stroke = "#5b8def" } = {}) {
+    if (!points || points.length < 2) return "";
+    const scores = points.map((p) => Number(p.score) || 0);
+    const min = Math.min(...scores);
+    const max = Math.max(...scores);
+    const range = max - min || 1;
+    const stepX = width / (points.length - 1);
+    const coords = scores.map((s, i) => {
+      const x = i * stepX;
+      const y = height - ((s - min) / range) * (height - 8) - 4;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    });
+    return `<svg viewBox="0 0 ${width} ${height}" width="100%" height="${height}" preserveAspectRatio="none" role="img" aria-label="Security exposure trend">
+      <polyline points="${coords.join(" ")}" fill="none" stroke="${stroke}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
+    </svg>`;
+  }
+
+  async function renderExecutiveDashboardPage() {
+    const el = qs("executivePageBody");
+    if (!el) return;
+    el.innerHTML = `<p class="hint">Loading…</p>`;
+    try {
+      const res = await fetch("/api/risk/executive-dashboard", { headers: authHeaders() });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+
+      const bandCls = (band) =>
+        band === "critical" || band === "high" ? "status-error" : band === "medium" ? "status-planned" : "status-done";
+      // Backend pre-signs change_pct so positive always means "improved"
+      // (risk went down since the earliest point in the window).
+      const changeBadge = (pct) => {
+        if (pct === null || pct === undefined) return `<em class="hint">not enough history yet</em>`;
+        const arrow = pct === 0 ? "→" : pct > 0 ? "↓" : "↑";
+        const cls = pct === 0 ? "status-planned" : pct > 0 ? "status-done" : "status-error";
+        return `<span class="auto-job-status ${cls}">${arrow} ${escapeHtml(String(Math.abs(pct)))}%</span>`;
+      };
+
+      const exposure = data.security_exposure || {};
+      const findings = data.critical_findings || {};
+      const patch = data.patch_compliance || {};
+      const mttr = data.mean_remediation_time || {};
+      const verified = data.verified_remediation || {};
+      const topRisks = data.top_remaining_risks || [];
+
+      const findingsChangeText =
+        findings.change_since_earliest_snapshot === null || findings.change_since_earliest_snapshot === undefined
+          ? `<em class="hint">not enough history yet</em>`
+          : (() => {
+              const c = findings.change_since_earliest_snapshot;
+              const cls = c > 0 ? "status-done" : c < 0 ? "status-error" : "status-planned";
+              const arrow = c > 0 ? "↓" : c < 0 ? "↑" : "→";
+              return `<span class="auto-job-status ${cls}">${arrow} ${escapeHtml(String(Math.abs(c)))}</span>`;
+            })();
+
+      el.innerHTML = `
+        <p class="hint" style="margin:0 0 12px">A management view of real, measured outcomes -- not a projection. Every number here is either the current organizational risk score, a real count from open findings/inventory/campaigns, or an aggregate over actual status-change timestamps.</p>
+        <div class="cc-kpi-grid">
+          <article class="cc-kpi">
+            <span>Security exposure</span>
+            <strong><span class="auto-job-status ${bandCls(exposure.band)}">${escapeHtml(String(exposure.current_score ?? 0))}</span></strong>
+            <em class="hint">${changeBadge(exposure.change_pct)} over last 90d</em>
+          </article>
+          <article class="cc-kpi">
+            <span>Critical findings</span>
+            <strong>${escapeHtml(String(findings.critical ?? 0))}</strong>
+            <em class="hint">${findingsChangeText} since earliest snapshot &middot; ${escapeHtml(String(findings.critical_high ?? 0))} critical+high</em>
+          </article>
+          <article class="cc-kpi ${patch.pct != null && patch.pct >= 90 ? "cc-kpi-ok" : ""}">
+            <span>Patch compliance</span>
+            <strong>${patch.pct != null ? escapeHtml(String(patch.pct)) + "%" : "—"}</strong>
+            <em class="hint">${patch.total ? `${escapeHtml(String(patch.up_to_date))} / ${escapeHtml(String(patch.total))} installations up to date` : "no software inventory yet"}</em>
+          </article>
+          <article class="cc-kpi ${verified.verified_pct != null && verified.verified_pct >= 90 ? "cc-kpi-ok" : ""}">
+            <span>Verified remediation</span>
+            <strong>${verified.verified_pct != null ? escapeHtml(String(verified.verified_pct)) + "%" : "—"}</strong>
+            <em class="hint">${verified.total_done ? `${escapeHtml(String(verified.verified))} / ${escapeHtml(String(verified.total_done))} executed patches confirmed fixed` : "no patches executed yet"}</em>
+          </article>
+          <article class="cc-kpi">
+            <span>Active campaigns</span>
+            <strong>${escapeHtml(String(data.active_campaigns ?? 0))}</strong>
+            <em class="hint">currently running</em>
+          </article>
+          <article class="cc-kpi">
+            <span>Mean remediation time</span>
+            <strong>${mttr.mean_days != null ? escapeHtml(String(mttr.mean_days)) + "d" : "—"}</strong>
+            <em class="hint">${mttr.sample_size ? `based on ${escapeHtml(String(mttr.sample_size))} resolved finding(s)` : "nothing resolved yet"}</em>
+          </article>
+        </div>
+
+        <section class="cc-panel" style="margin-top:1rem">
+          <header><h2>Security exposure trend</h2></header>
+          ${
+            exposure.history_points >= 2
+              ? `<div style="max-width:480px">${_sparklineSvg(exposure.history)}</div>
+                 <p class="hint" style="margin-top:6px">${escapeHtml(String(exposure.history_points))} real measurement(s) over the last 90 days -- each point is an actual organizational risk score at the time it was taken (from a patch campaign or a periodic check), not an interpolated value.</p>`
+              : `<p class="hint">Not enough history yet to show a trend (need at least 2 measurements). A measurement is taken automatically whenever this dashboard is opened, and whenever a patch campaign starts or finishes -- check back after some campaign activity or a day has passed.</p>`
+          }
+        </section>
+
+        <section class="cc-panel" style="margin-top:1rem">
+          <header><h2>Top remaining risks</h2></header>
+          ${
+            topRisks.length
+              ? `<div class="data-table-wrap"><table class="data-table">
+                  <thead><tr><th>Finding</th><th>Asset</th><th>Risk</th><th>Why</th></tr></thead>
+                  <tbody>${topRisks
+                    .map(
+                      (r) => `<tr>
+                        <td><strong>${escapeHtml(r.title || r.cve || "Untitled finding")}</strong>${r.cve ? ` <span class="hint">${escapeHtml(r.cve)}</span>` : ""}${r.kev ? ` <span class="auto-job-status status-error">KEV</span>` : ""}</td>
+                        <td class="hint">${escapeHtml(r.asset_name || "—")}</td>
+                        <td><span class="auto-job-status ${bandCls(r.band)}">${escapeHtml(String(r.score))}</span></td>
+                        <td class="hint">${(r.reasons || []).map((x) => escapeHtml(x)).join(" &middot; ")}</td>
+                      </tr>`
+                    )
+                    .join("")}</tbody></table></div>`
+              : `<p class="hint">No open findings right now.</p>`
+          }
+        </section>`;
+    } catch (err) {
+      el.innerHTML = `<p class="hint">Couldn't load the executive dashboard right now. <span class="hint-sub">(${escapeHtml(err.message || String(err))})</span></p>`;
+    }
+  }
+
   async function renderAgentsPanel() {
     const el = qs("agentsPanelBody");
     if (!el) return;
@@ -7793,6 +7919,7 @@
         integrations: () => typeof renderIntegrationsPage === "function" && renderIntegrationsPage(),
         orgs: () => typeof renderOrgsPage === "function" && renderOrgsPage(),
         billing: () => typeof renderBillingPage === "function" && renderBillingPage(),
+        executive: () => typeof renderExecutiveDashboardPage === "function" && renderExecutiveDashboardPage(),
       };
       const fn = runners[view];
       if (fn) fn();
