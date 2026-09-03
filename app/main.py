@@ -65,6 +65,7 @@ from app.cloud_posture_api import router as cloud_posture_router
 from app.sonarqube_api import router as sonarqube_router
 from app.scim_api import router as scim_router
 from app.stix_api import router as stix_router
+from app.exceptions_api import router as exceptions_router
 from app.commercial_ext import ensure_org_schema
 from app.gap_analysis import ensure_gap_schema
 from app.db import init_schema
@@ -336,6 +337,7 @@ app.include_router(sonarqube_router, prefix="/api/code")
 app.include_router(sonarqube_router, prefix="/api/sonarqube")  # compat alias
 app.include_router(scim_router)
 app.include_router(stix_router)
+app.include_router(exceptions_router)
 
 _PUBLIC_API_PREFIXES = (
     "/api/auth/login",

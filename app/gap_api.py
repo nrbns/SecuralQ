@@ -23,6 +23,7 @@ from app.gap_analysis import (
     list_frameworks,
     load_framework,
 )
+from app.services.compliance_center import audit_center_overview, compliance_overview
 from app.services.control_testing import controls_with_live_tests, run_live_tests_for_framework
 
 router = APIRouter(prefix="/api", tags=["gap-analysis"])
@@ -115,6 +116,29 @@ async def gap_live_tests(framework_id: str, user: Annotated[AuthUser, Depends(re
         "tested_control_ids": sorted(controls_with_live_tests(framework_id)),
         "results": run_live_tests_for_framework(user.id, framework_id),
     }
+
+
+@router.get("/compliance/overview")
+async def compliance_overview_route(
+    user: Annotated[AuthUser, Depends(require_user)], org_id: str | None = None
+):
+    """Compliance Center: overall %, per-framework breakdown, evidence
+    expiring soon, exception coverage -- built entirely from real
+    gap_assessments/evidence_links/securaiq_exceptions rows, never
+    hardcoded, and never counting an unassessed framework toward the
+    percentage."""
+    return compliance_overview(user.id, org_id=org_id)
+
+
+@router.get("/compliance/audit-center")
+async def audit_center_route(
+    user: Annotated[AuthUser, Depends(require_user)], org_id: str | None = None
+):
+    """Audit Center: evidence requested/supplied/missing and control
+    passing/failing/pending, rolled up across every framework's latest
+    assessment. Per-assessment ZIP export stays at
+    /gap/assessments/{id}/audit-pack."""
+    return audit_center_overview(user.id, org_id=org_id)
 
 
 @router.get("/gap/evidence-queue")

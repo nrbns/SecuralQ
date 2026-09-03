@@ -92,9 +92,12 @@
       <nav class="side-nav nav-group" aria-label="Compliance" data-nav-group>
         <button type="button" class="nav-group-toggle" aria-expanded="true"><span class="nav-ico" data-ico="comp" aria-hidden="true"></span> Compliance</button>
         <div class="nav-group-body">
+          <button type="button" class="nav-link" id="complianceCenterBtn" data-workspace="compliance_center"><span class="nav-ico sm" data-ico="comp" aria-hidden="true"></span> Compliance Center</button>
           <button type="button" class="nav-link" id="frameworksBtn" data-workspace="frameworks"><span class="nav-ico sm" data-ico="fw" aria-hidden="true"></span> Frameworks</button>
           <button type="button" class="nav-link" id="remBtn" data-workspace="remediations"><span class="nav-ico sm" data-ico="ctrl" aria-hidden="true"></span> Controls</button>
           <button type="button" class="nav-link" id="navEvidence" data-workspace="evidence"><span class="nav-ico sm" data-ico="ev" aria-hidden="true"></span> Evidence</button>
+          <button type="button" class="nav-link" id="exceptionsBtn" data-workspace="exceptions"><span class="nav-ico sm" data-ico="ev" aria-hidden="true"></span> Exceptions</button>
+          <button type="button" class="nav-link" id="auditCenterBtn" data-workspace="audit_center"><span class="nav-ico sm" data-ico="rep" aria-hidden="true"></span> Audit Center</button>
           <button type="button" class="nav-link" id="reportsBtn" data-workspace="reports"><span class="nav-ico sm" data-ico="rep" aria-hidden="true"></span> Reports</button>
           <button type="button" class="nav-link" id="riskBtn" data-workspace="risks"><span class="nav-ico sm" data-ico="reg" aria-hidden="true"></span> Risk register</button>
           <button type="button" class="nav-link" id="gapBtn"><span class="nav-ico sm" data-ico="gap" aria-hidden="true"></span> Gap analysis</button>
@@ -730,6 +733,52 @@
               </aside>
             </div>
           </div>
+        </section>
+        <section id="viewComplianceCenter" class="workspace-view hidden" data-module-page data-view-panel="compliance_center">
+          <div class="page-head">
+            <div>
+              <h1>Compliance Center</h1>
+              <p class="page-intro hint" style="margin:0.35rem 0 0">Overall compliance across every assessed framework — only frameworks you've actually scored count toward the total.</p>
+            </div>
+          </div>
+          <div id="complianceCenterPageBody"><p class="hint">Loading…</p></div>
+        </section>
+        <section id="viewExceptions" class="workspace-view hidden" data-module-page data-view-panel="exceptions">
+          <div class="page-head">
+            <div>
+              <h1>Compliance exceptions</h1>
+              <p class="page-intro hint" style="margin:0.35rem 0 0">Accepted risk, tracked with an owner, a reason, and a hard expiry. No exception is ever open-ended.</p>
+            </div>
+          </div>
+          <form id="excCreateForm" class="inline-form" style="margin-bottom:1rem;flex-wrap:wrap">
+            <input id="excNewTitle" placeholder="Exception title" required style="min-width:14rem" />
+            <input id="excNewFramework" placeholder="Framework ID (optional)" style="max-width:10rem" />
+            <input id="excNewControl" placeholder="Control ID (optional)" style="max-width:10rem" />
+            <input id="excNewOwner" placeholder="Owner" required style="max-width:12rem" />
+            <select id="excNewRiskLevel" style="max-width:9rem">
+              <option value="low">Low risk</option>
+              <option value="medium" selected>Medium risk</option>
+              <option value="high">High risk</option>
+              <option value="critical">Critical risk</option>
+            </select>
+            <label class="hint" style="display:flex;align-items:center;gap:0.35rem">Expires
+              <input id="excNewExpiry" type="date" required />
+            </label>
+            <textarea id="excNewReason" placeholder="Reason the control can't be met today" required style="min-width:100%;margin-top:0.5rem" rows="2"></textarea>
+            <textarea id="excNewRiskAccepted" placeholder="Residual risk being accepted" required style="min-width:100%" rows="2"></textarea>
+            <textarea id="excNewCompensating" placeholder="Compensating controls in place (optional)" style="min-width:100%" rows="2"></textarea>
+            <button type="submit" class="btn-secondary">Request exception</button>
+          </form>
+          <div id="exceptionsPageBody"><p class="hint">Loading…</p></div>
+        </section>
+        <section id="viewAuditCenter" class="workspace-view hidden" data-module-page data-view-panel="audit_center">
+          <div class="page-head">
+            <div>
+              <h1>Audit Center</h1>
+              <p class="page-intro hint" style="margin:0.35rem 0 0">Evidence requested vs. supplied and control pass/fail/pending, rolled up across every framework's latest assessment.</p>
+            </div>
+          </div>
+          <div id="auditCenterPageBody"><p class="hint">Loading…</p></div>
         </section>
         <section id="viewIntegrations" class="workspace-view hidden" data-module-page data-view-panel="integrations">
           <div class="page-head"><h1>Integrations</h1></div>

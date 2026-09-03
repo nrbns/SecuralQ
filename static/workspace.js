@@ -176,6 +176,9 @@
       evidence: "viewEvidence",
       orgs: "viewOrgs",
       frameworks: "viewFrameworks",
+      compliance_center: "viewComplianceCenter",
+      exceptions: "viewExceptions",
+      audit_center: "viewAuditCenter",
       integrations: "viewIntegrations",
       billing: "viewBilling",
       graph: "viewGraph",
@@ -216,6 +219,9 @@
         evidence: "Evidence Locker",
         orgs: "Organizations",
         frameworks: "Frameworks",
+        compliance_center: "Compliance Center",
+        exceptions: "Exceptions",
+        audit_center: "Audit Center",
         integrations: "Integrations",
         billing: "Billing",
         graph: "Knowledge Graph",
@@ -244,6 +250,9 @@
       renderHardeningPanel();
       renderFrameworksPage();
     }
+    if (view === "compliance_center") renderComplianceCenterPage();
+    if (view === "exceptions") renderExceptionsPage();
+    if (view === "audit_center") renderAuditCenterPage();
     if (view === "integrations") renderIntegrationsPage();
     if (view === "billing") renderBillingPage();
     if (view === "graph") renderGraphPage();
@@ -6683,6 +6692,302 @@
     });
   }
   window.renderFrameworksPage = renderFrameworksPage;
+
+  async function renderComplianceCenterPage() {
+    const body = qs("complianceCenterPageBody");
+    if (!body) return;
+    const res = await fetch("/api/compliance/overview", { headers: authHeaders() });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      body.innerHTML = `<p class="hint">Could not load compliance overview (${res.status})</p>`;
+      return;
+    }
+    const fws = data.frameworks || [];
+    const counts = data.counts || {};
+    const exc = data.exceptions || {};
+    const expiring = data.evidence_expiring_soon || [];
+    body.innerHTML = `
+      <div class="fw-hero">
+        <div class="fw-hero-score">
+          <span class="fw-hero-label">Overall compliance</span>
+          <strong>${data.overall_compliance_percent != null ? `${data.overall_compliance_percent}%` : "—"}</strong>
+          <em class="hint">${data.frameworks_assessed || 0} of ${data.frameworks_total || 0} frameworks assessed</em>
+        </div>
+        <ul class="fw-hero-stats">
+          <li><span>Implemented</span><strong>${counts.implemented || 0}</strong></li>
+          <li><span>Partial</span><strong>${counts.partial || 0}</strong></li>
+          <li><span>Missing</span><strong>${counts.missing || 0}</strong></li>
+          <li><span>Active exceptions</span><strong>${exc.active_coverage || 0}</strong></li>
+        </ul>
+      </div>
+      <p class="hint" style="margin:0.75rem 0">${escapeHtml(data.methodology || "")}</p>
+      <div class="data-table-wrap">
+        <table class="data-table">
+          <thead><tr><th>Framework</th><th>Status</th><th>Compliance</th><th>Implemented</th><th>Partial</th><th>Missing</th><th>Live-tested controls</th></tr></thead>
+          <tbody>
+            ${
+              fws.length
+                ? fws
+                    .map(
+                      (f) => `<tr>
+                        <td><strong>${escapeHtml(f.name)}</strong><div class="hint">${escapeHtml(f.framework_id)}</div></td>
+                        <td>${f.assessed ? `<span class="wq-badge pri-low">assessed</span>` : `<span class="hint">not assessed</span>`}</td>
+                        <td>${f.compliance_percent != null ? `${f.compliance_percent}%` : "—"}</td>
+                        <td>${f.counts?.implemented || 0}</td>
+                        <td>${f.counts?.partial || 0}</td>
+                        <td>${f.counts?.missing || 0}</td>
+                        <td>${f.live_tested_controls || 0}</td>
+                      </tr>`
+                    )
+                    .join("")
+                : `<tr><td colspan="7" class="hint">No frameworks loaded</td></tr>`
+            }
+          </tbody>
+        </table>
+      </div>
+      <div class="cc-panel" style="margin-top:1rem">
+        <header><h2>Evidence expiring soon (30 days)</h2></header>
+        ${
+          expiring.length
+            ? `<div class="data-table-wrap"><table class="data-table"><thead><tr><th>Control</th><th>File</th><th>Expires</th><th>Days left</th></tr></thead><tbody>${expiring
+                .map(
+                  (e) =>
+                    `<tr><td>${escapeHtml(e.control_id || "—")}</td><td>${escapeHtml(e.filename || "—")}</td><td>${escapeHtml(e.expiry)}</td><td>${e.days_until_expiry}</td></tr>`
+                )
+                .join("")}</tbody></table></div>`
+            : `<p class="hint">No evidence with a parseable expiry date is due in the next 30 days.</p>`
+        }
+      </div>
+      <div class="cc-panel" style="margin-top:1rem">
+        <header><h2>Exceptions</h2></header>
+        <p class="hint">${exc.total || 0} total · ${exc.by_status?.pending_approval || 0} pending approval · ${exc.active_coverage || 0} active · ${exc.expiring_soon_30d || 0} expiring within 30 days</p>
+        <button type="button" class="btn-secondary" data-workspace="exceptions">Open Exceptions</button>
+      </div>`;
+    body.querySelectorAll("[data-workspace]").forEach((el) => {
+      el.addEventListener("click", (e) => {
+        e.preventDefault();
+        showWorkspace(el.getAttribute("data-workspace"));
+      });
+    });
+  }
+  window.renderComplianceCenterPage = renderComplianceCenterPage;
+
+  async function renderAuditCenterPage() {
+    const body = qs("auditCenterPageBody");
+    if (!body) return;
+    const res = await fetch("/api/compliance/audit-center", { headers: authHeaders() });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      body.innerHTML = `<p class="hint">Could not load audit center (${res.status})</p>`;
+      return;
+    }
+    const fws = data.frameworks || [];
+    const t = data.totals || {};
+    body.innerHTML = `
+      <div class="fw-hero">
+        <div class="fw-hero-score">
+          <span class="fw-hero-label">Controls tracked</span>
+          <strong>${t.controls_total || 0}</strong>
+          <em class="hint">${data.assessments_included || 0} framework${data.assessments_included === 1 ? "" : "s"} with an assessment</em>
+        </div>
+        <ul class="fw-hero-stats">
+          <li><span>Passing</span><strong>${t.passing || 0}</strong></li>
+          <li><span>Failing</span><strong>${t.failing || 0}</strong></li>
+          <li><span>Pending</span><strong>${t.pending || 0}</strong></li>
+          <li><span>Evidence missing</span><strong>${t.evidence_missing || 0}</strong></li>
+        </ul>
+      </div>
+      <div class="data-table-wrap">
+        <table class="data-table">
+          <thead><tr><th>Framework</th><th>Controls</th><th>Passing</th><th>Failing</th><th>Pending</th><th>Evidence supplied</th><th>Evidence missing</th><th>Coverage</th><th></th></tr></thead>
+          <tbody>
+            ${
+              fws.length
+                ? fws
+                    .map(
+                      (f) => `<tr>
+                        <td><strong>${escapeHtml(f.framework_name)}</strong></td>
+                        <td>${f.controls_total}</td>
+                        <td>${f.passing}</td>
+                        <td>${f.failing}</td>
+                        <td>${f.pending}</td>
+                        <td>${f.evidence_supplied}</td>
+                        <td>${f.evidence_missing}</td>
+                        <td>${f.evidence_coverage_percent != null ? `${f.evidence_coverage_percent}%` : "—"}</td>
+                        <td><button type="button" class="btn-secondary ac-export" data-id="${escapeHtml(f.assessment_id)}" data-fw="${escapeHtml(f.framework_id)}">Export audit pack</button></td>
+                      </tr>`
+                    )
+                    .join("")
+                : `<tr><td colspan="9" class="hint">No assessments yet — run gap analysis from Frameworks to populate the Audit Center.</td></tr>`
+            }
+          </tbody>
+        </table>
+      </div>
+      <p class="hint" style="margin-top:0.75rem">${data.exceptions?.total || 0} compliance exceptions on file · ${data.exceptions?.active_coverage || 0} currently active.</p>`;
+    body.querySelectorAll(".ac-export").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        try {
+          await downloadApiExport(
+            `/api/gap/assessments/${btn.getAttribute("data-id")}/audit-pack`,
+            `securaiq-audit-pack-${btn.getAttribute("data-fw")}.zip`
+          );
+          if (typeof notifyUser === "function") notifyUser("**Audit pack ZIP exported.**");
+        } catch (err) {
+          alert(err.message || "Export failed");
+        }
+      });
+    });
+  }
+  window.renderAuditCenterPage = renderAuditCenterPage;
+
+  async function renderExceptionsPage() {
+    const body = qs("exceptionsPageBody");
+    if (!body) return;
+    const [listRes, sumRes] = await Promise.all([
+      fetch("/api/exceptions", { headers: authHeaders() }),
+      fetch("/api/exceptions/summary", { headers: authHeaders() }),
+    ]);
+    const listData = await listRes.json().catch(() => ({}));
+    const summary = await sumRes.json().catch(() => ({}));
+    if (!listRes.ok) {
+      body.innerHTML = `<p class="hint">Could not load exceptions (${listRes.status})</p>`;
+      return;
+    }
+    const items = listData.exceptions || [];
+    const statusBadge = (status, expired) => {
+      if (expired) return `<span class="wq-badge pri-high">expired</span>`;
+      const risk = status === "approved" ? "low" : status === "rejected" || status === "revoked" ? "high" : "medium";
+      return `<span class="wq-badge pri-${risk}">${escapeHtml(status.replace(/_/g, " "))}</span>`;
+    };
+    body.innerHTML = `
+      <p class="hint" style="margin-bottom:0.75rem">${summary.total || 0} total · ${summary.by_status?.pending_approval || 0} pending approval · ${summary.active_coverage || 0} active · ${summary.expiring_soon_30d || 0} expiring within 30 days · ${summary.expired || 0} expired</p>
+      <div class="data-table-wrap">
+        <table class="data-table">
+          <thead><tr><th>Title</th><th>Control</th><th>Owner</th><th>Risk</th><th>Status</th><th>Expires</th><th></th></tr></thead>
+          <tbody>
+            ${
+              items.length
+                ? items
+                    .map((x) => {
+                      const expiresLabel = x.expiry
+                        ? new Date(x.expiry * 1000).toISOString().slice(0, 10)
+                        : "—";
+                      const actions = [];
+                      if (x.status === "pending_approval" && !x.expired) {
+                        actions.push(`<button type="button" class="btn-secondary exc-approve" data-id="${x.id}">Approve</button>`);
+                        actions.push(`<button type="button" class="btn-secondary exc-reject" data-id="${x.id}">Reject</button>`);
+                      }
+                      if (x.status === "approved" && !x.expired) {
+                        actions.push(`<button type="button" class="btn-secondary exc-revoke" data-id="${x.id}">Revoke</button>`);
+                      }
+                      actions.push(`<button type="button" class="btn-secondary exc-delete" data-id="${x.id}">Delete</button>`);
+                      return `<tr>
+                        <td><strong>${escapeHtml(x.title)}</strong><div class="hint">${escapeHtml((x.reason || "").slice(0, 120))}</div></td>
+                        <td>${escapeHtml(x.framework_id || "—")} ${escapeHtml(x.control_id || "")}</td>
+                        <td>${escapeHtml(x.owner)}</td>
+                        <td><span class="wq-badge pri-${x.risk_level === "low" ? "low" : x.risk_level === "critical" || x.risk_level === "high" ? "high" : "medium"}">${escapeHtml(x.risk_level)}</span></td>
+                        <td>${statusBadge(x.status, x.expired)}</td>
+                        <td>${expiresLabel}${x.days_until_expiry != null && !x.expired ? ` <span class="hint">(${x.days_until_expiry}d)</span>` : ""}</td>
+                        <td class="ws-actions">${actions.join(" ")}</td>
+                      </tr>`;
+                    })
+                    .join("")
+                : `<tr><td colspan="7" class="hint">No exceptions on file</td></tr>`
+            }
+          </tbody>
+        </table>
+      </div>`;
+    const refresh = () => renderExceptionsPage();
+    body.querySelectorAll(".exc-approve").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        try {
+          const res = await fetch(`/api/exceptions/${btn.getAttribute("data-id")}/approve`, {
+            method: "POST",
+            headers: authHeaders(),
+          });
+          if (!res.ok) {
+            const d = await res.json().catch(() => ({}));
+            throw new Error(d.detail || `HTTP ${res.status}`);
+          }
+          refresh();
+        } catch (err) {
+          alert(err.message || "Approve failed");
+        }
+      });
+    });
+    body.querySelectorAll(".exc-reject").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const reason = prompt("Reason for rejecting this exception (optional):") || "";
+        await fetch(`/api/exceptions/${btn.getAttribute("data-id")}/reject`, {
+          method: "POST",
+          headers: authHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify({ reason }),
+        });
+        refresh();
+      });
+    });
+    body.querySelectorAll(".exc-revoke").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        if (!confirm("Revoke this exception now, before its expiry?")) return;
+        await fetch(`/api/exceptions/${btn.getAttribute("data-id")}/revoke`, {
+          method: "POST",
+          headers: authHeaders(),
+        });
+        refresh();
+      });
+    });
+    body.querySelectorAll(".exc-delete").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        if (!confirm("Delete this exception record permanently?")) return;
+        await fetch(`/api/exceptions/${btn.getAttribute("data-id")}`, { method: "DELETE", headers: authHeaders() });
+        refresh();
+      });
+    });
+    if (!window.__securaiqExcFormWired) {
+      window.__securaiqExcFormWired = true;
+      qs("excCreateForm")?.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const title = qs("excNewTitle")?.value?.trim();
+        const owner = qs("excNewOwner")?.value?.trim();
+        const reason = qs("excNewReason")?.value?.trim();
+        const riskAccepted = qs("excNewRiskAccepted")?.value?.trim();
+        const expiryStr = qs("excNewExpiry")?.value;
+        if (!title || !owner || !reason || !riskAccepted || !expiryStr) {
+          alert("Title, owner, reason, risk accepted, and an expiry date are all required.");
+          return;
+        }
+        const expiryTs = Math.floor(new Date(`${expiryStr}T23:59:59Z`).getTime() / 1000);
+        const res = await fetch("/api/exceptions", {
+          method: "POST",
+          headers: authHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify({
+            title,
+            owner,
+            reason,
+            risk_accepted: riskAccepted,
+            expiry: expiryTs,
+            risk_level: qs("excNewRiskLevel")?.value || "medium",
+            framework_id: qs("excNewFramework")?.value?.trim() || "",
+            control_id: qs("excNewControl")?.value?.trim() || "",
+            compensating_controls: qs("excNewCompensating")?.value?.trim() || "",
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          alert(data.detail || `HTTP ${res.status}`);
+          return;
+        }
+        ["excNewTitle", "excNewFramework", "excNewControl", "excNewOwner", "excNewExpiry", "excNewReason", "excNewRiskAccepted", "excNewCompensating"].forEach(
+          (id) => {
+            const el = qs(id);
+            if (el) el.value = "";
+          }
+        );
+        renderExceptionsPage();
+      });
+    }
+  }
+  window.renderExceptionsPage = renderExceptionsPage;
 
   function renderIntegrationsPage() {
     const body = qs("integrationsPageBody");
