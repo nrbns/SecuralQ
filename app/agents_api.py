@@ -30,6 +30,7 @@ from app.agents import (
     reject_campaign,
     reject_command,
     report_command_result,
+    request_agent_upgrade,
     request_command,
     revoke_agent,
 )
@@ -124,6 +125,18 @@ class CheckinPayload(BaseModel):
     packages: list[dict[str, Any]] = Field(default_factory=list)
     file_integrity: list[dict[str, Any]] = Field(default_factory=list)
     uptime_sec: float | None = None
+    # Deep telemetry (task #140) -- each is the collector's own
+    # {"collected": bool, "reason": str, ...} shape from
+    # scripts/securaiq_agent.py; a field simply absent from an older agent's
+    # check-in defaults to {} rather than erroring the whole check-in, and
+    # the UI treats "no such key" the same as "collected: false".
+    services: dict[str, Any] = Field(default_factory=dict)
+    local_users: dict[str, Any] = Field(default_factory=dict)
+    firewall_status: dict[str, Any] = Field(default_factory=dict)
+    disk_encryption_status: dict[str, Any] = Field(default_factory=dict)
+    defender_status: dict[str, Any] = Field(default_factory=dict)
+    startup_apps: dict[str, Any] = Field(default_factory=dict)
+    ssh_config: dict[str, Any] = Field(default_factory=dict)
 
 
 def _parse_agent_bearer(value: str | None) -> tuple[str, str]:
@@ -362,6 +375,20 @@ async def api_queue_agent_command(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     audit("agent_command_request", user.id, {"agent_id": agent_id, "kind": req.kind, "payload": req.payload})
+    return result
+
+
+@router.post("/{agent_id}/commands/upgrade")
+async def api_request_agent_upgrade(agent_id: str, user: Annotated[AuthUser, Depends(require_user)]):
+    """Request a self-upgrade for this agent. Same pending_approval gate as
+    any other command -- computes the server's current agent-script sha256
+    now and attaches it to the command so the agent verifies it's fetching
+    exactly what was approved (see request_agent_upgrade)."""
+    try:
+        result = request_agent_upgrade(user.id, agent_id, requested_by=user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    audit("agent_upgrade_request", user.id, {"agent_id": agent_id})
     return result
 
 

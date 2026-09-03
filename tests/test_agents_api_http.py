@@ -1408,3 +1408,216 @@ def test_verified_patch_does_not_resolve_vulnerability_without_cve_match(tmp_pat
 
     remaining_open = [v["id"] for v in list_vulnerabilities(uid, status="open")]
     assert open_vuln["id"] in remaining_open
+
+
+# --- agent health state machine (task #140) -----------------------------------
+# Six real states: revoked / pending / online / offline / stale / error /
+# upgrading -- every state beyond the original four is derived from an
+# actual checkable condition (check-in age, or the agent's most recent
+# command), never a cosmetic label. See app.agents._row_status.
+
+
+def test_agent_status_pending_before_any_checkin(tmp_path, monkeypatch):
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    client.post("/api/agents/enroll", json={"name": "never-checked-in"}, headers=_auth(token))
+    agents = client.get("/api/agents", headers=_auth(token)).json()["agents"]
+    assert agents[0]["status"] == "pending"
+
+
+def test_agent_status_online_right_after_checkin(tmp_path, monkeypatch):
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    enroll = client.post("/api/agents/enroll", json={"name": "fresh-checkin"}, headers=_auth(token))
+    agent_token = enroll.json()["agent_token"]
+    client.post("/api/agents/checkin", json={"hostname": "fresh-checkin"}, headers={"Authorization": f"Bearer {agent_token}"})
+    agents = client.get("/api/agents", headers=_auth(token)).json()["agents"]
+    assert agents[0]["status"] == "online"
+
+
+def test_agent_status_offline_after_missed_heartbeats(tmp_path, monkeypatch):
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    enroll = client.post("/api/agents/enroll", json={"name": "gone-quiet"}, headers=_auth(token))
+    agent_id, agent_token = enroll.json()["agent_id"], enroll.json()["agent_token"]
+    client.post("/api/agents/checkin", json={"hostname": "gone-quiet"}, headers={"Authorization": f"Bearer {agent_token}"})
+
+    from app.agents import OFFLINE_AFTER_SEC
+    from app.db import get_conn, now
+
+    c = get_conn()
+    c.execute("UPDATE securaiq_agents SET last_checkin = ? WHERE id = ?", (now() - OFFLINE_AFTER_SEC - 30, agent_id))
+    c.commit()
+
+    agents = client.get("/api/agents", headers=_auth(token)).json()["agents"]
+    assert agents[0]["status"] == "offline"
+
+
+def test_agent_status_stale_far_beyond_offline_threshold(tmp_path, monkeypatch):
+    """Offline covers an ordinary outage; stale means unreachable long
+    enough (7 days) that it's more likely decommissioned or gone."""
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    enroll = client.post("/api/agents/enroll", json={"name": "long-gone"}, headers=_auth(token))
+    agent_id, agent_token = enroll.json()["agent_id"], enroll.json()["agent_token"]
+    client.post("/api/agents/checkin", json={"hostname": "long-gone"}, headers={"Authorization": f"Bearer {agent_token}"})
+
+    from app.agents import STALE_AFTER_SEC
+    from app.db import get_conn, now
+
+    c = get_conn()
+    c.execute("UPDATE securaiq_agents SET last_checkin = ? WHERE id = ?", (now() - STALE_AFTER_SEC - 3600, agent_id))
+    c.commit()
+
+    agents = client.get("/api/agents", headers=_auth(token)).json()["agents"]
+    assert agents[0]["status"] == "stale"
+
+
+def test_agent_status_error_reflects_most_recent_command_outcome(tmp_path, monkeypatch):
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    enroll = client.post("/api/agents/enroll", json={"name": "cmd-errored"}, headers=_auth(token))
+    agent_id, agent_token = enroll.json()["agent_id"], enroll.json()["agent_token"]
+
+    requested = client.post(
+        f"/api/agents/{agent_id}/commands",
+        json={"kind": "patch_package", "payload": {"manager": "apt", "package": "curl"}},
+        headers=_auth(token),
+    )
+    command_id = requested.json()["id"]
+    client.post(f"/api/agents/{agent_id}/commands/{command_id}/approve", headers=_auth(token))
+    client.post("/api/agents/checkin", json={"hostname": "cmd-errored"}, headers={"Authorization": f"Bearer {agent_token}"})
+    client.post(
+        f"/api/agents/commands/{command_id}/result",
+        json={"status": "error", "result": {"error": "package not found"}},
+        headers={"Authorization": f"Bearer {agent_token}"},
+    )
+
+    agent = client.get(f"/api/agents/{agent_id}", headers=_auth(token)).json()
+    assert agent["status"] == "error"
+
+
+def test_agent_status_upgrading_reflects_in_flight_upgrade_command(tmp_path, monkeypatch):
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    enroll = client.post("/api/agents/enroll", json={"name": "mid-upgrade"}, headers=_auth(token))
+    agent_id = enroll.json()["agent_id"]
+
+    res = client.post(f"/api/agents/{agent_id}/commands/upgrade", headers=_auth(token))
+    assert res.status_code == 200, res.text
+    assert res.json()["status"] == "pending_approval"
+
+    agent = client.get(f"/api/agents/{agent_id}", headers=_auth(token)).json()
+    assert agent["status"] == "upgrading"
+
+
+# --- self-upgrade command (task #140) -----------------------------------------
+# Rides the exact same approval-gated command lifecycle as patch_package --
+# never auto-executed, and the agent checksum-verifies the download against
+# a server-declared sha256 attached at approval-request time.
+
+
+def test_request_upgrade_requires_auth(tmp_path, monkeypatch):
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    enroll = client.post("/api/agents/enroll", json={"name": "upgrade-noauth"}, headers=_auth(token))
+    agent_id = enroll.json()["agent_id"]
+    res = client.post(f"/api/agents/{agent_id}/commands/upgrade")
+    assert res.status_code == 401
+
+
+def test_request_upgrade_unknown_agent_400(tmp_path, monkeypatch):
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    res = client.post("/api/agents/does-not-exist/commands/upgrade", headers=_auth(token))
+    assert res.status_code == 400
+
+
+def test_request_upgrade_attaches_real_script_checksum(tmp_path, monkeypatch):
+    """The payload's expected_sha256 must be the ACTUAL current
+    scripts/securaiq_agent.py sha256, not a placeholder -- this is what lets
+    the agent verify it's fetching exactly what was approved."""
+    import hashlib
+
+    from app.paths import resource_root
+
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    enroll = client.post("/api/agents/enroll", json={"name": "upgrade-checksum"}, headers=_auth(token))
+    agent_id = enroll.json()["agent_id"]
+
+    client.post(f"/api/agents/{agent_id}/commands/upgrade", headers=_auth(token))
+
+    pending = client.get("/api/agents/commands/pending", headers=_auth(token)).json()["commands"]
+    cmd = next(c for c in pending if c["agent_id"] == agent_id)
+    assert cmd["kind"] == "agent_upgrade"
+
+    real_script = (resource_root() / "scripts" / "securaiq_agent.py").read_bytes()
+    expected = hashlib.sha256(real_script).hexdigest()
+    assert cmd["payload"]["expected_sha256"] == expected
+
+
+def test_upgrade_command_pending_until_approved_then_delivered(tmp_path, monkeypatch):
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    enroll = client.post("/api/agents/enroll", json={"name": "upgrade-flow"}, headers=_auth(token))
+    agent_id, agent_token = enroll.json()["agent_id"], enroll.json()["agent_token"]
+
+    req = client.post(f"/api/agents/{agent_id}/commands/upgrade", headers=_auth(token))
+    command_id = req.json()["id"]
+
+    # not delivered before approval
+    checkin1 = client.post("/api/agents/checkin", json={"hostname": "upgrade-flow"}, headers={"Authorization": f"Bearer {agent_token}"})
+    assert checkin1.json()["commands"] == []
+
+    approved = client.post(f"/api/agents/{agent_id}/commands/{command_id}/approve", headers=_auth(token))
+    assert approved.status_code == 200, approved.text
+
+    checkin2 = client.post("/api/agents/checkin", json={"hostname": "upgrade-flow"}, headers={"Authorization": f"Bearer {agent_token}"})
+    delivered = checkin2.json()["commands"]
+    assert len(delivered) == 1
+    assert delivered[0]["kind"] == "agent_upgrade"
+    assert delivered[0]["payload"]["expected_sha256"]
+
+
+# --- deep telemetry check-in fields (task #140) -------------------------------
+# Each collector on the agent side reports {"collected": bool, "reason": str,
+# ...}; the server must round-trip whatever shape the agent sends through to
+# last_payload untouched, honoring the same "never fabricate, degrade
+# honestly" contract on the way through.
+
+
+def test_checkin_round_trips_deep_telemetry_fields(tmp_path, monkeypatch):
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    enroll = client.post("/api/agents/enroll", json={"name": "telemetry-host"}, headers=_auth(token))
+    agent_id, agent_token = enroll.json()["agent_id"], enroll.json()["agent_token"]
+
+    res = client.post(
+        "/api/agents/checkin",
+        json={
+            "hostname": "telemetry-host",
+            "os": "linux",
+            "services": {"collected": True, "reason": "", "items": [{"name": "sshd", "status": "running"}]},
+            "firewall_status": {"collected": True, "reason": "", "backend": "ufw", "enabled": True},
+            "disk_encryption_status": {"collected": False, "reason": "lsblk unavailable or failed", "encrypted": None},
+            "defender_status": {"collected": False, "reason": "Not applicable on linux", "enabled": None},
+            "ssh_config": {"collected": True, "reason": "", "path": "/etc/ssh/sshd_config", "settings": {"PermitRootLogin": "no"}},
+        },
+        headers={"Authorization": f"Bearer {agent_token}"},
+    )
+    assert res.status_code == 200, res.text
+
+    agent = client.get(f"/api/agents/{agent_id}", headers=_auth(token)).json()
+    payload = agent["last_payload"]
+    assert payload["services"]["collected"] is True
+    assert payload["services"]["items"][0]["name"] == "sshd"
+    assert payload["firewall_status"]["enabled"] is True
+    assert payload["disk_encryption_status"]["collected"] is False
+    assert "lsblk" in payload["disk_encryption_status"]["reason"]
+    assert payload["defender_status"]["collected"] is False
+    assert payload["ssh_config"]["settings"]["PermitRootLogin"] == "no"
+
+
+def test_checkin_without_deep_telemetry_defaults_to_empty_not_error(tmp_path, monkeypatch):
+    """An older agent build that doesn't send the new fields at all must
+    still check in successfully -- absence defaults to {}, never a 4xx."""
+    client, token = _client_and_token(tmp_path, monkeypatch)
+    enroll = client.post("/api/agents/enroll", json={"name": "old-agent-build"}, headers=_auth(token))
+    agent_token = enroll.json()["agent_token"]
+
+    res = client.post(
+        "/api/agents/checkin",
+        json={"hostname": "old-agent-build", "os": "linux"},
+        headers={"Authorization": f"Bearer {agent_token}"},
+    )
+    assert res.status_code == 200, res.text

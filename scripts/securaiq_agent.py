@@ -298,6 +298,292 @@ def _packages(limit: int = 500) -> list[dict]:
     return []
 
 
+# ---------------------------------------------------------------------------
+# Deep telemetry collectors — services, local users, firewall, disk
+# encryption, endpoint AV (Defender), startup apps, SSH hardening.
+#
+# Every collector here returns {"collected": bool, "reason": str, ...}. When
+# a signal genuinely can't be gathered (wrong OS, tool missing, needs
+# elevated privileges, command failed) that is reported honestly via
+# collected=False + a real reason string -- never a fabricated/empty-looking
+# "clean" result standing in for "we don't actually know."
+# ---------------------------------------------------------------------------
+
+
+def _run(cmd: list[str], *, timeout: float = 10.0):
+    """Shared subprocess helper for the collectors below. Returns
+    (ok, stdout) -- ok is False on a missing binary, non-zero exit, or
+    timeout; stdout is "" in that case, never fabricated."""
+    import subprocess
+
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except FileNotFoundError:
+        return False, ""
+    except Exception:
+        return False, ""
+    return out.returncode == 0, (out.stdout or "")
+
+
+def _services() -> dict:
+    """Real running-service list. Linux: systemd. macOS: launchctl. Windows:
+    the Service Control Manager via PowerShell."""
+    system = platform.system().lower()
+    if system == "linux":
+        ok, out = _run(["systemctl", "list-units", "--type=service", "--state=running", "--no-legend", "--no-pager"], timeout=15)
+        if not ok:
+            return {"collected": False, "reason": "systemctl unavailable or failed (non-systemd host?)", "items": []}
+        items = []
+        for line in out.splitlines():
+            bits = line.split()
+            if bits:
+                items.append({"name": bits[0], "status": "running"})
+        return {"collected": True, "reason": "", "items": items}
+    if system == "darwin":
+        ok, out = _run(["launchctl", "list"], timeout=15)
+        if not ok:
+            return {"collected": False, "reason": "launchctl unavailable or failed", "items": []}
+        items = []
+        for line in out.splitlines()[1:]:
+            bits = line.split("\t")
+            if len(bits) == 3:
+                items.append({"name": bits[2], "pid": bits[0]})
+        return {"collected": True, "reason": "", "items": items}
+    if system == "windows":
+        ok, out = _run(
+            ["powershell", "-NoProfile", "-Command", "Get-Service | Where-Object Status -eq 'Running' | Select-Object Name,Status | ConvertTo-Json -Compress"],
+            timeout=20,
+        )
+        if not ok or not out.strip():
+            return {"collected": False, "reason": "Get-Service unavailable or failed", "items": []}
+        try:
+            data = json.loads(out)
+            rows = data if isinstance(data, list) else [data]
+            items = [{"name": r.get("Name"), "status": "running"} for r in rows if r.get("Name")]
+            return {"collected": True, "reason": "", "items": items}
+        except Exception:
+            return {"collected": False, "reason": "Could not parse Get-Service output", "items": []}
+    return {"collected": False, "reason": f"Unsupported OS '{system}'", "items": []}
+
+
+def _local_users() -> dict:
+    """Real local account list -- never includes passwords/hashes, only
+    usernames + whether the account is disabled, for a human-account-review
+    signal (e.g. spotting an unexpected local admin)."""
+    system = platform.system().lower()
+    if system in ("linux", "darwin"):
+        try:
+            with open("/etc/passwd", "r", encoding="utf-8", errors="replace") as fh:
+                lines = fh.readlines()
+        except Exception as exc:
+            return {"collected": False, "reason": f"Could not read /etc/passwd: {exc}", "items": []}
+        min_uid = 500 if system == "darwin" else 1000
+        items = []
+        for line in lines:
+            bits = line.strip().split(":")
+            if len(bits) < 7:
+                continue
+            name, _, uid_s, _, _, _, shell = bits[:7]
+            try:
+                uid = int(uid_s)
+            except ValueError:
+                continue
+            if uid < min_uid and uid != 0:
+                continue
+            is_login_shell = shell not in ("/usr/sbin/nologin", "/sbin/nologin", "/bin/false", "")
+            items.append({"name": name, "uid": uid, "login_shell": is_login_shell})
+        return {"collected": True, "reason": "", "items": items}
+    if system == "windows":
+        ok, out = _run(
+            ["powershell", "-NoProfile", "-Command", "Get-LocalUser | Select-Object Name,Enabled | ConvertTo-Json -Compress"],
+            timeout=15,
+        )
+        if not ok or not out.strip():
+            return {"collected": False, "reason": "Get-LocalUser unavailable or failed (needs the LocalAccounts module)", "items": []}
+        try:
+            data = json.loads(out)
+            rows = data if isinstance(data, list) else [data]
+            items = [{"name": r.get("Name"), "enabled": bool(r.get("Enabled"))} for r in rows if r.get("Name")]
+            return {"collected": True, "reason": "", "items": items}
+        except Exception:
+            return {"collected": False, "reason": "Could not parse Get-LocalUser output", "items": []}
+    return {"collected": False, "reason": f"Unsupported OS '{system}'", "items": []}
+
+
+def _firewall_status() -> dict:
+    """Real host firewall enabled/disabled state -- tries the platform's own
+    firewall control tool; never guesses "enabled" from its mere presence
+    on disk."""
+    system = platform.system().lower()
+    if system == "linux":
+        ok, out = _run(["ufw", "status"], timeout=8)
+        if ok and out.strip():
+            enabled = out.strip().lower().startswith("status: active")
+            return {"collected": True, "reason": "", "backend": "ufw", "enabled": enabled}
+        ok, out = _run(["firewall-cmd", "--state"], timeout=8)
+        if ok:
+            return {"collected": True, "reason": "", "backend": "firewalld", "enabled": out.strip().lower() == "running"}
+        return {"collected": False, "reason": "No supported firewall tool found (tried ufw, firewalld)", "enabled": None}
+    if system == "darwin":
+        ok, out = _run(["/usr/libexec/ApplicationFirewall/socketfilterfw", "--getglobalstate"], timeout=8)
+        if not ok:
+            return {"collected": False, "reason": "socketfilterfw unavailable or failed", "enabled": None}
+        return {"collected": True, "reason": "", "backend": "pf/ALF", "enabled": "enabled" in out.lower()}
+    if system == "windows":
+        ok, out = _run(
+            ["powershell", "-NoProfile", "-Command", "Get-NetFirewallProfile | Select-Object Name,Enabled | ConvertTo-Json -Compress"],
+            timeout=15,
+        )
+        if not ok or not out.strip():
+            return {"collected": False, "reason": "Get-NetFirewallProfile unavailable or failed", "enabled": None}
+        try:
+            data = json.loads(out)
+            rows = data if isinstance(data, list) else [data]
+            profiles = {r.get("Name"): bool(r.get("Enabled")) for r in rows if r.get("Name")}
+            return {"collected": True, "reason": "", "backend": "Windows Firewall", "enabled": any(profiles.values()) if profiles else None, "profiles": profiles}
+        except Exception:
+            return {"collected": False, "reason": "Could not parse Get-NetFirewallProfile output", "enabled": None}
+    return {"collected": False, "reason": f"Unsupported OS '{system}'", "enabled": None}
+
+
+def _disk_encryption_status() -> dict:
+    """Real full-disk-encryption state -- LUKS on Linux, FileVault on macOS,
+    BitLocker on Windows. Reports "not enabled" only when the platform tool
+    actually says so, not merely because the check itself failed."""
+    system = platform.system().lower()
+    if system == "linux":
+        ok, out = _run(["lsblk", "-o", "NAME,FSTYPE", "-n"], timeout=8)
+        if not ok:
+            return {"collected": False, "reason": "lsblk unavailable or failed", "encrypted": None}
+        encrypted = "crypto_luks" in out.lower()
+        return {"collected": True, "reason": "", "backend": "LUKS", "encrypted": encrypted}
+    if system == "darwin":
+        ok, out = _run(["fdesetup", "status"], timeout=8)
+        if not ok:
+            return {"collected": False, "reason": "fdesetup unavailable or failed", "encrypted": None}
+        return {"collected": True, "reason": "", "backend": "FileVault", "encrypted": "filevault is on" in out.lower()}
+    if system == "windows":
+        ok, out = _run(
+            ["powershell", "-NoProfile", "-Command", "Get-BitLockerVolume | Select-Object MountPoint,VolumeStatus | ConvertTo-Json -Compress"],
+            timeout=15,
+        )
+        if not ok or not out.strip():
+            return {"collected": False, "reason": "Get-BitLockerVolume unavailable or failed (BitLocker module not present, or needs elevation)", "encrypted": None}
+        try:
+            data = json.loads(out)
+            rows = data if isinstance(data, list) else [data]
+            volumes = {r.get("MountPoint"): r.get("VolumeStatus") for r in rows if r.get("MountPoint")}
+            any_on = any(str(v).lower() == "fullyencrypted" for v in volumes.values())
+            return {"collected": True, "reason": "", "backend": "BitLocker", "encrypted": any_on, "volumes": volumes}
+        except Exception:
+            return {"collected": False, "reason": "Could not parse Get-BitLockerVolume output", "encrypted": None}
+    return {"collected": False, "reason": f"Unsupported OS '{system}'", "encrypted": None}
+
+
+def _defender_status() -> dict:
+    """Windows Defender real-time protection state -- Windows only. Linux
+    and macOS honestly report "not applicable" rather than an unavailable
+    error, since Defender simply isn't part of those platforms."""
+    system = platform.system().lower()
+    if system != "windows":
+        return {"collected": False, "reason": f"Not applicable on {system}", "enabled": None}
+    ok, out = _run(
+        ["powershell", "-NoProfile", "-Command", "Get-MpComputerStatus | Select-Object AntivirusEnabled,RealTimeProtectionEnabled,AntivirusSignatureAge | ConvertTo-Json -Compress"],
+        timeout=15,
+    )
+    if not ok or not out.strip():
+        return {"collected": False, "reason": "Get-MpComputerStatus unavailable or failed (Defender module not present, or a 3rd-party AV has taken over)", "enabled": None}
+    try:
+        data = json.loads(out)
+        return {
+            "collected": True,
+            "reason": "",
+            "antivirus_enabled": bool(data.get("AntivirusEnabled")),
+            "realtime_protection_enabled": bool(data.get("RealTimeProtectionEnabled")),
+            "signature_age_days": data.get("AntivirusSignatureAge"),
+        }
+    except Exception:
+        return {"collected": False, "reason": "Could not parse Get-MpComputerStatus output", "enabled": None}
+
+
+def _startup_apps() -> dict:
+    """Real boot/login-time autostart entries -- systemd-enabled services on
+    Linux, LaunchAgents/LaunchDaemons on macOS, Win32_StartupCommand on
+    Windows. A common persistence-mechanism signal."""
+    system = platform.system().lower()
+    if system == "linux":
+        ok, out = _run(["systemctl", "list-unit-files", "--type=service", "--state=enabled", "--no-legend", "--no-pager"], timeout=15)
+        if not ok:
+            return {"collected": False, "reason": "systemctl unavailable or failed", "items": []}
+        items = [{"name": line.split()[0]} for line in out.splitlines() if line.split()]
+        return {"collected": True, "reason": "", "items": items}
+    if system == "darwin":
+        dirs = ["/Library/LaunchAgents", "/Library/LaunchDaemons", os.path.expanduser("~/Library/LaunchAgents")]
+        items = []
+        found_any_dir = False
+        for d in dirs:
+            if not os.path.isdir(d):
+                continue
+            found_any_dir = True
+            try:
+                for name in os.listdir(d):
+                    if name.endswith(".plist"):
+                        items.append({"name": name, "location": d})
+            except Exception:
+                continue
+        if not found_any_dir:
+            return {"collected": False, "reason": "No LaunchAgents/LaunchDaemons directories found", "items": []}
+        return {"collected": True, "reason": "", "items": items}
+    if system == "windows":
+        ok, out = _run(
+            ["powershell", "-NoProfile", "-Command", "Get-CimInstance Win32_StartupCommand | Select-Object Name,Command,Location | ConvertTo-Json -Compress"],
+            timeout=20,
+        )
+        if not ok or not out.strip():
+            return {"collected": False, "reason": "Get-CimInstance Win32_StartupCommand unavailable or failed", "items": []}
+        try:
+            data = json.loads(out)
+            rows = data if isinstance(data, list) else [data]
+            items = [{"name": r.get("Name"), "command": r.get("Command"), "location": r.get("Location")} for r in rows if r.get("Name")]
+            return {"collected": True, "reason": "", "items": items}
+        except Exception:
+            return {"collected": False, "reason": "Could not parse Win32_StartupCommand output", "items": []}
+    return {"collected": False, "reason": f"Unsupported OS '{system}'", "items": []}
+
+
+def _ssh_config() -> dict:
+    """Real sshd_config hardening signals -- PermitRootLogin,
+    PasswordAuthentication, PubkeyAuthentication, Port. Reads the config
+    file directly (no daemon reload/exec involved). Honestly reports "not
+    applicable" when no SSH server config exists on this host at all,
+    distinct from "collected but empty"."""
+    system = platform.system().lower()
+    candidates = (
+        ["/etc/ssh/sshd_config"]
+        if system in ("linux", "darwin")
+        else [r"C:\ProgramData\ssh\sshd_config"]
+        if system == "windows"
+        else []
+    )
+    path = next((p for p in candidates if os.path.isfile(p)), "")
+    if not path:
+        return {"collected": False, "reason": "No sshd_config found -- SSH server likely not installed on this host", "settings": {}}
+    wanted = {"permitrootlogin", "passwordauthentication", "pubkeyauthentication", "port"}
+    settings: dict = {}
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                bits = line.split(None, 1)
+                if len(bits) == 2 and bits[0].lower() in wanted:
+                    settings[bits[0]] = bits[1]
+    except Exception as exc:
+        return {"collected": False, "reason": f"Could not read {path}: {exc}", "settings": {}}
+    return {"collected": True, "reason": "", "path": path, "settings": settings}
+
+
 def _sha256_file(path: str, max_bytes: int = 25_000_000) -> str:
     """Real sha256 of a file, skipping anything past max_bytes (avoids the
     watcher stalling on huge files) — returns "" rather than a fabricated
@@ -780,6 +1066,18 @@ def sentinel_loop(server: str, token: str, *, interval: int, watch_dirs: list[st
         time.sleep(max(3, interval))
 
 
+def _collect_safe(fn, default):
+    """Run a collector, but never let one collector's crash take down the
+    whole check-in -- falls back to an honest "not collected" default
+    rather than dropping the field or fabricating a value."""
+    try:
+        return fn()
+    except Exception as exc:
+        d = dict(default)
+        d["reason"] = f"Collector raised: {exc}"
+        return d
+
+
 def collect_snapshot() -> dict:
     uname = platform.uname()
     try:
@@ -797,18 +1095,30 @@ def collect_snapshot() -> dict:
         "packages": _packages(),
         "file_integrity": fim_recent_events(),  # real baseline-diff events from Sentinel's FIM pass
         "uptime_sec": uptime_sec,
+        # Deep telemetry (task #140) -- each collector honestly reports
+        # collected=False + a real reason on failure/unsupported OS, never a
+        # fabricated "clean" result. See collector docstrings above.
+        "services": _collect_safe(_services, {"collected": False, "items": []}),
+        "local_users": _collect_safe(_local_users, {"collected": False, "items": []}),
+        "firewall_status": _collect_safe(_firewall_status, {"collected": False, "enabled": None}),
+        "disk_encryption_status": _collect_safe(_disk_encryption_status, {"collected": False, "encrypted": None}),
+        "defender_status": _collect_safe(_defender_status, {"collected": False, "enabled": None}),
+        "startup_apps": _collect_safe(_startup_apps, {"collected": False, "items": []}),
+        "ssh_config": _collect_safe(_ssh_config, {"collected": False, "settings": {}}),
     }
 
 
 # ---------------------------------------------------------------------------
 # Patch command execution — the agent side of the patch + verify loop.
 #
-# The server never sends an arbitrary shell string: a command is always
-# {"kind": "patch_package", "payload": {"manager": ..., "package": ...}},
-# and only the four package managers below are ever invoked, each with the
-# package name passed as a single subprocess argument (never interpolated
-# into a shell string), so a compromised/malicious server response still
-# can't achieve arbitrary command execution here.
+# The server never sends an arbitrary shell string: a command is always one
+# of two known kinds -- {"kind": "patch_package", "payload": {"manager":
+# ..., "package": ...}} or {"kind": "agent_upgrade", "payload":
+# {"expected_sha256": ...}} (see execute_agent_upgrade below) -- and only
+# the four package managers below are ever invoked for patch_package, each
+# with the package name passed as a single subprocess argument (never
+# interpolated into a shell string), so a compromised/malicious server
+# response still can't achieve arbitrary command execution here.
 # ---------------------------------------------------------------------------
 
 _PACKAGE_MANAGER_UPGRADE_CMD = {
@@ -908,6 +1218,76 @@ def execute_patch_package(payload: dict) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Self-upgrade command execution.
+#
+# Never a blind "run whatever the server sends now" fetch: the command's
+# payload carries expected_sha256, computed by the server from its OWN
+# scripts/securaiq_agent.py at the moment a human requested the upgrade. At
+# execution time this downloads the server's current install-script and
+# only proceeds if its sha256 still matches that pre-approved value -- if
+# the server's file changed since approval (a compromised server, or a
+# newer release landing mid-flight), the mismatch is reported as an error
+# and nothing on disk is touched. This is the one narrowly-scoped
+# self-modification this agent is allowed: fetch and checksum-verify one
+# server-declared file, replace this script with it, and exit for the
+# service supervisor to restart with the new code. It never executes
+# arbitrary code the server sends -- same "no shell strings from the
+# server" discipline as execute_patch_package above.
+# ---------------------------------------------------------------------------
+
+
+def execute_agent_upgrade(payload: dict, *, server: str, insecure: bool = False) -> dict:
+    """Download and verify the server's agent script, then atomically
+    replace this file with it. Always returns a result dict -- never
+    raises."""
+    expected = str(payload.get("expected_sha256") or "").strip().lower()
+    if not expected:
+        return {
+            "ok": False,
+            "error": "No expected_sha256 in command payload -- refusing to self-upgrade without a "
+            "server-declared checksum to verify against",
+        }
+    url = server.rstrip("/") + "/api/agents/install-script"
+    req = urllib.request.Request(url, headers={"User-Agent": f"SecuraIQ-Agent/{AGENT_VERSION}"})
+    ctx = None
+    if url.startswith("https://") and insecure:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    try:
+        with urllib.request.urlopen(req, timeout=30, context=ctx) as resp:
+            new_content = resp.read()
+    except Exception as exc:
+        return {"ok": False, "error": f"Could not download install script: {exc}"}
+    actual = hashlib.sha256(new_content).hexdigest()
+    if actual != expected:
+        return {
+            "ok": False,
+            "error": "Checksum mismatch -- the server's install-script content no longer matches what "
+            "was approved. Refusing to self-upgrade.",
+            "expected_sha256": expected,
+            "actual_sha256": actual,
+        }
+    this_file = os.path.abspath(__file__)
+    tmp_path = this_file + ".new"
+    try:
+        with open(tmp_path, "wb") as fh:
+            fh.write(new_content)
+        os.replace(tmp_path, this_file)
+    except Exception as exc:
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+        return {"ok": False, "error": f"Could not write new agent script: {exc}"}
+    return {
+        "ok": True,
+        "sha256": actual,
+        "note": "Script replaced -- process will exit so the service supervisor restarts it with the new code",
+    }
+
+
 def send_command_result(server: str, token: str, command_id: str, status: str, result: dict, *, insecure: bool = False, timeout: float = 15.0) -> dict:
     url = server.rstrip("/") + f"/api/agents/commands/{command_id}/result"
     data = json.dumps({"status": status, "result": result}).encode("utf-8")
@@ -929,22 +1309,33 @@ def send_command_result(server: str, token: str, command_id: str, status: str, r
 
 
 def run_commands(server: str, token: str, commands: list, *, insecure: bool = False) -> None:
+    upgraded = False
     for cmd in commands or []:
         kind = cmd.get("kind")
         cid = cmd.get("id")
         if not cid:
             continue
-        if kind != "patch_package":
+        if kind == "patch_package":
+            print(f"[securaiq-agent] running command {cid}: patch_package {cmd.get('payload')}")
+            result = execute_patch_package(cmd.get("payload") or {})
+            summary = f"{result.get('old_version', '?')} -> {result.get('new_version', '?')}"
+        elif kind == "agent_upgrade":
+            print(f"[securaiq-agent] running command {cid}: agent_upgrade")
+            result = execute_agent_upgrade(cmd.get("payload") or {}, server=server, insecure=insecure)
+            upgraded = upgraded or bool(result.get("ok"))
+            summary = result.get("note") or result.get("error") or "?"
+        else:
             send_command_result(server, token, cid, "error", {"error": f"Unknown command kind '{kind}'"}, insecure=insecure)
             continue
-        print(f"[securaiq-agent] running command {cid}: patch_package {cmd.get('payload')}")
-        result = execute_patch_package(cmd.get("payload") or {})
         status = "done" if result.get("ok") else "error"
         try:
             send_command_result(server, token, cid, status, result, insecure=insecure)
-            print(f"[securaiq-agent] command {cid} {status}: {result.get('old_version', '?')} -> {result.get('new_version', '?')}")
+            print(f"[securaiq-agent] command {cid} {status}: {summary}")
         except Exception as exc:
             print(f"[securaiq-agent] could not report result for command {cid}: {exc}", file=sys.stderr)
+    if upgraded:
+        print("[securaiq-agent] self-upgrade applied -- exiting so the service supervisor restarts with the new code")
+        sys.exit(0)
 
 
 def send_checkin(server: str, token: str, payload: dict, *, insecure: bool = False, timeout: float = 15.0) -> dict:

@@ -4589,8 +4589,41 @@
         return;
       }
       const statusChip = (st) => {
-        const cls = st === "online" ? "status-done" : st === "pending" ? "status-planned" : st === "revoked" ? "status-error" : "status-error";
+        // Six real states (see app.agents._row_status): online/pending are
+        // healthy; offline/stale are "not reachable right now" (stale is
+        // the same idea, just for much longer -- 7+ days); error/upgrading
+        // reflect this agent's most recent command outcome, independent of
+        // whether it's currently checking in.
+        const cls =
+          st === "online" ? "status-done" :
+          st === "pending" || st === "upgrading" ? "status-planned" :
+          st === "offline" || st === "stale" ? "status-planned" :
+          "status-error"; // revoked, error
         return `<span class="auto-job-status ${cls}">${escapeHtml(st)}</span>`;
+      };
+      const telemetryDetail = (payload) => {
+        const section = (label, data, render) => {
+          if (!data || typeof data !== "object") return `<div><strong>${escapeHtml(label)}:</strong> <span class="hint">not collected</span></div>`;
+          if (!data.collected) {
+            return `<div><strong>${escapeHtml(label)}:</strong> <span class="hint">not collected${data.reason ? ` — ${escapeHtml(data.reason)}` : ""}</span></div>`;
+          }
+          return `<div><strong>${escapeHtml(label)}:</strong> ${render(data)}</div>`;
+        };
+        const itemsLine = (data, nameKey) => {
+          const items = data.items || [];
+          if (!items.length) return `<span class="hint">0 found</span>`;
+          const names = items.slice(0, 6).map((it) => escapeHtml(it[nameKey] || it.name || "")).join(", ");
+          return `${items.length} found — <span class="hint">${names}${items.length > 6 ? "…" : ""}</span>`;
+        };
+        return `<div class="hint" style="display:flex;flex-direction:column;gap:4px;padding:8px 4px">
+          ${section("Running services", payload.services, (d) => itemsLine(d, "name"))}
+          ${section("Startup / autostart entries", payload.startup_apps, (d) => itemsLine(d, "name"))}
+          ${section("Local users", payload.local_users, (d) => itemsLine(d, "name"))}
+          ${section("Host firewall", payload.firewall_status, (d) => (d.enabled == null ? "unknown" : d.enabled ? "enabled ✓" : "<strong>disabled</strong>") + (d.backend ? ` (${escapeHtml(d.backend)})` : ""))}
+          ${section("Disk encryption", payload.disk_encryption_status, (d) => (d.encrypted == null ? "unknown" : d.encrypted ? "enabled ✓" : "<strong>not enabled</strong>") + (d.backend ? ` (${escapeHtml(d.backend)})` : ""))}
+          ${section("Windows Defender", payload.defender_status, (d) => `real-time protection ${d.realtime_protection_enabled ? "on ✓" : "<strong>off</strong>"}`)}
+          ${section("SSH hardening", payload.ssh_config, (d) => Object.entries(d.settings || {}).map(([k, v]) => `${escapeHtml(k)}=${escapeHtml(v)}`).join(", ") || "<span class=\"hint\">no relevant directives set</span>")}
+        </div>`;
       };
       const sevRank = { critical: 4, high: 3, medium: 2, low: 1 };
       const sevChip = (sev) => {
@@ -4613,6 +4646,7 @@
         <tbody>${agents
           .map((a) => {
             const payload = a.last_payload || {};
+            const canUpgrade = a.status !== "revoked" && a.status !== "upgrading";
             return `<tr>
               <td><strong>${escapeHtml(a.hostname || a.name || a.id.slice(0, 8))}</strong>${a.ip ? `<div class="hint">${escapeHtml(a.ip)}</div>` : ""}</td>
               <td>${statusChip(a.status)}</td>
@@ -4622,11 +4656,14 @@
               <td>${sentinelBadge(threatsByAgent[a.id])}</td>
               <td class="hint">${escapeHtml(fmtWhen(a.last_checkin))} · ${Number(a.checkin_count || 0)} check-in(s)</td>
               <td class="reports-dl-cell">
+                <button type="button" class="btn-secondary agents-toggle-telemetry" data-id="${escapeHtml(a.id)}">Telemetry</button>
                 ${a.asset_id ? `<button type="button" class="btn-secondary agents-view-asset" data-id="${escapeHtml(a.asset_id)}">View asset</button>` : ""}
+                ${canUpgrade ? `<button type="button" class="btn-secondary agents-request-upgrade" data-id="${escapeHtml(a.id)}">Request upgrade</button>` : ""}
                 <button type="button" class="btn-secondary agents-revoke" data-id="${escapeHtml(a.id)}">Revoke</button>
                 <button type="button" class="btn-secondary agents-delete" data-id="${escapeHtml(a.id)}">Delete</button>
               </td>
-            </tr>`;
+            </tr>
+            <tr class="agents-telemetry-row hidden" data-telemetry-for="${escapeHtml(a.id)}"><td colspan="8">${telemetryDetail(payload)}</td></tr>`;
           })
           .join("")}</tbody></table></div>
         ${
@@ -4649,16 +4686,20 @@
           pendingCommands.length
             ? `<div class="agents-pending-approvals" style="margin-top:12px">
                 <h4 style="margin:0 0 6px">Pending approvals</h4>
-                <p class="hint" style="margin:0 0 6px">Patch commands requested via "Patch via Agent" wait here until approved — nothing runs on a host until you approve it.</p>
+                <p class="hint" style="margin:0 0 6px">Patch and self-upgrade commands wait here until approved — nothing runs on a host until you approve it.</p>
                 <div class="data-table-wrap"><table class="data-table">
                   <thead><tr><th>Host</th><th>Command</th><th>Requested</th><th></th></tr></thead>
                   <tbody>${pendingCommands
                     .map((cmd) => {
                       const agent = agents.find((a) => a.id === cmd.agent_id);
                       const p = cmd.payload || {};
+                      const cmdLabel =
+                        cmd.kind === "agent_upgrade"
+                          ? `<code>agent self-upgrade</code> <span class="hint">checksum-verified against the current install script</span>`
+                          : `<code>${escapeHtml(p.manager || "")} upgrade ${escapeHtml(p.package || "")}</code>`;
                       return `<tr>
                         <td>${escapeHtml((agent && (agent.hostname || agent.name)) || cmd.agent_id.slice(0, 8))}</td>
-                        <td><code>${escapeHtml(p.manager || "")} upgrade ${escapeHtml(p.package || "")}</code></td>
+                        <td>${cmdLabel}</td>
                         <td class="hint">${escapeHtml(fmtWhen(cmd.created_at))}</td>
                         <td class="reports-dl-cell">
                           <button type="button" class="btn-primary-cc agents-approve-cmd" data-agent-id="${escapeHtml(cmd.agent_id)}" data-cmd-id="${escapeHtml(cmd.id)}">Approve</button>
@@ -4803,6 +4844,29 @@
       el.querySelectorAll(".agents-view-asset").forEach((btn) => {
         btn.addEventListener("click", () => {
           window.showWorkspace?.("assets");
+        });
+      });
+      el.querySelectorAll(".agents-toggle-telemetry").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const id = btn.getAttribute("data-id");
+          const row = el.querySelector(`tr.agents-telemetry-row[data-telemetry-for="${CSS.escape(id)}"]`);
+          if (row) row.classList.toggle("hidden");
+        });
+      });
+      el.querySelectorAll(".agents-request-upgrade").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const id = btn.getAttribute("data-id");
+          if (!confirm("Request a self-upgrade for this agent? It stays pending until you approve it — nothing runs until then.")) return;
+          btn.disabled = true;
+          try {
+            const r = await fetch(`/api/agents/${encodeURIComponent(id)}/commands/upgrade`, { method: "POST", headers: authHeaders() });
+            if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.detail || `HTTP ${r.status}`); }
+            if (typeof notifyUser === "function") notifyUser("Upgrade requested — approve it below to deliver it on the agent's next check-in.");
+            renderAgentsPanel();
+          } catch (err) {
+            alert(err.message || "Upgrade request failed");
+            btn.disabled = false;
+          }
         });
       });
       el.querySelectorAll(".agents-revoke").forEach((btn) => {

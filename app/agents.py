@@ -35,6 +35,13 @@ from app.db import audit, get_conn, new_id, now
 # arbitrarily generous one that would mask a genuinely dead agent.
 OFFLINE_AFTER_SEC = 180
 
+# Beyond this many seconds of silence, an agent is "stale" rather than just
+# "offline" -- offline covers an ordinary outage (host rebooting, network
+# blip); stale means it has been unreachable long enough (7 days) that it is
+# more likely decommissioned, uninstalled, or genuinely gone, and probably
+# needs an operator to look at it rather than just wait.
+STALE_AFTER_SEC = 7 * 24 * 3600
+
 
 def _hash_key(raw_key: str) -> str:
     return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
@@ -192,13 +199,51 @@ def enroll_agent(user_id: str, *, name: str = "") -> dict[str, Any]:
     return {"agent_id": aid, "agent_key": raw_key}
 
 
-def _row_status(row: dict[str, Any]) -> str:
+def _latest_command_for_agent(agent_id: str) -> dict[str, Any] | None:
+    """Most recent command requested for this agent, if any -- used only to
+    layer the real "upgrading" / "error" states onto status (see
+    _row_status). Not exposed as part of the public command list API."""
+    row = get_conn().execute(
+        "SELECT kind, status FROM securaiq_agent_commands WHERE agent_id = ? ORDER BY created_at DESC LIMIT 1",
+        (agent_id,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def _row_status(row: dict[str, Any], *, latest_command: dict[str, Any] | None = None) -> str:
+    """Six real states: revoked / pending / online / offline / stale / error
+    / upgrading. Every state beyond the original four is derived from an
+    actual checkable condition -- never a cosmetic label:
+      - stale: no check-in for STALE_AFTER_SEC (beyond ordinary "offline")
+      - upgrading: this agent's most recent command is a real, in-flight
+        'agent_upgrade' command (pending_approval/queued/sent) -- reflects
+        an actual approval-gated command that was requested, not a guess
+      - error: this agent's most recent command finished with status='error'
+    upgrading takes priority over error (a fresh upgrade in flight is more
+    relevant to show than a stale prior failure); both take priority over
+    the time-based state since they describe what's actually happening now.
+    """
     if row.get("revoked"):
         return "revoked"
     last = float(row.get("last_checkin") or 0)
     if not last:
-        return "pending"  # enrolled, never checked in yet
-    return "online" if (now() - last) <= OFFLINE_AFTER_SEC else "offline"
+        base = "pending"  # enrolled, never checked in yet
+    else:
+        age = now() - last
+        if age <= OFFLINE_AFTER_SEC:
+            base = "online"
+        elif age <= STALE_AFTER_SEC:
+            base = "offline"
+        else:
+            base = "stale"
+    if latest_command:
+        if latest_command.get("kind") == "agent_upgrade" and latest_command.get("status") in (
+            "pending_approval", "queued", "sent",
+        ):
+            return "upgrading"
+        if latest_command.get("status") == "error":
+            return "error"
+    return base
 
 
 def list_agents(user_id: str, *, limit: int = 200) -> list[dict[str, Any]]:
@@ -215,7 +260,7 @@ def list_agents(user_id: str, *, limit: int = 200) -> list[dict[str, Any]]:
         except Exception:
             d["last_payload"] = {}
         d.pop("key_hash", None)  # never return the hash either
-        d["status"] = _row_status(d)
+        d["status"] = _row_status(d, latest_command=_latest_command_for_agent(d["id"]))
         out.append(d)
     return out
 
@@ -230,7 +275,7 @@ def get_agent(agent_id: str) -> dict[str, Any] | None:
         d["last_payload"] = json.loads(d.get("last_payload_json") or "{}")
     except Exception:
         d["last_payload"] = {}
-    d["status"] = _row_status(d)
+    d["status"] = _row_status(d, latest_command=_latest_command_for_agent(agent_id))
     return d
 
 
@@ -299,6 +344,24 @@ def checkin(agent_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         asset_id = _link_agent_asset(agent.get("user_id") or "local", agent_id, payload)
     except Exception:
         asset_id = agent.get("asset_id") or ""
+    # The deep-telemetry fields (services, startup_apps, packages, etc.) can
+    # make a full payload large on a busy host. A blind string-slice on the
+    # JSON text (the old behavior) can cut mid-token and produce invalid
+    # JSON that silently parses back to {} everywhere downstream -- so
+    # instead: if it's oversized, fall back to a small, honestly-labeled
+    # "truncated" payload rather than writing something that LOOKS like
+    # real telemetry but silently isn't.
+    payload_json = json.dumps(payload)
+    if len(payload_json) > 200_000:
+        payload_json = json.dumps({
+            "hostname": payload.get("hostname", ""),
+            "os": payload.get("os", ""),
+            "os_version": payload.get("os_version", ""),
+            "agent_version": payload.get("agent_version", ""),
+            "truncated": True,
+            "reason": "Full telemetry payload exceeded the storage limit for this check-in and was dropped -- "
+            "core fields only. Will be retried next check-in.",
+        })
     c = get_conn()
     c.execute(
         """
@@ -315,7 +378,7 @@ def checkin(agent_id: str, payload: dict[str, Any]) -> dict[str, Any]:
             str(payload.get("agent_version") or "")[:32],
             asset_id,
             now(),
-            json.dumps(payload)[:20000],
+            payload_json,
             agent_id,
         ),
     )
@@ -585,7 +648,7 @@ def delete_agent(user_id: str, agent_id: str) -> bool:
 # machine is real and is what a patch campaign's per-item commands ride on.
 # ---------------------------------------------------------------------------
 
-SUPPORTED_COMMAND_KINDS = {"patch_package"}
+SUPPORTED_COMMAND_KINDS = {"patch_package", "agent_upgrade"}
 COMMAND_STATUSES = {"pending_approval", "queued", "sent", "done", "error", "rejected"}
 
 
@@ -635,6 +698,35 @@ def request_command(
 # meaning "request one". It no longer queues for delivery directly — approval
 # is required first.
 queue_command = request_command
+
+
+def request_agent_upgrade(user_id: str, agent_id: str, *, requested_by: str = "") -> dict[str, Any]:
+    """Request a self-upgrade command for one agent. Rides the exact same
+    approval-gated lifecycle as any other command (pending_approval ->
+    approve_command() -> queued -> dispatched on next check-in) -- never
+    auto-executed. The payload carries expected_sha256, the sha256 of THIS
+    server's current scripts/securaiq_agent.py at request time, so the
+    agent verifies the file it downloads at execution time still matches
+    what a human approved, not just "whatever the server serves right now".
+    Never turns the agent into a remote shell: the agent only ever fetches
+    and checksum-verifies this one server-declared file, exactly the same
+    trust model as the existing patch_package command kind."""
+    import hashlib
+
+    from app.paths import resource_root
+
+    script_path = resource_root() / "scripts" / "securaiq_agent.py"
+    if not script_path.is_file():
+        raise ValueError("Agent script not found on this server -- cannot compute an upgrade checksum")
+    content = script_path.read_bytes()
+    expected_sha256 = hashlib.sha256(content).hexdigest()
+    return request_command(
+        user_id,
+        agent_id,
+        kind="agent_upgrade",
+        payload={"expected_sha256": expected_sha256},
+        requested_by=requested_by,
+    )
 
 
 def _get_command_row(user_id: str, agent_id: str, command_id: str):
@@ -1031,7 +1123,7 @@ def _campaign_summary(user_id: str, campaign_id: str) -> dict[str, Any]:
         aid = r["agent_id"]
         if aid not in agent_cache:
             agent = get_agent(aid)
-            agent_cache[aid] = bool(agent) and _row_status(agent) == "offline"
+            agent_cache[aid] = bool(agent) and _row_status(agent) in ("offline", "stale")
         if agent_cache[aid]:
             waiting_for_agent += 1
     verif_rows = get_conn().execute(
@@ -1213,7 +1305,7 @@ def _annotate_waiting_for_agent(items: list[dict[str, Any]]) -> None:
         aid = item.get("agent_id") or ""
         if aid not in agent_cache:
             agent = get_agent(aid)
-            agent_cache[aid] = bool(agent) and _row_status(agent) == "offline"
+            agent_cache[aid] = bool(agent) and _row_status(agent) in ("offline", "stale")
         item["waiting_for_agent"] = agent_cache[aid]
 
 
