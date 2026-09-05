@@ -3,6 +3,33 @@
   "name": "CMMC 2.0 Level 2 (practice subset)",
   "version": "2.0 Level 2",
   "description": "CMMC 2.0 Level 2 practices aligned to NIST SP 800-171 for DFARS / CUI environments.",
+  "status_note": "As of the official DoD CIO CMMC page (fetched 2026): on July 13, 2026 the Department of War suspended CMMC Phase II (originally due Nov 10, 2026) and stood up a CMMC reform task force. Phase I self-assessment requirements remain in force. Level 1 (15 FAR 52.204-21 requirements) needs an annual self-assessment with annual affirmation into SPRS. Level 2 (110 NIST SP 800-171 Rev 2 requirements) currently needs a self-assessment every 3 years with annual affirmation into SPRS -- third-party (C3PAO) certification assessments are paused pending the reform review. This app's cmmc_l2 catalog is a 24-practice priority subset, not the full 110 requirements -- see resources below for the authoritative list.",
+  "resources": [
+    {
+      "title": "CMMC Program overview (DoD CIO)",
+      "url": "https://dodcio.defense.gov/cmmc/About/",
+      "source": "Official (dodcio.defense.gov)",
+      "note": "Program status, FCI/CUI definitions, Level 1 & 2 assessment/affirmation/POA&M requirements."
+    },
+    {
+      "title": "CMMC Resources & Documentation (DoD CIO)",
+      "url": "https://dodcio.defense.gov/CMMC/Resources-Documentation/",
+      "source": "Official (dodcio.defense.gov)",
+      "note": "Scoping guides, assessment guides, model overview, and NIST/DFARS source documents (PDF)."
+    },
+    {
+      "title": "CMMC Compliance solution (PreVeil)",
+      "url": "https://www.preveil.com/cmmc-compliance/",
+      "source": "Vendor -- not a SecuraIQ integration",
+      "note": "Encrypted email/file-sharing + prefilled compliance documentation aimed at the 110 NIST SP 800-171 practices. Listed as an external reference only; SecuraIQ has no API integration or data exchange with this product."
+    },
+    {
+      "title": "PreVeil (vendor homepage)",
+      "url": "https://www.preveil.com/",
+      "source": "Vendor -- not a SecuraIQ integration",
+      "note": "Same vendor as above; included for reference only."
+    }
+  ],
   "controls": [
     {
       "id": "AC.L2-3.1.1",

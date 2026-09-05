@@ -6431,6 +6431,39 @@
           )
           .join(" ");
       };
+      // Catalog metadata (including any curated external resources / status
+      // notes, e.g. cmmc_l2's DoD CIO + vendor reference links) -- fetched
+      // once up front so both the "no assessment yet" and "assessment
+      // exists" branches below can show the same Resources panel.
+      let catalog = {};
+      try {
+        const catRes = await fetch(`/api/frameworks/${encodeURIComponent(frameworkId)}`, { headers: authHeaders() });
+        catalog = catRes.ok ? await catRes.json().catch(() => ({})) : {};
+      } catch {
+        /* resources are a supplemental, non-blocking panel */
+      }
+      const renderResourcesPanel = () => {
+        const resources = catalog.resources || [];
+        if (!resources.length && !catalog.status_note) return "";
+        return `<div class="cc-panel" style="margin-top:1rem">
+          <header><h3 style="margin:0">Resources</h3></header>
+          ${catalog.status_note ? `<p class="hint">${escapeHtml(catalog.status_note)}</p>` : ""}
+          ${
+            resources.length
+              ? `<ul style="margin:0.5rem 0 0;padding-left:1.1rem">${resources
+                  .map(
+                    (r) =>
+                      `<li><a href="${escapeHtml(r.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(
+                        r.title || r.url
+                      )}</a> <span class="hint">— ${escapeHtml(r.source || "")}${
+                        r.note ? `: ${escapeHtml(r.note)}` : ""
+                      }</span></li>`
+                  )
+                  .join("")}</ul>`
+              : ""
+          }
+        </div>`;
+      };
       let aid = assessmentId;
       if (!aid) {
         const listRes = await fetch("/api/gap/assessments", { headers: authHeaders() });
@@ -6439,11 +6472,10 @@
         aid = match?.id;
       }
       if (!aid) {
-        const catRes = await fetch(`/api/frameworks/${encodeURIComponent(frameworkId)}`, { headers: authHeaders() });
-        const catalog = catRes.ok ? await catRes.json().catch(() => ({})) : {};
         const controls = catalog.controls || [];
         detailEl.innerHTML = `<p class="hint">No assessment for this framework yet — run gap analysis to score controls.</p>
           <button type="button" class="cc-action fw-run-gap" data-id="${escapeHtml(frameworkId)}">Run gap</button>
+          ${renderResourcesPanel()}
           ${
             liveTestedIds.length
               ? `<div class="cc-panel" style="margin-top:1rem"><header><h3 style="margin:0">Live control tests</h3></header>
@@ -6507,6 +6539,7 @@
             <button type="button" class="btn-secondary" id="fwDetailClose">Close</button>
           </div>
         </header>
+        ${renderResourcesPanel()}
         <div class="data-table-wrap">
           <table class="data-table">
             <thead>
@@ -6781,6 +6814,39 @@
         }
       </div>
       <div class="cc-panel" style="margin-top:0.5rem">
+        <header><h2>Collect next (missing evidence)</h2></header>
+        <p class="hint">Controls scored missing/partial with no accepted locker artifact — attach evidence, then re-score. Not a certification checklist.</p>
+        ${
+          (data.evidence_queue_preview || []).length
+            ? `<div class="data-table-wrap"><table class="data-table"><thead><tr>
+                <th>Control</th><th>Status</th><th>Suggested artifacts</th><th></th>
+              </tr></thead><tbody>${(data.evidence_queue_preview || [])
+                .map((q) => {
+                  const arts = (q.suggested_artifacts || []).slice(0, 2).join("; ");
+                  return `<tr>
+                    <td><strong>${escapeHtml(q.control_id || "")}</strong>
+                      <div class="hint">${escapeHtml((q.title || "").slice(0, 80))}</div></td>
+                    <td><span class="wq-badge pri-${q.status === "missing" ? "high" : "medium"}">${escapeHtml(
+                      q.status || ""
+                    )}</span></td>
+                    <td class="hint">${escapeHtml(arts || "Policy or config export")}</td>
+                    <td class="ws-actions">
+                      <button type="button" class="btn-secondary cc-queue-collect"
+                        data-cid="${escapeHtml(q.control_id || "")}"
+                        data-fw="${escapeHtml(q.framework_id || "")}">Collect</button>
+                    </td>
+                  </tr>`;
+                })
+                .join("")}</tbody></table></div>
+              ${
+                (data.evidence_queue_count || 0) > (data.evidence_queue_preview || []).length
+                  ? `<p class="hint">${data.evidence_queue_count} controls in the queue — opening Evidence locker shows the rest.</p>`
+                  : ""
+              }`
+            : `<p class="hint">No collect-next items — either nothing is assessed yet, or accepted evidence already covers scored gaps.</p>`
+        }
+      </div>
+      <div class="cc-panel" style="margin-top:0.5rem">
         <header><h2>Top compliance gaps</h2></header>
         <p class="hint">Missing before partial; live-test failures ranked higher. Control status and live tests are separate signals.</p>
         ${
@@ -6898,6 +6964,12 @@
         btn?.getAttribute("data-aid"),
         btn?.getAttribute("data-rem")
       );
+    });
+    body.querySelectorAll(".cc-queue-collect").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        window.__securaiqEvidenceFocusControl = btn.getAttribute("data-cid") || "";
+        showWorkspace("evidence");
+      });
     });
     body.querySelectorAll(".cc-gap-open").forEach((btn) => {
       btn.addEventListener("click", () =>
@@ -8126,7 +8198,15 @@
     document.querySelectorAll("[data-workspace]").forEach((el) => {
       el.addEventListener("click", (e) => {
         e.preventDefault();
-        showWorkspace(el.getAttribute("data-workspace"));
+        const ws = el.getAttribute("data-workspace");
+        const scroll = el.getAttribute("data-scroll");
+        showWorkspace(ws);
+        if (scroll) {
+          setTimeout(() => {
+            const target = document.getElementById(scroll);
+            if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+          }, 280);
+        }
       });
     });
     // notifBtn now opens the real notifications panel (wired in app.js).
