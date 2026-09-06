@@ -8,9 +8,9 @@ Catalogs live in `data/frameworks/*.json` and power `GET /api/frameworks`, gap a
 |----|----------|-------|
 | iso27001 | ISO/IEC 27001:2022 Annex A | Full 93 controls |
 | iso27701 | ISO/IEC 27701:2025 PIMS | Standalone privacy MS |
-| nist_csf | NIST CSF 2.0 | Govern–Recover outcomes |
+| nist_csf | NIST CSF 2.0 | Full 106 core subcategories (Govern–Recover, CSWP.29) |
 | nist_800_53 | NIST SP 800-53 Rev. 5 | Priority AC–SR controls |
-| nist_800_171 | NIST SP 800-171 | CUI protection |
+| nist_800_171 | NIST SP 800-171 Rev 2 | Full 110 requirements (same 110 CMMC L2 assesses) |
 | cmmc_l2 | CMMC 2.0 Level 2 | DFARS / CUI, all 110 NIST SP 800-171 Rev 2 practices (see `resources` below) |
 | cis_controls | CIS Controls v8.1 | IG1 essentials |
 | soc2 | SOC 2 TSC | 2017 TSC / 2022 points of focus |

@@ -2,7 +2,7 @@
   "id": "soc2",
   "name": "SOC 2 Trust Services Criteria (TSC)",
   "version": "2017 TSC / 2022 points of focus",
-  "description": "AICPA Trust Services Criteria (2017) with 2022 revised points of focus — Common Criteria plus Availability & Confidentiality.",
+  "description": "AICPA Trust Services Criteria (2017) with 2022 revised points of focus — all 33 Common Criteria (CC1.1-CC9.2, required for every SOC 2 report) plus the Availability and Confidentiality categories (Processing Integrity and Privacy categories are not included -- add them if your engagement's Trust Services scope requires them).",
   "controls": [
     {
       "id": "CC1.1",
@@ -206,6 +206,28 @@
         "deprovision",
         "termination",
         "access revocation"
+      ]
+    },
+    {
+      "id": "CC6.4",
+      "title": "Physical access to facilities and protected information assets restricted to authorized personnel",
+      "domain": "CC6 Logical Access",
+      "keywords": [
+        "physical access",
+        "data center",
+        "badge",
+        "facility"
+      ]
+    },
+    {
+      "id": "CC6.5",
+      "title": "Logical and physical protections over assets discontinued only after ability to read/recover data is removed",
+      "domain": "CC6 Logical Access",
+      "keywords": [
+        "secure disposal",
+        "decommission",
+        "data destruction",
+        "asset retirement"
       ]
     },
     {

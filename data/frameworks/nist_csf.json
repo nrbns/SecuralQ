@@ -2,22 +2,21 @@
   "id": "nist_csf",
   "name": "NIST Cybersecurity Framework 2.0",
   "version": "2.0",
-  "description": "NIST CSF 2.0 core outcomes across Govern–Identify–Protect–Detect–Respond–Recover.",
+  "description": "All 106 NIST CSF 2.0 core subcategories across Govern-Identify-Protect-Detect-Respond-Recover (CSWP.29, Feb 2024).",
   "controls": [
     {
       "id": "GV.OC-01",
-      "title": "Organizational context understood",
+      "title": "Organizational mission understood and informs cybersecurity risk management",
       "domain": "Govern",
       "keywords": [
         "mission",
-        "stakeholders",
         "organizational context",
         "business objectives"
       ]
     },
     {
       "id": "GV.OC-02",
-      "title": "Internal and external stakeholders understood",
+      "title": "Internal and external stakeholder needs and expectations understood",
       "domain": "Govern",
       "keywords": [
         "stakeholders",
@@ -28,27 +27,49 @@
     },
     {
       "id": "GV.OC-03",
-      "title": "Legal and regulatory requirements understood",
+      "title": "Legal, regulatory, and contractual cybersecurity requirements understood and managed",
       "domain": "Govern",
       "keywords": [
         "legal",
         "regulatory",
-        "compliance obligations"
+        "contractual",
+        "privacy",
+        "civil liberties"
+      ]
+    },
+    {
+      "id": "GV.OC-04",
+      "title": "Critical objectives, capabilities, and services stakeholders depend on are understood",
+      "domain": "Govern",
+      "keywords": [
+        "critical services",
+        "stakeholder dependency",
+        "business objectives"
+      ]
+    },
+    {
+      "id": "GV.OC-05",
+      "title": "Outcomes, capabilities, and services the organization depends on are understood",
+      "domain": "Govern",
+      "keywords": [
+        "dependencies",
+        "outcomes",
+        "critical services"
       ]
     },
     {
       "id": "GV.RM-01",
-      "title": "Risk management strategy established",
+      "title": "Risk management objectives established and agreed to by stakeholders",
       "domain": "Govern",
       "keywords": [
-        "risk appetite",
+        "risk objectives",
         "risk strategy",
         "risk management"
       ]
     },
     {
       "id": "GV.RM-02",
-      "title": "Risk appetite and tolerance established",
+      "title": "Risk appetite and risk tolerance statements established and communicated",
       "domain": "Govern",
       "keywords": [
         "risk appetite",
@@ -58,7 +79,7 @@
     },
     {
       "id": "GV.RM-03",
-      "title": "Cybersecurity risk included in enterprise risk",
+      "title": "Cybersecurity risk management activities included in enterprise risk management",
       "domain": "Govern",
       "keywords": [
         "enterprise risk",
@@ -67,29 +88,90 @@
       ]
     },
     {
+      "id": "GV.RM-04",
+      "title": "Strategic direction for risk response options established and communicated",
+      "domain": "Govern",
+      "keywords": [
+        "risk response",
+        "strategic direction",
+        "risk options"
+      ]
+    },
+    {
+      "id": "GV.RM-05",
+      "title": "Lines of communication established for cybersecurity risks including third parties",
+      "domain": "Govern",
+      "keywords": [
+        "risk communication",
+        "supplier risk",
+        "escalation"
+      ]
+    },
+    {
+      "id": "GV.RM-06",
+      "title": "Standardized method for calculating, documenting, and prioritizing cyber risk established",
+      "domain": "Govern",
+      "keywords": [
+        "risk methodology",
+        "risk scoring",
+        "risk register"
+      ]
+    },
+    {
+      "id": "GV.RM-07",
+      "title": "Strategic opportunities (positive risks) characterized in risk discussions",
+      "domain": "Govern",
+      "keywords": [
+        "positive risk",
+        "opportunity",
+        "risk strategy"
+      ]
+    },
+    {
       "id": "GV.RR-01",
-      "title": "Roles and responsibilities established",
+      "title": "Leadership accountable for cybersecurity risk and fosters risk-aware culture",
+      "domain": "Govern",
+      "keywords": [
+        "leadership accountability",
+        "risk culture",
+        "tone at the top"
+      ]
+    },
+    {
+      "id": "GV.RR-02",
+      "title": "Cybersecurity roles, responsibilities, and authorities established and enforced",
       "domain": "Govern",
       "keywords": [
         "roles",
         "responsibilities",
         "accountability",
-        "CISO"
+        "authority"
       ]
     },
     {
-      "id": "GV.RR-02",
-      "title": "Roles and authorities for risk decisions",
+      "id": "GV.RR-03",
+      "title": "Adequate resources allocated commensurate with cybersecurity risk strategy",
       "domain": "Govern",
       "keywords": [
-        "authority",
-        "delegation",
-        "risk owners"
+        "staffing",
+        "budget",
+        "resource allocation"
+      ]
+    },
+    {
+      "id": "GV.RR-04",
+      "title": "Cybersecurity included in human resources practices",
+      "domain": "Govern",
+      "keywords": [
+        "HR practices",
+        "onboarding",
+        "offboarding",
+        "background checks"
       ]
     },
     {
       "id": "GV.PO-01",
-      "title": "Policy established and communicated",
+      "title": "Cybersecurity risk management policy established and enforced",
       "domain": "Govern",
       "keywords": [
         "policy",
@@ -99,7 +181,7 @@
     },
     {
       "id": "GV.PO-02",
-      "title": "Policy reviewed and updated",
+      "title": "Cybersecurity policy reviewed and updated to reflect changing requirements",
       "domain": "Govern",
       "keywords": [
         "policy review",
@@ -109,39 +191,66 @@
     },
     {
       "id": "GV.OV-01",
-      "title": "Cybersecurity risk oversight",
+      "title": "Risk management strategy outcomes reviewed to inform strategy and direction",
       "domain": "Govern",
       "keywords": [
-        "board",
-        "oversight",
-        "metrics",
-        "KPI"
+        "strategy review",
+        "board oversight",
+        "metrics"
       ]
     },
     {
       "id": "GV.OV-02",
-      "title": "Strategy adjusted based on performance",
+      "title": "Risk management strategy reviewed and adjusted for coverage of requirements",
       "domain": "Govern",
       "keywords": [
-        "performance",
-        "strategy adjust",
+        "strategy adjustment",
+        "coverage review"
+      ]
+    },
+    {
+      "id": "GV.OV-03",
+      "title": "Organizational cybersecurity risk management performance measured and reviewed",
+      "domain": "Govern",
+      "keywords": [
+        "performance measurement",
+        "KPI",
         "continuous improvement"
       ]
     },
     {
       "id": "GV.SC-01",
-      "title": "Supply chain risk management strategy",
+      "title": "Cybersecurity supply chain risk management program and strategy established",
       "domain": "Govern",
       "keywords": [
         "supply chain",
-        "vendor",
-        "third party",
-        "SCRM"
+        "SCRM",
+        "vendor strategy"
       ]
     },
     {
       "id": "GV.SC-02",
-      "title": "Suppliers identified and prioritized",
+      "title": "Cybersecurity roles and responsibilities for suppliers and partners established",
+      "domain": "Govern",
+      "keywords": [
+        "supplier roles",
+        "third party",
+        "partner responsibilities"
+      ]
+    },
+    {
+      "id": "GV.SC-03",
+      "title": "Supply chain risk management integrated into enterprise risk processes",
+      "domain": "Govern",
+      "keywords": [
+        "SCRM integration",
+        "enterprise risk",
+        "risk assessment"
+      ]
+    },
+    {
+      "id": "GV.SC-04",
+      "title": "Suppliers known and prioritized by criticality",
       "domain": "Govern",
       "keywords": [
         "supplier inventory",
@@ -150,13 +259,63 @@
       ]
     },
     {
-      "id": "GV.SC-03",
-      "title": "Contracts with suppliers require cybersecurity",
+      "id": "GV.SC-05",
+      "title": "Cybersecurity requirements integrated into supplier contracts and agreements",
       "domain": "Govern",
       "keywords": [
         "supplier contract",
         "security clauses",
         "flow-down"
+      ]
+    },
+    {
+      "id": "GV.SC-06",
+      "title": "Planning and due diligence performed before entering supplier relationships",
+      "domain": "Govern",
+      "keywords": [
+        "due diligence",
+        "vendor onboarding",
+        "pre-contract review"
+      ]
+    },
+    {
+      "id": "GV.SC-07",
+      "title": "Supplier and third-party risk understood, recorded, and monitored over time",
+      "domain": "Govern",
+      "keywords": [
+        "vendor risk monitoring",
+        "third party risk",
+        "ongoing assessment"
+      ]
+    },
+    {
+      "id": "GV.SC-08",
+      "title": "Relevant suppliers included in incident planning, response, and recovery",
+      "domain": "Govern",
+      "keywords": [
+        "supplier incident response",
+        "third party IR",
+        "vendor coordination"
+      ]
+    },
+    {
+      "id": "GV.SC-09",
+      "title": "Supply chain security practices integrated and monitored across product lifecycle",
+      "domain": "Govern",
+      "keywords": [
+        "supply chain security",
+        "product lifecycle",
+        "monitoring"
+      ]
+    },
+    {
+      "id": "GV.SC-10",
+      "title": "Supply chain risk plans include provisions for relationship termination",
+      "domain": "Govern",
+      "keywords": [
+        "offboarding vendors",
+        "contract termination",
+        "supplier exit"
       ]
     },
     {
@@ -171,7 +330,7 @@
     },
     {
       "id": "ID.AM-02",
-      "title": "Software inventories maintained",
+      "title": "Software, services, and systems inventories maintained",
       "domain": "Identify",
       "keywords": [
         "software inventory",
@@ -181,7 +340,7 @@
     },
     {
       "id": "ID.AM-03",
-      "title": "Data flows and network topology documented",
+      "title": "Authorized network communication and data flows documented",
       "domain": "Identify",
       "keywords": [
         "network diagram",
@@ -191,7 +350,7 @@
     },
     {
       "id": "ID.AM-04",
-      "title": "External services catalogued",
+      "title": "Inventories of services provided by suppliers maintained",
       "domain": "Identify",
       "keywords": [
         "SaaS",
@@ -201,7 +360,7 @@
     },
     {
       "id": "ID.AM-05",
-      "title": "Assets prioritized by criticality",
+      "title": "Assets prioritized by classification, criticality, and impact on mission",
       "domain": "Identify",
       "keywords": [
         "critical assets",
@@ -211,7 +370,7 @@
     },
     {
       "id": "ID.AM-07",
-      "title": "Data inventories managed",
+      "title": "Inventories of data and corresponding metadata maintained",
       "domain": "Identify",
       "keywords": [
         "data inventory",
@@ -221,7 +380,7 @@
     },
     {
       "id": "ID.AM-08",
-      "title": "Assets managed through lifecycle",
+      "title": "Systems, hardware, software, services, and data managed through lifecycle",
       "domain": "Identify",
       "keywords": [
         "lifecycle",
@@ -231,7 +390,7 @@
     },
     {
       "id": "ID.RA-01",
-      "title": "Vulnerabilities identified",
+      "title": "Vulnerabilities in assets identified, validated, and recorded",
       "domain": "Identify",
       "keywords": [
         "vulnerability assessment",
@@ -241,7 +400,7 @@
     },
     {
       "id": "ID.RA-02",
-      "title": "Cyber threat intelligence received",
+      "title": "Cyber threat intelligence received from information sharing forums",
       "domain": "Identify",
       "keywords": [
         "threat intelligence",
@@ -250,7 +409,7 @@
     },
     {
       "id": "ID.RA-03",
-      "title": "Internal and external threats identified",
+      "title": "Internal and external threats identified and recorded",
       "domain": "Identify",
       "keywords": [
         "threat identification",
@@ -259,7 +418,7 @@
     },
     {
       "id": "ID.RA-04",
-      "title": "Likelihood and impact assessed",
+      "title": "Potential impacts and likelihoods of threats identified and recorded",
       "domain": "Identify",
       "keywords": [
         "likelihood",
@@ -269,17 +428,17 @@
     },
     {
       "id": "ID.RA-05",
-      "title": "Risks prioritized",
+      "title": "Threats, vulnerabilities, likelihoods, and impacts used to prioritize risk response",
       "domain": "Identify",
       "keywords": [
         "risk register",
         "prioritize",
-        "risk score"
+        "inherent risk"
       ]
     },
     {
       "id": "ID.RA-06",
-      "title": "Risk responses chosen",
+      "title": "Risk responses chosen, prioritized, planned, tracked, and communicated",
       "domain": "Identify",
       "keywords": [
         "risk treatment",
@@ -289,8 +448,47 @@
       ]
     },
     {
+      "id": "ID.RA-07",
+      "title": "Changes and exceptions managed, assessed for risk impact, and tracked",
+      "domain": "Identify",
+      "keywords": [
+        "change risk",
+        "exception tracking",
+        "risk impact"
+      ]
+    },
+    {
+      "id": "ID.RA-08",
+      "title": "Process for receiving and responding to vulnerability disclosures established",
+      "domain": "Identify",
+      "keywords": [
+        "vulnerability disclosure",
+        "VDP",
+        "responsible disclosure"
+      ]
+    },
+    {
+      "id": "ID.RA-09",
+      "title": "Authenticity and integrity of hardware and software assessed before use",
+      "domain": "Identify",
+      "keywords": [
+        "software integrity",
+        "hardware integrity",
+        "supply chain assurance"
+      ]
+    },
+    {
+      "id": "ID.RA-10",
+      "title": "Critical suppliers assessed prior to acquisition",
+      "domain": "Identify",
+      "keywords": [
+        "supplier assessment",
+        "pre-acquisition review"
+      ]
+    },
+    {
       "id": "ID.IM-01",
-      "title": "Improvements identified from assessments",
+      "title": "Improvements identified from evaluations",
       "domain": "Identify",
       "keywords": [
         "assessment",
@@ -300,7 +498,7 @@
     },
     {
       "id": "ID.IM-02",
-      "title": "Improvements identified from tests and exercises",
+      "title": "Improvements identified from security tests and exercises",
       "domain": "Identify",
       "keywords": [
         "tabletop",
@@ -309,17 +507,28 @@
       ]
     },
     {
+      "id": "ID.IM-03",
+      "title": "Improvements identified from execution of operational processes and activities",
+      "domain": "Identify",
+      "keywords": [
+        "operational review",
+        "process improvement",
+        "lessons learned"
+      ]
+    },
+    {
       "id": "ID.IM-04",
-      "title": "Incident response plans improved",
+      "title": "Incident response and cybersecurity plans established, maintained, and improved",
       "domain": "Identify",
       "keywords": [
         "IR improvement",
-        "playbook update"
+        "playbook update",
+        "plan maintenance"
       ]
     },
     {
       "id": "PR.AA-01",
-      "title": "Identities and credentials managed",
+      "title": "Identities and credentials for authorized users, services, and hardware managed",
       "domain": "Protect",
       "keywords": [
         "IAM",
@@ -330,7 +539,16 @@
     },
     {
       "id": "PR.AA-02",
-      "title": "Identities authenticated",
+      "title": "Identities proofed and bound to credentials based on context",
+      "domain": "Protect",
+      "keywords": [
+        "identity proofing",
+        "onboarding verification"
+      ]
+    },
+    {
+      "id": "PR.AA-03",
+      "title": "Users, services, and hardware authenticated",
       "domain": "Protect",
       "keywords": [
         "authentication",
@@ -339,17 +557,8 @@
       ]
     },
     {
-      "id": "PR.AA-03",
-      "title": "Identities proofed for high assurance",
-      "domain": "Protect",
-      "keywords": [
-        "identity proofing",
-        "onboarding verification"
-      ]
-    },
-    {
       "id": "PR.AA-04",
-      "title": "Identity assertions protected",
+      "title": "Identity assertions protected, conveyed, and verified",
       "domain": "Protect",
       "keywords": [
         "federation",
@@ -360,17 +569,18 @@
     },
     {
       "id": "PR.AA-05",
-      "title": "Access permissions managed",
+      "title": "Access permissions and authorizations managed with least privilege",
       "domain": "Protect",
       "keywords": [
         "access control",
         "least privilege",
-        "RBAC"
+        "RBAC",
+        "separation of duties"
       ]
     },
     {
       "id": "PR.AA-06",
-      "title": "Physical access managed",
+      "title": "Physical access to assets managed, monitored, and enforced",
       "domain": "Protect",
       "keywords": [
         "physical access",
@@ -380,7 +590,7 @@
     },
     {
       "id": "PR.AT-01",
-      "title": "Users are aware and trained",
+      "title": "Personnel provided with general cybersecurity awareness and training",
       "domain": "Protect",
       "keywords": [
         "awareness",
@@ -390,7 +600,7 @@
     },
     {
       "id": "PR.AT-02",
-      "title": "Specialized roles trained",
+      "title": "Individuals in specialized roles provided with role-specific training",
       "domain": "Protect",
       "keywords": [
         "role-based training",
@@ -399,7 +609,7 @@
     },
     {
       "id": "PR.DS-01",
-      "title": "Data-at-rest protected",
+      "title": "Confidentiality, integrity, and availability of data-at-rest protected",
       "domain": "Protect",
       "keywords": [
         "encryption at rest",
@@ -409,7 +619,7 @@
     },
     {
       "id": "PR.DS-02",
-      "title": "Data-in-transit protected",
+      "title": "Confidentiality, integrity, and availability of data-in-transit protected",
       "domain": "Protect",
       "keywords": [
         "TLS",
@@ -419,7 +629,7 @@
     },
     {
       "id": "PR.DS-10",
-      "title": "Data-in-use protected",
+      "title": "Confidentiality, integrity, and availability of data-in-use protected",
       "domain": "Protect",
       "keywords": [
         "data in use",
@@ -428,8 +638,18 @@
       ]
     },
     {
+      "id": "PR.DS-11",
+      "title": "Backups of data created, protected, maintained, and tested",
+      "domain": "Protect",
+      "keywords": [
+        "backup",
+        "restore testing",
+        "data recovery"
+      ]
+    },
+    {
       "id": "PR.PS-01",
-      "title": "Configuration management baselines",
+      "title": "Configuration management practices established and applied",
       "domain": "Protect",
       "keywords": [
         "hardening",
@@ -439,7 +659,7 @@
     },
     {
       "id": "PR.PS-02",
-      "title": "Software maintained and patched",
+      "title": "Software maintained, replaced, and removed commensurate with risk",
       "domain": "Protect",
       "keywords": [
         "patch management",
@@ -449,7 +669,7 @@
     },
     {
       "id": "PR.PS-03",
-      "title": "Hardware maintained",
+      "title": "Hardware maintained, replaced, and removed commensurate with risk",
       "domain": "Protect",
       "keywords": [
         "hardware maintenance",
@@ -459,7 +679,7 @@
     },
     {
       "id": "PR.PS-04",
-      "title": "Log records generated",
+      "title": "Log records generated and made available for continuous monitoring",
       "domain": "Protect",
       "keywords": [
         "logging",
@@ -469,7 +689,7 @@
     },
     {
       "id": "PR.PS-05",
-      "title": "Installation of software prevented when unauthorized",
+      "title": "Installation and execution of unauthorized software prevented",
       "domain": "Protect",
       "keywords": [
         "application control",
@@ -479,7 +699,7 @@
     },
     {
       "id": "PR.PS-06",
-      "title": "Secure software development practices",
+      "title": "Secure software development practices integrated across the SDLC",
       "domain": "Protect",
       "keywords": [
         "SDLC",
@@ -489,27 +709,17 @@
     },
     {
       "id": "PR.IR-01",
-      "title": "Backup and recovery maintained",
+      "title": "Networks and environments protected from unauthorized logical access",
       "domain": "Protect",
       "keywords": [
-        "backup",
-        "restore",
-        "recovery"
+        "network segmentation",
+        "firewall",
+        "access boundary"
       ]
     },
     {
       "id": "PR.IR-02",
-      "title": "Capacity and continuity managed",
-      "domain": "Protect",
-      "keywords": [
-        "capacity",
-        "continuity",
-        "resilience"
-      ]
-    },
-    {
-      "id": "PR.IR-03",
-      "title": "Environmental protections maintained",
+      "title": "Technology assets protected from environmental threats",
       "domain": "Protect",
       "keywords": [
         "environmental",
@@ -518,18 +728,28 @@
       ]
     },
     {
-      "id": "PR.IR-04",
-      "title": "Adequate resources for resilience",
+      "id": "PR.IR-03",
+      "title": "Mechanisms implemented to achieve resilience in normal and adverse situations",
       "domain": "Protect",
       "keywords": [
-        "resilience resources",
-        "staffing",
-        "tooling"
+        "resilience",
+        "failover",
+        "continuity"
+      ]
+    },
+    {
+      "id": "PR.IR-04",
+      "title": "Adequate resource capacity to ensure availability maintained",
+      "domain": "Protect",
+      "keywords": [
+        "capacity planning",
+        "availability",
+        "scaling"
       ]
     },
     {
       "id": "DE.CM-01",
-      "title": "Networks monitored",
+      "title": "Networks and network services monitored for adverse events",
       "domain": "Detect",
       "keywords": [
         "network monitoring",
@@ -539,7 +759,7 @@
     },
     {
       "id": "DE.CM-02",
-      "title": "Physical environment monitored",
+      "title": "Physical environment monitored for adverse events",
       "domain": "Detect",
       "keywords": [
         "physical monitoring",
@@ -549,7 +769,7 @@
     },
     {
       "id": "DE.CM-03",
-      "title": "Personnel activity monitored",
+      "title": "Personnel activity and technology usage monitored for adverse events",
       "domain": "Detect",
       "keywords": [
         "UEBA",
@@ -559,7 +779,7 @@
     },
     {
       "id": "DE.CM-06",
-      "title": "External service provider activity monitored",
+      "title": "External service provider activities monitored for adverse events",
       "domain": "Detect",
       "keywords": [
         "vendor monitoring",
@@ -569,7 +789,7 @@
     },
     {
       "id": "DE.CM-09",
-      "title": "Computing hardware and software monitored",
+      "title": "Computing hardware, software, and runtime environments monitored",
       "domain": "Detect",
       "keywords": [
         "EDR",
@@ -579,7 +799,7 @@
     },
     {
       "id": "DE.AE-02",
-      "title": "Adverse events analyzed",
+      "title": "Potentially adverse events analyzed to understand associated activity",
       "domain": "Detect",
       "keywords": [
         "SIEM",
@@ -599,17 +819,16 @@
     },
     {
       "id": "DE.AE-04",
-      "title": "Potential incidents estimated and escalated",
+      "title": "Estimated impact and scope of adverse events determined",
       "domain": "Detect",
       "keywords": [
-        "escalation",
-        "SOC tier",
-        "on-call"
+        "impact estimate",
+        "scope determination"
       ]
     },
     {
       "id": "DE.AE-06",
-      "title": "Declared incidents information provided",
+      "title": "Information on adverse events provided to authorized staff and tools",
       "domain": "Detect",
       "keywords": [
         "incident declaration",
@@ -618,7 +837,7 @@
     },
     {
       "id": "DE.AE-07",
-      "title": "Cyber threat intelligence integrated",
+      "title": "Cyber threat intelligence and contextual information integrated into analysis",
       "domain": "Detect",
       "keywords": [
         "CTI integration",
@@ -628,7 +847,7 @@
     },
     {
       "id": "DE.AE-08",
-      "title": "Incidents declared when criteria met",
+      "title": "Incidents declared when adverse events meet defined criteria",
       "domain": "Detect",
       "keywords": [
         "incident criteria",
@@ -637,7 +856,7 @@
     },
     {
       "id": "RS.MA-01",
-      "title": "Incident response plan executed",
+      "title": "Incident response plan executed in coordination with third parties",
       "domain": "Respond",
       "keywords": [
         "incident response",
@@ -647,11 +866,12 @@
     },
     {
       "id": "RS.MA-02",
-      "title": "Incident reports initiated",
+      "title": "Incident reports triaged and validated",
       "domain": "Respond",
       "keywords": [
         "incident ticket",
-        "incident report"
+        "incident report",
+        "triage"
       ]
     },
     {
@@ -666,7 +886,7 @@
     },
     {
       "id": "RS.MA-04",
-      "title": "Incidents escalated to stakeholders",
+      "title": "Incidents escalated or elevated as needed",
       "domain": "Respond",
       "keywords": [
         "stakeholder escalation",
@@ -675,16 +895,16 @@
     },
     {
       "id": "RS.MA-05",
-      "title": "Criteria applied to end incident response",
+      "title": "Criteria for initiating incident recovery applied",
       "domain": "Respond",
       "keywords": [
-        "incident closure",
-        "recovery criteria"
+        "recovery criteria",
+        "incident closure"
       ]
     },
     {
       "id": "RS.AN-03",
-      "title": "Analysis performed to establish what happened",
+      "title": "Analysis performed to determine what happened and root cause",
       "domain": "Respond",
       "keywords": [
         "forensics",
@@ -694,7 +914,7 @@
     },
     {
       "id": "RS.AN-06",
-      "title": "Actions performed consistent with evidence preservation",
+      "title": "Actions performed during investigation recorded with integrity preserved",
       "domain": "Respond",
       "keywords": [
         "evidence preservation",
@@ -703,7 +923,7 @@
     },
     {
       "id": "RS.AN-07",
-      "title": "Incident data and metadata collected",
+      "title": "Incident data and metadata collected with integrity preserved",
       "domain": "Respond",
       "keywords": [
         "artifact collection",
@@ -713,11 +933,31 @@
     },
     {
       "id": "RS.AN-08",
-      "title": "Incidents estimated for magnitude",
+      "title": "Incident magnitude estimated and validated",
       "domain": "Respond",
       "keywords": [
         "blast radius",
         "impact estimate"
+      ]
+    },
+    {
+      "id": "RS.CO-02",
+      "title": "Internal and external stakeholders notified of incidents",
+      "domain": "Respond",
+      "keywords": [
+        "notification",
+        "comms",
+        "regulator notice"
+      ]
+    },
+    {
+      "id": "RS.CO-03",
+      "title": "Information shared with designated internal and external stakeholders",
+      "domain": "Respond",
+      "keywords": [
+        "information sharing",
+        "ISAC",
+        "partner notice"
       ]
     },
     {
@@ -741,28 +981,8 @@
       ]
     },
     {
-      "id": "RS.CO-02",
-      "title": "Internal and external stakeholders notified",
-      "domain": "Respond",
-      "keywords": [
-        "notification",
-        "comms",
-        "regulator notice"
-      ]
-    },
-    {
-      "id": "RS.CO-03",
-      "title": "Information shared consistent with response plans",
-      "domain": "Respond",
-      "keywords": [
-        "information sharing",
-        "ISAC",
-        "partner notice"
-      ]
-    },
-    {
       "id": "RC.RP-01",
-      "title": "Recovery plan executed",
+      "title": "Recovery portion of incident response plan executed",
       "domain": "Recover",
       "keywords": [
         "disaster recovery",
@@ -772,7 +992,7 @@
     },
     {
       "id": "RC.RP-02",
-      "title": "Recovery actions selected and scoped",
+      "title": "Recovery actions selected, scoped, prioritized, and performed",
       "domain": "Recover",
       "keywords": [
         "recovery scope",
@@ -781,7 +1001,7 @@
     },
     {
       "id": "RC.RP-03",
-      "title": "Integrity of backups and systems verified",
+      "title": "Integrity of backups and restoration assets verified before use",
       "domain": "Recover",
       "keywords": [
         "backup integrity",
@@ -790,16 +1010,16 @@
     },
     {
       "id": "RC.RP-04",
-      "title": "Critical mission functions restored",
+      "title": "Critical mission functions considered to establish post-incident norms",
       "domain": "Recover",
       "keywords": [
         "mission critical",
-        "service restore"
+        "post-incident operations"
       ]
     },
     {
       "id": "RC.RP-05",
-      "title": "Integrity of restored assets verified",
+      "title": "Integrity of restored assets verified and normal operations confirmed",
       "domain": "Recover",
       "keywords": [
         "post-restore validation",
@@ -808,17 +1028,17 @@
     },
     {
       "id": "RC.RP-06",
-      "title": "End of incident declared based on criteria",
+      "title": "Criteria for end of incident recovery applied and documentation completed",
       "domain": "Recover",
       "keywords": [
         "lessons learned",
         "post-incident",
-        "improvement"
+        "recovery closure"
       ]
     },
     {
       "id": "RC.CO-03",
-      "title": "Recovery activities communicated",
+      "title": "Recovery activities and progress communicated to stakeholders",
       "domain": "Recover",
       "keywords": [
         "stakeholder communication",
@@ -828,7 +1048,7 @@
     },
     {
       "id": "RC.CO-04",
-      "title": "Public updates on recovery shared",
+      "title": "Public updates on incident recovery shared using approved methods",
       "domain": "Recover",
       "keywords": [
         "public communication",
