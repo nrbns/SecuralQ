@@ -6471,6 +6471,8 @@
       // SPRS affirmation record -- only meaningful for cmmc_l2 (the only
       // catalog with sprs_weight per control). Best-effort, non-blocking.
       let latestAffirmation = null;
+      let attestationProfile = null;
+      let latestAttestation = null;
       if (frameworkId === "cmmc_l2") {
         try {
           const affRes = await fetch("/api/cmmc/affirmations/latest?framework_id=cmmc_l2", {
@@ -6482,16 +6484,81 @@
         } catch {
           /* affirmation panel is supplemental */
         }
+      } else {
+        // Every other framework gets the generalized attestation tracker
+        // (its own real terminology/cadence -- see compliance_attestation.py)
+        // instead of CMMC's SPRS-specific vocabulary.
+        try {
+          const profRes = await fetch(
+            `/api/compliance/attestations/profile/${encodeURIComponent(frameworkId)}`,
+            { headers: authHeaders() }
+          );
+          attestationProfile = profRes.ok ? await profRes.json().catch(() => null) : null;
+        } catch {
+          /* supplemental */
+        }
+        try {
+          const attRes = await fetch(
+            `/api/compliance/attestations/latest?framework_id=${encodeURIComponent(frameworkId)}`,
+            { headers: authHeaders() }
+          );
+          if (attRes.ok) {
+            latestAttestation = (await attRes.json().catch(() => ({}))).attestation || null;
+          }
+        } catch {
+          /* supplemental */
+        }
       }
+      const dueLabel = (days, overdue) => {
+        if (days == null) return "";
+        return overdue
+          ? `<span class="wq-badge pri-high">overdue by ${Math.abs(Math.round(days))}d</span>`
+          : `<span class="wq-badge pri-low">due in ${Math.round(days)}d</span>`;
+      };
       const renderAffirmationPanel = () => {
-        if (frameworkId !== "cmmc_l2") return "";
+        if (frameworkId !== "cmmc_l2") {
+          if (!attestationProfile) return "";
+          const a = latestAttestation;
+          const label = attestationProfile.attestation_label || "Attestation";
+          const reassessLabel = attestationProfile.reassessment_label || "Reassessment";
+          const cadenceNote = attestationProfile.cadence_note || "";
+          return `<div class="cc-panel" style="margin-top:1rem" id="complianceAttestPanel">
+            <header><h3 style="margin:0">${escapeHtml(label)}</h3>
+              <button type="button" class="btn-secondary" id="complianceAttestToggle">Record attestation</button>
+            </header>
+            <p class="hint">${escapeHtml(cadenceNote)}${
+              attestationProfile.mandated ? "" : " Not an official fixed deadline — industry practice."
+            }</p>
+            ${
+              a
+                ? `<p>Attested by ${escapeHtml(a.attesting_official)} on ${new Date(a.assessment_date * 1000)
+                    .toISOString()
+                    .slice(0, 10)}</p>
+                   <p>Next ${escapeHtml(label.toLowerCase())}: ${new Date(a.next_affirmation_due * 1000)
+                     .toISOString()
+                     .slice(0, 10)} ${dueLabel(a.days_until_affirmation_due, a.affirmation_overdue)} &nbsp; Next ${escapeHtml(
+                     reassessLabel.toLowerCase()
+                   )}: ${new Date(a.next_reassessment_due * 1000).toISOString().slice(0, 10)} ${dueLabel(
+                     a.days_until_reassessment_due,
+                     a.reassessment_overdue
+                   )}</p>`
+                : `<p class="hint">No attestation recorded yet.</p>`
+            }
+            <form id="complianceAttestForm" style="display:none;margin-top:0.75rem;display:grid;gap:0.5rem;max-width:420px">
+              <label class="hint">Assessment date
+                <input type="date" id="complianceAttestDate" class="input" />
+              </label>
+              <label class="hint">Attesting official
+                <input type="text" id="complianceAttestOfficial" class="input" placeholder="Name, title" />
+              </label>
+              <label class="hint">Notes (optional)
+                <input type="text" id="complianceAttestNotes" class="input" />
+              </label>
+              <button type="submit" class="btn-primary">Save attestation</button>
+            </form>
+          </div>`;
+        }
         const a = latestAffirmation;
-        const dueLabel = (days, overdue) => {
-          if (days == null) return "";
-          return overdue
-            ? `<span class="wq-badge pri-high">overdue by ${Math.abs(Math.round(days))}d</span>`
-            : `<span class="wq-badge pri-low">due in ${Math.round(days)}d</span>`;
-        };
         return `<div class="cc-panel" style="margin-top:1rem" id="cmmcAffirmPanel">
           <header><h3 style="margin:0">SPRS affirmation</h3>
             <button type="button" class="btn-secondary" id="cmmcAffirmToggle">Record affirmation</button>
@@ -6534,7 +6601,38 @@
         </div>`;
       };
       const wireAffirmationPanel = () => {
-        if (frameworkId !== "cmmc_l2") return;
+        if (frameworkId !== "cmmc_l2") {
+          if (!attestationProfile) return;
+          const toggle = qs("complianceAttestToggle");
+          const form = qs("complianceAttestForm");
+          toggle?.addEventListener("click", () => {
+            if (form) form.style.display = form.style.display === "none" ? "grid" : "none";
+          });
+          form?.addEventListener("submit", async (e) => {
+            e.preventDefault();
+            const dateStr = qs("complianceAttestDate")?.value;
+            const official = qs("complianceAttestOfficial")?.value?.trim();
+            const notes = qs("complianceAttestNotes")?.value?.trim() || "";
+            if (!dateStr || !official) {
+              alert("Assessment date and attesting official are both required.");
+              return;
+            }
+            const assessment_date = Math.floor(new Date(`${dateStr}T00:00:00Z`).getTime() / 1000);
+            const res = await fetch("/api/compliance/attestations", {
+              method: "POST",
+              headers: authHeaders({ "Content-Type": "application/json" }),
+              body: JSON.stringify({ framework_id: frameworkId, assessment_date, attesting_official: official, notes }),
+            });
+            const resData = await res.json().catch(() => ({}));
+            if (!res.ok) {
+              alert(resData.detail || `HTTP ${res.status}`);
+              return;
+            }
+            if (typeof notifyUser === "function") notifyUser("**Attestation recorded.**");
+            openControlCenter(frameworkId, assessmentId);
+          });
+          return;
+        }
         const toggle = qs("cmmcAffirmToggle");
         const form = qs("cmmcAffirmForm");
         toggle?.addEventListener("click", () => {
@@ -6649,6 +6747,13 @@
           /* optional */
         }
       }
+      let docProfile = { report_kind: "System Security Plan (SSP)", plan_kind: "Plan of Action & Milestones (POA&M)" };
+      try {
+        const profRes = await fetch(`/api/gap/assessments/${aid}/document-profile`, { headers: authHeaders() });
+        if (profRes.ok) docProfile = await profRes.json().catch(() => docProfile);
+      } catch {
+        /* label fallback above covers cmmc_l2/nist_800_171/nist_800_53; harmless for others */
+      }
       const rows = data.results || data.top_gaps || [];
       const counts = data.counts || {};
       detailEl.innerHTML = `
@@ -6665,8 +6770,8 @@
           <div class="cc-action-row">
             <button type="button" class="btn-secondary" id="fwExportAssessment">Export assessment</button>
             <button type="button" class="btn-secondary" id="fwExportAuditPack">Export audit pack</button>
-            <button type="button" class="btn-secondary" id="fwExportSsp">Export SSP</button>
-            <button type="button" class="btn-secondary" id="fwExportPoam">Export POA&amp;M</button>
+            <button type="button" class="btn-secondary" id="fwExportSsp">Export ${escapeHtml(docProfile.report_kind || "Report")}</button>
+            <button type="button" class="btn-secondary" id="fwExportPoam">Export ${escapeHtml(docProfile.plan_kind || "Action Plan")}</button>
             <button type="button" class="btn-secondary" id="fwDeleteAssessment" data-id="${escapeHtml(aid)}">Delete assessment</button>
             <button type="button" class="btn-secondary" id="fwDetailClose">Close</button>
           </div>
@@ -6758,22 +6863,26 @@
       });
       qs("fwExportSsp")?.addEventListener("click", async () => {
         try {
-          await downloadApiExport(`/api/gap/assessments/${aid}/ssp`, `securaiq-ssp-${frameworkId}.md`);
+          const kind = docProfile.report_kind || "Report";
+          await downloadApiExport(`/api/gap/assessments/${aid}/report`, `securaiq-${frameworkId}-report.md`);
           if (typeof notifyUser === "function") {
-            notifyUser("**System Security Plan exported** — review and approve before submission; not a certified SSP.");
+            notifyUser(`**${kind} exported** — review and approve before submission; ${
+              docProfile.report_caveat || "not a certified/audited artifact"
+            }.`);
           }
         } catch (err) {
-          alert(err.message || "SSP export failed");
+          alert(err.message || "Report export failed");
         }
       });
       qs("fwExportPoam")?.addEventListener("click", async () => {
         try {
-          await downloadApiExport(`/api/gap/assessments/${aid}/poam`, `securaiq-poam-${frameworkId}.md`);
+          const kind = docProfile.plan_kind || "Action Plan";
+          await downloadApiExport(`/api/gap/assessments/${aid}/action-plan`, `securaiq-${frameworkId}-action-plan.md`);
           if (typeof notifyUser === "function") {
-            notifyUser("**POA&M exported** — open items with owners and target dates from this assessment.");
+            notifyUser(`**${kind} exported** — open items with owners and target dates from this assessment.`);
           }
         } catch (err) {
-          alert(err.message || "POA&M export failed");
+          alert(err.message || "Action plan export failed");
         }
       });
       wireAffirmationPanel();
