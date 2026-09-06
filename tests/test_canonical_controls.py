@@ -124,3 +124,76 @@ def test_compute_all_canonical_statuses(tmp_path, monkeypatch):
     statuses = compute_all_canonical_statuses(uid)
     assert len(statuses) == len(list_canonical_controls())
     assert all(s["overall_status"] == "not_assessed" for s in statuses)
+
+
+def test_live_signal_none_for_canonical_control_without_a_live_source(tmp_path, monkeypatch):
+    """Most canonical controls (e.g. backup_recovery) have no real telemetry
+    source yet -- live_signal must say so honestly, never fabricate one."""
+    from app.services.canonical_controls import compute_canonical_status
+
+    uid = _setup(monkeypatch, tmp_path)
+    status = compute_canonical_status(uid, "backup_recovery")
+    assert status["live_signal"] is None
+
+
+def test_live_signal_mfa_coverage_reflects_real_user_accounts(tmp_path, monkeypatch):
+    """MFA live signal is computed from real users.mfa_enabled rows, not
+    guessed -- a freshly registered admin has MFA disabled by default, so
+    coverage must honestly report a gap on the highest-privilege account."""
+    from app.services.canonical_controls import compute_canonical_status
+
+    uid = _setup(monkeypatch, tmp_path)
+    status = compute_canonical_status(uid, "mfa")
+    live = status["live_signal"]
+    assert live is not None
+    assert live["test"] == "mfa_coverage"
+    assert live["detail"]["total_users"] >= 1
+    assert live["detail"]["admins_without_mfa"] >= 1
+    assert live["status"] in ("partial", "fail")
+
+
+def test_live_signal_mfa_coverage_passes_once_enabled(tmp_path, monkeypatch):
+    import time
+
+    from app.mfa import _decode_secret, mfa_enroll_confirm, mfa_enroll_start, totp_at
+    from app.services.canonical_controls import compute_canonical_status
+
+    uid = _setup(monkeypatch, tmp_path, username="mfa_pass_tester")
+    enroll = mfa_enroll_start(uid, username="mfa_pass_tester")
+    code = totp_at(_decode_secret(enroll["secret"]), counter=int(time.time()) // 30)
+    mfa_enroll_confirm(uid, code)
+
+    status = compute_canonical_status(uid, "mfa")
+    live = status["live_signal"]
+    assert live["status"] == "pass"
+    assert live["detail"]["admins_without_mfa"] == 0
+
+
+def test_live_signal_logging_monitoring_fails_with_no_agents(tmp_path, monkeypatch):
+    from app.services.canonical_controls import compute_canonical_status
+
+    uid = _setup(monkeypatch, tmp_path)
+    status = compute_canonical_status(uid, "logging_monitoring")
+    live = status["live_signal"]
+    assert live is not None
+    assert live["test"] == "logging_monitoring"
+    assert live["status"] == "fail"
+    assert live["detail"]["total_agents"] == 0
+
+
+def test_live_signal_reuses_control_testing_for_asset_and_vuln_canonical_controls(tmp_path, monkeypatch):
+    """asset_inventory/vulnerability_management canonical ids reuse the exact
+    same test functions as app.services.control_testing -- one real signal,
+    surfaced at both the per-framework-control layer and the cross-framework
+    canonical layer, never two independently-computed answers to the same
+    question."""
+    from app.services.canonical_controls import compute_canonical_status
+    from app.services.control_testing import TEST_ASSET_INVENTORY, run_live_test
+
+    uid = _setup(monkeypatch, tmp_path)
+    direct = run_live_test(uid, TEST_ASSET_INVENTORY)
+    status = compute_canonical_status(uid, "asset_inventory")
+    live = status["live_signal"]
+    assert live["test"] == direct["test"]
+    assert live["status"] == direct["status"]
+    assert live["detail"] == direct["detail"]

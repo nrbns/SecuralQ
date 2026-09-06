@@ -40,6 +40,140 @@ _REGISTRY_PATH = resource_root() / "data" / "frameworks" / "canonical_controls.j
 _STATUS_RANK = {"implemented": 3, "partial": 2, "missing": 1, "not_applicable": 0}
 
 
+def _live_signal_mfa_coverage(user_id: str) -> dict[str, Any]:
+    """Real MFA enrollment coverage across every user account -- not a
+    per-framework live test (control_testing.py's _CONTROL_TEST_MAP has no
+    MFA entry today), but a genuine telemetry signal this product already
+    has: app.auth.list_users_public() + app.mfa.mfa_status() per user.
+    Unscoped by design -- list_users_public() already lists every account
+    in this deployment (same precedent as app/scim_api.py)."""
+    from app.auth import list_users_public
+    from app.mfa import mfa_status
+
+    users = list_users_public()
+    total = len(users)
+    if total == 0:
+        return {
+            "test": "mfa_coverage",
+            "status": "fail",
+            "summary": "No user accounts found -- no evidence to assess MFA coverage.",
+            "detail": {"total_users": 0, "mfa_enabled": 0, "admins_without_mfa": 0},
+        }
+
+    enabled = 0
+    admins_without_mfa = 0
+    for u in users:
+        st = mfa_status(u["id"])
+        if st.get("enabled"):
+            enabled += 1
+        elif (u.get("role") or "").lower() == "admin":
+            admins_without_mfa += 1
+
+    pct = round(enabled / total * 100, 1)
+    if admins_without_mfa > 0:
+        status = "partial" if pct >= 50 else "fail"
+        summary = f"{admins_without_mfa} admin account(s) without MFA enrolled -- highest-privilege accounts are the priority regardless of overall coverage."
+    elif pct >= 100:
+        status = "pass"
+        summary = f"All {total} user accounts have MFA enabled."
+    elif pct >= 50:
+        status = "partial"
+        summary = f"{enabled} of {total} user accounts ({pct}%) have MFA enabled."
+    else:
+        status = "fail"
+        summary = f"Only {enabled} of {total} user accounts ({pct}%) have MFA enabled."
+
+    return {
+        "test": "mfa_coverage",
+        "status": status,
+        "summary": summary,
+        "detail": {"total_users": total, "mfa_enabled": enabled, "coverage_pct": pct, "admins_without_mfa": admins_without_mfa},
+    }
+
+
+def _live_signal_logging_monitoring(user_id: str) -> dict[str, Any]:
+    """Real signal for 'is logging/monitoring active' -- proxied by installed
+    SecuraIQ agent checkin freshness (app.agents.list_agents already derives
+    online/offline from last_checkin age; this is the same signal
+    app.services.risk_priority.py uses as a compensating control). Not a full
+    SIEM-coverage claim -- an agent that's online is actively reporting
+    telemetry, which is the honest scope of what SecuraIQ can verify today."""
+    from app.agents import list_agents
+
+    try:
+        agents = list_agents(user_id)
+    except Exception:
+        agents = []
+    total = len(agents)
+    if total == 0:
+        return {
+            "test": "logging_monitoring",
+            "status": "fail",
+            "summary": "No agents enrolled -- no evidence of active telemetry/logging collection.",
+            "detail": {"total_agents": 0, "online": 0, "coverage_pct": None},
+        }
+
+    online = sum(1 for a in agents if (a.get("status") or "").lower() == "online")
+    pct = round(online / total * 100, 1)
+    if pct >= 80:
+        status = "pass"
+        summary = f"{online} of {total} enrolled agents ({pct}%) are actively checking in with telemetry."
+    elif pct >= 40:
+        status = "partial"
+        summary = f"Only {online} of {total} enrolled agents ({pct}%) are actively checking in -- monitoring coverage has gaps."
+    else:
+        status = "fail"
+        summary = f"Only {online} of {total} enrolled agents ({pct}%) are actively checking in -- monitoring is largely inactive."
+
+    return {
+        "test": "logging_monitoring",
+        "status": status,
+        "summary": summary,
+        "detail": {"total_agents": total, "online": online, "coverage_pct": pct},
+    }
+
+
+def _live_signal_asset_inventory(user_id: str) -> dict[str, Any] | None:
+    from app.services.control_testing import TEST_ASSET_INVENTORY, run_live_test
+
+    return run_live_test(user_id, TEST_ASSET_INVENTORY)
+
+
+def _live_signal_vulnerability_management(user_id: str) -> dict[str, Any] | None:
+    from app.services.control_testing import TEST_VULNERABILITY_MANAGEMENT, run_live_test
+
+    return run_live_test(user_id, TEST_VULNERABILITY_MANAGEMENT)
+
+
+# Canonical-control-id -> live-signal test function. Deliberately small and
+# explicit, same philosophy as control_testing.py's _CONTROL_TEST_MAP: only a
+# canonical control with a REAL, verifiable telemetry source gets an entry
+# here. A canonical control absent from this map simply has no live signal
+# yet -- its status still comes from gap-assessment evidence only.
+_CANONICAL_LIVE_TESTS = {
+    "mfa": _live_signal_mfa_coverage,
+    "logging_monitoring": _live_signal_logging_monitoring,
+    "asset_inventory": _live_signal_asset_inventory,
+    "vulnerability_management": _live_signal_vulnerability_management,
+}
+
+
+def compute_live_signal(user_id: str, canonical_id: str) -> dict[str, Any] | None:
+    """Independent real-telemetry check for one canonical control, if this
+    product has a genuine data source for it. Returned alongside (never
+    blended into) overall_status -- this is deliberately additive, mirroring
+    control_testing.py's own separation of 'pasted evidence describes the
+    control' from 'real telemetry shows the control operating'. None means
+    no live signal exists yet for this canonical control, not that it failed."""
+    fn = _CANONICAL_LIVE_TESTS.get(canonical_id)
+    if not fn:
+        return None
+    try:
+        return fn(user_id)
+    except Exception:
+        return None
+
+
 @lru_cache(maxsize=1)
 def _load_registry_cached(mtime: float) -> dict[str, Any]:
     return json.loads(_REGISTRY_PATH.read_text(encoding="utf-8"))
@@ -166,6 +300,12 @@ def compute_canonical_status(user_id: str, canonical_id: str) -> dict[str, Any] 
         "frameworks_assessed": assessed,
         "frameworks_satisfied": satisfied,
         "overall_status": overall,
+        # Independent real-telemetry check, if this canonical control has one
+        # (see _CANONICAL_LIVE_TESTS). Never blended into overall_status --
+        # that stays a pure function of pasted-evidence gap assessments so
+        # the two signal types (declared evidence vs. observed telemetry)
+        # are never silently conflated into one number.
+        "live_signal": compute_live_signal(user_id, canonical_id),
     }
 
 
