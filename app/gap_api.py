@@ -28,6 +28,11 @@ from app.services.cmmc_documents import (
     generate_poam_markdown,
     generate_ssp_markdown,
 )
+from app.services.compliance_documents import (
+    document_profile,
+    generate_action_plan_markdown,
+    generate_report_markdown,
+)
 from app.services.compliance_center import audit_center_overview, compliance_overview
 from app.services.control_testing import controls_with_live_tests, run_live_tests_for_framework
 
@@ -112,6 +117,44 @@ async def gap_sprs_preview(assessment_id: str, user: Annotated[AuthUser, Depends
     if not data:
         raise HTTPException(status_code=404, detail="Not found")
     return {"assessment_id": assessment_id, "preview": compute_sprs_preview(user.id, assessment_id)}
+
+
+@router.get("/gap/assessments/{assessment_id}/document-profile")
+async def gap_document_profile(assessment_id: str, user: Annotated[AuthUser, Depends(require_user)]):
+    """The framework-appropriate document names for this assessment (e.g.
+    'Statement of Applicability' for iso27001, 'Security Risk Assessment
+    Report' for hipaa) -- lets the UI label export buttons correctly instead
+    of calling every framework's documentation an 'SSP'."""
+    data = get_assessment(user.id, assessment_id)
+    if not data:
+        raise HTTPException(status_code=404, detail="Not found")
+    return document_profile(data.get("framework_id") or "")
+
+
+@router.get("/gap/assessments/{assessment_id}/report")
+async def gap_report(assessment_id: str, user: Annotated[AuthUser, Depends(require_user)]):
+    """Framework-appropriate implementation report for any framework -- SSP
+    for cmmc_l2/nist_800_171/nist_800_53, Statement of Applicability for
+    iso27001/iso27701, Security Risk Assessment Report for hipaa, a
+    readiness report for pci_dss, Article 32/21 reports for gdpr/nis2, and a
+    generic Control Implementation Report for everything else."""
+    try:
+        md = generate_report_markdown(user.id, assessment_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return PlainTextResponse(md, media_type="text/markdown; charset=utf-8")
+
+
+@router.get("/gap/assessments/{assessment_id}/action-plan")
+async def gap_action_plan(assessment_id: str, user: Annotated[AuthUser, Depends(require_user)]):
+    """Framework-appropriate open-items action plan -- POA&M, corrective
+    action plan, or remediation action plan depending on the framework (see
+    /document-profile)."""
+    try:
+        md = generate_action_plan_markdown(user.id, assessment_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return PlainTextResponse(md, media_type="text/markdown; charset=utf-8")
 
 
 @router.get("/gap/assessments/{assessment_id}/coverage")

@@ -144,182 +144,20 @@ def compute_sprs_preview(user_id: str, assessment_id: str) -> dict[str, Any] | N
 
 
 def generate_ssp_markdown(user_id: str, assessment_id: str) -> str:
-    data = get_assessment(user_id, assessment_id)
-    if not data:
-        raise ValueError("Assessment not found")
+    """CMMC/NIST-flavored System Security Plan. Thin wrapper kept for backward
+    compatibility (existing routes/tests) -- the real, framework-generic
+    implementation now lives in app.services.compliance_documents so every
+    framework gets its own correctly-named document (SoA, SRA, readiness
+    report, etc.) instead of everything being called an "SSP". Imported
+    lazily to avoid a module-load-time circular import (compliance_documents
+    imports the helper functions in this module)."""
+    from app.services.compliance_documents import generate_report_markdown
 
-    framework_id = data.get("framework_id") or ""
-    catalog = _control_catalog_by_id(framework_id)
-    evidence_by_control = _evidence_by_control(user_id, data.get("engagement_id"))
-    remediations = _remediations_by_control(user_id, assessment_id)
-    org_name = _org_name(user_id)
-    env = _asset_environment_summary(user_id)
-    generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-
-    lines: list[str] = [
-        "# System Security Plan (SSP)",
-        "",
-        f"**Organization:** {org_name}",
-        f"**Framework:** {data.get('framework_name')} (`{framework_id}`)",
-        f"**Based on assessment:** {data.get('title')} (`{assessment_id}`)",
-        f"**Generated:** {generated}",
-        "",
-        f"> {DOCUMENT_DISCLAIMER}",
-        "",
-        "## 1. System identification and environment",
-        "",
-        f"SecuraIQ's asset inventory for this organization currently tracks **{env['total']}** "
-        "registered asset(s)"
-        + (
-            ": " + ", ".join(f"{n} {t}" for t, n in sorted(env["by_type"].items(), key=lambda kv: -kv[1]))
-            if env["by_type"]
-            else " -- no assets have been registered yet in Assets."
-        )
-        + ".",
-        "",
-        "This scope reflects what has been entered into SecuraIQ, not an independently verified "
-        "system boundary. Confirm and document the authorization boundary (CUI flow, external "
-        "connections, and any out-of-scope segments) separately before formal submission.",
-        "",
-    ]
-
-    if framework_id == "cmmc_l2":
-        sprs = compute_sprs_preview(user_id, assessment_id)
-        if sprs:
-            lines += [
-                "## 2. SPRS score preview",
-                "",
-                f"**Preview score:** {sprs['score']} / {sprs['max_score']}",
-                "",
-                f"> {sprs['disclaimer']}",
-                "",
-            ]
-            if sprs["top_point_losses"]:
-                lines += ["Largest point losses:", ""]
-                for u in sprs["top_point_losses"]:
-                    lines.append(f"- {u['control_id']} ({u['weight']} pts, {u['status']}): {u['title']}")
-                lines.append("")
-
-    section_num = 3 if framework_id == "cmmc_l2" else 2
-    lines += [f"## {section_num}. Security requirements", ""]
-
-    results = _controls_from_assessment(data)
-    by_domain: dict[str, list[dict[str, Any]]] = {}
-    for r in results:
-        by_domain.setdefault(r.get("domain") or "Uncategorized", []).append(r)
-
-    for domain in sorted(by_domain):
-        lines.append(f"### {domain}")
-        lines.append("")
-        for r in sorted(by_domain[domain], key=lambda x: x.get("control_id", "")):
-            cid = str(r.get("control_id") or "").strip()
-            cid_up = cid.upper()
-            ctrl = catalog.get(cid_up, {})
-            status = r.get("status") or "missing"
-            lines.append(f"**{cid} — {r.get('title')}** ({status})")
-            weight = ctrl.get("sprs_weight")
-            l1 = ctrl.get("cmmc_level1")
-            tags = []
-            if weight is not None:
-                tags.append(f"SPRS weight {weight}")
-            if l1:
-                tags.append("CMMC Level 1")
-            if tags:
-                lines.append(f"_{' · '.join(tags)}_")
-            lines.append("")
-            ev_links = evidence_by_control.get(cid_up) or []
-            accepted = [e for e in ev_links if (e.get("status") or "").lower() == "accepted"]
-            if accepted:
-                lines.append("Implementation evidence on file:")
-                for e in accepted:
-                    fname = e.get("filename") or "(file)"
-                    note = f" — {e['notes']}" if e.get("notes") else ""
-                    lines.append(f"- {fname}{note}")
-            else:
-                lines.append(
-                    "Implementation description: not yet documented — no accepted evidence "
-                    "linked to this control in SecuraIQ."
-                )
-            rem = remediations.get(cid_up)
-            if rem:
-                due = rem.get("due_date") or "no target date set"
-                owner = rem.get("owner") or "unassigned"
-                lines.append(f"Remediation owner: {owner} (target: {due}, status: {rem.get('status')})")
-            lines.append("")
-
-    lines += [
-        "---",
-        "_Generated by SecuraIQ. Review with your ISSO/ISSM before use as a submitted SSP._",
-    ]
-    return "\n".join(lines)
+    return generate_report_markdown(user_id, assessment_id)
 
 
 def generate_poam_markdown(user_id: str, assessment_id: str) -> str:
-    data = get_assessment(user_id, assessment_id)
-    if not data:
-        raise ValueError("Assessment not found")
+    """CMMC/NIST-flavored POA&M. Thin wrapper -- see generate_ssp_markdown."""
+    from app.services.compliance_documents import generate_action_plan_markdown
 
-    framework_id = data.get("framework_id") or ""
-    catalog = _control_catalog_by_id(framework_id)
-    remediations = _remediations_by_control(user_id, assessment_id)
-    generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-
-    results = _controls_from_assessment(data)
-    open_items = [r for r in results if (r.get("status") or "").lower() in {"missing", "partial"}]
-    open_items.sort(key=lambda x: (0 if x.get("status") == "missing" else 1, x.get("control_id", "")))
-
-    lines: list[str] = [
-        "# Plan of Action & Milestones (POA&M)",
-        "",
-        f"**Framework:** {data.get('framework_name')} (`{framework_id}`)",
-        f"**Based on assessment:** {data.get('title')} (`{assessment_id}`)",
-        f"**Generated:** {generated}",
-        f"**Open items:** {len(open_items)} of {len(results)} controls",
-        "",
-        f"> {DOCUMENT_DISCLAIMER}",
-        "",
-        "| Control | Weakness | Status | Owner | Target date | Remediation status |",
-        "|---|---|---|---|---|---|",
-    ]
-
-    for r in open_items:
-        cid = str(r.get("control_id") or "").strip()
-        rem = remediations.get(cid.upper())
-        weakness = (r.get("recommendation") or r.get("title") or "").replace("|", "/").replace("\n", " ")
-        owner = (rem.get("owner") if rem else "") or "_not assigned_"
-        due = (rem.get("due_date") if rem else "") or "_no target date set_"
-        rem_status = (rem.get("status") if rem else "") or "_no remediation created_"
-        lines.append(
-            f"| {cid} | {weakness[:160]} | {r.get('status')} | {owner} | {due} | {rem_status} |"
-        )
-
-    lines += ["", "## Milestones without an assigned owner or target date", ""]
-    unowned = [
-        r
-        for r in open_items
-        if not (remediations.get(str(r.get("control_id") or "").upper()) or {}).get("owner")
-    ]
-    if unowned:
-        for r in unowned:
-            lines.append(f"- {r.get('control_id')} — {r.get('title')}: create a remediation with an owner and target date.")
-    else:
-        lines.append("None — every open control has an assigned remediation owner.")
-
-    if framework_id == "cmmc_l2":
-        sprs = compute_sprs_preview(user_id, assessment_id)
-        if sprs:
-            lines += [
-                "",
-                "## SPRS score impact",
-                "",
-                f"Closing every item above would move the preview score from **{sprs['score']}** "
-                f"toward **{sprs['max_score']}** (subject to the scoring caveats above).",
-            ]
-
-    lines += [
-        "",
-        "---",
-        "_Generated by SecuraIQ. Not a POA&M accepted by any authority until reviewed and approved "
-        "through your own process._",
-    ]
-    return "\n".join(lines)
+    return generate_action_plan_markdown(user_id, assessment_id)
