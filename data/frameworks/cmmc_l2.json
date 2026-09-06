@@ -1,9 +1,9 @@
 {
   "id": "cmmc_l2",
-  "name": "CMMC 2.0 Level 2 (practice subset)",
+  "name": "CMMC 2.0 Level 2",
   "version": "2.0 Level 2",
-  "description": "CMMC 2.0 Level 2 practices aligned to NIST SP 800-171 for DFARS / CUI environments.",
-  "status_note": "As of the official DoD CIO CMMC page (fetched 2026): on July 13, 2026 the Department of War suspended CMMC Phase II (originally due Nov 10, 2026) and stood up a CMMC reform task force. Phase I self-assessment requirements remain in force. Level 1 (15 FAR 52.204-21 requirements) needs an annual self-assessment with annual affirmation into SPRS. Level 2 (110 NIST SP 800-171 Rev 2 requirements) currently needs a self-assessment every 3 years with annual affirmation into SPRS -- third-party (C3PAO) certification assessments are paused pending the reform review. This app's cmmc_l2 catalog is a 24-practice priority subset, not the full 110 requirements -- see resources below for the authoritative list.",
+  "description": "CMMC 2.0 Level 2 -- all 110 NIST SP 800-171 Rev 2 security requirements for DFARS / CUI environments.",
+  "status_note": "As of the official DoD CIO CMMC page (fetched 2026): on July 13, 2026 the Department of War suspended CMMC Phase II (originally due Nov 10, 2026) and stood up a CMMC reform task force. Phase I self-assessment requirements remain in force. Level 1 (15 FAR 52.204-21 requirements) needs an annual self-assessment with annual affirmation into SPRS. Level 2 (110 NIST SP 800-171 Rev 2 requirements) currently needs a self-assessment every 3 years with annual affirmation into SPRS -- third-party (C3PAO) certification assessments are paused pending the reform review. This catalog covers all 110 practices. Each control carries the official DoD SPRS point weight and whether it is also one of the 17 CMMC Level 1 basic safeguarding practices.",
   "resources": [
     {
       "title": "CMMC Program overview (DoD CIO)",
@@ -33,225 +33,1175 @@
   "controls": [
     {
       "id": "AC.L2-3.1.1",
-      "title": "Limit system access to authorized users",
+      "title": "Limit system access to authorized users, processes, and devices",
       "domain": "Access Control",
       "keywords": [
         "access control",
         "authorized users"
-      ]
+      ],
+      "sprs_weight": 5,
+      "cmmc_level1": true
+    },
+    {
+      "id": "AC.L2-3.1.2",
+      "title": "Limit access to the types of transactions and functions authorized users are permitted to execute",
+      "domain": "Access Control",
+      "keywords": [
+        "permitted transactions",
+        "authorized functions"
+      ],
+      "sprs_weight": 5,
+      "cmmc_level1": true
     },
     {
       "id": "AC.L2-3.1.3",
-      "title": "Control CUI flow",
+      "title": "Control the flow of CUI in accordance with approved authorizations",
       "domain": "Access Control",
       "keywords": [
         "CUI flow",
         "information flow"
-      ]
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
+    },
+    {
+      "id": "AC.L2-3.1.4",
+      "title": "Separate the duties of individuals to reduce the risk of malevolent activity without collusion",
+      "domain": "Access Control",
+      "keywords": [
+        "separation of duties"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
     },
     {
       "id": "AC.L2-3.1.5",
-      "title": "Employ least privilege",
+      "title": "Employ the principle of least privilege, including for specific security functions and privileged accounts",
       "domain": "Access Control",
       "keywords": [
         "least privilege",
         "privileged"
-      ]
+      ],
+      "sprs_weight": 3,
+      "cmmc_level1": false
+    },
+    {
+      "id": "AC.L2-3.1.6",
+      "title": "Use non-privileged accounts or roles when accessing nonsecurity functions",
+      "domain": "Access Control",
+      "keywords": [
+        "non-privileged account"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
+    },
+    {
+      "id": "AC.L2-3.1.7",
+      "title": "Prevent non-privileged users from executing privileged functions and audit execution of such functions",
+      "domain": "Access Control",
+      "keywords": [
+        "privilege escalation",
+        "audit privileged"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
+    },
+    {
+      "id": "AC.L2-3.1.8",
+      "title": "Limit unsuccessful logon attempts",
+      "domain": "Access Control",
+      "keywords": [
+        "lockout",
+        "failed logon"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
+    },
+    {
+      "id": "AC.L2-3.1.9",
+      "title": "Provide privacy and security notices consistent with applicable rules",
+      "domain": "Access Control",
+      "keywords": [
+        "privacy notice",
+        "logon banner"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
+    },
+    {
+      "id": "AC.L2-3.1.10",
+      "title": "Use session lock with pattern-hiding displays to prevent access/viewing of data after a period of inactivity",
+      "domain": "Access Control",
+      "keywords": [
+        "session lock",
+        "screen lock"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
+    },
+    {
+      "id": "AC.L2-3.1.11",
+      "title": "Terminate (automatically) a user session after a defined condition",
+      "domain": "Access Control",
+      "keywords": [
+        "session termination",
+        "idle timeout"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
     },
     {
       "id": "AC.L2-3.1.12",
-      "title": "Monitor remote access sessions",
+      "title": "Monitor and control remote access sessions",
       "domain": "Access Control",
       "keywords": [
         "remote access",
         "VPN",
         "MFA"
-      ]
+      ],
+      "sprs_weight": 5,
+      "cmmc_level1": false
+    },
+    {
+      "id": "AC.L2-3.1.13",
+      "title": "Employ cryptographic mechanisms to protect the confidentiality of remote access sessions",
+      "domain": "Access Control",
+      "keywords": [
+        "remote access encryption",
+        "VPN crypto"
+      ],
+      "sprs_weight": 5,
+      "cmmc_level1": false
+    },
+    {
+      "id": "AC.L2-3.1.14",
+      "title": "Route remote access via managed access control points",
+      "domain": "Access Control",
+      "keywords": [
+        "managed access point",
+        "remote access gateway"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
+    },
+    {
+      "id": "AC.L2-3.1.15",
+      "title": "Authorize remote execution of privileged commands and remote access to security-relevant information",
+      "domain": "Access Control",
+      "keywords": [
+        "privileged remote command"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
+    },
+    {
+      "id": "AC.L2-3.1.16",
+      "title": "Authorize wireless access prior to allowing such connections",
+      "domain": "Access Control",
+      "keywords": [
+        "wireless authorization"
+      ],
+      "sprs_weight": 5,
+      "cmmc_level1": false
+    },
+    {
+      "id": "AC.L2-3.1.17",
+      "title": "Protect wireless access using authentication and encryption",
+      "domain": "Access Control",
+      "keywords": [
+        "wireless encryption",
+        "WPA"
+      ],
+      "sprs_weight": 5,
+      "cmmc_level1": false
+    },
+    {
+      "id": "AC.L2-3.1.18",
+      "title": "Control connection of mobile devices",
+      "domain": "Access Control",
+      "keywords": [
+        "mobile device management",
+        "MDM"
+      ],
+      "sprs_weight": 5,
+      "cmmc_level1": false
+    },
+    {
+      "id": "AC.L2-3.1.19",
+      "title": "Encrypt CUI on mobile devices and mobile computing platforms",
+      "domain": "Access Control",
+      "keywords": [
+        "mobile encryption",
+        "CUI mobile"
+      ],
+      "sprs_weight": 3,
+      "cmmc_level1": false
+    },
+    {
+      "id": "AC.L2-3.1.20",
+      "title": "Verify and control/limit connections to and use of external information systems",
+      "domain": "Access Control",
+      "keywords": [
+        "external system",
+        "third-party connection"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": true
+    },
+    {
+      "id": "AC.L2-3.1.21",
+      "title": "Limit use of portable storage devices on external systems",
+      "domain": "Access Control",
+      "keywords": [
+        "portable storage",
+        "removable media external"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
+    },
+    {
+      "id": "AC.L2-3.1.22",
+      "title": "Control CUI posted or processed on publicly accessible information systems",
+      "domain": "Access Control",
+      "keywords": [
+        "public-facing system",
+        "CUI public disclosure"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": true
     },
     {
       "id": "AT.L2-3.2.1",
-      "title": "Security awareness",
-      "domain": "Awareness & Training",
+      "title": "Ensure managers, systems administrators, and users are made aware of the security risks and applicable policies",
+      "domain": "Awareness and Training",
       "keywords": [
-        "awareness",
+        "security awareness",
         "training"
-      ]
+      ],
+      "sprs_weight": 5,
+      "cmmc_level1": false
+    },
+    {
+      "id": "AT.L2-3.2.2",
+      "title": "Ensure personnel are trained to carry out their assigned information security-related duties and responsibilities",
+      "domain": "Awareness and Training",
+      "keywords": [
+        "role-based training"
+      ],
+      "sprs_weight": 5,
+      "cmmc_level1": false
+    },
+    {
+      "id": "AT.L2-3.2.3",
+      "title": "Provide security awareness training on recognizing and reporting potential indicators of insider threat",
+      "domain": "Awareness and Training",
+      "keywords": [
+        "insider threat training"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
     },
     {
       "id": "AU.L2-3.3.1",
-      "title": "System auditing",
-      "domain": "Audit & Accountability",
+      "title": "Create and retain system audit logs and records to enable monitoring, analysis, investigation, and reporting",
+      "domain": "Audit and Accountability",
       "keywords": [
         "audit log",
         "logging"
-      ]
+      ],
+      "sprs_weight": 5,
+      "cmmc_level1": false
     },
     {
       "id": "AU.L2-3.3.2",
-      "title": "User accountability",
-      "domain": "Audit & Accountability",
+      "title": "Ensure that the actions of individual system users can be uniquely traced to those users",
+      "domain": "Audit and Accountability",
       "keywords": [
         "unique ID",
         "accountability"
-      ]
+      ],
+      "sprs_weight": 3,
+      "cmmc_level1": false
+    },
+    {
+      "id": "AU.L2-3.3.3",
+      "title": "Review and update logged events",
+      "domain": "Audit and Accountability",
+      "keywords": [
+        "audit event review"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
+    },
+    {
+      "id": "AU.L2-3.3.4",
+      "title": "Alert in the event of an audit logging process failure",
+      "domain": "Audit and Accountability",
+      "keywords": [
+        "audit failure alert"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
+    },
+    {
+      "id": "AU.L2-3.3.5",
+      "title": "Correlate audit record review, analysis, and reporting processes for investigation and response",
+      "domain": "Audit and Accountability",
+      "keywords": [
+        "audit correlation",
+        "SIEM"
+      ],
+      "sprs_weight": 5,
+      "cmmc_level1": false
+    },
+    {
+      "id": "AU.L2-3.3.6",
+      "title": "Provide audit record reduction and report generation to support on-demand analysis and reporting",
+      "domain": "Audit and Accountability",
+      "keywords": [
+        "audit reduction",
+        "reporting"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
+    },
+    {
+      "id": "AU.L2-3.3.7",
+      "title": "Provide a system capability that compares and synchronizes internal system clocks with an authoritative time source",
+      "domain": "Audit and Accountability",
+      "keywords": [
+        "time synchronization",
+        "NTP"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
+    },
+    {
+      "id": "AU.L2-3.3.8",
+      "title": "Protect audit information and audit logging tools from unauthorized access, modification, and deletion",
+      "domain": "Audit and Accountability",
+      "keywords": [
+        "audit log protection"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
+    },
+    {
+      "id": "AU.L2-3.3.9",
+      "title": "Limit management of audit logging functionality to a subset of privileged users",
+      "domain": "Audit and Accountability",
+      "keywords": [
+        "audit admin restriction"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
     },
     {
       "id": "CM.L2-3.4.1",
-      "title": "Baseline configurations",
+      "title": "Establish and maintain baseline configurations and inventories of organizational systems",
       "domain": "Configuration Management",
       "keywords": [
         "baseline",
-        "hardening"
-      ]
+        "hardening",
+        "inventory"
+      ],
+      "sprs_weight": 5,
+      "cmmc_level1": false
     },
     {
       "id": "CM.L2-3.4.2",
-      "title": "Security configuration settings",
+      "title": "Establish and enforce security configuration settings for information technology products",
       "domain": "Configuration Management",
       "keywords": [
         "secure configuration",
-        "CIS"
-      ]
+        "CIS benchmark"
+      ],
+      "sprs_weight": 5,
+      "cmmc_level1": false
+    },
+    {
+      "id": "CM.L2-3.4.3",
+      "title": "Track, review, approve or disapprove, and log changes to organizational systems",
+      "domain": "Configuration Management",
+      "keywords": [
+        "change control",
+        "change management"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
+    },
+    {
+      "id": "CM.L2-3.4.4",
+      "title": "Analyze the security impact of changes prior to implementation",
+      "domain": "Configuration Management",
+      "keywords": [
+        "security impact analysis"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
+    },
+    {
+      "id": "CM.L2-3.4.5",
+      "title": "Define, document, approve, and enforce physical and logical access restrictions associated with changes",
+      "domain": "Configuration Management",
+      "keywords": [
+        "access restrictions for change"
+      ],
+      "sprs_weight": 5,
+      "cmmc_level1": false
+    },
+    {
+      "id": "CM.L2-3.4.6",
+      "title": "Employ the principle of least functionality by configuring systems to provide only essential capabilities",
+      "domain": "Configuration Management",
+      "keywords": [
+        "least functionality"
+      ],
+      "sprs_weight": 5,
+      "cmmc_level1": false
+    },
+    {
+      "id": "CM.L2-3.4.7",
+      "title": "Restrict, disable, or prevent the use of nonessential programs, functions, ports, protocols, and services",
+      "domain": "Configuration Management",
+      "keywords": [
+        "nonessential services",
+        "open ports"
+      ],
+      "sprs_weight": 5,
+      "cmmc_level1": false
+    },
+    {
+      "id": "CM.L2-3.4.8",
+      "title": "Apply deny-by-exception (blacklist) or permit-by-exception (whitelist) policy to allow execution of authorized software",
+      "domain": "Configuration Management",
+      "keywords": [
+        "application whitelisting",
+        "deny by exception"
+      ],
+      "sprs_weight": 5,
+      "cmmc_level1": false
+    },
+    {
+      "id": "CM.L2-3.4.9",
+      "title": "Control and monitor user-installed software",
+      "domain": "Configuration Management",
+      "keywords": [
+        "user-installed software"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
+    },
+    {
+      "id": "IA.L2-3.5.1",
+      "title": "Identify system users, processes acting on behalf of users, and devices",
+      "domain": "Identification and Authentication",
+      "keywords": [
+        "identification",
+        "user ID"
+      ],
+      "sprs_weight": 5,
+      "cmmc_level1": true
+    },
+    {
+      "id": "IA.L2-3.5.2",
+      "title": "Authenticate (or verify) the identities of users, processes, or devices as a prerequisite to allowing access",
+      "domain": "Identification and Authentication",
+      "keywords": [
+        "authentication"
+      ],
+      "sprs_weight": 5,
+      "cmmc_level1": true
     },
     {
       "id": "IA.L2-3.5.3",
-      "title": "Multifactor authentication",
-      "domain": "Identification & Authentication",
+      "title": "Use multifactor authentication for local and network access to privileged accounts and for network access to non-privileged accounts",
+      "domain": "Identification and Authentication",
       "keywords": [
         "MFA",
         "multi-factor"
-      ]
+      ],
+      "sprs_weight": 5,
+      "cmmc_level1": false
+    },
+    {
+      "id": "IA.L2-3.5.4",
+      "title": "Employ replay-resistant authentication mechanisms for network access to privileged and non-privileged accounts",
+      "domain": "Identification and Authentication",
+      "keywords": [
+        "replay-resistant authentication"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
+    },
+    {
+      "id": "IA.L2-3.5.5",
+      "title": "Prevent reuse of identifiers for a defined period",
+      "domain": "Identification and Authentication",
+      "keywords": [
+        "identifier reuse"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
+    },
+    {
+      "id": "IA.L2-3.5.6",
+      "title": "Disable identifiers after a defined period of inactivity",
+      "domain": "Identification and Authentication",
+      "keywords": [
+        "disable inactive identifier"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
+    },
+    {
+      "id": "IA.L2-3.5.7",
+      "title": "Enforce a minimum password complexity and change of characters when new passwords are created",
+      "domain": "Identification and Authentication",
+      "keywords": [
+        "password complexity"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
+    },
+    {
+      "id": "IA.L2-3.5.8",
+      "title": "Prohibit password reuse for a specified number of generations",
+      "domain": "Identification and Authentication",
+      "keywords": [
+        "password reuse",
+        "password history"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
+    },
+    {
+      "id": "IA.L2-3.5.9",
+      "title": "Allow temporary password use for system logons with an immediate change to a permanent password",
+      "domain": "Identification and Authentication",
+      "keywords": [
+        "temporary password"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
+    },
+    {
+      "id": "IA.L2-3.5.10",
+      "title": "Store and transmit only cryptographically-protected passwords",
+      "domain": "Identification and Authentication",
+      "keywords": [
+        "password encryption",
+        "hashed passwords"
+      ],
+      "sprs_weight": 5,
+      "cmmc_level1": false
+    },
+    {
+      "id": "IA.L2-3.5.11",
+      "title": "Obscure feedback of authentication information",
+      "domain": "Identification and Authentication",
+      "keywords": [
+        "obscure password entry"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
     },
     {
       "id": "IR.L2-3.6.1",
-      "title": "Incident handling",
+      "title": "Establish an operational incident-handling capability that includes preparation, detection, analysis, containment, recovery, and user response activities",
       "domain": "Incident Response",
       "keywords": [
         "incident response",
         "IR plan"
-      ]
+      ],
+      "sprs_weight": 5,
+      "cmmc_level1": false
     },
     {
       "id": "IR.L2-3.6.2",
-      "title": "Incident reporting",
+      "title": "Track, document, and report incidents to designated officials and/or authorities both internal and external",
       "domain": "Incident Response",
       "keywords": [
         "incident reporting",
         "notification"
-      ]
+      ],
+      "sprs_weight": 5,
+      "cmmc_level1": false
+    },
+    {
+      "id": "IR.L2-3.6.3",
+      "title": "Test the organizational incident response capability",
+      "domain": "Incident Response",
+      "keywords": [
+        "IR tabletop",
+        "incident response test"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
     },
     {
       "id": "MA.L2-3.7.1",
-      "title": "System maintenance",
+      "title": "Perform maintenance on organizational systems",
       "domain": "Maintenance",
       "keywords": [
         "maintenance",
         "controlled"
-      ]
+      ],
+      "sprs_weight": 3,
+      "cmmc_level1": false
+    },
+    {
+      "id": "MA.L2-3.7.2",
+      "title": "Provide controls on the tools, techniques, mechanisms, and personnel used to conduct system maintenance",
+      "domain": "Maintenance",
+      "keywords": [
+        "maintenance controls",
+        "maintenance personnel"
+      ],
+      "sprs_weight": 5,
+      "cmmc_level1": false
+    },
+    {
+      "id": "MA.L2-3.7.3",
+      "title": "Ensure equipment removed for off-site maintenance is sanitized of any CUI",
+      "domain": "Maintenance",
+      "keywords": [
+        "sanitize maintenance equipment"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
+    },
+    {
+      "id": "MA.L2-3.7.4",
+      "title": "Check media containing diagnostic and test programs for malicious code before use",
+      "domain": "Maintenance",
+      "keywords": [
+        "diagnostic media scan"
+      ],
+      "sprs_weight": 3,
+      "cmmc_level1": false
+    },
+    {
+      "id": "MA.L2-3.7.5",
+      "title": "Require multifactor authentication to establish nonlocal maintenance sessions via external network connections",
+      "domain": "Maintenance",
+      "keywords": [
+        "nonlocal maintenance MFA"
+      ],
+      "sprs_weight": 5,
+      "cmmc_level1": false
+    },
+    {
+      "id": "MA.L2-3.7.6",
+      "title": "Supervise the maintenance activities of maintenance personnel without required access authorization",
+      "domain": "Maintenance",
+      "keywords": [
+        "unescorted maintenance supervision"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
+    },
+    {
+      "id": "MP.L2-3.8.1",
+      "title": "Protect (physically control and securely store) system media containing CUI, both paper and digital",
+      "domain": "Media Protection",
+      "keywords": [
+        "media storage",
+        "CUI media"
+      ],
+      "sprs_weight": 3,
+      "cmmc_level1": false
+    },
+    {
+      "id": "MP.L2-3.8.2",
+      "title": "Limit access to CUI on system media to authorized users",
+      "domain": "Media Protection",
+      "keywords": [
+        "media access control"
+      ],
+      "sprs_weight": 3,
+      "cmmc_level1": false
     },
     {
       "id": "MP.L2-3.8.3",
-      "title": "Media sanitization",
+      "title": "Sanitize or destroy system media containing CUI before disposal or release for reuse",
       "domain": "Media Protection",
       "keywords": [
         "sanitize",
         "wipe",
-        "CUI media"
-      ]
+        "destroy media"
+      ],
+      "sprs_weight": 5,
+      "cmmc_level1": true
     },
     {
-      "id": "PE.L2-3.10.1",
-      "title": "Physical access",
-      "domain": "Physical Protection",
+      "id": "MP.L2-3.8.4",
+      "title": "Mark media with necessary CUI markings and distribution limitations",
+      "domain": "Media Protection",
       "keywords": [
-        "physical access",
-        "facility"
-      ]
+        "CUI marking"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
+    },
+    {
+      "id": "MP.L2-3.8.5",
+      "title": "Control access to media containing CUI and maintain accountability for media during transport",
+      "domain": "Media Protection",
+      "keywords": [
+        "media transport control"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
+    },
+    {
+      "id": "MP.L2-3.8.6",
+      "title": "Implement cryptographic mechanisms to protect the confidentiality of CUI stored on digital media during transport",
+      "domain": "Media Protection",
+      "keywords": [
+        "media transport encryption"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
+    },
+    {
+      "id": "MP.L2-3.8.7",
+      "title": "Control the use of removable media on system components",
+      "domain": "Media Protection",
+      "keywords": [
+        "removable media control",
+        "USB"
+      ],
+      "sprs_weight": 5,
+      "cmmc_level1": false
+    },
+    {
+      "id": "MP.L2-3.8.8",
+      "title": "Prohibit the use of portable storage devices when such devices have no identifiable owner",
+      "domain": "Media Protection",
+      "keywords": [
+        "unowned portable storage"
+      ],
+      "sprs_weight": 3,
+      "cmmc_level1": false
+    },
+    {
+      "id": "MP.L2-3.8.9",
+      "title": "Protect the confidentiality of backup CUI at storage locations",
+      "domain": "Media Protection",
+      "keywords": [
+        "backup encryption",
+        "backup confidentiality"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
+    },
+    {
+      "id": "PS.L2-3.9.1",
+      "title": "Screen individuals prior to authorizing access to organizational systems containing CUI",
+      "domain": "Personnel Security",
+      "keywords": [
+        "personnel screening",
+        "background check"
+      ],
+      "sprs_weight": 3,
+      "cmmc_level1": false
     },
     {
       "id": "PS.L2-3.9.2",
-      "title": "Personnel termination",
+      "title": "Ensure that organizational systems containing CUI are protected during and after personnel actions such as terminations and transfers",
       "domain": "Personnel Security",
       "keywords": [
         "termination",
         "offboarding"
-      ]
+      ],
+      "sprs_weight": 5,
+      "cmmc_level1": false
+    },
+    {
+      "id": "PE.L2-3.10.1",
+      "title": "Limit physical access to organizational systems, equipment, and operating environments to authorized individuals",
+      "domain": "Physical Protection",
+      "keywords": [
+        "physical access",
+        "facility"
+      ],
+      "sprs_weight": 5,
+      "cmmc_level1": true
+    },
+    {
+      "id": "PE.L2-3.10.2",
+      "title": "Protect and monitor the physical facility and support infrastructure for organizational systems",
+      "domain": "Physical Protection",
+      "keywords": [
+        "facility monitoring",
+        "physical security"
+      ],
+      "sprs_weight": 5,
+      "cmmc_level1": false
+    },
+    {
+      "id": "PE.L2-3.10.3",
+      "title": "Escort visitors and monitor visitor activity",
+      "domain": "Physical Protection",
+      "keywords": [
+        "visitor escort"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": true
+    },
+    {
+      "id": "PE.L2-3.10.4",
+      "title": "Maintain audit logs of physical access",
+      "domain": "Physical Protection",
+      "keywords": [
+        "physical access log"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": true
+    },
+    {
+      "id": "PE.L2-3.10.5",
+      "title": "Control and manage physical access devices",
+      "domain": "Physical Protection",
+      "keywords": [
+        "access badge",
+        "physical access device"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": true
+    },
+    {
+      "id": "PE.L2-3.10.6",
+      "title": "Enforce safeguarding measures for CUI at alternate work sites",
+      "domain": "Physical Protection",
+      "keywords": [
+        "remote work site",
+        "alternate work site"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
+    },
+    {
+      "id": "RA.L2-3.11.1",
+      "title": "Periodically assess the risk to organizational operations, assets, and individuals from CUI processing, storage, or transmission",
+      "domain": "Risk Assessment",
+      "keywords": [
+        "risk assessment"
+      ],
+      "sprs_weight": 3,
+      "cmmc_level1": false
     },
     {
       "id": "RA.L2-3.11.2",
-      "title": "Vulnerability scanning",
+      "title": "Scan for vulnerabilities in organizational systems and applications periodically and when new vulnerabilities are identified",
       "domain": "Risk Assessment",
       "keywords": [
         "vulnerability",
         "scan",
         "remediation"
-      ]
+      ],
+      "sprs_weight": 5,
+      "cmmc_level1": false
+    },
+    {
+      "id": "RA.L2-3.11.3",
+      "title": "Remediate vulnerabilities in accordance with risk assessments",
+      "domain": "Risk Assessment",
+      "keywords": [
+        "vulnerability remediation"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
     },
     {
       "id": "CA.L2-3.12.1",
-      "title": "Security control assessments",
+      "title": "Periodically assess the security controls in organizational systems to determine effectiveness",
       "domain": "Security Assessment",
       "keywords": [
         "assessment",
         "SSP",
         "POA&M"
-      ]
+      ],
+      "sprs_weight": 5,
+      "cmmc_level1": false
+    },
+    {
+      "id": "CA.L2-3.12.2",
+      "title": "Develop and implement plans of action designed to correct deficiencies and reduce or eliminate vulnerabilities",
+      "domain": "Security Assessment",
+      "keywords": [
+        "POA&M",
+        "plan of action"
+      ],
+      "sprs_weight": 3,
+      "cmmc_level1": false
+    },
+    {
+      "id": "CA.L2-3.12.3",
+      "title": "Monitor security controls on an ongoing basis to ensure continued effectiveness",
+      "domain": "Security Assessment",
+      "keywords": [
+        "continuous monitoring"
+      ],
+      "sprs_weight": 5,
+      "cmmc_level1": false
+    },
+    {
+      "id": "CA.L2-3.12.4",
+      "title": "Develop, document, and periodically update system security plans that describe boundaries, environments, security requirements, and relationships with or connections to other systems",
+      "domain": "Security Assessment",
+      "keywords": [
+        "system security plan",
+        "SSP"
+      ],
+      "sprs_weight": 0,
+      "cmmc_level1": false
     },
     {
       "id": "SC.L2-3.13.1",
-      "title": "Boundary protection",
-      "domain": "System & Communications",
+      "title": "Monitor, control, and protect organizational communications at external boundaries and key internal boundaries",
+      "domain": "System and Communications Protection",
       "keywords": [
         "firewall",
         "boundary",
         "segmentation"
-      ]
+      ],
+      "sprs_weight": 5,
+      "cmmc_level1": true
+    },
+    {
+      "id": "SC.L2-3.13.2",
+      "title": "Employ architectural designs, software development techniques, and systems engineering principles that promote effective information security",
+      "domain": "System and Communications Protection",
+      "keywords": [
+        "secure architecture",
+        "secure SDLC"
+      ],
+      "sprs_weight": 5,
+      "cmmc_level1": false
+    },
+    {
+      "id": "SC.L2-3.13.3",
+      "title": "Separate user functionality from system management functionality",
+      "domain": "System and Communications Protection",
+      "keywords": [
+        "management plane separation"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
+    },
+    {
+      "id": "SC.L2-3.13.4",
+      "title": "Prevent unauthorized and unintended information transfer via shared system resources",
+      "domain": "System and Communications Protection",
+      "keywords": [
+        "shared resource isolation"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
+    },
+    {
+      "id": "SC.L2-3.13.5",
+      "title": "Implement subnetworks for publicly accessible system components that are physically or logically separated from internal networks",
+      "domain": "System and Communications Protection",
+      "keywords": [
+        "DMZ",
+        "public subnetwork"
+      ],
+      "sprs_weight": 5,
+      "cmmc_level1": true
+    },
+    {
+      "id": "SC.L2-3.13.6",
+      "title": "Deny network communications traffic by default and allow by exception (deny-all, permit-by-exception)",
+      "domain": "System and Communications Protection",
+      "keywords": [
+        "deny by default",
+        "firewall policy"
+      ],
+      "sprs_weight": 5,
+      "cmmc_level1": false
+    },
+    {
+      "id": "SC.L2-3.13.7",
+      "title": "Prevent remote devices from simultaneously establishing non-remote connections and communicating via some other network connection (split tunneling)",
+      "domain": "System and Communications Protection",
+      "keywords": [
+        "split tunneling"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
     },
     {
       "id": "SC.L2-3.13.8",
-      "title": "Cryptographic protection of CUI",
-      "domain": "System & Communications",
+      "title": "Implement cryptographic mechanisms to prevent unauthorized disclosure of CUI during transmission",
+      "domain": "System and Communications Protection",
       "keywords": [
         "encryption",
         "CUI",
         "TLS"
-      ]
+      ],
+      "sprs_weight": 3,
+      "cmmc_level1": false
+    },
+    {
+      "id": "SC.L2-3.13.9",
+      "title": "Terminate network connections associated with communications sessions at the end of the session or after a defined period of inactivity",
+      "domain": "System and Communications Protection",
+      "keywords": [
+        "network session termination"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
+    },
+    {
+      "id": "SC.L2-3.13.10",
+      "title": "Establish and manage cryptographic keys for cryptography employed in organizational systems",
+      "domain": "System and Communications Protection",
+      "keywords": [
+        "key management"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
     },
     {
       "id": "SC.L2-3.13.11",
-      "title": "FIPS-validated cryptography",
-      "domain": "System & Communications",
+      "title": "Employ FIPS-validated cryptography when used to protect the confidentiality of CUI",
+      "domain": "System and Communications Protection",
       "keywords": [
         "FIPS",
         "cryptography"
-      ]
+      ],
+      "sprs_weight": 5,
+      "cmmc_level1": false
+    },
+    {
+      "id": "SC.L2-3.13.12",
+      "title": "Control and monitor the use of collaborative computing devices and provide indication of use to users present",
+      "domain": "System and Communications Protection",
+      "keywords": [
+        "collaborative computing device"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
+    },
+    {
+      "id": "SC.L2-3.13.13",
+      "title": "Control and monitor the use of mobile code",
+      "domain": "System and Communications Protection",
+      "keywords": [
+        "mobile code"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
+    },
+    {
+      "id": "SC.L2-3.13.14",
+      "title": "Control and monitor the use of Voice over Internet Protocol (VoIP) technologies",
+      "domain": "System and Communications Protection",
+      "keywords": [
+        "VoIP monitoring"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
+    },
+    {
+      "id": "SC.L2-3.13.15",
+      "title": "Protect the authenticity of communications sessions",
+      "domain": "System and Communications Protection",
+      "keywords": [
+        "session authenticity"
+      ],
+      "sprs_weight": 5,
+      "cmmc_level1": false
+    },
+    {
+      "id": "SC.L2-3.13.16",
+      "title": "Protect the confidentiality of CUI at rest",
+      "domain": "System and Communications Protection",
+      "keywords": [
+        "encryption at rest",
+        "CUI at rest"
+      ],
+      "sprs_weight": 1,
+      "cmmc_level1": false
     },
     {
       "id": "SI.L2-3.14.1",
-      "title": "Flaw remediation",
-      "domain": "System & Information Integrity",
+      "title": "Identify, report, and correct system flaws in a timely manner",
+      "domain": "System and Information Integrity",
       "keywords": [
         "patch",
         "CVE"
-      ]
+      ],
+      "sprs_weight": 5,
+      "cmmc_level1": true
     },
     {
       "id": "SI.L2-3.14.2",
-      "title": "Malicious code protection",
-      "domain": "System & Information Integrity",
+      "title": "Provide protection from malicious code at designated locations within organizational systems",
+      "domain": "System and Information Integrity",
       "keywords": [
         "EDR",
         "anti-malware"
-      ]
+      ],
+      "sprs_weight": 5,
+      "cmmc_level1": true
     },
     {
       "id": "SI.L2-3.14.3",
-      "title": "Security alerts and advisories",
-      "domain": "System & Information Integrity",
+      "title": "Monitor system security alerts and advisories and take action in response",
+      "domain": "System and Information Integrity",
       "keywords": [
         "monitoring",
         "advisories"
-      ]
+      ],
+      "sprs_weight": 5,
+      "cmmc_level1": false
+    },
+    {
+      "id": "SI.L2-3.14.4",
+      "title": "Update malicious code protection mechanisms when new releases are available",
+      "domain": "System and Information Integrity",
+      "keywords": [
+        "antivirus update",
+        "signature update"
+      ],
+      "sprs_weight": 5,
+      "cmmc_level1": true
+    },
+    {
+      "id": "SI.L2-3.14.5",
+      "title": "Perform periodic scans of organizational systems and real-time scans of files from external sources as files are downloaded, opened, or executed",
+      "domain": "System and Information Integrity",
+      "keywords": [
+        "real-time scan",
+        "on-access scan"
+      ],
+      "sprs_weight": 3,
+      "cmmc_level1": true
+    },
+    {
+      "id": "SI.L2-3.14.6",
+      "title": "Monitor organizational systems, including inbound and outbound communications traffic, for unauthorized use and attacks",
+      "domain": "System and Information Integrity",
+      "keywords": [
+        "network traffic monitoring",
+        "IDS"
+      ],
+      "sprs_weight": 5,
+      "cmmc_level1": false
+    },
+    {
+      "id": "SI.L2-3.14.7",
+      "title": "Identify unauthorized use of organizational systems",
+      "domain": "System and Information Integrity",
+      "keywords": [
+        "unauthorized use detection"
+      ],
+      "sprs_weight": 3,
+      "cmmc_level1": false
     }
   ]
 }

@@ -23,6 +23,11 @@ from app.gap_analysis import (
     list_frameworks,
     load_framework,
 )
+from app.services.cmmc_documents import (
+    compute_sprs_preview,
+    generate_poam_markdown,
+    generate_ssp_markdown,
+)
 from app.services.compliance_center import audit_center_overview, compliance_overview
 from app.services.control_testing import controls_with_live_tests, run_live_tests_for_framework
 
@@ -73,6 +78,40 @@ async def gap_export(assessment_id: str, user: Annotated[AuthUser, Depends(requi
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return PlainTextResponse(md, media_type="text/markdown; charset=utf-8")
+
+
+@router.get("/gap/assessments/{assessment_id}/ssp")
+async def gap_ssp(assessment_id: str, user: Annotated[AuthUser, Depends(require_user)]):
+    """System Security Plan generated strictly from this assessment's real
+    control statuses, linked evidence, and remediation owners -- not a
+    certified SSP, see the disclaimer at the top of the document."""
+    try:
+        md = generate_ssp_markdown(user.id, assessment_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return PlainTextResponse(md, media_type="text/markdown; charset=utf-8")
+
+
+@router.get("/gap/assessments/{assessment_id}/poam")
+async def gap_poam(assessment_id: str, user: Annotated[AuthUser, Depends(require_user)]):
+    """Plan of Action & Milestones listing every missing/partial control from
+    this assessment, joined with any linked remediation owner/target date."""
+    try:
+        md = generate_poam_markdown(user.id, assessment_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return PlainTextResponse(md, media_type="text/markdown; charset=utf-8")
+
+
+@router.get("/gap/assessments/{assessment_id}/sprs-preview")
+async def gap_sprs_preview(assessment_id: str, user: Annotated[AuthUser, Depends(require_user)]):
+    """Computed SPRS-style score preview -- only meaningful for cmmc_l2
+    assessments (the only catalog with sprs_weight per control). Returns
+    null for any other framework rather than fabricating a score."""
+    data = get_assessment(user.id, assessment_id)
+    if not data:
+        raise HTTPException(status_code=404, detail="Not found")
+    return {"assessment_id": assessment_id, "preview": compute_sprs_preview(user.id, assessment_id)}
 
 
 @router.get("/gap/assessments/{assessment_id}/coverage")

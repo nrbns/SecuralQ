@@ -14,10 +14,23 @@ def dump(data: dict) -> None:
     print(f"wrote {path.name} ({len(data.get('controls') or [])} controls)")
 
 
-def c(cid: str, title: str, domain: str, keywords: list[str], description: str | None = None) -> dict:
+def c(
+    cid: str,
+    title: str,
+    domain: str,
+    keywords: list[str],
+    description: str | None = None,
+    sprs_weight: int | None = None,
+    cmmc_level1: bool | None = None,
+) -> dict:
     row: dict = {"id": cid, "title": title, "domain": domain, "keywords": keywords}
     if description:
         row["description"] = description
+    # Optional CMMC/SPRS metadata -- only cmmc_l2() populates these today.
+    if sprs_weight is not None:
+        row["sprs_weight"] = sprs_weight
+    if cmmc_level1 is not None:
+        row["cmmc_level1"] = cmmc_level1
     return row
 
 
@@ -574,40 +587,170 @@ def nist_800_171() -> dict:
 
 
 def cmmc_l2() -> dict:
-    # CMMC 2.0 Level 2 maps to 800-171 practices — present as CMMC domains
+    """CMMC 2.0 Level 2 -- all 110 NIST SP 800-171 Rev 2 security requirements.
+    Each row carries the official DoD SPRS point weight (5/3/1, 0 for the SSP
+    requirement which has no point value -- see 32 CFR 170 / DoD NIST SP 800-171
+    Assessment Methodology) and whether it is one of the 17 CMMC Level 1 (FAR
+    52.204-21) basic safeguarding practices."""
     rows = [
-        ("AC.L2-3.1.1", "Limit system access to authorized users", "Access Control", ["access control", "authorized users"]),
-        ("AC.L2-3.1.3", "Control CUI flow", "Access Control", ["CUI flow", "information flow"]),
-        ("AC.L2-3.1.5", "Employ least privilege", "Access Control", ["least privilege", "privileged"]),
-        ("AC.L2-3.1.12", "Monitor remote access sessions", "Access Control", ["remote access", "VPN", "MFA"]),
-        ("AT.L2-3.2.1", "Security awareness", "Awareness & Training", ["awareness", "training"]),
-        ("AU.L2-3.3.1", "System auditing", "Audit & Accountability", ["audit log", "logging"]),
-        ("AU.L2-3.3.2", "User accountability", "Audit & Accountability", ["unique ID", "accountability"]),
-        ("CM.L2-3.4.1", "Baseline configurations", "Configuration Management", ["baseline", "hardening"]),
-        ("CM.L2-3.4.2", "Security configuration settings", "Configuration Management", ["secure configuration", "CIS"]),
-        ("IA.L2-3.5.3", "Multifactor authentication", "Identification & Authentication", ["MFA", "multi-factor"]),
-        ("IR.L2-3.6.1", "Incident handling", "Incident Response", ["incident response", "IR plan"]),
-        ("IR.L2-3.6.2", "Incident reporting", "Incident Response", ["incident reporting", "notification"]),
-        ("MA.L2-3.7.1", "System maintenance", "Maintenance", ["maintenance", "controlled"]),
-        ("MP.L2-3.8.3", "Media sanitization", "Media Protection", ["sanitize", "wipe", "CUI media"]),
-        ("PE.L2-3.10.1", "Physical access", "Physical Protection", ["physical access", "facility"]),
-        ("PS.L2-3.9.2", "Personnel termination", "Personnel Security", ["termination", "offboarding"]),
-        ("RA.L2-3.11.2", "Vulnerability scanning", "Risk Assessment", ["vulnerability", "scan", "remediation"]),
-        ("CA.L2-3.12.1", "Security control assessments", "Security Assessment", ["assessment", "SSP", "POA&M"]),
-        ("SC.L2-3.13.1", "Boundary protection", "System & Communications", ["firewall", "boundary", "segmentation"]),
-        ("SC.L2-3.13.8", "Cryptographic protection of CUI", "System & Communications", ["encryption", "CUI", "TLS"]),
-        ("SC.L2-3.13.11", "FIPS-validated cryptography", "System & Communications", ["FIPS", "cryptography"]),
-        ("SI.L2-3.14.1", "Flaw remediation", "System & Information Integrity", ["patch", "CVE"]),
-        ("SI.L2-3.14.2", "Malicious code protection", "System & Information Integrity", ["EDR", "anti-malware"]),
-        ("SI.L2-3.14.3", "Security alerts and advisories", "System & Information Integrity", ["monitoring", "advisories"]),
+        ('AC.L2-3.1.1', 'Limit system access to authorized users, processes, and devices', 'Access Control', ['access control', 'authorized users'], 5, True),
+        ('AC.L2-3.1.2', 'Limit access to the types of transactions and functions authorized users are permitted to execute', 'Access Control', ['permitted transactions', 'authorized functions'], 5, True),
+        ('AC.L2-3.1.3', 'Control the flow of CUI in accordance with approved authorizations', 'Access Control', ['CUI flow', 'information flow'], 1, False),
+        ('AC.L2-3.1.4', 'Separate the duties of individuals to reduce the risk of malevolent activity without collusion', 'Access Control', ['separation of duties'], 1, False),
+        ('AC.L2-3.1.5', 'Employ the principle of least privilege, including for specific security functions and privileged accounts', 'Access Control', ['least privilege', 'privileged'], 3, False),
+        ('AC.L2-3.1.6', 'Use non-privileged accounts or roles when accessing nonsecurity functions', 'Access Control', ['non-privileged account'], 1, False),
+        ('AC.L2-3.1.7', 'Prevent non-privileged users from executing privileged functions and audit execution of such functions', 'Access Control', ['privilege escalation', 'audit privileged'], 1, False),
+        ('AC.L2-3.1.8', 'Limit unsuccessful logon attempts', 'Access Control', ['lockout', 'failed logon'], 1, False),
+        ('AC.L2-3.1.9', 'Provide privacy and security notices consistent with applicable rules', 'Access Control', ['privacy notice', 'logon banner'], 1, False),
+        ('AC.L2-3.1.10', 'Use session lock with pattern-hiding displays to prevent access/viewing of data after a period of inactivity', 'Access Control', ['session lock', 'screen lock'], 1, False),
+        ('AC.L2-3.1.11', 'Terminate (automatically) a user session after a defined condition', 'Access Control', ['session termination', 'idle timeout'], 1, False),
+        ('AC.L2-3.1.12', 'Monitor and control remote access sessions', 'Access Control', ['remote access', 'VPN', 'MFA'], 5, False),
+        ('AC.L2-3.1.13', 'Employ cryptographic mechanisms to protect the confidentiality of remote access sessions', 'Access Control', ['remote access encryption', 'VPN crypto'], 5, False),
+        ('AC.L2-3.1.14', 'Route remote access via managed access control points', 'Access Control', ['managed access point', 'remote access gateway'], 1, False),
+        ('AC.L2-3.1.15', 'Authorize remote execution of privileged commands and remote access to security-relevant information', 'Access Control', ['privileged remote command'], 1, False),
+        ('AC.L2-3.1.16', 'Authorize wireless access prior to allowing such connections', 'Access Control', ['wireless authorization'], 5, False),
+        ('AC.L2-3.1.17', 'Protect wireless access using authentication and encryption', 'Access Control', ['wireless encryption', 'WPA'], 5, False),
+        ('AC.L2-3.1.18', 'Control connection of mobile devices', 'Access Control', ['mobile device management', 'MDM'], 5, False),
+        ('AC.L2-3.1.19', 'Encrypt CUI on mobile devices and mobile computing platforms', 'Access Control', ['mobile encryption', 'CUI mobile'], 3, False),
+        ('AC.L2-3.1.20', 'Verify and control/limit connections to and use of external information systems', 'Access Control', ['external system', 'third-party connection'], 1, True),
+        ('AC.L2-3.1.21', 'Limit use of portable storage devices on external systems', 'Access Control', ['portable storage', 'removable media external'], 1, False),
+        ('AC.L2-3.1.22', 'Control CUI posted or processed on publicly accessible information systems', 'Access Control', ['public-facing system', 'CUI public disclosure'], 1, True),
+        ('AT.L2-3.2.1', 'Ensure managers, systems administrators, and users are made aware of the security risks and applicable policies', 'Awareness and Training', ['security awareness', 'training'], 5, False),
+        ('AT.L2-3.2.2', 'Ensure personnel are trained to carry out their assigned information security-related duties and responsibilities', 'Awareness and Training', ['role-based training'], 5, False),
+        ('AT.L2-3.2.3', 'Provide security awareness training on recognizing and reporting potential indicators of insider threat', 'Awareness and Training', ['insider threat training'], 1, False),
+        ('AU.L2-3.3.1', 'Create and retain system audit logs and records to enable monitoring, analysis, investigation, and reporting', 'Audit and Accountability', ['audit log', 'logging'], 5, False),
+        ('AU.L2-3.3.2', 'Ensure that the actions of individual system users can be uniquely traced to those users', 'Audit and Accountability', ['unique ID', 'accountability'], 3, False),
+        ('AU.L2-3.3.3', 'Review and update logged events', 'Audit and Accountability', ['audit event review'], 1, False),
+        ('AU.L2-3.3.4', 'Alert in the event of an audit logging process failure', 'Audit and Accountability', ['audit failure alert'], 1, False),
+        ('AU.L2-3.3.5', 'Correlate audit record review, analysis, and reporting processes for investigation and response', 'Audit and Accountability', ['audit correlation', 'SIEM'], 5, False),
+        ('AU.L2-3.3.6', 'Provide audit record reduction and report generation to support on-demand analysis and reporting', 'Audit and Accountability', ['audit reduction', 'reporting'], 1, False),
+        ('AU.L2-3.3.7', 'Provide a system capability that compares and synchronizes internal system clocks with an authoritative time source', 'Audit and Accountability', ['time synchronization', 'NTP'], 1, False),
+        ('AU.L2-3.3.8', 'Protect audit information and audit logging tools from unauthorized access, modification, and deletion', 'Audit and Accountability', ['audit log protection'], 1, False),
+        ('AU.L2-3.3.9', 'Limit management of audit logging functionality to a subset of privileged users', 'Audit and Accountability', ['audit admin restriction'], 1, False),
+        ('CM.L2-3.4.1', 'Establish and maintain baseline configurations and inventories of organizational systems', 'Configuration Management', ['baseline', 'hardening', 'inventory'], 5, False),
+        ('CM.L2-3.4.2', 'Establish and enforce security configuration settings for information technology products', 'Configuration Management', ['secure configuration', 'CIS benchmark'], 5, False),
+        ('CM.L2-3.4.3', 'Track, review, approve or disapprove, and log changes to organizational systems', 'Configuration Management', ['change control', 'change management'], 1, False),
+        ('CM.L2-3.4.4', 'Analyze the security impact of changes prior to implementation', 'Configuration Management', ['security impact analysis'], 1, False),
+        ('CM.L2-3.4.5', 'Define, document, approve, and enforce physical and logical access restrictions associated with changes', 'Configuration Management', ['access restrictions for change'], 5, False),
+        ('CM.L2-3.4.6', 'Employ the principle of least functionality by configuring systems to provide only essential capabilities', 'Configuration Management', ['least functionality'], 5, False),
+        ('CM.L2-3.4.7', 'Restrict, disable, or prevent the use of nonessential programs, functions, ports, protocols, and services', 'Configuration Management', ['nonessential services', 'open ports'], 5, False),
+        ('CM.L2-3.4.8', 'Apply deny-by-exception (blacklist) or permit-by-exception (whitelist) policy to allow execution of authorized software', 'Configuration Management', ['application whitelisting', 'deny by exception'], 5, False),
+        ('CM.L2-3.4.9', 'Control and monitor user-installed software', 'Configuration Management', ['user-installed software'], 1, False),
+        ('IA.L2-3.5.1', 'Identify system users, processes acting on behalf of users, and devices', 'Identification and Authentication', ['identification', 'user ID'], 5, True),
+        ('IA.L2-3.5.2', 'Authenticate (or verify) the identities of users, processes, or devices as a prerequisite to allowing access', 'Identification and Authentication', ['authentication'], 5, True),
+        ('IA.L2-3.5.3', 'Use multifactor authentication for local and network access to privileged accounts and for network access to non-privileged accounts', 'Identification and Authentication', ['MFA', 'multi-factor'], 5, False),
+        ('IA.L2-3.5.4', 'Employ replay-resistant authentication mechanisms for network access to privileged and non-privileged accounts', 'Identification and Authentication', ['replay-resistant authentication'], 1, False),
+        ('IA.L2-3.5.5', 'Prevent reuse of identifiers for a defined period', 'Identification and Authentication', ['identifier reuse'], 1, False),
+        ('IA.L2-3.5.6', 'Disable identifiers after a defined period of inactivity', 'Identification and Authentication', ['disable inactive identifier'], 1, False),
+        ('IA.L2-3.5.7', 'Enforce a minimum password complexity and change of characters when new passwords are created', 'Identification and Authentication', ['password complexity'], 1, False),
+        ('IA.L2-3.5.8', 'Prohibit password reuse for a specified number of generations', 'Identification and Authentication', ['password reuse', 'password history'], 1, False),
+        ('IA.L2-3.5.9', 'Allow temporary password use for system logons with an immediate change to a permanent password', 'Identification and Authentication', ['temporary password'], 1, False),
+        ('IA.L2-3.5.10', 'Store and transmit only cryptographically-protected passwords', 'Identification and Authentication', ['password encryption', 'hashed passwords'], 5, False),
+        ('IA.L2-3.5.11', 'Obscure feedback of authentication information', 'Identification and Authentication', ['obscure password entry'], 1, False),
+        ('IR.L2-3.6.1', 'Establish an operational incident-handling capability that includes preparation, detection, analysis, containment, recovery, and user response activities', 'Incident Response', ['incident response', 'IR plan'], 5, False),
+        ('IR.L2-3.6.2', 'Track, document, and report incidents to designated officials and/or authorities both internal and external', 'Incident Response', ['incident reporting', 'notification'], 5, False),
+        ('IR.L2-3.6.3', 'Test the organizational incident response capability', 'Incident Response', ['IR tabletop', 'incident response test'], 1, False),
+        ('MA.L2-3.7.1', 'Perform maintenance on organizational systems', 'Maintenance', ['maintenance', 'controlled'], 3, False),
+        ('MA.L2-3.7.2', 'Provide controls on the tools, techniques, mechanisms, and personnel used to conduct system maintenance', 'Maintenance', ['maintenance controls', 'maintenance personnel'], 5, False),
+        ('MA.L2-3.7.3', 'Ensure equipment removed for off-site maintenance is sanitized of any CUI', 'Maintenance', ['sanitize maintenance equipment'], 1, False),
+        ('MA.L2-3.7.4', 'Check media containing diagnostic and test programs for malicious code before use', 'Maintenance', ['diagnostic media scan'], 3, False),
+        ('MA.L2-3.7.5', 'Require multifactor authentication to establish nonlocal maintenance sessions via external network connections', 'Maintenance', ['nonlocal maintenance MFA'], 5, False),
+        ('MA.L2-3.7.6', 'Supervise the maintenance activities of maintenance personnel without required access authorization', 'Maintenance', ['unescorted maintenance supervision'], 1, False),
+        ('MP.L2-3.8.1', 'Protect (physically control and securely store) system media containing CUI, both paper and digital', 'Media Protection', ['media storage', 'CUI media'], 3, False),
+        ('MP.L2-3.8.2', 'Limit access to CUI on system media to authorized users', 'Media Protection', ['media access control'], 3, False),
+        ('MP.L2-3.8.3', 'Sanitize or destroy system media containing CUI before disposal or release for reuse', 'Media Protection', ['sanitize', 'wipe', 'destroy media'], 5, True),
+        ('MP.L2-3.8.4', 'Mark media with necessary CUI markings and distribution limitations', 'Media Protection', ['CUI marking'], 1, False),
+        ('MP.L2-3.8.5', 'Control access to media containing CUI and maintain accountability for media during transport', 'Media Protection', ['media transport control'], 1, False),
+        ('MP.L2-3.8.6', 'Implement cryptographic mechanisms to protect the confidentiality of CUI stored on digital media during transport', 'Media Protection', ['media transport encryption'], 1, False),
+        ('MP.L2-3.8.7', 'Control the use of removable media on system components', 'Media Protection', ['removable media control', 'USB'], 5, False),
+        ('MP.L2-3.8.8', 'Prohibit the use of portable storage devices when such devices have no identifiable owner', 'Media Protection', ['unowned portable storage'], 3, False),
+        ('MP.L2-3.8.9', 'Protect the confidentiality of backup CUI at storage locations', 'Media Protection', ['backup encryption', 'backup confidentiality'], 1, False),
+        ('PS.L2-3.9.1', 'Screen individuals prior to authorizing access to organizational systems containing CUI', 'Personnel Security', ['personnel screening', 'background check'], 3, False),
+        ('PS.L2-3.9.2', 'Ensure that organizational systems containing CUI are protected during and after personnel actions such as terminations and transfers', 'Personnel Security', ['termination', 'offboarding'], 5, False),
+        ('PE.L2-3.10.1', 'Limit physical access to organizational systems, equipment, and operating environments to authorized individuals', 'Physical Protection', ['physical access', 'facility'], 5, True),
+        ('PE.L2-3.10.2', 'Protect and monitor the physical facility and support infrastructure for organizational systems', 'Physical Protection', ['facility monitoring', 'physical security'], 5, False),
+        ('PE.L2-3.10.3', 'Escort visitors and monitor visitor activity', 'Physical Protection', ['visitor escort'], 1, True),
+        ('PE.L2-3.10.4', 'Maintain audit logs of physical access', 'Physical Protection', ['physical access log'], 1, True),
+        ('PE.L2-3.10.5', 'Control and manage physical access devices', 'Physical Protection', ['access badge', 'physical access device'], 1, True),
+        ('PE.L2-3.10.6', 'Enforce safeguarding measures for CUI at alternate work sites', 'Physical Protection', ['remote work site', 'alternate work site'], 1, False),
+        ('RA.L2-3.11.1', 'Periodically assess the risk to organizational operations, assets, and individuals from CUI processing, storage, or transmission', 'Risk Assessment', ['risk assessment'], 3, False),
+        ('RA.L2-3.11.2', 'Scan for vulnerabilities in organizational systems and applications periodically and when new vulnerabilities are identified', 'Risk Assessment', ['vulnerability', 'scan', 'remediation'], 5, False),
+        ('RA.L2-3.11.3', 'Remediate vulnerabilities in accordance with risk assessments', 'Risk Assessment', ['vulnerability remediation'], 1, False),
+        ('CA.L2-3.12.1', 'Periodically assess the security controls in organizational systems to determine effectiveness', 'Security Assessment', ['assessment', 'SSP', 'POA&M'], 5, False),
+        ('CA.L2-3.12.2', 'Develop and implement plans of action designed to correct deficiencies and reduce or eliminate vulnerabilities', 'Security Assessment', ['POA&M', 'plan of action'], 3, False),
+        ('CA.L2-3.12.3', 'Monitor security controls on an ongoing basis to ensure continued effectiveness', 'Security Assessment', ['continuous monitoring'], 5, False),
+        ('CA.L2-3.12.4', 'Develop, document, and periodically update system security plans that describe boundaries, environments, security requirements, and relationships with or connections to other systems', 'Security Assessment', ['system security plan', 'SSP'], 0, False),
+        ('SC.L2-3.13.1', 'Monitor, control, and protect organizational communications at external boundaries and key internal boundaries', 'System and Communications Protection', ['firewall', 'boundary', 'segmentation'], 5, True),
+        ('SC.L2-3.13.2', 'Employ architectural designs, software development techniques, and systems engineering principles that promote effective information security', 'System and Communications Protection', ['secure architecture', 'secure SDLC'], 5, False),
+        ('SC.L2-3.13.3', 'Separate user functionality from system management functionality', 'System and Communications Protection', ['management plane separation'], 1, False),
+        ('SC.L2-3.13.4', 'Prevent unauthorized and unintended information transfer via shared system resources', 'System and Communications Protection', ['shared resource isolation'], 1, False),
+        ('SC.L2-3.13.5', 'Implement subnetworks for publicly accessible system components that are physically or logically separated from internal networks', 'System and Communications Protection', ['DMZ', 'public subnetwork'], 5, True),
+        ('SC.L2-3.13.6', 'Deny network communications traffic by default and allow by exception (deny-all, permit-by-exception)', 'System and Communications Protection', ['deny by default', 'firewall policy'], 5, False),
+        ('SC.L2-3.13.7', 'Prevent remote devices from simultaneously establishing non-remote connections and communicating via some other network connection (split tunneling)', 'System and Communications Protection', ['split tunneling'], 1, False),
+        ('SC.L2-3.13.8', 'Implement cryptographic mechanisms to prevent unauthorized disclosure of CUI during transmission', 'System and Communications Protection', ['encryption', 'CUI', 'TLS'], 3, False),
+        ('SC.L2-3.13.9', 'Terminate network connections associated with communications sessions at the end of the session or after a defined period of inactivity', 'System and Communications Protection', ['network session termination'], 1, False),
+        ('SC.L2-3.13.10', 'Establish and manage cryptographic keys for cryptography employed in organizational systems', 'System and Communications Protection', ['key management'], 1, False),
+        ('SC.L2-3.13.11', 'Employ FIPS-validated cryptography when used to protect the confidentiality of CUI', 'System and Communications Protection', ['FIPS', 'cryptography'], 5, False),
+        ('SC.L2-3.13.12', 'Control and monitor the use of collaborative computing devices and provide indication of use to users present', 'System and Communications Protection', ['collaborative computing device'], 1, False),
+        ('SC.L2-3.13.13', 'Control and monitor the use of mobile code', 'System and Communications Protection', ['mobile code'], 1, False),
+        ('SC.L2-3.13.14', 'Control and monitor the use of Voice over Internet Protocol (VoIP) technologies', 'System and Communications Protection', ['VoIP monitoring'], 1, False),
+        ('SC.L2-3.13.15', 'Protect the authenticity of communications sessions', 'System and Communications Protection', ['session authenticity'], 5, False),
+        ('SC.L2-3.13.16', 'Protect the confidentiality of CUI at rest', 'System and Communications Protection', ['encryption at rest', 'CUI at rest'], 1, False),
+        ('SI.L2-3.14.1', 'Identify, report, and correct system flaws in a timely manner', 'System and Information Integrity', ['patch', 'CVE'], 5, True),
+        ('SI.L2-3.14.2', 'Provide protection from malicious code at designated locations within organizational systems', 'System and Information Integrity', ['EDR', 'anti-malware'], 5, True),
+        ('SI.L2-3.14.3', 'Monitor system security alerts and advisories and take action in response', 'System and Information Integrity', ['monitoring', 'advisories'], 5, False),
+        ('SI.L2-3.14.4', 'Update malicious code protection mechanisms when new releases are available', 'System and Information Integrity', ['antivirus update', 'signature update'], 5, True),
+        ('SI.L2-3.14.5', 'Perform periodic scans of organizational systems and real-time scans of files from external sources as files are downloaded, opened, or executed', 'System and Information Integrity', ['real-time scan', 'on-access scan'], 3, True),
+        ('SI.L2-3.14.6', 'Monitor organizational systems, including inbound and outbound communications traffic, for unauthorized use and attacks', 'System and Information Integrity', ['network traffic monitoring', 'IDS'], 5, False),
+        ('SI.L2-3.14.7', 'Identify unauthorized use of organizational systems', 'System and Information Integrity', ['unauthorized use detection'], 3, False),
     ]
     return {
         "id": "cmmc_l2",
-        "name": "CMMC 2.0 Level 2 (practice subset)",
+        "name": "CMMC 2.0 Level 2",
         "version": "2.0 Level 2",
-        "description": "CMMC 2.0 Level 2 practices aligned to NIST SP 800-171 for DFARS / CUI environments.",
-        "controls": [c(cid, title, domain, kws) for cid, title, domain, kws in rows],
+        "description": "CMMC 2.0 Level 2 -- all 110 NIST SP 800-171 Rev 2 security requirements for DFARS / CUI environments.",
+        "status_note": (
+            "As of the official DoD CIO CMMC page (fetched 2026): on July 13, 2026 the Department of War "
+            "suspended CMMC Phase II (originally due Nov 10, 2026) and stood up a CMMC reform task force. "
+            "Phase I self-assessment requirements remain in force. Level 1 (15 FAR 52.204-21 requirements) "
+            "needs an annual self-assessment with annual affirmation into SPRS. Level 2 (110 NIST SP 800-171 "
+            "Rev 2 requirements) currently needs a self-assessment every 3 years with annual affirmation into "
+            "SPRS -- third-party (C3PAO) certification assessments are paused pending the reform review. This "
+            "catalog covers all 110 practices. Each control carries the official DoD SPRS point weight and "
+            "whether it is also one of the 17 CMMC Level 1 basic safeguarding practices."
+        ),
+        "resources": [
+            {
+                "title": "CMMC Program overview (DoD CIO)",
+                "url": "https://dodcio.defense.gov/cmmc/About/",
+                "source": "Official (dodcio.defense.gov)",
+                "note": "Program status, FCI/CUI definitions, Level 1 & 2 assessment/affirmation/POA&M requirements.",
+            },
+            {
+                "title": "CMMC Resources & Documentation (DoD CIO)",
+                "url": "https://dodcio.defense.gov/CMMC/Resources-Documentation/",
+                "source": "Official (dodcio.defense.gov)",
+                "note": "Scoping guides, assessment guides, model overview, and NIST/DFARS source documents (PDF).",
+            },
+            {
+                "title": "CMMC Compliance solution (PreVeil)",
+                "url": "https://www.preveil.com/cmmc-compliance/",
+                "source": "Vendor -- not a SecuraIQ integration",
+                "note": "Encrypted email/file-sharing + prefilled compliance documentation aimed at the 110 NIST SP 800-171 practices. Listed as an external reference only; SecuraIQ has no API integration or data exchange with this product.",
+            },
+            {
+                "title": "PreVeil (vendor homepage)",
+                "url": "https://www.preveil.com/",
+                "source": "Vendor -- not a SecuraIQ integration",
+                "note": "Same vendor as above; included for reference only.",
+            },
+        ],
+        "controls": [
+            c(cid, title, domain, kws, sprs_weight=weight, cmmc_level1=l1)
+            for cid, title, domain, kws, weight, l1 in rows
+        ],
     }
+
 
 
 def nis2() -> dict:
