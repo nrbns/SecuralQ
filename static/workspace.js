@@ -158,6 +158,10 @@
 
   window.showWorkspace = function showWorkspace(view, opts) {
     opts = opts || {};
+    // User opened a module before boot landing finished — don't steal the view later.
+    if (view && view !== "command" && view !== "chat") {
+      window.__securaiqSkipBootLanding = true;
+    }
     hideAllViews();
     const map = {
       command: "viewCommand",
@@ -6464,6 +6468,118 @@
           }
         </div>`;
       };
+      // SPRS affirmation record -- only meaningful for cmmc_l2 (the only
+      // catalog with sprs_weight per control). Best-effort, non-blocking.
+      let latestAffirmation = null;
+      if (frameworkId === "cmmc_l2") {
+        try {
+          const affRes = await fetch("/api/cmmc/affirmations/latest?framework_id=cmmc_l2", {
+            headers: authHeaders(),
+          });
+          if (affRes.ok) {
+            latestAffirmation = (await affRes.json().catch(() => ({}))).affirmation || null;
+          }
+        } catch {
+          /* affirmation panel is supplemental */
+        }
+      }
+      const renderAffirmationPanel = () => {
+        if (frameworkId !== "cmmc_l2") return "";
+        const a = latestAffirmation;
+        const dueLabel = (days, overdue) => {
+          if (days == null) return "";
+          return overdue
+            ? `<span class="wq-badge pri-high">overdue by ${Math.abs(Math.round(days))}d</span>`
+            : `<span class="wq-badge pri-low">due in ${Math.round(days)}d</span>`;
+        };
+        return `<div class="cc-panel" style="margin-top:1rem" id="cmmcAffirmPanel">
+          <header><h3 style="margin:0">SPRS affirmation</h3>
+            <button type="button" class="btn-secondary" id="cmmcAffirmToggle">Record affirmation</button>
+          </header>
+          <p class="hint">A record of what you affirm into the DoD's Supplier Performance Risk System — SecuraIQ does not submit to SPRS or certify this score. See disclaimer in the exported SSP/POA&M.</p>
+          ${
+            a
+              ? `<p>${escapeHtml(a.level)}${a.score != null ? ` · score ${a.score}/110` : ""} · affirmed by ${escapeHtml(
+                  a.affirming_official
+                )} on ${new Date(a.assessment_date * 1000).toISOString().slice(0, 10)}</p>
+                 <p>Next affirmation: ${new Date(a.next_affirmation_due * 1000).toISOString().slice(0, 10)} ${dueLabel(
+                   a.days_until_affirmation_due,
+                   a.affirmation_overdue
+                 )} &nbsp; Next full self-assessment: ${new Date(a.next_assessment_due * 1000)
+                   .toISOString()
+                   .slice(0, 10)} ${dueLabel(a.days_until_assessment_due, a.assessment_overdue)}</p>`
+              : `<p class="hint">No affirmation recorded yet.</p>`
+          }
+          <form id="cmmcAffirmForm" style="display:none;margin-top:0.75rem;display:grid;gap:0.5rem;max-width:420px">
+            <label class="hint">Level
+              <select id="cmmcAffirmLevel" class="input">
+                <option value="Level 2">Level 2 (110 practices, SPRS score)</option>
+                <option value="Level 1">Level 1 (15 practices, no score)</option>
+              </select>
+            </label>
+            <label class="hint">Score (Level 2 only, -203 to 110)
+              <input type="number" id="cmmcAffirmScore" class="input" min="-203" max="110" />
+            </label>
+            <label class="hint">Assessment date
+              <input type="date" id="cmmcAffirmDate" class="input" />
+            </label>
+            <label class="hint">Affirming official
+              <input type="text" id="cmmcAffirmOfficial" class="input" placeholder="Name, title" />
+            </label>
+            <label class="hint">Notes (optional)
+              <input type="text" id="cmmcAffirmNotes" class="input" />
+            </label>
+            <button type="submit" class="btn-primary">Save affirmation</button>
+          </form>
+        </div>`;
+      };
+      const wireAffirmationPanel = () => {
+        if (frameworkId !== "cmmc_l2") return;
+        const toggle = qs("cmmcAffirmToggle");
+        const form = qs("cmmcAffirmForm");
+        toggle?.addEventListener("click", () => {
+          if (form) form.style.display = form.style.display === "none" ? "grid" : "none";
+        });
+        form?.addEventListener("submit", async (e) => {
+          e.preventDefault();
+          const level = qs("cmmcAffirmLevel")?.value || "Level 2";
+          const dateStr = qs("cmmcAffirmDate")?.value;
+          const official = qs("cmmcAffirmOfficial")?.value?.trim();
+          const notes = qs("cmmcAffirmNotes")?.value?.trim() || "";
+          const scoreRaw = qs("cmmcAffirmScore")?.value;
+          if (!dateStr || !official) {
+            alert("Assessment date and affirming official are both required.");
+            return;
+          }
+          const assessment_date = Math.floor(new Date(`${dateStr}T00:00:00Z`).getTime() / 1000);
+          const body = {
+            level,
+            assessment_date,
+            affirming_official: official,
+            notes,
+            framework_id: "cmmc_l2",
+          };
+          if (level === "Level 2") {
+            if (scoreRaw === "" || scoreRaw == null) {
+              alert("Score is required for a Level 2 affirmation.");
+              return;
+            }
+            body.score = Number(scoreRaw);
+          }
+          const res = await fetch("/api/cmmc/affirmations", {
+            method: "POST",
+            headers: authHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify(body),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            alert(data.detail || `HTTP ${res.status}`);
+            return;
+          }
+          if (typeof notifyUser === "function") notifyUser("**SPRS affirmation recorded.**");
+          openControlCenter(frameworkId, assessmentId);
+        });
+      };
       let aid = assessmentId;
       if (!aid) {
         const listRes = await fetch("/api/gap/assessments", { headers: authHeaders() });
@@ -6476,6 +6592,7 @@
         detailEl.innerHTML = `<p class="hint">No assessment for this framework yet — run gap analysis to score controls.</p>
           <button type="button" class="cc-action fw-run-gap" data-id="${escapeHtml(frameworkId)}">Run gap</button>
           ${renderResourcesPanel()}
+          ${renderAffirmationPanel()}
           ${
             liveTestedIds.length
               ? `<div class="cc-panel" style="margin-top:1rem"><header><h3 style="margin:0">Live control tests</h3></header>
@@ -6501,6 +6618,7 @@
         detailEl.querySelector(".fw-run-gap")?.addEventListener("click", () => {
           if (typeof openGap === "function") openGap(frameworkId);
         });
+        wireAffirmationPanel();
         return;
       }
       const res = await fetch(`/api/gap/assessments/${aid}`, { headers: authHeaders() });
@@ -6519,6 +6637,18 @@
       } catch {
         /* optional */
       }
+      let sprsLabel = "";
+      if (frameworkId === "cmmc_l2") {
+        try {
+          const sprsRes = await fetch(`/api/gap/assessments/${aid}/sprs-preview`, { headers: authHeaders() });
+          const sprsData = sprsRes.ok ? await sprsRes.json().catch(() => ({})) : {};
+          if (sprsData.preview) {
+            sprsLabel = ` · SPRS preview ${sprsData.preview.score}/${sprsData.preview.max_score}`;
+          }
+        } catch {
+          /* optional */
+        }
+      }
       const rows = data.results || data.top_gaps || [];
       const counts = data.counts || {};
       detailEl.innerHTML = `
@@ -6529,17 +6659,20 @@
               data.compliance_percent || 0
             )}% heuristic · ${counts.implemented || 0} implemented · ${counts.partial || 0} partial · ${
               counts.missing || 0
-            } missing${covLabel}</p>
+            } missing${covLabel}${sprsLabel}</p>
             <p class="hint">Flow: control → evidence / live test → gap → remediation. Live tests are telemetry signals, separate from the pasted-evidence score.</p>
           </div>
           <div class="cc-action-row">
             <button type="button" class="btn-secondary" id="fwExportAssessment">Export assessment</button>
             <button type="button" class="btn-secondary" id="fwExportAuditPack">Export audit pack</button>
+            <button type="button" class="btn-secondary" id="fwExportSsp">Export SSP</button>
+            <button type="button" class="btn-secondary" id="fwExportPoam">Export POA&amp;M</button>
             <button type="button" class="btn-secondary" id="fwDeleteAssessment" data-id="${escapeHtml(aid)}">Delete assessment</button>
             <button type="button" class="btn-secondary" id="fwDetailClose">Close</button>
           </div>
         </header>
         ${renderResourcesPanel()}
+        ${renderAffirmationPanel()}
         <div class="data-table-wrap">
           <table class="data-table">
             <thead>
@@ -6623,6 +6756,27 @@
           alert(err.message || "Audit pack failed");
         }
       });
+      qs("fwExportSsp")?.addEventListener("click", async () => {
+        try {
+          await downloadApiExport(`/api/gap/assessments/${aid}/ssp`, `securaiq-ssp-${frameworkId}.md`);
+          if (typeof notifyUser === "function") {
+            notifyUser("**System Security Plan exported** — review and approve before submission; not a certified SSP.");
+          }
+        } catch (err) {
+          alert(err.message || "SSP export failed");
+        }
+      });
+      qs("fwExportPoam")?.addEventListener("click", async () => {
+        try {
+          await downloadApiExport(`/api/gap/assessments/${aid}/poam`, `securaiq-poam-${frameworkId}.md`);
+          if (typeof notifyUser === "function") {
+            notifyUser("**POA&M exported** — open items with owners and target dates from this assessment.");
+          }
+        } catch (err) {
+          alert(err.message || "POA&M export failed");
+        }
+      });
+      wireAffirmationPanel();
       qs("fwDeleteAssessment")?.addEventListener("click", async () => {
         if (!confirm("Delete this assessment and all its remediation tasks? This cannot be undone.")) return;
         try {
