@@ -113,7 +113,9 @@ SecuraIQ can monitor your own servers continuously, the same way a Wazuh or EDR 
    | macOS | `sudo ./install_agent_macos.sh --server <url> --token <token>` (launchd) |
    | Windows | `.\install_agent_windows.ps1 -Server <url> -Token <token>` (elevated PowerShell — runs as a Scheduled Task at startup under SYSTEM) |
 
-   Or run it in the foreground once for testing: `python3 securaiq_agent.py --server <url> --token <token>`.
+   Or run it in the foreground once for testing: `python securaiq_agent.py --server <url> --token <token>`.
+
+The agent prefers a persistent **WebSocket** to `/api/agents/ws` (instant command push + heartbeat). If the gateway is unavailable it falls back to HTTP check-in and long-poll (`POST /api/agents/gateway/wait`). Use `--no-websocket` to skip WS.
 
 The install scripts and the agent script itself are served directly by the app (`/api/agents/install-script` and `/api/agents/install-script/{linux|macos|windows}`) — nothing to download separately.
 

@@ -205,6 +205,17 @@ async def scans_combo_assessment(
             detail="Authorization required: confirm you own or are authorized to test this target.",
         )
 
+    # Web stays on SecuraIQ Web Scanner only — never mix nmap/LAN via combo.
+    if (req.profile or "").lower() == "web":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Web profile uses SecuraIQ Web Scanner only "
+                "(POST /api/scans with scanner=zap). "
+                "Combo is for Network/Discovery — do not mix."
+            ),
+        )
+
     scope = normalize_scope_json(req.scope)
     if req.engagement_id and not scope:
         eng = get_engagement(user.id, req.engagement_id)
@@ -219,7 +230,8 @@ async def scans_combo_assessment(
         "profile": req.profile,
         "engagement_id": req.engagement_id,
         "org_id": oid,
-        "include_web": req.include_web or req.profile in {"web", "full", "vulnerability"},
+        # Explicit opt-in or VA/full only — never because profile=web (rejected above).
+        "include_web": bool(req.include_web) or req.profile in {"full", "vulnerability"},
         "auto_triage_high": req.auto_triage_high,
     }
 
@@ -356,6 +368,19 @@ async def scans_create(
 
     scope = _resolve_scope(user, req)
     scanner_id = (req.scanner or "securaiq").lower().strip()
+    profile = (req.profile or "discovery").lower().strip()
+
+    # Keep Web ≠ Network: web profile always routes to built-in DAST only.
+    if profile == "web":
+        if scanner_id in {"all", "nmap", "nuclei", "securaiq", "combo"}:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Web profile uses SecuraIQ Web Scanner only (scanner=zap). "
+                    "For network/LAN use Discovery with nmap or combo."
+                ),
+            )
+        scanner_id = "zap"
 
     if scanner_id == "all":
         queued: list[dict[str, Any]] = []
@@ -378,7 +403,7 @@ async def scans_create(
                         oid=oid,
                         target=req.target,
                         scanner_id=sid,
-                        profile=req.profile,
+                        profile=profile,
                         scope=scope,
                         engagement_id=req.engagement_id,
                     )
@@ -393,7 +418,7 @@ async def scans_create(
         return {
             "status": "queued",
             "scanner": "all",
-            "profile": req.profile,
+            "profile": profile,
             "scan_id": queued[0]["scan_id"],
             "scans": queued,
             "skipped": skipped,
@@ -405,7 +430,7 @@ async def scans_create(
         oid=oid,
         target=req.target,
         scanner_id=scanner_id,
-        profile=req.profile,
+        profile=profile,
         scope=scope,
         engagement_id=req.engagement_id,
     )

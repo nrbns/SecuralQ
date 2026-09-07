@@ -127,7 +127,7 @@ async def run_combo_assessment(
         profile = "discovery"
 
     wanted = scanners or resolve_combo_scanners(
-        include_web=include_web or profile in {"web", "full", "vulnerability"}
+        include_web=include_web or profile in {"full", "vulnerability"}
     )
     if not wanted:
         return {"ok": False, "error": "No scanners available for combo assessment"}

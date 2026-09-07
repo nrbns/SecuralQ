@@ -183,6 +183,40 @@ def compliance_overview(user_id: str, *, org_id: str | None = None) -> dict[str,
     except Exception:
         pass
 
+    continuous: dict[str, Any] = {
+        "enabled": True,
+        "label": "Continuous compliance (live telemetry)",
+        "last_evaluated": None,
+        "tests_run": 0,
+        "passing": 0,
+        "partial": 0,
+        "failing": 0,
+        "not_tested_mapped_controls": 0,
+        "live_failures": [],
+        "disclaimer": (
+            "Live tests re-check curated controls from product telemetry whenever you open "
+            "this view or call Run live tests — separate from the pasted-evidence posture %."
+        ),
+    }
+    try:
+        from app.services.control_testing import list_live_control_failures
+
+        live = list_live_control_failures(user_id, record_evidence=False, include_partial=True)
+        continuous.update(
+            {
+                "last_evaluated": live.get("evaluated_at"),
+                "tests_run": live.get("tests_run") or 0,
+                "passing": live.get("passing") or 0,
+                "partial": live.get("partial") or 0,
+                "failing": live.get("failing") or 0,
+                "not_tested_mapped_controls": 0,
+                "live_failures": (live.get("failures") or [])[:10],
+                "frameworks_tested": live.get("frameworks_tested") or 0,
+            }
+        )
+    except Exception:
+        continuous["enabled"] = False
+
     return {
         "overall_compliance_percent": round(pct_sum / pct_n, 1) if pct_n else None,
         "frameworks_assessed": pct_n,
@@ -195,6 +229,7 @@ def compliance_overview(user_id: str, *, org_id: str | None = None) -> dict[str,
         "evidence_queue_count": int(evidence_queue.get("count") or 0),
         "evidence_expiring_soon": _evidence_expiring_soon(user_id),
         "exceptions": exceptions_summary(user_id, org_id=org_id),
+        "continuous": continuous,
         "hierarchy": [
             "framework",
             "requirement",

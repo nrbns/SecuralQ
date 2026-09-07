@@ -31,6 +31,39 @@ _TIMEOUT = {
 }
 
 
+def _web_scan_url(target: str) -> str:
+    """Normalize host/IP/CIDR/URL into an http(s) URL for the built-in web scanner.
+
+    Private/lab IPs prefer http (labs rarely terminate TLS on the gateway).
+    CIDR like ``192.168.0.1/24`` is reduced to the host portion for web DAST
+    (subnet sweeps belong to Discovery / network scanners).
+    """
+    import ipaddress
+
+    t = (target or "").strip()
+    if not t:
+        return ""
+    if re.match(r"^https?://", t, re.I):
+        return t.rstrip("/")
+    # Strip CIDR suffix for web single-host scan
+    host_part = t.split("/")[0].strip()
+    bare = _hostname_from_target(host_part) or host_part.split(":")[0]
+    port = ""
+    if ":" in host_part and not host_part.startswith("["):
+        # host:port (not IPv6)
+        bits = host_part.rsplit(":", 1)
+        if len(bits) == 2 and bits[1].isdigit():
+            bare, port = bits[0], bits[1]
+    try:
+        ip = ipaddress.ip_address(bare)
+        scheme = "http" if (ip.is_private or ip.is_loopback) else "https"
+    except ValueError:
+        scheme = "https"
+    if port:
+        return f"{scheme}://{bare}:{port}"
+    return f"{scheme}://{bare}"
+
+
 def _sev_from_zap_risk(riskcode: str | int | None, riskdesc: str = "") -> str:
     try:
         code = int(riskcode) if riskcode is not None and str(riskcode).strip() != "" else -1
@@ -130,22 +163,23 @@ class ZapScanner(Scanner):
             return False, "target required"
         if any(c in t for c in ";&|`$()<>"):
             return False, "invalid target characters"
-        host = _hostname_from_target(t)
+        # Web DAST needs a single host/URL — accept CIDR by using the host part.
+        host = _hostname_from_target(t.split("/")[0] if "/" in t and "://" not in t else t)
+        if not host:
+            host = _hostname_from_target(t)
         if not host or not HOST_OR_IP.match(host):
             return False, "target must be hostname, IPv4, or http(s) URL"
-        # The Web Scanner is scoped to public-facing web apps — internal
-        # hosts (loopback, RFC1918/private IPs, link-local, .local/.internal
-        # names) belong to the network/VAPT scanner instead, and allowing
-        # them here would let this tool be pointed at internal services
-        # (SSRF) rather than the public web it's meant to assess.
-        blocked = internal_target_reason(host)
+        # Web path is public/web URLs only — never RFC1918, loopback, or
+        # link-local/cloud-metadata. Use Network/Discovery (nmap/combo) for LAN.
+        blocked = internal_target_reason(host, allow_lab_private=False)
         if blocked:
             return (
                 False,
-                f"Web Scanner targets public web apps only ({blocked}). "
-                "Use a network/VAPT scan for internal hosts.",
+                f"Web Scanner blocked ({blocked}). "
+                "Use a public http(s) URL only. For private/LAN hosts use Network "
+                "(Discovery) scan — not Web.",
             )
-        return True, to_nuclei_url(t)
+        return True, _web_scan_url(t)
 
     def validate_scope(self, target: str, scope: list[str]) -> tuple[bool, str]:
         host = _hostname_from_target(target)

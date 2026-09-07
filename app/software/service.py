@@ -234,6 +234,38 @@ def _record_source_sync(
         )
 
 
+def upsert_records(user_id: str, records: list[Any], *, publish: bool = True) -> dict[str, Any]:
+    """Upsert a batch of InstallationRecord rows without re-running every source."""
+    ensure_schema()
+    n = 0
+    changed_assets: set[str] = set()
+    for rec in records:
+        if not (rec.product or "").strip():
+            continue
+        norm = normalize_product(rec.product, rec.vendor, rec.publisher)
+        pid = _upsert_product(user_id, norm)
+        iid = _upsert_installation(user_id, pid, rec)
+        patch_st, target, reason = compute_patch_status(
+            installed=rec.version,
+            latest=rec.latest_version,
+            latest_source=rec.latest_version_source,
+            raw_status=rec.raw_status,
+            severity=rec.severity,
+            cve=rec.cve,
+        )
+        if not rec.patch_status or rec.patch_status == "unknown":
+            rec.patch_status = patch_st
+        _upsert_patch_status(user_id, iid, rec, status=patch_st, target=target, reason=reason)
+        n += 1
+        if rec.asset_id:
+            changed_assets.add(rec.asset_id)
+    get_conn().commit()
+    totals = {"products": 0, "installations": n, "sources": {"securaiq_agent": n}}
+    if publish and n:
+        _publish_inventory_updated(user_id, totals, changed_assets)
+    return totals
+
+
 def sync_inventory(user_id: str, *, publish: bool = True) -> dict[str, Any]:
     """Run all inventory sources → normalized tables → patch_status."""
     ensure_schema()
@@ -245,6 +277,9 @@ def sync_inventory(user_id: str, *, publish: bool = True) -> dict[str, Any]:
         key = source.key
         label = source.label
         health = source.health(user_id)
+        # Skip optional connectors that are not configured (no Wazuh noise on lab dashboards)
+        if health.get("configured") is False:
+            continue
         try:
             records = source.collect(user_id)
             n = 0
@@ -435,9 +470,34 @@ def list_sources(user_id: str) -> list[dict[str, Any]]:
         (user_id,),
     ).fetchall()
     if rows:
-        return [dict(r) for r in rows]
-    # Fallback: source health without sync history
-    return [s.health(user_id) for s in all_sources()]
+        out = [dict(r) for r in rows]
+    else:
+        out = [s.health(user_id) for s in all_sources()]
+    # Hide Wazuh / SIEM from the live inventory dashboard unless explicitly configured
+    wazuh_on = False
+    try:
+        from app.connectors.wazuh import is_configured as wazuh_configured
+
+        wazuh_on = bool(wazuh_configured())
+    except Exception:
+        wazuh_on = False
+    if not wazuh_on:
+        try:
+            c.execute(
+                "DELETE FROM inventory_sources WHERE user_id=? AND lower(source_key) IN ('wazuh','siem')",
+                (user_id,),
+            )
+            c.commit()
+        except Exception:
+            pass
+    filtered: list[dict[str, Any]] = []
+    for s in out:
+        key = str(s.get("source_key") or s.get("key") or "").lower()
+        label = str(s.get("label") or "").lower()
+        if (key in {"wazuh", "siem"} or "wazuh" in label) and not wazuh_on:
+            continue
+        filtered.append(s)
+    return filtered
 
 
 def inventory_status(user_id: str) -> dict[str, Any]:
@@ -556,6 +616,8 @@ def legacy_row_from_normalized(row: dict[str, Any]) -> dict[str, Any]:
         "control_panel": "Control Panel",
         "local": "SecuraIQ tools",
         "code": "Code / SBOM",
+        "securaiq_agent": "SecuraIQ Agent",
+        "agent": "SecuraIQ Agent",
         "legacy": "SecuraIQ inventory",
         "inventory": "Inventory",
     }

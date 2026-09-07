@@ -19,6 +19,7 @@ from urllib.parse import quote, urljoin, urlparse
 import httpx
 
 from app.scanners.nuclei import _hostname_from_target
+from app.scanners.constants import internal_target_reason
 
 _SECURITY_HEADERS = (
     ("strict-transport-security", "Strict-Transport-Security Missing", "2", "10035"),
@@ -166,6 +167,12 @@ async def run_builtin_web_scan(
     deep = prof in {"vulnerability", "full"}
     base_url = target_url.rstrip("/") + "/"
     host = _hostname_from_target(target_url) or target_url
+    blocked = internal_target_reason(host, allow_lab_private=False)
+    if blocked:
+        raise ValueError(
+            f"Web Scanner blocked ({blocked}). "
+            "Public http(s) URLs only — use Network scan for private/LAN hosts."
+        )
     alerts: list[dict[str, Any]] = []
     trace: list[dict[str, Any]] = []
     timeout = httpx.Timeout(connect=2.0, read=8.0, write=4.0, pool=4.0)

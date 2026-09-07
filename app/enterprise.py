@@ -1254,6 +1254,111 @@ def create_remediation(
     return next((r for r in rows if r.get("id") == rid), {"id": rid, "title": title, "status": "open"})
 
 
+def create_remediations_from_live_failures(
+    user_id: str,
+    failures: list[dict[str, Any]] | None = None,
+    *,
+    org_id: str | None = None,
+    engagement_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Create owned remediation tasks from risk-ranked live control failures.
+
+    Uses the latest gap assessment for each framework when available so tasks
+    stay linked to an assessment; otherwise uses assessment_id `live:{framework_id}`.
+    Dedupes against existing open remediations for the same control_id.
+    """
+    from app.services.control_testing import list_live_control_failures
+    from app.tenancy import ensure_tenant_schema, primary_org_id
+
+    ensure_tenant_schema()
+    oid = org_id or primary_org_id(user_id)
+    if failures is None:
+        failures = list_live_control_failures(user_id, record_evidence=True).get("failures") or []
+
+    latest_aid: dict[str, str] = {}
+    try:
+        from app.gap_analysis import list_assessments
+
+        for row in list_assessments(user_id):
+            fid = row.get("framework_id")
+            if fid and fid not in latest_aid:
+                latest_aid[fid] = row["id"]
+    except Exception:
+        latest_aid = {}
+
+    open_controls = {
+        (r.get("control_id") or "").strip().upper()
+        for r in list_remediations(user_id, status="open")
+        if (r.get("control_id") or "").strip()
+    }
+
+    c = get_conn()
+    out: list[dict[str, Any]] = []
+    ts = now()
+    for g in failures:
+        st = (g.get("status") or "").lower()
+        if st not in {"missing", "partial", "fail"}:
+            continue
+        cid = (g.get("control_id") or "").strip()
+        if not cid:
+            continue
+        if cid.upper() in open_controls:
+            continue
+        fid = g.get("framework_id") or "unknown"
+        aid = _ensure_assessment_id(c, user_id, latest_aid.get(fid), engagement_id)
+        title = g.get("title") or cid
+        recommendation = (g.get("summary") or g.get("fix_hint") or "").strip()
+        if g.get("risk_score") is not None:
+            recommendation = f"[Live risk {g['risk_score']}] {recommendation}"
+        rid = new_id()
+        c.execute(
+            """
+            INSERT INTO gap_remediations
+            (id, assessment_id, user_id, engagement_id, control_id, title, status,
+             owner, due_date, notes, recommendation, created_at, updated_at, org_id)
+            VALUES (?, ?, ?, ?, ?, ?, 'open', '', '', ?, ?, ?, ?, ?)
+            """,
+            (
+                rid,
+                aid,
+                user_id,
+                engagement_id,
+                cid,
+                title,
+                f"source=live_test;test={g.get('test') or ''};framework={fid}",
+                recommendation,
+                ts,
+                ts,
+                oid,
+            ),
+        )
+        open_controls.add(cid.upper())
+        out.append(
+            {
+                "id": rid,
+                "assessment_id": aid,
+                "control_id": cid,
+                "title": title,
+                "status": "open",
+                "recommendation": recommendation,
+                "framework_id": fid,
+                "test": g.get("test"),
+                "risk_score": g.get("risk_score"),
+                "workspace": g.get("workspace") or "remediations",
+            }
+        )
+    c.commit()
+    audit("live_failure_remediations", user_id, {"count": len(out)})
+    if out:
+        try:
+            from app.realtime_bus import publish
+
+            publish(type="remediation", id="live_failures", count=len(out), user_id=user_id)
+        except Exception:
+            pass
+    return out
+
+
 def create_remediations_from_assessment(
     user_id: str,
     assessment_id: str,
@@ -1486,10 +1591,25 @@ def enterprise_dashboard(user_id: str) -> dict[str, Any]:
         ]
     )
 
-    # Security index — empty workspaces stay at 0 (not a fake mid-score from “no findings”)
+    # Security index — empty workspaces stay at 0 (not a fake mid-score from “no findings”).
+    # When no gap assessments exist, do not treat compliance_score=0 as "0% compliant"
+    # (that would falsely drag the index down); score from open risk/vuln/rem posture only.
+    assessment_count = int(gap.get("assessment_count") or 0)
     compliance = float(gap.get("compliance_score") or 0)
     if is_empty:
         security_index = 0
+    elif assessment_count <= 0:
+        security_index = max(
+            0,
+            min(
+                100,
+                round(
+                    max(0, 100 - len(open_risks) * 4) * 0.4
+                    + max(0, 100 - len(crit_vulns) * 8) * 0.35
+                    + max(0, 100 - len(open_rems) * 2) * 0.25
+                ),
+            ),
+        )
     else:
         security_index = max(
             0,
@@ -1642,10 +1762,96 @@ def enterprise_dashboard(user_id: str) -> dict[str, Any]:
     except Exception:
         pass
 
+    # Honest assessed compliance posture (never-assessed frameworks excluded).
+    compliance_posture: dict[str, Any] = {
+        "overall_percent": None,
+        "frameworks_assessed": 0,
+        "frameworks_total": 0,
+        "top_gaps": [],
+        "counts": {"implemented": 0, "partial": 0, "missing": 0},
+        "disclaimer": (
+            "Scores help assess control requirements — not a claim that you are certified compliant."
+        ),
+    }
+    try:
+        from app.services.compliance_center import compliance_overview
+
+        co = compliance_overview(user_id)
+        compliance_posture = {
+            "overall_percent": co.get("overall_compliance_percent"),
+            "frameworks_assessed": int(co.get("frameworks_assessed") or 0),
+            "frameworks_total": int(co.get("frameworks_total") or 0),
+            "top_gaps": (co.get("top_gaps") or [])[:3],
+            "counts": co.get("counts") or compliance_posture["counts"],
+            "disclaimer": co.get("disclaimer") or compliance_posture["disclaimer"],
+            "evidence_queue_count": int(co.get("evidence_queue_count") or 0),
+            "evidence_queue_preview": (co.get("evidence_queue_preview") or [])[:5],
+        }
+    except Exception:
+        if assessment_count > 0:
+            compliance_posture["overall_percent"] = compliance
+            compliance_posture["frameworks_assessed"] = len(frameworks)
+
+    # SecuraIQ Sentinel fleet (distinct from optional Wazuh SIEM agents).
+    agents_fleet: dict[str, Any] = {"total": 0, "online": 0, "offline": 0, "pending": 0, "error": 0}
+    try:
+        from app.agents import list_agents as list_securaiq_agents
+
+        fleet = list_securaiq_agents(user_id, limit=200)
+        agents_fleet["total"] = len(fleet)
+        for a in fleet:
+            st = (a.get("status") or "").lower()
+            if st in {"online", "upgrading"}:
+                agents_fleet["online"] += 1
+            elif st in {"pending"}:
+                agents_fleet["pending"] += 1
+            elif st in {"error"}:
+                agents_fleet["error"] += 1
+            else:
+                agents_fleet["offline"] += 1
+    except Exception:
+        pass
+
+    # "What should I fix first?" — same ranking as Executive Dashboard / Risk Simulator.
+    fix_first: list[dict[str, Any]] = []
+    org_risk: dict[str, Any] = {"score": 0.0, "band": "low", "total_open": 0}
+    try:
+        from app.services.executive_dashboard import _ai_priority_queue
+        from app.services.risk_priority import compute_org_risk_score
+
+        org_risk = compute_org_risk_score(user_id)
+        fix_first = _ai_priority_queue(user_id, org_id=None, engagement_id=None, limit=5)
+    except Exception:
+        try:
+            from app.services.risk_priority import compute_org_risk_score, compute_priority_list
+
+            org_risk = compute_org_risk_score(user_id)
+            pri = compute_priority_list(user_id, limit=5)
+            fix_first = [
+                {
+                    "group_key": f"cve:{it.get('cve')}" if it.get("cve") else f"vuln:{it.get('vuln_id')}",
+                    "title": it.get("title") or it.get("cve") or "Finding",
+                    "cve": it.get("cve"),
+                    "kev": it.get("kev"),
+                    "quick_win": it.get("quick_win"),
+                    "assets_affected": 1,
+                    "asset_names": [it.get("asset_name")] if it.get("asset_name") else [],
+                    "estimated_risk_reduction_pct": None,
+                    "reasons": it.get("reasons") or [],
+                }
+                for it in (pri.get("items") or [])
+            ]
+        except Exception:
+            fix_first = []
+
     return {
         **gap,
         "is_empty": is_empty,
         "security_index": security_index,
+        "compliance_posture": compliance_posture,
+        "agents_fleet": agents_fleet,
+        "org_risk": org_risk,
+        "fix_first": fix_first,
         "correlation": correlation,
         "severity_counts": severity_counts,
         "risks_open": len(open_risks),

@@ -269,6 +269,54 @@ def find_archived_scan(scan_id: str) -> Path | None:
     return None
 
 
+def delete_archived_scan(scan_id: str, user_id: str) -> dict[str, Any]:
+    """Permanently remove one archived scan folder (Markdown/PDF/evidence).
+
+    Ownership: allow when archive_meta.user_id matches the caller, is missing
+    (legacy), or either side is local open-mode. Reject cross-user deletes.
+    """
+    path = find_archived_scan(scan_id)
+    if not path:
+        raise FileNotFoundError("Archived scan not found")
+
+    meta: dict[str, Any] = {}
+    meta_path = path / "archive_meta.json"
+    if meta_path.is_file():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            meta = {}
+
+    uid = (user_id or "").strip()
+    owner = str(meta.get("user_id") or "").strip()
+    if owner and uid and owner not in {uid, "local"} and uid != "local":
+        raise PermissionError("Not allowed to delete this archive")
+
+    batch = path.parent
+    shutil.rmtree(path, ignore_errors=False)
+
+    # Drop empty batch dirs so archive/scans stays tidy
+    try:
+        if batch.is_dir() and not any(batch.iterdir()):
+            batch.rmdir()
+    except OSError:
+        pass
+
+    try:
+        from app.realtime_bus import publish
+
+        publish(
+            type="archive_delete",
+            user_id=uid or owner or "local",
+            scan_id=scan_id,
+            status="deleted",
+        )
+    except Exception:
+        pass
+
+    return {"ok": True, "scan_id": scan_id, "deleted": True}
+
+
 def prototype_status() -> dict[str, Any]:
     """Compact readiness signal for Mission Control / health."""
     layout = ensure_data_layout()

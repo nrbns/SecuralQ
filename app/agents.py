@@ -28,6 +28,50 @@ from typing import Any
 
 from app.db import audit, get_conn, new_id, now
 
+COMMAND_TTL_SEC = 86400
+COMMAND_ACK_TIMEOUT_SEC = 180
+
+
+def _scope_sql(user_id: str, *, org_id: str | None = None, alias: str = "") -> tuple[str, list[Any]]:
+    from app.tenancy import tenant_visibility_sql
+
+    return tenant_visibility_sql(user_id, org_id=org_id, alias=alias)
+
+
+def _row_in_scope(user_id: str, row: dict[str, Any] | None, *, org_id: str | None = None) -> bool:
+    from app.tenancy import row_visible_to_user
+
+    if not row:
+        return False
+    if org_id and (row.get("org_id") or "") != org_id:
+        return False
+    return row_visible_to_user(user_id, row)
+
+
+def _strip_agent_secrets(d: dict[str, Any]) -> dict[str, Any]:
+    d.pop("key_hash", None)
+    d.pop("key_enc", None)
+    d.pop("last_nonce", None)
+    return d
+
+
+def _command_ttl() -> int:
+    try:
+        from app.config import settings
+
+        return max(60, int(getattr(settings, "agent_command_ttl_sec", None) or COMMAND_TTL_SEC))
+    except Exception:
+        return COMMAND_TTL_SEC
+
+
+def _ack_timeout() -> int:
+    try:
+        from app.config import settings
+
+        return max(30, int(getattr(settings, "agent_command_ack_timeout_sec", None) or COMMAND_ACK_TIMEOUT_SEC))
+    except Exception:
+        return COMMAND_ACK_TIMEOUT_SEC
+
 # An agent is considered offline once this many seconds pass with no
 # check-in. Real agents check in every 60s by default (see
 # scripts/securaiq_agent.py DEFAULT_INTERVAL_SEC), so 3x that is a
@@ -76,6 +120,16 @@ def ensure_schema() -> None:
         cols = table_columns(c, "securaiq_agents")
         if "asset_id" not in cols:
             c.execute("ALTER TABLE securaiq_agents ADD COLUMN asset_id TEXT NOT NULL DEFAULT ''")
+        if "org_id" not in cols:
+            c.execute("ALTER TABLE securaiq_agents ADD COLUMN org_id TEXT")
+        if "device_fingerprint" not in cols:
+            c.execute(
+                "ALTER TABLE securaiq_agents ADD COLUMN device_fingerprint TEXT NOT NULL DEFAULT ''"
+            )
+        if "key_enc" not in cols:
+            c.execute("ALTER TABLE securaiq_agents ADD COLUMN key_enc TEXT NOT NULL DEFAULT ''")
+        if "ws_connected" not in cols:
+            c.execute("ALTER TABLE securaiq_agents ADD COLUMN ws_connected INTEGER NOT NULL DEFAULT 0")
     except Exception:
         pass
     c.execute(
@@ -85,6 +139,7 @@ def ensure_schema() -> None:
             fingerprint TEXT NOT NULL,
             agent_id TEXT NOT NULL,
             user_id TEXT NOT NULL DEFAULT 'local',
+            org_id TEXT,
             asset_id TEXT NOT NULL DEFAULT '',
             severity TEXT NOT NULL DEFAULT 'medium',
             category TEXT NOT NULL DEFAULT 'behavioral',
@@ -101,6 +156,12 @@ def ensure_schema() -> None:
         )
         """
     )
+    try:
+        tcols = table_columns(c, "securaiq_agent_threats")
+        if "org_id" not in tcols:
+            c.execute("ALTER TABLE securaiq_agent_threats ADD COLUMN org_id TEXT")
+    except Exception:
+        pass
     c.execute(
         "CREATE INDEX IF NOT EXISTS idx_agent_threats_fp ON securaiq_agent_threats(agent_id, fingerprint)"
     )
@@ -118,14 +179,29 @@ def ensure_schema() -> None:
             approved_at REAL NOT NULL DEFAULT 0,
             rejected_reason TEXT NOT NULL DEFAULT '',
             campaign_id TEXT NOT NULL DEFAULT '',
-            created_at REAL NOT NULL,
+            ring_index INTEGER NOT NULL DEFAULT 0,
+            created_at REAL NOT NULL DEFAULT 0,
             sent_at REAL NOT NULL DEFAULT 0,
-            completed_at REAL NOT NULL DEFAULT 0,
+            finished_at REAL NOT NULL DEFAULT 0,
             result_json TEXT NOT NULL DEFAULT '{}',
-            error TEXT NOT NULL DEFAULT ''
+            verification_status TEXT NOT NULL DEFAULT ''
         )
         """
     )
+    try:
+        ccols = table_columns(c, "securaiq_agent_commands")
+        for col, ddl in (
+            ("org_id", "ALTER TABLE securaiq_agent_commands ADD COLUMN org_id TEXT"),
+            ("event_id", "ALTER TABLE securaiq_agent_commands ADD COLUMN event_id TEXT NOT NULL DEFAULT ''"),
+            ("nonce", "ALTER TABLE securaiq_agent_commands ADD COLUMN nonce TEXT NOT NULL DEFAULT ''"),
+            ("signature", "ALTER TABLE securaiq_agent_commands ADD COLUMN signature TEXT NOT NULL DEFAULT ''"),
+            ("ack_at", "ALTER TABLE securaiq_agent_commands ADD COLUMN ack_at REAL NOT NULL DEFAULT 0"),
+            ("timeout_at", "ALTER TABLE securaiq_agent_commands ADD COLUMN timeout_at REAL NOT NULL DEFAULT 0"),
+        ):
+            if col not in ccols:
+                c.execute(ddl)
+    except Exception:
+        pass
     try:
         cmd_cols = table_columns(c, "securaiq_agent_commands")
         for col, ddl in (
@@ -137,6 +213,8 @@ def ensure_schema() -> None:
             ("verification_status", "ALTER TABLE securaiq_agent_commands ADD COLUMN verification_status TEXT NOT NULL DEFAULT ''"),
             ("verification_detail", "ALTER TABLE securaiq_agent_commands ADD COLUMN verification_detail TEXT NOT NULL DEFAULT ''"),
             ("verified_at", "ALTER TABLE securaiq_agent_commands ADD COLUMN verified_at REAL NOT NULL DEFAULT 0"),
+            ("completed_at", "ALTER TABLE securaiq_agent_commands ADD COLUMN completed_at REAL NOT NULL DEFAULT 0"),
+            ("error", "ALTER TABLE securaiq_agent_commands ADD COLUMN error TEXT NOT NULL DEFAULT ''"),
         ):
             if col not in cmd_cols:
                 c.execute(ddl)
@@ -153,6 +231,7 @@ def ensure_schema() -> None:
         CREATE TABLE IF NOT EXISTS securaiq_patch_campaigns (
             id TEXT PRIMARY KEY,
             user_id TEXT NOT NULL DEFAULT 'local',
+            org_id TEXT,
             name TEXT NOT NULL DEFAULT '',
             manager TEXT NOT NULL DEFAULT '',
             package TEXT NOT NULL DEFAULT '',
@@ -173,30 +252,59 @@ def ensure_schema() -> None:
         camp_cols = table_columns(c, "securaiq_patch_campaigns")
         if "resolved_ring" not in camp_cols:
             c.execute("ALTER TABLE securaiq_patch_campaigns ADD COLUMN resolved_ring INTEGER NOT NULL DEFAULT -1")
+        if "org_id" not in camp_cols:
+            c.execute("ALTER TABLE securaiq_patch_campaigns ADD COLUMN org_id TEXT")
     except Exception:
         pass
     c.execute(
         "CREATE INDEX IF NOT EXISTS idx_patch_campaigns_user ON securaiq_patch_campaigns(user_id, created_at)"
     )
+    try:
+        from app.agent_security import ensure_security_schema
+
+        ensure_security_schema()
+    except Exception:
+        pass
     c.commit()
 
 
-def enroll_agent(user_id: str, *, name: str = "") -> dict[str, Any]:
+def enroll_agent(user_id: str, *, name: str = "", org_id: str | None = None) -> dict[str, Any]:
     """Create a new agent identity. Returns the raw key ONCE — never stored."""
     ensure_schema()
     raw_key = secrets.token_urlsafe(32)
     aid = new_id()
+    oid = (org_id or "").strip() or None
+    key_enc = ""
+    try:
+        from app.secrets_crypto import encrypt_value
+
+        key_enc = encrypt_value(raw_key) or ""
+    except Exception:
+        key_enc = ""
     c = get_conn()
     c.execute(
         """
         INSERT INTO securaiq_agents
-        (id, user_id, name, key_hash, enrolled_at, last_checkin, last_payload_json)
-        VALUES (?, ?, ?, ?, ?, 0, '{}')
+        (id, user_id, org_id, name, key_hash, key_enc, enrolled_at, last_checkin, last_payload_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 0, '{}')
         """,
-        (aid, user_id, name or "", _hash_key(raw_key), now()),
+        (aid, user_id, oid, name or "", _hash_key(raw_key), key_enc, now()),
     )
     c.commit()
-    return {"agent_id": aid, "agent_key": raw_key}
+    return {"agent_id": aid, "agent_key": raw_key, "org_id": oid}
+
+
+def agent_visible_to_user(user_id: str, agent: dict[str, Any] | None) -> bool:
+    if not agent:
+        return False
+    if agent.get("user_id") == user_id or user_id == "local":
+        return True
+    try:
+        from app.tenancy import row_visible_to_user
+
+        return row_visible_to_user(user_id, agent)
+    except Exception:
+        return False
 
 
 def _latest_command_for_agent(agent_id: str) -> dict[str, Any] | None:
@@ -246,12 +354,22 @@ def _row_status(row: dict[str, Any], *, latest_command: dict[str, Any] | None = 
     return base
 
 
-def list_agents(user_id: str, *, limit: int = 200) -> list[dict[str, Any]]:
+def list_agents(user_id: str, *, limit: int = 200, org_id: str | None = None) -> list[dict[str, Any]]:
     ensure_schema()
-    rows = get_conn().execute(
-        "SELECT * FROM securaiq_agents WHERE user_id = ? ORDER BY enrolled_at DESC LIMIT ?",
-        (user_id, max(1, min(limit, 500))),
-    ).fetchall()
+    lim = max(1, min(limit, 500))
+    try:
+        from app.tenancy import tenant_visibility_sql
+
+        where, args = tenant_visibility_sql(user_id, org_id=org_id)
+        rows = get_conn().execute(
+            f"SELECT * FROM securaiq_agents WHERE {where} ORDER BY enrolled_at DESC LIMIT ?",
+            (*args, lim),
+        ).fetchall()
+    except Exception:
+        rows = get_conn().execute(
+            "SELECT * FROM securaiq_agents WHERE user_id = ? ORDER BY enrolled_at DESC LIMIT ?",
+            (user_id, lim),
+        ).fetchall()
     out = []
     for r in rows:
         d = dict(r)
@@ -259,7 +377,7 @@ def list_agents(user_id: str, *, limit: int = 200) -> list[dict[str, Any]]:
             d["last_payload"] = json.loads(d.get("last_payload_json") or "{}")
         except Exception:
             d["last_payload"] = {}
-        d.pop("key_hash", None)  # never return the hash either
+        _strip_agent_secrets(d)
         d["status"] = _row_status(d, latest_command=_latest_command_for_agent(d["id"]))
         out.append(d)
     return out
@@ -279,6 +397,13 @@ def get_agent(agent_id: str) -> dict[str, Any] | None:
     return d
 
 
+def public_agent_view(agent: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not agent:
+        return None
+    d = dict(agent)
+    return _strip_agent_secrets(d)
+
+
 def authenticate_agent(agent_id: str, raw_key: str) -> dict[str, Any] | None:
     ensure_schema()
     row = get_conn().execute(
@@ -292,7 +417,9 @@ def authenticate_agent(agent_id: str, raw_key: str) -> dict[str, Any] | None:
     return d
 
 
-def _link_agent_asset(user_id: str, agent_id: str, payload: dict[str, Any]) -> str:
+def _link_agent_asset(
+    user_id: str, agent_id: str, payload: dict[str, Any], *, org_id: str | None = None
+) -> str:
     from app.asset_categories import infer_asset_category
     from app.asset_names import canonical_asset_name
     from app.enterprise import ensure_asset_for_target, list_assets
@@ -327,6 +454,7 @@ def _link_agent_asset(user_id: str, agent_id: str, payload: dict[str, Any]) -> s
         asset_type=infer_asset_category(asset_type="server", os=os_name, hostname=hostname, name=display),
         criticality="high",
         resolve_ptr=False,
+        org_id=org_id,
     )
     if asset and asset.get("id"):
         return str(asset["id"])
@@ -341,7 +469,12 @@ def checkin(agent_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "error": "unknown agent"}
     asset_id = ""
     try:
-        asset_id = _link_agent_asset(agent.get("user_id") or "local", agent_id, payload)
+        asset_id = _link_agent_asset(
+            agent.get("user_id") or "local",
+            agent_id,
+            payload,
+            org_id=agent.get("org_id") or None,
+        )
     except Exception:
         asset_id = agent.get("asset_id") or ""
     # The deep-telemetry fields (services, startup_apps, packages, etc.) can
@@ -389,21 +522,40 @@ def checkin(agent_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         publish(type="agent", id=agent_id, status="online", asset_id=asset_id)
     except Exception:
         pass
+    # Feed packages into software inventory so patch-verify can see installed versions.
+    pkgs = payload.get("packages") if isinstance(payload.get("packages"), list) else []
+    if pkgs and not payload.get("truncated"):
+        try:
+            from app.software.sources.securaiq_agent import ingest_agent_packages
+
+            refreshed = dict(agent)
+            refreshed["asset_id"] = asset_id
+            refreshed["hostname"] = payload.get("hostname") or agent.get("hostname") or ""
+            refreshed["os"] = payload.get("os") or agent.get("os") or ""
+            refreshed["os_version"] = payload.get("os_version") or agent.get("os_version") or ""
+            refreshed["last_checkin"] = now()
+            ingest_agent_packages(
+                agent.get("user_id") or "local",
+                refreshed,
+                [p for p in pkgs if isinstance(p, dict)],
+                sync=True,
+            )
+        except Exception:
+            pass
     commands = _dispatch_queued_commands(agent_id)
     return {"ok": True, "asset_id": asset_id, "commands": commands}
 
 
 def _dispatch_queued_commands(agent_id: str, *, limit: int = 5) -> list[dict[str, Any]]:
-    """Hand any queued commands to the agent on this check-in (the agent has
-    no inbound listener — check-in is the only pull channel — so this is
-    where server -> agent commands actually get delivered) and mark them
-    'sent' so the same command isn't handed out again on the next check-in
-    while the agent is still working on it.
+    """Deliver queued commands via check-in, long-poll, or WebSocket push.
 
-    A command tied to a campaign with a maintenance window is approved and
-    queued the same as any other, but is held back here — not delivered —
-    until the current time falls inside that campaign's window. It stays
-    'queued' and is simply reconsidered on the agent's next check-in."""
+    Marks each row 'sent' (with event_id + signature) so the same command is
+    not handed out again while the agent is still working on it.
+
+    A command tied to a campaign with a maintenance window stays 'queued'
+    until the current time falls inside that campaign's window.
+    """
+    expire_timed_out_commands()
     c = get_conn()
     rows = c.execute(
         "SELECT * FROM securaiq_agent_commands WHERE agent_id = ? AND status = 'queued' ORDER BY created_at ASC LIMIT ?",
@@ -411,11 +563,19 @@ def _dispatch_queued_commands(agent_id: str, *, limit: int = 5) -> list[dict[str
     ).fetchall()
     campaign_cache: dict[str, dict[str, Any] | None] = {}
     out: list[dict[str, Any]] = []
+    seen_event_ids: set[str] = set()
     ts = now()
     for r in rows:
         if len(out) >= limit:
             break
         d = dict(r)
+        created_at = float(d.get("created_at") or 0)
+        if created_at and (ts - created_at) > _command_ttl():
+            c.execute(
+                "UPDATE securaiq_agent_commands SET status = 'timeout', error = ? WHERE id = ?",
+                ("Command expired before delivery", d["id"]),
+            )
+            continue
         cid = d.get("campaign_id") or ""
         if cid:
             if cid not in campaign_cache:
@@ -424,21 +584,67 @@ def _dispatch_queued_commands(agent_id: str, *, limit: int = 5) -> list[dict[str
             campaign = campaign_cache[cid]
             if campaign and not _in_maintenance_window(campaign):
                 continue  # held for the next check-in, still 'queued'
-        c.execute(
-            "UPDATE securaiq_agent_commands SET status = 'sent', sent_at = ? WHERE id = ?",
-            (ts, d["id"]),
-        )
         try:
             payload = json.loads(d.get("payload_json") or "{}")
         except Exception:
             payload = {}
-        out.append({"id": d["id"], "kind": d["kind"], "payload": payload})
+        try:
+            from app.agent_security import remember_nonce, seal_command_for_delivery
+
+            sealed = seal_command_for_delivery(d, payload)
+            eid = str(sealed.get("event_id") or "")
+            if eid and eid in seen_event_ids:
+                continue
+            if eid:
+                seen_event_ids.add(eid)
+            remember_nonce(sealed["nonce"], agent_id=agent_id)
+        except Exception:
+            sealed = {
+                "id": d["id"],
+                "kind": d["kind"],
+                "payload": payload,
+                "event_id": "",
+                "nonce": "",
+                "signature": "",
+                "seq": float(d.get("created_at") or 0),
+            }
+        timeout_at = ts + float(_ack_timeout())
+        cur = c.execute(
+            """
+            UPDATE securaiq_agent_commands
+            SET status = 'sent', sent_at = ?, event_id = ?, nonce = ?, signature = ?, timeout_at = ?
+            WHERE id = ? AND status = 'queued'
+            """,
+            (
+                ts,
+                sealed.get("event_id") or "",
+                sealed.get("nonce") or "",
+                sealed.get("signature") or "",
+                timeout_at,
+                d["id"],
+            ),
+        )
+        if int(cur.rowcount or 0) <= 0:
+            continue  # raced / already delivered
+        out.append(sealed)
     if out:
         c.commit()
         try:
             from app.realtime_bus import publish
 
-            publish(type="agent_command", agent_id=agent_id, status="sent", count=len(out))
+            for sealed in out:
+                publish(
+                    type="agent_command",
+                    agent_id=agent_id,
+                    id=sealed.get("id"),
+                    status="sent",
+                    event_id=sealed.get("event_id") or None,
+                )
+        except Exception:
+            pass
+    else:
+        try:
+            c.commit()
         except Exception:
             pass
     return out
@@ -472,6 +678,7 @@ def record_threat_detections(agent_id: str, detections: list[dict[str, Any]]) ->
     if not agent:
         return {"ok": False, "error": "unknown agent"}
     user_id = agent.get("user_id") or "local"
+    org_id = agent.get("org_id") or None
     asset_id = agent.get("asset_id") or ""
     hostname = agent.get("hostname") or agent.get("id", "")[:8]
     c = get_conn()
@@ -509,11 +716,26 @@ def record_threat_detections(agent_id: str, detections: list[dict[str, Any]]) ->
             c.execute(
                 """
                 INSERT INTO securaiq_agent_threats
-                (id, fingerprint, agent_id, user_id, asset_id, severity, category, title, detail, target, hash,
+                (id, fingerprint, agent_id, user_id, org_id, asset_id, severity, category, title, detail, target, hash,
                  status, first_seen, last_seen, hit_count)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, 1)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, 1)
                 """,
-                (tid, fp, agent_id, user_id, asset_id, severity, category, title, detail, target, file_hash, ts, ts),
+                (
+                    tid,
+                    fp,
+                    agent_id,
+                    user_id,
+                    org_id,
+                    asset_id,
+                    severity,
+                    category,
+                    title,
+                    detail,
+                    target,
+                    file_hash,
+                    ts,
+                    ts,
+                ),
             )
             c.commit()
 
@@ -606,26 +828,36 @@ def record_threat_detections(agent_id: str, detections: list[dict[str, Any]]) ->
     return {"ok": True, "created": len(created), "skipped": skipped, "detections": created}
 
 
-def list_threats(user_id: str, *, agent_id: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
+def list_threats(
+    user_id: str, *, agent_id: str | None = None, limit: int = 200, org_id: str | None = None
+) -> list[dict[str, Any]]:
     ensure_schema()
     c = get_conn()
-    q = "SELECT * FROM securaiq_agent_threats WHERE user_id = ?"
-    args: list[Any] = [user_id]
+    lim = max(1, min(limit, 500))
+    try:
+        from app.tenancy import tenant_visibility_sql
+
+        where, args = tenant_visibility_sql(user_id, org_id=org_id)
+        q = f"SELECT * FROM securaiq_agent_threats WHERE ({where})"
+        args_l: list[Any] = list(args)
+    except Exception:
+        q = "SELECT * FROM securaiq_agent_threats WHERE user_id = ?"
+        args_l = [user_id]
     if agent_id:
         q += " AND agent_id = ?"
-        args.append(agent_id)
+        args_l.append(agent_id)
     q += " ORDER BY last_seen DESC LIMIT ?"
-    args.append(max(1, min(limit, 500)))
-    rows = c.execute(q, args).fetchall()
+    args_l.append(lim)
+    rows = c.execute(q, args_l).fetchall()
     return [dict(r) for r in rows]
 
 
 def revoke_agent(user_id: str, agent_id: str) -> bool:
     ensure_schema()
-    c = get_conn()
-    row = c.execute("SELECT id FROM securaiq_agents WHERE id = ? AND user_id = ?", (agent_id, user_id)).fetchone()
-    if not row:
+    agent = get_agent(agent_id)
+    if not agent_visible_to_user(user_id, agent):
         return False
+    c = get_conn()
     c.execute("UPDATE securaiq_agents SET revoked = 1 WHERE id = ?", (agent_id,))
     c.commit()
     return True
@@ -633,26 +865,100 @@ def revoke_agent(user_id: str, agent_id: str) -> bool:
 
 def delete_agent(user_id: str, agent_id: str) -> bool:
     ensure_schema()
-    c = get_conn()
-    row = c.execute("SELECT id FROM securaiq_agents WHERE id = ? AND user_id = ?", (agent_id, user_id)).fetchone()
-    if not row:
+    agent = get_agent(agent_id)
+    if not agent_visible_to_user(user_id, agent):
         return False
+    c = get_conn()
     c.execute("DELETE FROM securaiq_agents WHERE id = ?", (agent_id,))
     c.commit()
     return True
 
 
+def mark_agent_ws(agent_id: str, *, connected: bool, heartbeat: bool = False) -> None:
+    """Track gateway presence. Heartbeat refreshes last_checkin so status stays online."""
+    ensure_schema()
+    c = get_conn()
+    if heartbeat or connected:
+        c.execute(
+            "UPDATE securaiq_agents SET ws_connected = ?, last_checkin = ? WHERE id = ?",
+            (1 if connected else 0, now(), agent_id),
+        )
+    else:
+        c.execute(
+            "UPDATE securaiq_agents SET ws_connected = 0 WHERE id = ?",
+            (agent_id,),
+        )
+    c.commit()
+    if heartbeat:
+        return
+    try:
+        from app.realtime_bus import publish
+
+        publish(
+            type="agent",
+            id=agent_id,
+            status="online" if connected else "offline",
+            ws_connected=bool(connected),
+            via="gateway",
+        )
+    except Exception:
+        pass
+
+
+def ack_command(agent_id: str, command_id: str) -> dict[str, Any]:
+    ensure_schema()
+    c = get_conn()
+    row = c.execute(
+        "SELECT * FROM securaiq_agent_commands WHERE id = ? AND agent_id = ?",
+        (command_id, agent_id),
+    ).fetchone()
+    if not row:
+        return {"ok": False, "error": "unknown command"}
+    st = row["status"]
+    if st not in ("sent", "queued", "acked"):
+        return {"ok": True, "status": st}
+    ts = now()
+    c.execute(
+        "UPDATE securaiq_agent_commands SET status = 'acked', ack_at = ? WHERE id = ?",
+        (ts, command_id),
+    )
+    c.commit()
+    try:
+        from app.realtime_bus import publish
+
+        publish(type="agent_command", agent_id=agent_id, id=command_id, status="acked")
+    except Exception:
+        pass
+    return {"ok": True, "status": "acked"}
+
+
+def expire_timed_out_commands() -> int:
+    ensure_schema()
+    ts = now()
+    c = get_conn()
+    n = 0
+    try:
+        cur = c.execute(
+            "UPDATE securaiq_agent_commands SET status = 'timeout', error = 'ack/result timeout' "
+            "WHERE status IN ('sent', 'acked') AND timeout_at > 0 AND timeout_at < ?",
+            (ts,),
+        )
+        n = int(cur.rowcount or 0)
+        c.commit()
+    except Exception:
+        try:
+            c.rollback()
+        except Exception:
+            pass
+    return n
+
+
 # ---------------------------------------------------------------------------
 # Agent command channel — the patch-execution + verification loop.
 #
-# The agent has no inbound listener (it only ever calls out to the server),
-# so a "command" is not pushed live: it is queued here, then handed to the
-# agent as part of its next regular check-in response (see
-# _dispatch_queued_commands above), and the agent reports the outcome back
-# via report_command_result(). This keeps the transport identical to the
-# existing check-in model — no new port, no new protocol — at the cost of
-# latency bounded by the agent's --interval (default 60s), which is an
-# honest tradeoff spelled out in the API docstrings rather than a silent one.
+# Commands are queued here, then delivered via WebSocket push, long-poll
+# (/api/agents/gateway/wait), or the next HTTP check-in (fallback). The
+# agent reports the outcome via report_command_result() (HTTP or WS).
 #
 # `kind` is deliberately an allowlist, not free-form shell: the only command
 # an agent will currently execute is "patch_package" (an OS package-manager
@@ -668,7 +974,7 @@ def delete_agent(user_id: str, agent_id: str) -> bool:
 # ---------------------------------------------------------------------------
 
 SUPPORTED_COMMAND_KINDS = {"patch_package", "agent_upgrade"}
-COMMAND_STATUSES = {"pending_approval", "queued", "sent", "done", "error", "rejected"}
+COMMAND_STATUSES = {"pending_approval", "queued", "sent", "acked", "done", "error", "rejected", "timeout"}
 
 
 def request_command(
@@ -687,21 +993,33 @@ def request_command(
     command for delivery — see approve_command()."""
     ensure_schema()
     agent = get_agent(agent_id)
-    if not agent or agent.get("user_id") != user_id:
+    if not agent_visible_to_user(user_id, agent):
         raise ValueError("Agent not found")
     if agent.get("revoked"):
         raise ValueError("Agent is revoked")
     if kind not in SUPPORTED_COMMAND_KINDS:
         raise ValueError(f"Unsupported command kind '{kind}'")
     cid = new_id()
+    oid = agent.get("org_id") or None
     c = get_conn()
     c.execute(
         """
         INSERT INTO securaiq_agent_commands
-        (id, agent_id, user_id, kind, payload_json, status, requested_by, campaign_id, ring_index, created_at)
-        VALUES (?, ?, ?, ?, ?, 'pending_approval', ?, ?, ?, ?)
+        (id, agent_id, user_id, org_id, kind, payload_json, status, requested_by, campaign_id, ring_index, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, 'pending_approval', ?, ?, ?, ?)
         """,
-        (cid, agent_id, user_id, kind, json.dumps(payload)[:4000], requested_by or user_id, campaign_id, ring_index, now()),
+        (
+            cid,
+            agent_id,
+            user_id,
+            oid,
+            kind,
+            json.dumps(payload)[:4000],
+            requested_by or user_id,
+            campaign_id,
+            ring_index,
+            now(),
+        ),
     )
     c.commit()
     try:
@@ -756,9 +1074,19 @@ def _get_command_row(user_id: str, agent_id: str, command_id: str):
     if not row:
         return None
     d = dict(row)
-    if d.get("user_id") != user_id:
-        return None
-    return d
+    if d.get("user_id") == user_id or user_id == "local":
+        return d
+    try:
+        from app.tenancy import row_visible_to_user
+
+        if row_visible_to_user(user_id, d):
+            return d
+    except Exception:
+        pass
+    # Fall back: command visible if the parent agent is visible to this user.
+    if agent_visible_to_user(user_id, get_agent(agent_id)):
+        return d
+    return None
 
 
 def approve_command(user_id: str, agent_id: str, command_id: str, *, approver_id: str) -> dict[str, Any]:
@@ -784,6 +1112,12 @@ def approve_command(user_id: str, agent_id: str, command_id: str, *, approver_id
         from app.realtime_bus import publish
 
         publish(type="agent_command", agent_id=agent_id, id=command_id, status="queued")
+    except Exception:
+        pass
+    try:
+        from app.agent_gateway import notify_agent
+
+        notify_agent(agent_id)
     except Exception:
         pass
     return {"id": command_id, "status": "queued"}
@@ -815,14 +1149,26 @@ def reject_command(user_id: str, agent_id: str, command_id: str, *, approver_id:
     return {"id": command_id, "status": "rejected"}
 
 
-def list_pending_commands(user_id: str, *, limit: int = 200) -> list[dict[str, Any]]:
+def list_pending_commands(user_id: str, *, limit: int = 200, org_id: str | None = None) -> list[dict[str, Any]]:
     """All commands awaiting approval across all of this user's agents —
     backs the approvals UI/queue view."""
     ensure_schema()
-    rows = get_conn().execute(
-        "SELECT * FROM securaiq_agent_commands WHERE user_id = ? AND status = 'pending_approval' ORDER BY created_at ASC LIMIT ?",
-        (user_id, max(1, min(limit, 500))),
-    ).fetchall()
+    lim = max(1, min(limit, 500))
+    try:
+        from app.tenancy import tenant_visibility_sql
+
+        where, args = tenant_visibility_sql(user_id, org_id=org_id)
+        rows = get_conn().execute(
+            f"SELECT * FROM securaiq_agent_commands WHERE ({where}) AND status = 'pending_approval' "
+            f"ORDER BY created_at ASC LIMIT ?",
+            (*args, lim),
+        ).fetchall()
+    except Exception:
+        rows = get_conn().execute(
+            "SELECT * FROM securaiq_agent_commands WHERE user_id = ? AND status = 'pending_approval' "
+            "ORDER BY created_at ASC LIMIT ?",
+            (user_id, lim),
+        ).fetchall()
     out = []
     for r in rows:
         d = dict(r)
@@ -860,6 +1206,7 @@ def create_campaign(
     window_days: list[int] | None = None,
     ring_threshold_pct: float = 100,
     requested_by: str = "",
+    org_id: str | None = None,
 ) -> dict[str, Any]:
     """Create a campaign and request one patch_package command per targeted
     agent in the FIRST ring only (each lands in 'pending_approval', same as
@@ -881,16 +1228,18 @@ def create_campaign(
         raise ValueError("window_end_hour must be 0-23 (or -1 for no window)")
     cid = new_id()
     ts = now()
+    first = get_agent(ring_list[0][0]) if ring_list and ring_list[0] else None
+    oid = (org_id or (first or {}).get("org_id") or "").strip() or None
     c = get_conn()
     c.execute(
         """
         INSERT INTO securaiq_patch_campaigns
-        (id, user_id, name, manager, package, target_version, requested_by,
+        (id, user_id, org_id, name, manager, package, target_version, requested_by,
          rings_json, window_start_hour, window_end_hour, window_days_json, ring_threshold_pct, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            cid, user_id, name or f"{manager} upgrade {package}", manager, package, target_version, requested_by or user_id,
+            cid, user_id, oid, name or f"{manager} upgrade {package}", manager, package, target_version, requested_by or user_id,
             json.dumps(ring_list), window_start_hour, window_end_hour, json.dumps(window_days or []),
             max(0.0, min(100.0, ring_threshold_pct)), ts,
         ),
@@ -1197,12 +1546,22 @@ def fleet_verification_summary(user_id: str) -> dict[str, Any]:
     }
 
 
-def list_campaigns(user_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
+def list_campaigns(user_id: str, *, limit: int = 100, org_id: str | None = None) -> list[dict[str, Any]]:
     ensure_schema()
-    rows = get_conn().execute(
-        "SELECT * FROM securaiq_patch_campaigns WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
-        (user_id, max(1, min(limit, 300))),
-    ).fetchall()
+    lim = max(1, min(limit, 300))
+    try:
+        from app.tenancy import tenant_visibility_sql
+
+        where, args = tenant_visibility_sql(user_id, org_id=org_id)
+        rows = get_conn().execute(
+            f"SELECT * FROM securaiq_patch_campaigns WHERE {where} ORDER BY created_at DESC LIMIT ?",
+            (*args, lim),
+        ).fetchall()
+    except Exception:
+        rows = get_conn().execute(
+            "SELECT * FROM securaiq_patch_campaigns WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
+            (user_id, lim),
+        ).fetchall()
     out = []
     for r in rows:
         d = dict(r)
@@ -1222,15 +1581,18 @@ def list_campaigns(user_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
 def get_campaign(user_id: str, campaign_id: str) -> dict[str, Any] | None:
     ensure_schema()
     row = get_conn().execute(
-        "SELECT * FROM securaiq_patch_campaigns WHERE id = ? AND user_id = ?", (campaign_id, user_id)
+        "SELECT * FROM securaiq_patch_campaigns WHERE id = ?", (campaign_id,)
     ).fetchone()
     if not row:
         return None
-    d = dict(row)
+    d0 = dict(row)
+    if not _row_in_scope(user_id, d0):
+        return None
+    d = d0
     d["summary"] = _campaign_summary(user_id, campaign_id)
     item_rows = get_conn().execute(
-        "SELECT * FROM securaiq_agent_commands WHERE campaign_id = ? AND user_id = ? ORDER BY created_at ASC",
-        (campaign_id, user_id),
+        "SELECT * FROM securaiq_agent_commands WHERE campaign_id = ? ORDER BY created_at ASC",
+        (campaign_id,),
     ).fetchall()
     items = []
     for r in item_rows:
@@ -1260,13 +1622,13 @@ def approve_campaign(user_id: str, campaign_id: str, *, approver_id: str) -> dic
     additive, not a reset."""
     ensure_schema()
     row = get_conn().execute(
-        "SELECT id FROM securaiq_patch_campaigns WHERE id = ? AND user_id = ?", (campaign_id, user_id)
+        "SELECT * FROM securaiq_patch_campaigns WHERE id = ?", (campaign_id,)
     ).fetchone()
-    if not row:
+    if not row or not _row_in_scope(user_id, dict(row)):
         raise ValueError("Campaign not found")
     pending = get_conn().execute(
-        "SELECT id, agent_id FROM securaiq_agent_commands WHERE campaign_id = ? AND user_id = ? AND status = 'pending_approval'",
-        (campaign_id, user_id),
+        "SELECT id, agent_id FROM securaiq_agent_commands WHERE campaign_id = ? AND status = 'pending_approval'",
+        (campaign_id,),
     ).fetchall()
     approved, failed = 0, 0
     for r in pending:
@@ -1284,13 +1646,13 @@ def reject_campaign(user_id: str, campaign_id: str, *, approver_id: str, reason:
     itself canceled."""
     ensure_schema()
     row = get_conn().execute(
-        "SELECT id FROM securaiq_patch_campaigns WHERE id = ? AND user_id = ?", (campaign_id, user_id)
+        "SELECT * FROM securaiq_patch_campaigns WHERE id = ?", (campaign_id,)
     ).fetchone()
-    if not row:
+    if not row or not _row_in_scope(user_id, dict(row)):
         raise ValueError("Campaign not found")
     pending = get_conn().execute(
-        "SELECT id, agent_id FROM securaiq_agent_commands WHERE campaign_id = ? AND user_id = ? AND status = 'pending_approval'",
-        (campaign_id, user_id),
+        "SELECT id, agent_id FROM securaiq_agent_commands WHERE campaign_id = ? AND status = 'pending_approval'",
+        (campaign_id,),
     ).fetchall()
     rejected, failed = 0, 0
     for r in pending:
@@ -1330,9 +1692,11 @@ def _annotate_waiting_for_agent(items: list[dict[str, Any]]) -> None:
 
 def list_commands(user_id: str, agent_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
     ensure_schema()
+    if not agent_visible_to_user(user_id, get_agent(agent_id)):
+        return []
     rows = get_conn().execute(
-        "SELECT * FROM securaiq_agent_commands WHERE user_id = ? AND agent_id = ? ORDER BY created_at DESC LIMIT ?",
-        (user_id, agent_id, max(1, min(limit, 300))),
+        "SELECT * FROM securaiq_agent_commands WHERE agent_id = ? ORDER BY created_at DESC LIMIT ?",
+        (agent_id, max(1, min(limit, 300))),
     ).fetchall()
     out = []
     for r in rows:
@@ -1407,6 +1771,30 @@ def report_command_result(agent_id: str, command_id: str, *, status: str, result
     except Exception:
         pass
     if status == "done" and asset_id:
+        # Stamp installed version from the agent result immediately so the
+        # advisory-refresh verification job is not racing an empty inventory.
+        try:
+            payload_d = result if isinstance(result, dict) else {}
+            new_ver = str(payload_d.get("new_version") or "").strip()
+            pkg = ""
+            try:
+                cmd_payload = json.loads(dict(row).get("payload_json") or "{}")
+                pkg = str(cmd_payload.get("package") or "").strip()
+            except Exception:
+                pkg = str(payload_d.get("package") or "").strip()
+            if pkg and new_ver:
+                from app.software.sources.securaiq_agent import apply_patch_version_to_inventory
+
+                apply_patch_version_to_inventory(
+                    (agent or {}).get("user_id") or "local",
+                    asset_id=asset_id,
+                    package=pkg,
+                    version=new_ver,
+                    agent_id=agent_id,
+                    hostname=str((agent or {}).get("hostname") or ""),
+                )
+        except Exception:
+            pass
         try:
             from app.jobs import enqueue_job
 

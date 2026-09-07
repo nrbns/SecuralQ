@@ -61,6 +61,7 @@ def missing_evidence_queue(
 
     accepted = _accepted_control_ids(user_id)
     queue: list[dict[str, Any]] = []
+    total = 0
     for a in assessments:
         aid = a.get("id") or assessment_id or ""
         for c in _controls_from_assessment(a):
@@ -71,6 +72,9 @@ def missing_evidence_queue(
             if not cid:
                 continue
             if cid.upper() in accepted:
+                continue
+            total += 1
+            if len(queue) >= limit:
                 continue
             queue.append(
                 {
@@ -83,13 +87,9 @@ def missing_evidence_queue(
                     "suggested_artifacts": _suggest_artifacts(c),
                 }
             )
-            if len(queue) >= limit:
-                break
-        if len(queue) >= limit:
-            break
 
     return {
-        "count": len(queue),
+        "count": total,
         "accepted_controls": len(accepted),
         "items": queue,
     }

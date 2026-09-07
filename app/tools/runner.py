@@ -1156,7 +1156,7 @@ async def _tool_combo_assessment(
             "output": "Check Auth — only assess systems you own or are authorized to test.",
         }
     prof = (profile or "discovery").lower()
-    include_web = prof in {"web", "vulnerability", "full"}
+    include_web = prof in {"vulnerability", "full"}
     pack = await run_combo_assessment(
         user_id=user_id or "local",
         target=target,

@@ -1,4 +1,8 @@
-# SecuraIQ agent — Windows installer.
+# SecuraIQ agent — Windows installer (DEVELOPER FALLBACK).
+#
+# Prefer the packaged agent from dist/agent-packages/ (or Agents UI download):
+#   SecuraIQ-Agent-*-windows-x64.exe  or  *.zip (embeds install.ps1).
+# This script remains for labs without a built package.
 #
 # Registers the agent as a Scheduled Task that starts at boot, runs as
 # SYSTEM (no logged-in user needed), and restarts automatically on failure —

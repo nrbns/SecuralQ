@@ -177,6 +177,7 @@
       reports: "viewReports",
       webscan: "viewWebscan",
       soc: "viewSoc",
+      agents: "viewAgents",
       evidence: "viewEvidence",
       orgs: "viewOrgs",
       frameworks: "viewFrameworks",
@@ -220,6 +221,7 @@
         reports: "Reports",
         webscan: "Web URL Scan",
         soc: "SOC",
+        agents: "Agents & packages",
         evidence: "Evidence Locker",
         orgs: "Organizations",
         frameworks: "Frameworks",
@@ -248,6 +250,7 @@
     if (view === "reports") renderReportsPage();
     if (view === "webscan") renderWebScanPage();
     if (view === "soc") renderSocPage();
+    if (view === "agents") renderAgentsPage();
     if (view === "evidence") renderEvidencePage();
     if (view === "orgs") renderOrgsPage();
     if (view === "frameworks") {
@@ -968,15 +971,19 @@
     )
       .toString()
       .trim() || "unknown";
+    const latest = r.latest_version || r.target_version || "";
+    const latestSrc = r.latest_version_source || r.latest_source || "";
+    const latestCell = latest
+      ? `<strong>${escapeHtml(latest)}</strong>${latestSrc ? `<br><span class="hint">${escapeHtml(latestSrc)}</span>` : ""}`
+      : `<span class="hint" title="No upstream map for this product yet">—</span>`;
     return `<tr data-sw-key="${escapeHtml(softwareRowKey(r))}" data-sw-installation="${iid}" class="sw-product-row">
         <td>${fn(r)}</td>
         <td><button type="button" class="sw-row-link sw-open-product" data-key="${prodKey}" data-installation="${iid}">${escapeHtml(r.product || "?")}</button>${r.detail ? `<br><span class="hint">${escapeHtml(r.detail)}</span>` : ""}</td>
         <td><span class="sw-source-pill" title="${escapeHtml(sourceText)}">${escapeHtml(sourceText)}</span></td>
         <td>${escapeHtml(r.version || "—")}</td>
-        <td class="hint">${r.latest_version ? escapeHtml(r.latest_version) : "Unknown"}</td>
+        <td>${latestCell}</td>
         <td>${r.kev ? `<span class="sw-status-chip status-error" title="CISA KEV">KEV</span> ` : ""}${escapeHtml(r.cve || "—")}${Number(r.cve_count || 0) > 1 ? `<br><span class="hint">+${Number(r.cve_count) - 1} more</span>` : ""}</td>
         <td>${aid ? `<button type="button" class="sw-row-link sw-open-asset" data-id="${aid}" data-name="${aname}">${aname || "—"}</button>` : escapeHtml(r.asset_name || "—")}</td>
-        <td>${r.port ? `:${r.port}` : "—"}</td>
       </tr>`;
   }
 
@@ -1457,11 +1464,16 @@
         Number(patchCounts.end_of_life || 0);
     }
     const engineUpToDate = Number(engine.up_to_date || patchCounts.up_to_date || 0);
-    const sourceRows = (invStatus && invStatus.sources) || [];
+    const sourceRows = ((invStatus && invStatus.sources) || []).filter((s) => {
+      const key = String(s.source_key || s.key || "").toLowerCase();
+      const lab = String(s.label || "").toLowerCase();
+      return !(key === "wazuh" || key === "siem" || lab.includes("wazuh"));
+    });
     const sourceFreshness =
       sourceRows.length > 0
         ? sourceRows
-            .slice(0, 6)
+            .filter((s) => s.healthy === 1 || s.healthy === true || Number(s.items_synced || 0) > 0)
+            .slice(0, 5)
             .map((s) => {
               const ok = s.healthy === 1 || s.healthy === true;
               const ts = s.last_sync ? new Date(Number(s.last_sync) * (Number(s.last_sync) < 1e12 ? 1000 : 1)) : null;
@@ -1469,7 +1481,7 @@
                 ts && !Number.isNaN(ts.getTime())
                   ? `${Math.max(0, Math.round((Date.now() - ts.getTime()) / 60000))}m ago`
                   : "never";
-              return `<span class="sw-source-fresh${ok ? " is-healthy" : ""}">${escapeHtml(s.label || s.source_key || "?")} ${ok ? "●" : "○"} ${ago}</span>`;
+              return `<span class="sw-source-fresh${ok ? " is-healthy" : ""}">${escapeHtml(s.label || s.source_key || "?")} · ${ago}</span>`;
             })
             .join("")
         : "";
@@ -1481,26 +1493,17 @@
     if (totalProducts === 0 && servers.length === 0) {
       el.innerHTML = `<div class="sw-empty-state sw-empty-hero">
         <h2>No inventory yet</h2>
-        <p class="hint">${escapeHtml(data.message || "Connect an endpoint source or run a scan to begin collecting software inventory.")}</p>
+        <p class="hint">${escapeHtml(data.message || "Refresh this PC, enroll an agent, or run a scan to collect software.")}</p>
         <div class="cc-action-row">
           <button type="button" class="btn-primary-cc" id="softwareEmptySync">Sync now</button>
-          <button type="button" class="btn-secondary" data-workspace="integrations">Connect Wazuh / Open-AudIT</button>
           <button type="button" class="btn-secondary" data-action="new-scan">New scan</button>
-          <button type="button" class="btn-secondary" id="softwareEmptyRebuild">Rebuild inventory</button>
+          <button type="button" class="btn-secondary" data-workspace="agents">Agents</button>
         </div>
-        <p class="hint sw-empty-sources">Sources: Wazuh · Open-AudIT · LAN · Scans · XDR · OS patches · Control Panel</p>
+        <p class="hint sw-empty-sources">Sources: SecuraIQ Agent · Control Panel · OS patches · Scans · LAN</p>
       </div>`;
       qs("softwareEmptySync")?.addEventListener("click", () => {
         if (typeof window.runSoftwareSyncAll === "function") window.runSoftwareSyncAll();
         else if (typeof window.syncAllAndRebuildSoftware === "function") window.syncAllAndRebuildSoftware({});
-      });
-      qs("softwareEmptyRebuild")?.addEventListener("click", async () => {
-        try {
-          await fetch("/api/software/rebuild", { method: "POST", headers: authHeaders() });
-          renderSoftwarePage();
-        } catch (e) {
-          if (typeof notifyUser === "function") notifyUser(`Rebuild failed: ${e.message || e}`);
-        }
       });
       return;
     }
@@ -1556,25 +1559,21 @@
       <div class="sw-table-wrap">
         <table class="ws-table sw-table sw-server-table">
           <thead><tr><th>Patch status</th><th>Server / system</th><th>OS</th><th>Issues</th><th>Products</th><th>Top gaps</th><th></th></tr></thead>
-          <tbody>${serverRows || `<tr><td colspan="7" class="hint">No servers tracked yet — scan assets, sync SIEM/XDR, or rebuild all sources.</td></tr>`}</tbody>
+          <tbody>${serverRows || `<tr><td colspan="7" class="hint">No hosts yet — Refresh this PC, enroll an agent, or run a scan.</td></tr>`}</tbody>
         </table>
       </div>`;
 
     const sourceOpts = [
       ["", "All sources"],
+      ["securaiq_agent", "SecuraIQ Agent"],
+      ["control_panel", "Control Panel"],
+      ["os", "OS patches"],
       ["scan", "Network scan"],
       ["vuln", "Vulnerabilities"],
-      ["xdr", "XDR / EDR"],
-      ["wazuh", "SIEM (Wazuh)"],
       ["openaudit", "Open-AudIT"],
       ["lan", "LAN inventory"],
       ["asset", "Asset inventory"],
-      ["code", "Code / SBOM"],
-      ["hardening", "Hardening"],
-      ["cloud", "Cloud posture"],
       ["local", "SecuraIQ tools"],
-      ["os", "OS patches"],
-      ["control_panel", "Control Panel (Windows)"],
     ]
       .map(
         ([v, lab]) =>
@@ -1583,18 +1582,14 @@
       .join("");
 
     const covChips = [
+      ["Agent", coverage.agent || coverage.securaiq_agent || byLabel["SecuraIQ Agent"], "securaiq_agent"],
       ["Control Panel", coverage.control_panel, "control_panel"],
       ["OS patches", coverage.os_patches, "os"],
       ["Scans", coverage.scans, "scan"],
       ["Inventory", coverage.inventory, "openaudit"],
-      ["XDR", coverage.xdr, "xdr"],
-      ["SIEM", coverage.siem, "wazuh"],
-      ["Code", coverage.code, "code"],
-      ["Hardening", coverage.hardening, "hardening"],
-      ["Cloud", coverage.cloud, "cloud"],
       ["Local tools", coverage.local_tools, "local"],
-      ["Remote SSH", coverage.remote_ssh, "os"],
     ]
+      .filter(([, n, src]) => Number(n || 0) > 0 || _softwareFilters.source === src)
       .map(([lab, n, src]) => {
         const on = _softwareFilters.source === src;
         return `<button type="button" class="sw-cov-chip${Number(n) > 0 ? " has-data" : ""}${on ? " is-active" : ""}" data-sw-source="${src}">${escapeHtml(lab)} <strong>${Number(n || 0)}</strong></button>`;
@@ -1611,12 +1606,12 @@
           <option value="outdated"${_softwareFilters.status === "outdated" ? " selected" : ""}>Outdated</option>
           <option value="current"${_softwareFilters.status === "current" ? " selected" : ""}>Current</option>
           <option value="up_to_date"${_softwareFilters.status === "up_to_date" ? " selected" : ""}>Up to date</option>
-          <option value="unknown"${_softwareFilters.status === "unknown" ? " selected" : ""}>Unknown</option>
         </select>
         <select id="softwareSourceFilter">${sourceOpts}</select>
       </div>
-      <div class="sw-coverage" aria-label="Source coverage">${covChips}</div>`;
+      ${covChips ? `<div class="sw-coverage" aria-label="Source coverage">${covChips}</div>` : ""}`;
 
+    const byLabelClean = Object.entries(byLabel).filter(([k]) => !/wazuh/i.test(k));
     const summary = `
       <div class="sw-page-summary">
         ${
@@ -1629,10 +1624,8 @@
           <div class="sw-health-gauge" style="--p:${health}"><span>${health}%</span></div>
           <div class="sw-health-copy">
             <strong>${Number(posture.issues || 0)} issue(s) across ${Number(posture.hosts_with_issues || 0)} host(s)</strong>
-            <p class="hint">${Number(posture.total_products || 0)} products from every tool — ${counts.current || 0} current · ${counts.outdated || 0} outdated · ${counts.eol || 0} EOL · ${counts.missing_patch || 0} patch gaps</p>
-            <p class="hint">${Object.entries(byLabel)
-              .map(([k, v]) => `${escapeHtml(k)} ${v}`)
-              .join(" · ") || "Rebuild inventory after scans / SIEM / XDR / LAN sync."}</p>
+            <p class="hint">${Number(posture.total_products || 0)} products — ${counts.current || 0} current · ${counts.outdated || 0} outdated · ${counts.eol || 0} EOL · ${counts.missing_patch || 0} patch gaps</p>
+            <p class="hint">${byLabelClean.map(([k, v]) => `${escapeHtml(k)} ${v}`).join(" · ") || "Refresh this PC or Sync & rebuild to collect inventory."}</p>
           </div>
         </div>
       </div>`;
@@ -1653,8 +1646,8 @@
       ${_softwareView === "servers" ? serverPanel : `${filterBar}
       <div class="sw-table-wrap">
         <table class="ws-table sw-table">
-          <thead><tr><th>Status</th><th>Product</th><th>Source</th><th>Installed</th><th>Latest</th><th>CVE</th><th>Host</th><th>Port</th></tr></thead>
-          <tbody>${tableRows || `<tr><td colspan="8" class="hint">No software rows — click Sync all &amp; rebuild.</td></tr>`}</tbody>
+          <thead><tr><th>Status</th><th>Product</th><th>Source</th><th>Installed</th><th>Latest</th><th>CVE</th><th>Host</th></tr></thead>
+          <tbody>${tableRows || `<tr><td colspan="7" class="hint">No software rows — click Sync &amp; rebuild.</td></tr>`}</tbody>
         </table>
       </div>`}`;
 
@@ -1733,6 +1726,16 @@
     ) {
       window.__securaiqSwLocalTried = true;
       window.refreshLocalWindowsHost(true).then(() => renderSoftwarePage({ quiet: true })).catch(() => {});
+    }
+    // Background latest-version refresh once per session when the page is opened
+    if (!quiet && !window.__securaiqSwVersionsTried && totalProducts > 0) {
+      window.__securaiqSwVersionsTried = true;
+      fetch("/api/software/versions/refresh", { method: "POST", headers: authHeaders() })
+        .then((r) => r.json().catch(() => ({})))
+        .then(() => {
+          if (window.__securaiqWorkspaceView === "software") renderSoftwarePage({ quiet: true });
+        })
+        .catch(() => {});
     }
   }
   window.renderSoftwarePage = renderSoftwarePage;
@@ -3464,13 +3467,22 @@
           )}">${escapeHtml(label)}</button>`
         : `<span class="hint">—</span>`;
 
-    const scanTable = (rows, empty) =>
-      rows.length
+    const scanTable = (rows, empty, opts = {}) => {
+      const canDelete = Boolean(opts.deletable);
+      const head = `<tr><th>Target</th><th>Engine</th><th>Findings</th><th>When</th><th>Download</th>${
+        canDelete ? "<th></th>" : ""
+      }</tr>`;
+      return rows.length
         ? `<div class="data-table-wrap reports-table-wrap"><table class="data-table reports-table">
-            <thead><tr><th>Target</th><th>Engine</th><th>Findings</th><th>When</th><th>Download</th></tr></thead>
+            <thead>${head}</thead>
             <tbody>${rows
               .map((s) => {
                 const p = parseScanTitle(s.title);
+                const delCell = canDelete
+                  ? `<td class="reports-dl-cell"><button type="button" class="btn-secondary reports-archive-del" data-scan-id="${escapeHtml(
+                      s.id || ""
+                    )}">Delete</button></td>`
+                  : "";
                 return `<tr>
                   <td><strong>${escapeHtml(p.target)}</strong></td>
                   <td>${escapeHtml(p.scanner || "—")}</td>
@@ -3481,10 +3493,12 @@
                     "pdf",
                     "PDF"
                   )}</td>
+                  ${delCell}
                 </tr>`;
               })
               .join("")}</tbody></table></div>`
         : `<p class="hint page-pad">${empty}</p>`;
+    };
 
     body.innerHTML = `
       <div class="reports-page">
@@ -3524,7 +3538,7 @@
           archives.length
             ? `<section class="reports-section">
                 <header class="reports-section-head"><h2>Archived</h2><span class="hint">${archives.length}</span></header>
-                ${scanTable(archives, "")}
+                ${scanTable(archives, "", { deletable: true })}
               </section>`
             : ""
         }
@@ -3598,6 +3612,31 @@
 
     body.querySelectorAll(".reports-dl").forEach((btn) => {
       btn.addEventListener("click", () => downloadReport(btn.getAttribute("data-href"), btn.getAttribute("data-kind") || ""));
+    });
+    body.querySelectorAll(".reports-archive-del").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const scanId = btn.getAttribute("data-scan-id") || "";
+        if (!scanId) return;
+        if (
+          !confirm(
+            "Permanently delete this archived report (Markdown, PDF, and evidence)? This cannot be undone."
+          )
+        )
+          return;
+        btn.disabled = true;
+        try {
+          const res = await fetch(`/api/archive/scans/${encodeURIComponent(scanId)}`, {
+            method: "DELETE",
+            headers: authHeaders(),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+          await renderReportsPage();
+        } catch (err) {
+          btn.disabled = false;
+          alert(err.message || "Delete failed");
+        }
+      });
     });
     qs("reportExecPdf")?.addEventListener("click", () => {
       if (typeof window.downloadBinary === "function") {
@@ -4658,8 +4697,289 @@
     }
   }
 
+  function _fmtPkgBytes(n) {
+    const b = Number(n) || 0;
+    if (b <= 0) return "";
+    if (b < 1024) return `${b} B`;
+    if (b < 1048576) return `${(b / 1024).toFixed(1)} KB`;
+    return `${(b / 1048576).toFixed(1)} MB`;
+  }
+
+  async function renderAgentPackagesHub(el) {
+    if (!el) return;
+    try {
+      const res = await fetch("/api/agents/packages", { headers: authHeaders() });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+      const byOs = data.by_os || {};
+      const rt = data.realtime || {};
+      const dmgAvailable = !!data.dmg_available;
+      const osMeta = [
+        { key: "windows", title: "Windows", expect: "Download .exe (or .zip with install.ps1 inside)" },
+        { key: "linux", title: "Linux", expect: "Download .tar.gz — install.sh is inside the archive" },
+        { key: "macos", title: "macOS", expect: "Download .tar.gz (+ .dmg when built on Mac/CI)" },
+      ];
+      const itemBtn = (item) => {
+        const url = item.download_url || "";
+        const size = item.size_bytes != null ? ` · ${_fmtPkgBytes(item.size_bytes)}` : "";
+        const missing = item.built === false;
+        if (missing) {
+          return `<span class="hint">${escapeHtml(item.label || item.filename)} — not on this server</span>`;
+        }
+        const cls = item.primary === false ? "btn-ghost agents-pkg-dl" : "btn-secondary agents-pkg-dl";
+        return `<a class="${cls}" href="${escapeHtml(url)}" download>${escapeHtml(item.label || item.filename)}${escapeHtml(size)}</a>`;
+      };
+      const cards = osMeta
+        .map((os) => {
+          const items = byOs[os.key] || [];
+          const pkgs = items.filter((i) => i.kind !== "installer" && i.kind !== "script");
+          const scripts = items.filter((i) => i.kind === "installer" || i.kind === "script");
+          const hasDmg = pkgs.some((p) => p.kind === "dmg");
+          const dmgNote =
+            os.key === "macos" && !hasDmg && !dmgAvailable
+              ? `<p class="hint agents-dmg-note">No .dmg on this server — use the .tar.gz package (DMG needs macOS/CI).</p>`
+              : "";
+          const empty =
+            !pkgs.length
+              ? `<p class="hint">No package artifacts yet. Build with <code>${escapeHtml(data.build_hint || "python scripts/build_agent_packages.py")}</code></p>`
+              : "";
+          const fallback =
+            scripts.length
+              ? `<details class="agents-dev-fallback" style="margin-top:0.5rem"><summary class="hint">Developer fallback (scripts)</summary><div class="agents-pkg-actions" style="margin-top:0.35rem">${scripts.map(itemBtn).join("")}</div></details>`
+              : "";
+          return `<article class="agents-os-card" data-os="${escapeHtml(os.key)}">
+            <h3>${escapeHtml(os.title)}</h3>
+            <p class="hint">${escapeHtml(os.expect)}</p>
+            ${dmgNote}
+            <div class="agents-pkg-actions">
+              ${pkgs.map(itemBtn).join("")}
+              ${empty}
+            </div>
+            ${fallback}
+          </article>`;
+        })
+        .join("");
+      const allScripts = (byOs.all || []).map(itemBtn).join("");
+      const notes = (data.notes || []).map((n) => `<li>${escapeHtml(n)}</li>`).join("");
+      el.innerHTML = `
+        <div class="agents-rt-inline hint" id="agentsPkgRealtimeHint">
+          Realtime: SSE <code>${escapeHtml(rt.sse || "/api/realtime")}</code>
+          · Agent WS <code>${escapeHtml(rt.agent_websocket || "/api/agents/ws")}</code>
+          · Fleet <strong id="agentsPkgFleetOnline">${Number(rt.fleet_online || 0)}</strong>/<span id="agentsPkgFleetTotal">${Number(rt.fleet_total || 0)}</span> online
+        </div>
+        <div class="agents-os-grid">${cards}</div>
+        ${allScripts ? `<details class="agents-dev-fallback" style="margin-top:0.75rem"><summary class="hint">Developer fallback — all platforms</summary><div class="agents-pkg-actions" style="margin-top:0.35rem">${allScripts}</div></details>` : ""}
+        <div class="agents-enroll-steps" style="margin-top:1rem">
+          <h4 style="margin:0 0 0.35rem">Install after enroll</h4>
+          <ol class="hint" style="margin:0;padding-left:1.2rem">
+            <li>Click <strong>Enroll new agent</strong> and copy the one-time token (<code>agent_id.agent_key</code>).</li>
+            <li>Download the <strong>package</strong> for the host OS (.exe / .zip / .tar.gz) — not the raw scripts.</li>
+            <li>Run the exe, or unzip and use the embedded <code>install.ps1</code> / <code>install.sh</code> with your token.</li>
+            <li>Status should flip to <strong>online</strong> within ~60s; Mission Control SSE emits <code>agent</code> events.</li>
+          </ol>
+        </div>
+        ${notes ? `<ul class="hint agents-pkg-notes" style="margin:0.75rem 0 0;padding-left:1.2rem">${notes}</ul>` : ""}
+      `;
+    } catch (err) {
+      el.innerHTML = `<p class="hint">Couldn't load package catalog. <span class="hint-sub">(${escapeHtml(err.message || String(err))})</span></p>`;
+    }
+  }
+  window.renderAgentPackagesHub = renderAgentPackagesHub;
+
+  function wireAgentsControls(cfg) {
+    cfg = cfg || {};
+    const enrollBtn = typeof cfg.enrollBtn === "string" ? qs(cfg.enrollBtn) : cfg.enrollBtn;
+    const campaignBtn = typeof cfg.campaignBtn === "string" ? qs(cfg.campaignBtn) : cfg.campaignBtn;
+    const resultEl = typeof cfg.resultEl === "string" ? qs(cfg.resultEl) : cfg.resultEl;
+    const formEl = typeof cfg.formEl === "string" ? qs(cfg.formEl) : cfg.formEl;
+    if (enrollBtn && !enrollBtn.dataset.wired) {
+      enrollBtn.dataset.wired = "1";
+      enrollBtn.addEventListener("click", async () => {
+        enrollBtn.disabled = true;
+        const prev = enrollBtn.textContent;
+        enrollBtn.textContent = "Enrolling…";
+        try {
+          const res = await fetch("/api/agents/enroll", {
+            method: "POST",
+            headers: authHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify({ name: "" }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+          if (resultEl) {
+            resultEl.innerHTML = `
+              <div class="cc-panel" style="margin:0.75rem 0;background:var(--panel-2,rgba(255,255,255,0.03))">
+                <p class="hint"><strong>Agent enrolled</strong> · id <code>${escapeHtml(data.agent_id)}</code></p>
+                <p class="hint">Token shown ONCE — copy it now. Download a package below, then run with <code>--server</code> + <code>--token</code> (or set <code>SECURAIQ_SERVER</code> / <code>SECURAIQ_TOKEN</code>):</p>
+                <textarea readonly rows="3" style="width:100%;font-family:ui-monospace,monospace;font-size:0.82rem" onclick="this.select()">${escapeHtml(
+                  data.install_hint || ""
+                )}</textarea>
+                <button type="button" class="btn-secondary agents-enroll-dismiss" style="margin-top:0.5rem">Dismiss</button>
+              </div>`;
+            resultEl.querySelector(".agents-enroll-dismiss")?.addEventListener("click", () => {
+              resultEl.innerHTML = "";
+            });
+          }
+          renderAgentsPanel();
+          if (typeof renderAgentPackagesHub === "function") {
+            const pkgEl = qs("agentsPackagesBody") || qs("socAgentsPackagesBody");
+            if (pkgEl) renderAgentPackagesHub(pkgEl);
+          }
+        } catch (err) {
+          if (typeof notifyUser === "function") notifyUser(`**Agent enroll failed:** ${err.message || err}`);
+          else alert(err.message || "Enroll failed");
+        } finally {
+          enrollBtn.disabled = false;
+          enrollBtn.textContent = prev || "Enroll new agent";
+        }
+      });
+    }
+    if (campaignBtn && !campaignBtn.dataset.wired) {
+      campaignBtn.dataset.wired = "1";
+      campaignBtn.addEventListener("click", async () => {
+        if (!formEl) return;
+        if (formEl.innerHTML) {
+          formEl.innerHTML = "";
+          return;
+        }
+        let agents = [];
+        try {
+          const r = await fetch("/api/agents", { headers: authHeaders() });
+          const d = await r.json().catch(() => ({}));
+          agents = (d.agents || []).filter((a) => !a.revoked);
+        } catch (e) {
+          agents = [];
+        }
+        if (!agents.length) {
+          if (typeof notifyUser === "function") notifyUser("No enrolled agents to target — enroll one first.");
+          return;
+        }
+        formEl.innerHTML = `
+          <div class="cc-panel" style="margin:0.75rem 0;background:var(--panel-2,rgba(255,255,255,0.03))">
+            <h4 style="margin:0 0 8px">New patch campaign</h4>
+            <form id="campaignFormShared" class="inline-form" style="flex-wrap:wrap">
+              <input id="campaignNameShared" placeholder="Campaign name (optional)" style="min-width:220px" />
+              <select id="campaignManagerShared">
+                <option value="apt">apt (Linux)</option>
+                <option value="winget">winget (Windows)</option>
+                <option value="brew">brew (macOS)</option>
+                <option value="pip">pip</option>
+              </select>
+              <input id="campaignPackageShared" placeholder="Package name" required style="min-width:160px" />
+              <input id="campaignTargetVersionShared" placeholder="Target version (optional)" style="min-width:160px" />
+              <button type="submit" class="btn-primary-cc">Create campaign</button>
+              <button type="button" class="btn-secondary" id="campaignCancelShared">Cancel</button>
+            </form>
+            <div style="margin-top:8px;max-height:160px;overflow:auto">
+              ${agents
+                .map(
+                  (a) =>
+                    `<label style="display:block;font-size:0.82rem"><input type="checkbox" class="campaign-agent-cb" value="${escapeHtml(a.id)}" checked /> ${escapeHtml(a.hostname || a.name || a.id.slice(0, 8))}</label>`
+                )
+                .join("")}
+            </div>
+          </div>`;
+        formEl.querySelector("#campaignCancelShared")?.addEventListener("click", () => {
+          formEl.innerHTML = "";
+        });
+        formEl.querySelector("#campaignFormShared")?.addEventListener("submit", async (ev) => {
+          ev.preventDefault();
+          const agentIds = Array.from(formEl.querySelectorAll(".campaign-agent-cb:checked")).map((c) => c.value);
+          if (!agentIds.length) {
+            alert("Select at least one agent");
+            return;
+          }
+          const payload = {
+            name: (qs("campaignNameShared")?.value || "").trim(),
+            manager: qs("campaignManagerShared")?.value || "apt",
+            package: (qs("campaignPackageShared")?.value || "").trim(),
+            target_version: (qs("campaignTargetVersionShared")?.value || "").trim(),
+            agent_ids: agentIds,
+          };
+          try {
+            const r = await fetch("/api/agents/campaigns", {
+              method: "POST",
+              headers: authHeaders({ "Content-Type": "application/json" }),
+              body: JSON.stringify(payload),
+            });
+            const d = await r.json().catch(() => ({}));
+            if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+            if (typeof notifyUser === "function") notifyUser("Campaign created — approve pending items before agents run patches.");
+            formEl.innerHTML = "";
+            renderAgentsPanel();
+          } catch (err) {
+            alert(err.message || "Campaign create failed");
+          }
+        });
+      });
+    }
+  }
+
+  async function renderAgentsPage(opts) {
+    opts = opts || {};
+    const quiet = !!opts.quiet;
+    const body = qs("agentsPageBody");
+    if (!body) return;
+    const already = body.dataset.agentsRendered === "1";
+    if (!quiet || !already) {
+      body.innerHTML = `
+        <section class="cc-panel agents-rt-strip" id="agentsRealtimePanel">
+          <header><h2>Realtime status</h2><button type="button" class="btn-secondary" id="agentsPageRefreshBtn">Refresh</button></header>
+          <div id="agentsRealtimeBody"><p class="hint">Loading…</p></div>
+        </section>
+        <section class="cc-panel" id="agentsPackagesPanel" style="margin-top:1rem">
+          <header><h2>Packages by OS</h2></header>
+          <div id="agentsPackagesBody"><p class="hint">Loading…</p></div>
+        </section>
+        <section class="cc-panel" id="agentsFleetPanel" style="margin-top:1rem">
+          <header><h2>Fleet</h2></header>
+          <div id="agentsPageEnrollResult"></div>
+          <div id="agentsPageCampaignForm"></div>
+          <div id="agentsFleetBody"><p class="hint">Loading…</p></div>
+        </section>`;
+      body.dataset.agentsRendered = "1";
+      wireAgentsControls({
+        enrollBtn: "agentsPageEnrollBtn",
+        campaignBtn: "agentsPageCampaignBtn",
+        resultEl: "agentsPageEnrollResult",
+        formEl: "agentsPageCampaignForm",
+      });
+      qs("agentsPageRefreshBtn")?.addEventListener("click", () => renderAgentsPage());
+    }
+    await Promise.all([
+      renderAgentPackagesHub(qs("agentsPackagesBody")),
+      renderAgentsPanel(),
+    ]);
+    // Mirror package catalog realtime counts into the strip
+    const rtBody = qs("agentsRealtimeBody");
+    const online = qs("agentsPkgFleetOnline")?.textContent || "0";
+    const total = qs("agentsPkgFleetTotal")?.textContent || "0";
+    if (rtBody) {
+      const esState =
+        window.__securaiqRealtimeEs && typeof EventSource !== "undefined"
+          ? window.__securaiqRealtimeEs.readyState === EventSource.OPEN
+            ? "connected"
+            : window.__securaiqRealtimeEs.readyState === EventSource.CONNECTING
+            ? "connecting"
+            : "disconnected"
+          : "unknown";
+      rtBody.innerHTML = `
+        <div class="cc-kpi-grid" style="margin:0">
+          <article class="cc-kpi"><span>Agents online</span><strong>${escapeHtml(online)}</strong></article>
+          <article class="cc-kpi"><span>Enrolled</span><strong>${escapeHtml(total)}</strong></article>
+          <article class="cc-kpi"><span>UI SSE <code>/api/realtime</code></span><strong>${escapeHtml(esState)}</strong></article>
+          <article class="cc-kpi"><span>Agent WS</span><strong><code>/api/agents/ws</code></strong></article>
+        </div>
+        <p class="hint" style="margin:0.5rem 0 0">Fleet list and package cards refresh on <code>agent</code> / <code>agent_command</code> realtime events.</p>`;
+    }
+  }
+  window.renderAgentsPage = renderAgentsPage;
+
   async function renderAgentsPanel() {
-    const el = qs("agentsPanelBody");
+    const el =
+      (window.__securaiqWorkspaceView === "agents" && qs("agentsFleetBody")) ||
+      qs("agentsPanelBody") ||
+      qs("agentsFleetBody");
     if (!el) return;
     try {
       const [res, threatsRes, pendingRes, campaignsRes] = await Promise.all([
@@ -4682,7 +5002,7 @@
         (threatsByAgent[t.agent_id] = threatsByAgent[t.agent_id] || []).push(t);
       });
       if (!agents.length) {
-        el.innerHTML = `<p class="hint">No agents enrolled yet. Click <strong>Enroll new agent</strong>, then install <code>scripts/securaiq_agent.py</code> on a server to monitor.</p>`;
+        el.innerHTML = `<p class="hint">No agents enrolled yet. Click <strong>Enroll new agent</strong>, download a package (.exe / .zip / .tar.gz), and run it on a lab host you own.</p>`;
         return;
       }
       const statusChip = (st) => {
@@ -5162,10 +5482,17 @@
     ev.preventDefault();
     const targetEl = qs("webscanTarget");
     const target = (targetEl?.value || "").trim();
-    const profile = qs("webscanProfile")?.value || "vulnerability";
+    const profile = qs("webscanProfile")?.value || "web";
     const authorized = !!qs("webscanAuthorized")?.checked;
     if (!target) {
-      alert("Enter a URL to scan.");
+      alert("Enter a public URL to scan.");
+      targetEl?.focus();
+      return;
+    }
+    if (typeof isPrivateOrInternalWebTarget === "function" && isPrivateOrInternalWebTarget(target)) {
+      alert(
+        "Web scan is for public http(s) URLs only. Private/LAN/loopback targets belong under Network scan."
+      );
       targetEl?.focus();
       return;
     }
@@ -5276,19 +5603,19 @@
         <section class="cc-panel">
           <header><h2>Scan a URL</h2></header>
           <form id="webscanForm" class="inline-form inline-form-col" style="gap:0.6rem">
-            <input id="webscanTarget" type="text" placeholder="https://example.com" required style="width:100%" />
+            <input id="webscanTarget" type="text" placeholder="https://public.example.com" required style="width:100%" />
             <div style="display:flex;gap:0.75rem;flex-wrap:wrap;align-items:center">
-              <label class="hint">Depth
+              <label class="hint">Checks
                 <select id="webscanProfile">
-                  <option value="web">Standard — headers, TLS, robots/sitemap</option>
-                  <option value="vulnerability" selected>Deep — + sensitive paths, cookies, CORS</option>
-                  <option value="full">Full — + active checks (reflected input, open redirect)</option>
+                  <option value="web" selected>Standard — headers, TLS, robots/sitemap</option>
+                  <option value="vulnerability">Extended — + sensitive paths, cookies, CORS</option>
+                  <option value="full">Thorough — + light reflection / redirect probes</option>
                 </select>
               </label>
               <label class="hint"><input type="checkbox" id="webscanAuthorized" checked /> I'm authorized to scan this target</label>
               <button type="submit" class="btn-primary" id="webscanStart">Start scan</button>
             </div>
-            <p class="hint">Authorized lab/owned targets only. Public targets need the checkbox above confirmed.</p>
+            <p class="hint">Public http(s) URLs only. Private/LAN hosts use Network scan (New scan → Network). Built-in DAST — no ZAP daemon required.</p>
           </form>
         </section>
         <section class="cc-panel" id="webscanProgressPanel" style="margin-top:1rem;display:none">
@@ -5387,6 +5714,7 @@
       // event shouldn't re-hit /api/siem/overview, /api/xdr/status, etc.
       if (!opts.pushType || SOC_RELEVANT_PUSH_TYPES.has(opts.pushType)) {
         renderAgentsPanel();
+        renderAgentPackagesHub(qs("socAgentsPackagesBody"));
         renderXdrPanel(true);
         renderWazuhPanel(true);
         renderTheHivePanel(true);
@@ -5462,7 +5790,8 @@
         </section>
       </div>
       <section class="cc-panel" id="agentsPanel" style="margin-top:1rem">
-        <header><h2>SecuraIQ Agents</h2><div style="display:flex;gap:0.5rem"><button type="button" class="btn-secondary" id="agentsCampaignBtn">New patch campaign</button><button type="button" class="btn-secondary" id="agentsEnrollBtn">Enroll new agent</button></div></header>
+        <header><h2>Agents &amp; packages</h2><div style="display:flex;gap:0.5rem;flex-wrap:wrap"><button type="button" class="btn-secondary" data-workspace="agents" id="socOpenAgentsPage">Open Agents page</button><button type="button" class="btn-secondary" id="agentsCampaignBtn">New patch campaign</button><button type="button" class="btn-secondary" id="agentsEnrollBtn">Enroll new agent</button></div></header>
+        <div id="socAgentsPackagesBody"><p class="hint">Loading packages…</p></div>
         <div id="agentsEnrollResult"></div>
         <div id="agentsCampaignForm"></div>
         <div id="agentsPanelBody"><p class="hint">Loading…</p></div>
@@ -5484,10 +5813,12 @@
     renderRiskSimulatorPanel();
     renderRemediationPlansPanel();
     renderAttackPathsPanel();
+    renderAgentPackagesHub(qs("socAgentsPackagesBody"));
     renderAgentsPanel();
     renderXdrPanel();
     renderWazuhPanel();
     renderTheHivePanel();
+    qs("socOpenAgentsPage")?.addEventListener("click", () => showWorkspace("agents"));
     qs("agentsEnrollBtn")?.addEventListener("click", async () => {
       const btn = qs("agentsEnrollBtn");
       const resultEl = qs("agentsEnrollResult");
@@ -6147,7 +6478,6 @@
       const st = await stRes.json().catch(() => ({}));
       const listsPayload = await listRes.json().catch(() => ({}));
       const lists = listsPayload.lists || [];
-      const cisLists = lists.filter((l) => l.kind === "cis").slice(0, 8);
       const chip = st.installed
         ? `<span class="auto-job-status status-done">installed</span>`
         : `<span class="auto-job-status status-planned">not installed</span>`;
@@ -6155,95 +6485,54 @@
       const auditRuns = runs.filter((r) => ["Audit", "Import", "Config"].includes(r.mode) && (r.status || "done") === "done");
       const auditDone = auditRuns.length > 0;
       const lastAudit = auditRuns[0] || runs[0];
-      let auditChip = `<span class="auto-job-status status-planned">Not audited</span>`;
+      let auditChip = `<span class="auto-job-status status-planned">not audited</span>`;
       if (auditDone) {
-        auditChip = `<span class="auto-job-status status-done">Audit done</span>`;
+        auditChip = `<span class="auto-job-status status-done">audited</span>`;
       } else if (st.installed) {
-        auditChip = `<span class="auto-job-status status-running">Ready — run audit</span>`;
+        auditChip = `<span class="auto-job-status status-running">ready</span>`;
       }
-      const runsHtml = runs.length
-        ? runs
-            .map(
-              (r) =>
-                `<li><strong>${escapeHtml(r.mode || "")}</strong> · score ${
-                  r.score != null ? escapeHtml(String(r.score)) : "—"
-                } · failed ${r.failed || 0} · imported ${r.imported || 0}
-                ${r.list_name ? ` · <span class="hint">${escapeHtml(String(r.list_name).replace(/^.*[\\\\\\/]/, ""))}</span>` : ""}</li>`
-            )
-            .join("")
-        : `<li class="hint">No audits yet</li>`;
-      const listHtml = cisLists.length
-        ? cisLists.map((l) => `<li><code>${escapeHtml(l.name)}</code></li>`).join("")
-        : lists
-            .slice(0, 6)
-            .map((l) => `<li><code>${escapeHtml(l.name)}</code></li>`)
-            .join("") || `<li class="hint">No finding lists on disk</li>`;
       el.innerHTML = `
-        <div class="hk-status">
+        <div class="hk-status hk-status-compact">
           ${chip}
           ${auditChip}
-          ${st.module_path ? `<code class="hk-path">${escapeHtml(st.module_path)}</code>` : ""}
-          <span class="hint">${Number(st.finding_lists) || 0} lists · ${Number(st.cis_lists) || 0} CIS${
-            lastAudit && lastAudit.score != null ? ` · last score ${escapeHtml(String(lastAudit.score))}` : ""
+          <span class="hint">${Number(st.cis_lists) || 0} CIS lists${
+            lastAudit && lastAudit.score != null ? ` · score ${escapeHtml(String(lastAudit.score))}` : ""
           }</span>
         </div>
         ${
           !st.installed
             ? `<div class="hk-setup-block">
-                <p class="hint">Windows hardening checks aren't installed on this host yet.</p>
-                <details class="hk-setup-advanced">
-                  <summary>Advanced: install manually</summary>
-                  <p class="hint">Run this in PowerShell from the SecuraIQ folder, then restart and click <strong>HardeningKitty audit</strong> above.</p>
-                  <div class="hk-setup-cmd-row">
-                    <code class="hk-setup-code" id="hkSetupCmd">.\\scripts\\use_hardeningkitty.cmd -Download</code>
-                    <button type="button" class="btn-secondary" id="hkCopySetup">Copy</button>
-                  </div>
-                </details>
+                <button type="button" class="btn-primary-cc" id="hkCopySetup">Copy install command</button>
+                <code class="hk-setup-code hidden" id="hkSetupCmd">.\\scripts\\use_hardeningkitty.cmd -Download</code>
               </div>`
             : !auditDone
-              ? `<p class="hint">Module is installed — run <strong>Audit</strong> to baseline CIS checks on this host.</p>`
-              : `<p class="hint">Last audit imported ${lastAudit?.imported || 0} finding(s) · failed checks ${lastAudit?.failed || 0}.</p>`
+              ? `<button type="button" class="btn-primary-cc" id="hkRunAuditInline">Run audit</button>`
+              : `<p class="hint">${lastAudit?.failed || 0} failed · ${lastAudit?.imported || 0} imported</p>`
         }
-        <div class="hk-columns">
-          <div>
-            <p class="hint">Finding lists</p>
-            <ul class="cc-list">${listHtml}</ul>
-          </div>
-          <div>
-            <p class="hint">Recent runs</p>
-            <ul class="cc-list">${runsHtml}</ul>
-          </div>
-        </div>
-        <p class="hint hk-links">
-          Official CIS Benchmarks:
-          <a href="${escapeHtml(st.cis_downloads || "https://downloads.cisecurity.org/#/")}" target="_blank" rel="noopener">CIS Downloads</a>
-          · Module:
-          <a href="${escapeHtml(st.repo || "https://github.com/scipag/HardeningKitty")}" target="_blank" rel="noopener">HardeningKitty</a>
-          · Or import an Audit report CSV under Vulnerabilities.
-        </p>
         <div class="cc-action-row hk-actions">
-          <label class="hint">List
-            <select id="hkListSelect" class="composer-select">
-              <option value="">Default list</option>
-              ${lists
-                .map(
-                  (l) =>
-                    `<option value="${escapeHtml(l.path)}">${escapeHtml(l.label || l.name)}</option>`
-                )
-                .join("")}
-            </select>
-          </label>
-          <button type="button" class="btn-secondary" id="hkImportBtn">Import report CSV</button>
+          <select id="hkListSelect" class="composer-select" aria-label="Finding list">
+            <option value="">Default list</option>
+            ${lists
+              .map(
+                (l) =>
+                  `<option value="${escapeHtml(l.path)}">${escapeHtml(l.label || l.name)}</option>`
+              )
+              .join("")}
+          </select>
+          <button type="button" class="btn-secondary" id="hkImportBtn">Import CSV</button>
           <input type="file" id="hkImportFile" accept=".csv,text/csv" class="hidden" />
         </div>`;
       qs("hkCopySetup")?.addEventListener("click", async () => {
         const cmd = qs("hkSetupCmd")?.textContent || ".\\scripts\\use_hardeningkitty.cmd -Download";
         try {
           await navigator.clipboard.writeText(cmd);
-          if (typeof notifyUser === "function") notifyUser("**Copied** setup command to clipboard.");
+          if (typeof notifyUser === "function") notifyUser("**Copied** install command.");
         } catch {
-          if (typeof notifyUser === "function") notifyUser(`**Setup command:** \`${cmd}\``);
+          if (typeof notifyUser === "function") notifyUser(`**Command:** \`${cmd}\``);
         }
+      });
+      qs("hkRunAuditInline")?.addEventListener("click", () => {
+        if (typeof runHardeningKittyAudit === "function") runHardeningKittyAudit();
       });
       qs("hkImportBtn")?.addEventListener("click", () => qs("hkImportFile")?.click());
       qs("hkImportFile")?.addEventListener("change", async (e) => {
@@ -6260,7 +6549,7 @@
           const data = await res.json().catch(() => ({}));
           if (!res.ok) throw new Error(data.detail || res.status);
           if (typeof notifyUser === "function") {
-            notifyUser(`**HardeningKitty import:** ${data.imported || 0} findings`);
+            notifyUser(`**Import:** ${data.imported || 0} findings`);
           }
           renderHardeningPanel();
           if (typeof loadCommandCenter === "function") loadCommandCenter();
@@ -6937,7 +7226,7 @@
     body.innerHTML = `
       ${
         apiErrors.length
-          ? `<p class="hint" style="color:var(--danger,#b91c1c)">API issues: ${escapeHtml(apiErrors.join(" · "))}</p>`
+          ? `<p class="hint" style="color:var(--danger,#b91c1c)">API: ${escapeHtml(apiErrors.join(" · "))}</p>`
           : ""
       }
       <div class="fw-grid">
@@ -6949,27 +7238,50 @@
                   const st = statsById[f.id] || {};
                   const c = st.counts || {};
                   const pct = s ? Number(s.compliance_percent || 0) : null;
+                  const ok = c.implemented || 0;
+                  const part = c.partial || 0;
+                  const miss = c.missing || 0;
                   const total =
                     st.controls_total ||
                     f.control_count ||
-                    (c.implemented || 0) + (c.partial || 0) + (c.missing || 0);
-                  return `<article class="fw-card ${pct != null ? "fw-card-scored" : ""}">
+                    ok + part + miss;
+                  const t = Math.max(1, Number(total) || ok + part + miss || 1);
+                  const okW = Math.round((ok / t) * 100);
+                  const partW = Math.round((part / t) * 100);
+                  const missW = Math.max(0, 100 - okW - partW);
+                  const status =
+                    pct == null
+                      ? "Not assessed"
+                      : pct >= 80
+                        ? "Strong"
+                        : pct >= 50
+                          ? "Partial"
+                          : "Weak";
+                  const shortName = String(f.name || f.id || "")
+                    .replace(/\s*\(.*?\)\s*/g, " ")
+                    .replace(/\s+/g, " ")
+                    .trim();
+                  return `<article class="fw-card ${pct != null ? "fw-card-scored" : "fw-card-empty"}" data-fw-id="${escapeHtml(f.id)}">
                     <header>
-                      <h2>${escapeHtml(f.name)}</h2>
+                      <h2 title="${escapeHtml(f.name || "")}">${escapeHtml(shortName)}</h2>
                       <span class="fw-card-pct">${pct != null ? `${pct}%` : "—"}</span>
                     </header>
-                    <p class="hint">${escapeHtml(f.version || f.id || "")}</p>
-                    <p class="fw-meta"><strong>${total || 0}</strong> controls ·
-                      <strong>${c.implemented || 0}</strong> ok ·
-                      <strong>${c.partial || 0}</strong> partial ·
-                      <strong>${c.missing || 0}</strong> missing</p>
-                    <div class="cc-bar"><i style="width:${pct != null ? pct : 0}%"></i></div>
-                    <p class="fw-score">${pct != null ? "Heuristic assessment score (not certification)" : "Not assessed — run gap analysis"}</p>
+                    <p class="fw-meta">${total || 0} controls · <span class="fw-status-tag">${status}</span></p>
+                    <div class="fw-stack-bar" title="Pass ${ok} · Partial ${part} · Fail ${miss}">
+                      <i class="is-ok" style="width:${okW}%"></i>
+                      <i class="is-warn" style="width:${partW}%"></i>
+                      <i class="is-fail" style="width:${missW}%"></i>
+                    </div>
+                    <div class="fw-card-stats">
+                      <span class="is-ok">${ok} pass</span>
+                      <span class="is-warn">${part} partial</span>
+                      <span class="is-fail">${miss} fail</span>
+                    </div>
                     <div class="cc-action-row">
                       <button type="button" class="btn-primary-cc fw-open-controls" data-id="${escapeHtml(
                         f.id
-                      )}" data-aid="${escapeHtml(st.assessment_id || s?.id || "")}">Open controls</button>
-                      <button type="button" class="btn-secondary fw-run-gap" data-id="${escapeHtml(f.id)}">Gap analysis</button>
+                      )}" data-aid="${escapeHtml(st.assessment_id || s?.id || "")}">Open</button>
+                      <button type="button" class="btn-secondary fw-run-gap" data-id="${escapeHtml(f.id)}">Assess</button>
                     </div>
                   </article>`;
                 })
@@ -7005,6 +7317,8 @@
     const expiring = data.evidence_expiring_soon || [];
     const topGaps = data.top_gaps || [];
     const highest = data.highest_impact_gap || topGaps[0] || null;
+    const continuous = data.continuous || {};
+    const liveFails = continuous.live_failures || [];
     const hierarchy = data.hierarchy || [
       "framework",
       "requirement",
@@ -7030,6 +7344,13 @@
       if (worst === "partial") return `<span class="wq-badge pri-medium">live partial</span>`;
       return `<span class="hint">—</span>`;
     };
+    const liveEvalLabel = continuous.last_evaluated
+      ? new Date(
+          Number(continuous.last_evaluated) < 1e12
+            ? Number(continuous.last_evaluated) * 1000
+            : Number(continuous.last_evaluated)
+        ).toLocaleString()
+      : "—";
     body.innerHTML = `
       <nav class="cc-flow-strip" aria-label="Compliance evidence flow" style="display:flex;flex-wrap:wrap;gap:0.35rem;align-items:center;margin:0 0 1rem;font-size:0.85rem">
         ${hierarchy
@@ -7056,6 +7377,56 @@
           <li><span>Missing</span><strong>${counts.missing || 0}</strong></li>
           <li><span>Active exceptions</span><strong>${exc.active_coverage || 0}</strong></li>
         </ul>
+      </div>
+      <div class="cc-panel" style="margin-top:0.85rem" id="ccContinuousPanel">
+        <header style="display:flex;flex-wrap:wrap;gap:0.5rem;align-items:center;justify-content:space-between">
+          <h2>Continuous compliance</h2>
+          <div style="display:flex;flex-wrap:wrap;gap:0.4rem">
+            <button type="button" class="btn-secondary" id="ccRunLiveTests">Run all control tests</button>
+            <button type="button" class="btn-primary-cc" id="ccFixLiveFails" ${liveFails.length ? "" : "disabled"}>
+              Fix with SecuraIQ${liveFails.length ? ` (${liveFails.length})` : ""}
+            </button>
+          </div>
+        </header>
+        <p class="hint">${escapeHtml(
+          continuous.disclaimer ||
+            "Live telemetry tests for curated controls — separate from the pasted-evidence posture % above."
+        )}</p>
+        <ul class="fw-hero-stats" style="margin:0.5rem 0">
+          <li><span>Last evaluated</span><strong>${escapeHtml(liveEvalLabel)}</strong></li>
+          <li><span>Tests run</span><strong>${continuous.tests_run || 0}</strong></li>
+          <li><span>Passing</span><strong>${continuous.passing || 0}</strong></li>
+          <li><span>Partial</span><strong>${continuous.partial || 0}</strong></li>
+          <li><span>Failing</span><strong>${continuous.failing || 0}</strong></li>
+        </ul>
+        ${
+          liveFails.length
+            ? `<div class="data-table-wrap"><table class="data-table"><thead><tr>
+                <th>Risk</th><th>Framework</th><th>Control</th><th>Live test</th><th>Why</th><th></th>
+              </tr></thead><tbody>${liveFails
+                .map((f) => {
+                  const risk = Number(f.risk_score || 0);
+                  const pri = risk >= 80 ? "high" : risk >= 50 ? "medium" : "low";
+                  return `<tr>
+                    <td><span class="wq-badge pri-${pri}">${escapeHtml(String(f.risk_score ?? "—"))}</span></td>
+                    <td>${escapeHtml(f.framework_name || f.framework_id || "")}</td>
+                    <td><strong>${escapeHtml(f.control_id || "")}</strong>
+                      <div class="hint">${escapeHtml(f.title || "")}</div></td>
+                    <td><span class="wq-badge pri-${f.status === "fail" ? "high" : "medium"}">${escapeHtml(
+                      f.status || ""
+                    )}</span>
+                      <div class="hint">${escapeHtml(f.test || "")}</div></td>
+                    <td class="hint">${escapeHtml((f.summary || "").slice(0, 140))}</td>
+                    <td class="ws-actions">
+                      <button type="button" class="btn-secondary cc-live-open"
+                        data-ws="${escapeHtml(f.workspace || "frameworks")}"
+                        data-fw="${escapeHtml(f.framework_id || "")}">Open</button>
+                    </td>
+                  </tr>`;
+                })
+                .join("")}</tbody></table></div>`
+            : `<p class="hint">No live fails/partials on curated tests right now — run tests after inventory, vulns, or patch data changes.</p>`
+        }
       </div>
       <div class="cc-action-row" style="margin:0.75rem 0;flex-wrap:wrap;gap:0.5rem">
         ${
@@ -7227,6 +7598,54 @@
         btn?.getAttribute("data-aid"),
         btn?.getAttribute("data-rem")
       );
+    });
+    qs("ccRunLiveTests")?.addEventListener("click", async () => {
+      const btn = qs("ccRunLiveTests");
+      if (btn) btn.disabled = true;
+      try {
+        const r = await fetch("/api/compliance/run-live-tests", {
+          method: "POST",
+          headers: { ...authHeaders(), "Content-Type": "application/json" },
+        });
+        const payload = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(payload.detail || `HTTP ${r.status}`);
+        if (typeof notifyUser === "function") {
+          notifyUser(
+            `**Live tests complete** — ${payload.failing || 0} failing, ${payload.partial || 0} partial, ${payload.passing || 0} passing (telemetry signal, not certification).`
+          );
+        }
+        renderComplianceCenterPage();
+      } catch (err) {
+        if (typeof notifyUser === "function") notifyUser(`Live tests failed: ${err.message || err}`);
+        if (btn) btn.disabled = false;
+      }
+    });
+    qs("ccFixLiveFails")?.addEventListener("click", async () => {
+      const btn = qs("ccFixLiveFails");
+      if (btn) btn.disabled = true;
+      try {
+        const r = await fetch("/api/compliance/live-failures/fix", {
+          method: "POST",
+          headers: { ...authHeaders(), "Content-Type": "application/json" },
+        });
+        const payload = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(payload.detail || `HTTP ${r.status}`);
+        if (typeof notifyUser === "function") {
+          notifyUser(
+            `**Fix with SecuraIQ** — created ${payload.created || 0} remediation task(s) from live control failures.`
+          );
+        }
+        showWorkspace("remediations");
+      } catch (err) {
+        if (typeof notifyUser === "function") notifyUser(`Could not create remediations: ${err.message || err}`);
+        if (btn) btn.disabled = false;
+      }
+    });
+    body.querySelectorAll(".cc-live-open").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const ws = btn.getAttribute("data-ws") || "frameworks";
+        showWorkspace(ws);
+      });
     });
     body.querySelectorAll(".cc-queue-collect").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -8277,21 +8696,32 @@
   function renderAutomationPage() {
     const body = qs("automationPageBody");
     if (!body) return;
-    body.innerHTML = `<p class="hint">Loading jobs…</p>`;
+    if (!body.querySelector(".auto-dash")) {
+      body.innerHTML = `<p class="hint" aria-live="polite">Loading automation…</p>`;
+    }
     refreshAutomationPage();
   }
 
   async function refreshAutomationPage() {
     const body = qs("automationPageBody");
     if (!body) return;
+    const prevEngine = qs("autoJobEngine")?.value || "auto";
     let jobs = [];
     let prefect = {};
+    let hooks = [];
     try {
-      const res = await fetch("/api/jobs?limit=40", { headers: authHeaders() });
+      const [res, hookRes] = await Promise.all([
+        fetch("/api/jobs?limit=50", { headers: authHeaders() }),
+        fetch("/api/webhooks", { headers: authHeaders() }).catch(() => null),
+      ]);
       const data = await res.json().catch(() => ({}));
       jobs = data.jobs || [];
       prefect = data.prefect || {};
       if (!res.ok) throw new Error(data.detail || `Jobs failed (${res.status})`);
+      if (hookRes && hookRes.ok) {
+        const hd = await hookRes.json().catch(() => ({}));
+        hooks = hd.webhooks || [];
+      }
     } catch (err) {
       body.innerHTML = `<p class="hint">Could not load jobs: ${escapeHtml(err.message || String(err))}</p>`;
       return;
@@ -8304,116 +8734,254 @@
         /* ignore */
       }
     }
-    const engineDefault = prefect.ready ? "prefect" : "local";
+
     const fmtWhen = (ts) => {
-      if (ts == null || ts === "") return "-";
+      if (ts == null || ts === "") return "—";
       const n = Number(ts);
       const d = Number.isFinite(n) && n > 1e11 ? new Date(n) : Number.isFinite(n) ? new Date(n * 1000) : new Date(ts);
       return Number.isNaN(d.getTime()) ? String(ts) : d.toLocaleString();
     };
-    const jobRows =
+    const durationSec = (j) => {
+      const a = Number(j.started_at || j.created_at);
+      const b = Number(j.finished_at || 0);
+      if (!Number.isFinite(a) || !b) return null;
+      const as = a > 1e11 ? a / 1000 : a;
+      const bs = b > 1e11 ? b / 1000 : b;
+      return Math.max(0, Math.round(bs - as));
+    };
+    const statusOf = (j) => String(j.status || "unknown").toLowerCase();
+    const running = jobs.filter((j) => statusOf(j) === "running").length;
+    const pending = jobs.filter((j) => statusOf(j) === "pending").length;
+    const done = jobs.filter((j) => statusOf(j) === "done").length;
+    const failed = jobs.filter((j) => statusOf(j) === "error" || statusOf(j) === "failed").length;
+    const liveOn = !!window.__securaiqEsConnected;
+    const pill = qs("automationLivePill");
+    if (pill) {
+      pill.textContent = liveOn
+        ? `● LIVE · ${running} run · ${pending} queued`
+        : `○ Polling · ${running} run · ${pending} queued`;
+      pill.classList.toggle("is-live", liveOn);
+      pill.classList.toggle("is-busy", running + pending > 0);
+    }
+
+    const kindLabel = (k) =>
+      ({
+        scan_execute: "Scan",
+        combo_assessment: "Combo scan",
+        kev_sync: "KEV intel",
+        xdr_sync: "XDR sync",
+        wazuh_sync: "SIEM sync",
+        thehive_sync: "TheHive",
+        cloud_posture_sync: "Cloud posture",
+        openaudit_sync: "Inventory sync",
+        software_sync_all: "Software sync",
+        hardeningkitty_audit: "Hardening audit",
+        report_export: "Board PDF",
+      }[k] || k || "?");
+
+    const stageHits = {
+      Trigger: jobs.some((j) => /kev|webhook|intel/i.test(j.kind || "")),
+      Scan: jobs.some((j) => /scan|combo|nuclei|nmap|zap|web/i.test(j.kind || "")),
+      "AI triage": jobs.some((j) => /triage|investigate|ai/i.test(j.kind || "")),
+      Risk: jobs.some((j) => /risk|software_sync|vuln/i.test(j.kind || "")),
+      Approval: false,
+      Ticket: jobs.some((j) => /jira|thehive|ticket/i.test(j.kind || "")),
+      Notify: hooks.some((h) => h.enabled !== false),
+      Close: jobs.some((j) => statusOf(j) === "done" && /report|remed|verify/i.test(j.kind || "")),
+    };
+    const flowSteps = ["Trigger", "Scan", "AI triage", "Risk", "Approval", "Ticket", "Notify", "Close"];
+
+    const engineDefault = prefect.ready ? "prefect" : "local";
+    const hooksOn = hooks.filter((h) => h.enabled !== false).length;
+
+    const jobTable =
       jobs.length > 0
-        ? jobs
-            .map((j) => {
-              const st = String(j.status || "unknown").toLowerCase();
-              const eng = (j.payload && j.payload._engine) || (j.result && j.result.engine) || "-";
-              const summary =
-                j.error ||
-                (j.result && (j.result.path || j.result.count != null || j.result.duration_sec != null)
-                  ? JSON.stringify(j.result).slice(0, 120)
-                  : "");
-              return `<li data-job-id="${escapeHtml(j.id)}">
-                  <div>
-                    <strong>${escapeHtml(j.kind || "?")}</strong>
-                    <span class="hint">${escapeHtml(eng)} · ${escapeHtml(fmtWhen(j.created_at))}</span>
-                    ${summary ? `<span class="hint">${escapeHtml(String(summary).slice(0, 140))}</span>` : ""}
-                  </div>
-                  <span class="auto-job-status status-${escapeHtml(st)}">${escapeHtml(st)}</span>
-                  <span class="hint">${escapeHtml(fmtWhen(j.finished_at || j.started_at))}</span>
-                </li>`;
-            })
-            .join("")
-        : `<li class="hint">No runs yet - enqueue KEV sync, XDR sync, or a board report below.</li>`;
+        ? `<div class="data-table-wrap auto-jobs-wrap"><table class="data-table auto-jobs-table">
+            <thead><tr><th>Job</th><th>Engine</th><th>Status</th><th>Started</th><th>Duration</th><th>Result</th></tr></thead>
+            <tbody>${jobs
+              .slice(0, 25)
+              .map((j) => {
+                const st = statusOf(j);
+                const eng = (j.payload && j.payload._engine) || (j.result && j.result.engine) || "local";
+                const dur = durationSec(j);
+                const summary =
+                  j.error ||
+                  (j.result &&
+                    (j.result.message ||
+                      j.result.path ||
+                      (j.result.count != null ? `${j.result.count} items` : "") ||
+                      (j.result.duration_sec != null ? `${j.result.duration_sec}s` : ""))) ||
+                  "";
+                return `<tr data-job-id="${escapeHtml(j.id)}">
+                  <td><strong>${escapeHtml(kindLabel(j.kind))}</strong><br><span class="hint">${escapeHtml(j.kind || "")}</span></td>
+                  <td>${escapeHtml(String(eng))}</td>
+                  <td><span class="auto-job-status status-${escapeHtml(st)}">${escapeHtml(st)}</span></td>
+                  <td class="hint">${escapeHtml(fmtWhen(j.started_at || j.created_at))}</td>
+                  <td class="hint">${dur != null ? `${dur}s` : "—"}</td>
+                  <td class="hint">${escapeHtml(String(summary).slice(0, 100) || "—")}</td>
+                </tr>`;
+              })
+              .join("")}</tbody></table></div>`
+        : `<p class="hint page-pad">No jobs yet — run a sync below or start a <button type="button" class="btn-secondary" data-action="new-scan">New scan</button>.</p>`;
+
     const logLines = jobs
-      .slice(0, 12)
+      .slice(0, 14)
       .map((j) => {
-        const st = j.status || "?";
+        const st = statusOf(j);
         const when = fmtWhen(j.finished_at || j.started_at || j.created_at);
-        return `<div class="auto-log-line"><code>${escapeHtml(when)}</code> <strong>${escapeHtml(
-          j.kind || ""
-        )}</strong> ${escapeHtml(st)}${j.error ? ` - ${escapeHtml(String(j.error).slice(0, 80))}` : ""}</div>`;
+        return `<div class="auto-log-line is-${escapeHtml(st)}"><code>${escapeHtml(when)}</code>
+          <strong>${escapeHtml(kindLabel(j.kind))}</strong>
+          <span class="auto-job-status status-${escapeHtml(st)}">${escapeHtml(st)}</span>
+          ${j.error ? `<span class="hint">${escapeHtml(String(j.error).slice(0, 90))}</span>` : ""}</div>`;
       })
       .join("");
+
     body.innerHTML = `
-      <section class="cc-panel auto-flow-panel">
-        <header><h2>Golden-path workflow</h2>
-          <p class="hint">Visual pipeline for authorized scan → decision → ticket → verify. Jobs below power the automation spine.</p>
-        </header>
-        <div class="auto-flow" role="list">
-          ${["Trigger", "Scan", "AI triage", "Risk", "Approval", "Ticket", "Notify", "Close"]
-            .map(
-              (step, i) =>
-                `<div class="auto-flow-step" role="listitem"><span>${i + 1}</span><strong>${step}</strong></div>${
-                  i < 7 ? '<span class="auto-flow-arrow" aria-hidden="true">→</span>' : ""
-                }`
-            )
-            .join("")}
+      <div class="auto-dash">
+        <div class="vuln-summary-metrics mc-sw-metrics auto-kpi-row" aria-label="Job KPIs">
+          <article class="cc-kpi${running ? " cc-kpi-warn" : ""}"><span>Running</span><strong>${running}</strong><em class="hint">live workers</em></article>
+          <article class="cc-kpi"><span>Queued</span><strong>${pending}</strong><em class="hint">waiting</em></article>
+          <article class="cc-kpi cc-kpi-ok"><span>Completed</span><strong>${done}</strong><em class="hint">in recent list</em></article>
+          <article class="cc-kpi${failed ? " cc-kpi-warn" : ""}"><span>Failed</span><strong>${failed}</strong><em class="hint">need attention</em></article>
+          <article class="cc-kpi"><span>Webhooks</span><strong>${hooksOn}</strong><em class="hint">${hooks.length} configured</em></article>
+          <article class="cc-kpi"><span>Engine</span><strong>${prefect.ready ? "Prefect" : "Local"}</strong><em class="hint">${escapeHtml(prefect.version ? `v${prefect.version}` : engineDefault)}</em></article>
         </div>
-      </section>
-      <section class="cc-panel">
-        <header><h2>Prefect</h2>
-          <p class="hint">${escapeHtml(prefect.hint || "Optional job orchestrator")}</p>
-        </header>
-        <p>
-          <span class="auto-job-status status-${prefect.ready ? "done" : prefect.installed ? "partial" : "planned"}">
-            ${prefect.ready ? "ready" : prefect.installed ? "installed" : "not installed"}
-          </span>
-          ${prefect.version ? `<span class="hint">v${escapeHtml(prefect.version)}</span>` : ""}
-          ${prefect.api_url ? `<span class="hint">${escapeHtml(prefect.api_url)}</span>` : ""}
-        </p>
-        <div class="cc-action-row auto-run-row">
-          <label class="hint">Engine
-            <select id="autoJobEngine" class="composer-select">
-              <option value="auto">auto (${escapeHtml(engineDefault)})</option>
-              <option value="local">local</option>
-              <option value="prefect" ${prefect.installed ? "" : "disabled"}>prefect</option>
-            </select>
-          </label>
-          <button type="button" class="btn-primary-cc" data-job-kind="kev_sync">Run KEV sync</button>
-          <button type="button" class="btn-secondary" data-job-kind="xdr_sync">Run XDR sync</button>
-          <button type="button" class="btn-secondary" data-job-kind="wazuh_sync">Run SecuraIQ SIEM sync</button>
-          <button type="button" class="btn-secondary" data-job-kind="thehive_sync">Run TheHive sync</button>
-          <button type="button" class="btn-secondary" data-job-kind="cloud_posture_sync">Run cloud posture sync</button>
-          <button type="button" class="btn-secondary" data-job-kind="openaudit_sync">Run inventory sync</button>
-          <button type="button" class="btn-secondary" data-job-kind="hardeningkitty_audit">Run HardeningKitty audit</button>
-          <button type="button" class="btn-secondary" data-job-kind="report_export">Export board PDF</button>
-        </div>
-      </section>
-      <div class="auto-grid">
-        <section class="cc-panel">
-          <header><h2>Jobs</h2></header>
-          <ul class="auto-job-list">${jobRows}</ul>
-        </section>
-        <section class="cc-panel">
-          <header><h2>Triggers &amp; webhooks</h2></header>
-          <p class="hint">Wire scanner webhooks and chatops under Integrations. Prefect wraps the same handlers when enabled.</p>
-          <div class="cc-action-row">
-            <button type="button" class="cc-action" data-workspace="integrations">Open integrations</button>
-            <button type="button" class="btn-secondary" data-workspace="reports">Reports</button>
+
+        <section class="cc-panel auto-flow-panel">
+          <header class="auto-section-head">
+            <div>
+              <h2>Golden path</h2>
+              <p class="hint">Authorized work only — stages light up from real recent jobs / webhooks.</p>
+            </div>
+          </header>
+          <div class="auto-flow" role="list">
+            ${flowSteps
+              .map((step, i) => {
+                const on = !!stageHits[step];
+                return `<div class="auto-flow-step${on ? " is-active" : ""}" role="listitem"><span>${i + 1}</span><strong>${step}</strong>${on ? '<em class="hint">active</em>' : ""}</div>${
+                  i < flowSteps.length - 1 ? '<span class="auto-flow-arrow" aria-hidden="true">→</span>' : ""
+                }`;
+              })
+              .join("")}
           </div>
         </section>
-        <section class="cc-panel">
-          <header><h2>Execution logs</h2></header>
-          <div class="auto-log">
-            ${logLines || `<p class="hint">No automated runs yet - enqueue a job above.</p>`}
-          </div>
-        </section>
+
+        <div class="auto-split">
+          <section class="cc-panel auto-actions-panel">
+            <header class="auto-section-head">
+              <div>
+                <h2>Run actions</h2>
+                <p class="hint">Grouped by purpose. Web and network scanning stay in New scan — not mixed here.</p>
+              </div>
+              <label class="hint auto-engine-label">Engine
+                <select id="autoJobEngine" class="composer-select">
+                  <option value="auto"${prevEngine === "auto" ? " selected" : ""}>auto (${escapeHtml(engineDefault)})</option>
+                  <option value="local"${prevEngine === "local" ? " selected" : ""}>local</option>
+                  <option value="prefect"${prevEngine === "prefect" ? " selected" : ""}${prefect.installed ? "" : " disabled"}>prefect</option>
+                </select>
+              </label>
+            </header>
+            <div class="auto-action-groups">
+              <div class="auto-action-group">
+                <h3>Scans</h3>
+                <p class="hint">Separate engines — open New scan and pick Web or Network.</p>
+                <div class="cc-action-row">
+                  <button type="button" class="btn-primary-cc" data-action="new-scan">New web / network scan</button>
+                  <button type="button" class="btn-secondary" data-workspace="webscan">Web Scan page</button>
+                  <button type="button" class="btn-secondary" data-workspace="reports">Scan reports</button>
+                </div>
+              </div>
+              <div class="auto-action-group">
+                <h3>Threat intel</h3>
+                <div class="cc-action-row">
+                  <button type="button" class="btn-primary-cc" data-job-kind="kev_sync">Sync CISA KEV</button>
+                  <button type="button" class="btn-secondary" data-workspace="intel">Open intel</button>
+                </div>
+              </div>
+              <div class="auto-action-group">
+                <h3>Inventory &amp; posture</h3>
+                <div class="cc-action-row">
+                  <button type="button" class="btn-secondary" data-job-kind="software_sync_all">Software sync</button>
+                  <button type="button" class="btn-secondary" data-job-kind="openaudit_sync">Inventory sync</button>
+                  <button type="button" class="btn-secondary" data-job-kind="hardeningkitty_audit">Hardening audit</button>
+                  <button type="button" class="btn-secondary" data-job-kind="cloud_posture_sync">Cloud posture</button>
+                </div>
+              </div>
+              <div class="auto-action-group">
+                <h3>Connectors</h3>
+                <div class="cc-action-row">
+                  <button type="button" class="btn-secondary" data-job-kind="xdr_sync">XDR sync</button>
+                  <button type="button" class="btn-secondary" data-job-kind="thehive_sync">TheHive sync</button>
+                  <button type="button" class="btn-secondary" data-workspace="integrations">Integrations</button>
+                </div>
+              </div>
+              <div class="auto-action-group">
+                <h3>Reports</h3>
+                <div class="cc-action-row">
+                  <button type="button" class="btn-secondary" data-job-kind="report_export">Export board PDF</button>
+                </div>
+              </div>
+            </div>
+            <p class="hint auto-prefect-hint">${escapeHtml(
+              prefect.hint ||
+                (prefect.ready
+                  ? "Prefect ready — jobs can use the prefect engine."
+                  : prefect.installed
+                    ? "Prefect installed — set PREFECT_ENABLED=true or pick engine=prefect."
+                    : "Local worker handles jobs. Optional: install Prefect for orchestration.")
+            )}</p>
+          </section>
+
+          <section class="cc-panel auto-side-panel">
+            <header class="auto-section-head"><h2>Triggers &amp; webhooks</h2></header>
+            ${
+              hooks.length
+                ? `<ul class="auto-hook-list">${hooks
+                    .slice(0, 8)
+                    .map(
+                      (h) =>
+                        `<li><strong>${escapeHtml(h.name || h.event || "webhook")}</strong>
+                          <span class="auto-job-status status-${h.enabled === false ? "planned" : "done"}">${h.enabled === false ? "off" : "on"}</span>
+                          <span class="hint">${escapeHtml(h.url || h.event || "")}</span></li>`
+                    )
+                    .join("")}</ul>`
+                : `<p class="hint">No webhooks yet. Wire scanner / chatops callbacks under Integrations.</p>`
+            }
+            <div class="cc-action-row">
+              <button type="button" class="btn-secondary" data-workspace="integrations">Open integrations</button>
+            </div>
+          </section>
+        </div>
+
+        <div class="auto-grid auto-grid-2">
+          <section class="cc-panel">
+            <header class="auto-section-head">
+              <h2>Job queue</h2>
+              <span class="hint">${jobs.length} recent</span>
+            </header>
+            ${jobTable}
+          </section>
+          <section class="cc-panel">
+            <header class="auto-section-head"><h2>Execution log</h2></header>
+            <div class="auto-log" aria-live="polite">
+              ${logLines || `<p class="hint">Waiting for the next job…</p>`}
+            </div>
+          </section>
+        </div>
       </div>`;
+
     body.querySelectorAll("[data-workspace]").forEach((el) => {
       el.addEventListener("click", () => showWorkspace(el.getAttribute("data-workspace")));
     });
     body.querySelectorAll("[data-job-kind]").forEach((btn) => {
       btn.addEventListener("click", () => enqueueAutomationJob(btn.getAttribute("data-job-kind")));
+    });
+    body.querySelectorAll("[data-action='new-scan']").forEach((el) => {
+      el.addEventListener("click", (e) => {
+        e.preventDefault();
+        if (typeof window.openNewScanModal === "function") window.openNewScanModal();
+        else if (typeof window.startLiveScan === "function") window.startLiveScan();
+      });
     });
   }
 
@@ -8434,8 +9002,9 @@
       if (typeof notifyUser === "function") {
         notifyUser(`**Job queued:** \`${kind}\` (${engine}) · id \`${data.id || "?"}\``);
       }
-      setTimeout(() => refreshAutomationPage(), 600);
-      setTimeout(() => refreshAutomationPage(), 2500);
+      // Realtime SSE also refreshes this view; short polls cover local-only gaps
+      setTimeout(() => refreshAutomationPage(), 400);
+      setTimeout(() => refreshAutomationPage(), 1800);
     } catch (err) {
       alert(err.message || "Enqueue failed");
     }
@@ -8830,26 +9399,31 @@
           downloadMd("/api/software/export?format=md", "securaiq-software.md"),
       ],
       [
-        "softwareRebuildBtn",
+        "softwareVersionsRefreshBtn",
         async () => {
-          const el = qs("softwarePageBody");
-          if (el) el.innerHTML = `<p class="hint">Rebuilding inventory…</p>`;
+          const btn = qs("softwareVersionsRefreshBtn");
+          if (btn) btn.disabled = true;
+          setSoftwareSyncLive("Checking latest versions…", true);
           try {
-            const res = await fetch("/api/software/rebuild", { method: "POST", headers: authHeaders() });
-            if (!res.ok) throw new Error(await readApiError(res));
+            const res = await fetch("/api/software/versions/refresh", {
+              method: "POST",
+              headers: authHeaders(),
+            });
             const body = await res.json().catch(() => ({}));
-            renderSoftwarePage();
-            if (typeof loadCommandCenter === "function") loadCommandCenter();
-            if (typeof notifyUser === "function") notifyUser("**Software inventory rebuilt.**");
-          } catch (err) {
-            if (el) {
-              el.innerHTML = `<div class="sw-empty-state"><p class="hint">Rebuild failed: ${escapeHtml(err.message || String(err))}</p>
-                <div class="cc-action-row"><button type="button" class="btn-secondary" id="softwareRetryRebuild">Retry</button></div></div>`;
-              qs("softwareRetryRebuild")?.addEventListener("click", () => {
-                const btn = qs("softwareRebuildBtn");
-                if (btn) btn.click();
-              });
+            if (!res.ok) throw new Error(body.detail || body.message || `HTTP ${res.status}`);
+            const r = body.refresh || {};
+            if (typeof notifyUser === "function") {
+              notifyUser(
+                `**Latest versions** · ${Number(r.resolved || 0)} updated · ${Number(r.skipped || 0)} no upstream map`
+              );
             }
+            renderSoftwarePage({ quiet: true });
+          } catch (err) {
+            if (typeof notifyUser === "function") {
+              notifyUser(`**Version check failed:** ${err.message || String(err)}`);
+            }
+          } finally {
+            if (btn) btn.disabled = false;
           }
         },
       ],
@@ -8929,6 +9503,7 @@
           renderIntelPage(),
         reports: () => typeof renderReportsPage === "function" && renderReportsPage(),
         soc: () => typeof renderSocPage === "function" && renderSocPage(),
+        agents: () => typeof renderAgentsPage === "function" && renderAgentsPage({ quiet: true }),
         evidence: () => typeof renderEvidencePage === "function" && renderEvidencePage(),
         frameworks: () => {
           if (typeof renderHardeningPanel === "function") renderHardeningPanel();

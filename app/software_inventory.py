@@ -49,6 +49,8 @@ SOURCE_LABELS: dict[str, str] = {
     "code": "Code / SBOM",
     "os": "OS patches",
     "control_panel": "Control Panel",
+    "securaiq_agent": "SecuraIQ Agent",
+    "agent": "SecuraIQ Agent",
 }
 
 _SEV_WEIGHT = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
@@ -995,6 +997,7 @@ def rebuild_for_user(user_id: str) -> dict[str, int]:
         "local_os": 0,
         "control_panel": 0,
         "remote_os": 0,
+        "securaiq_agent": 0,
     }
     for asset in list_assets(user_id):
         try:
@@ -1044,6 +1047,18 @@ def rebuild_for_user(user_id: str) -> dict[str, int]:
         counts["remote_os"] = int(ingest_remote_os_patches(user_id).get("ingested") or 0)
     except Exception:
         counts["remote_os"] = 0
+    try:
+        from app.agents import ensure_schema as ensure_agent_schema
+        from app.agents import list_agents
+        from app.software.sources.securaiq_agent import ingest_agent_packages
+
+        ensure_agent_schema()
+        agent_n = 0
+        for ag in list_agents(user_id, limit=500):
+            agent_n += int(ingest_agent_packages(user_id, ag, sync=False).get("ingested") or 0)
+        counts["securaiq_agent"] = agent_n
+    except Exception:
+        counts["securaiq_agent"] = 0
     try:
         from app.software.service import sync_inventory
 

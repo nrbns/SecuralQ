@@ -13,7 +13,7 @@ from app.software.patch_status import compute_patch_status
 from app.software.sources.vendor import resolve_upstream_latest
 
 VERSION_CACHE_TTL_SEC = 6 * 3600  # don't hammer registries
-REFRESH_BATCH_SIZE = 25
+REFRESH_BATCH_SIZE = 50
 
 
 def _scalar(row: Any, key: str, default: Any = None):

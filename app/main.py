@@ -55,6 +55,7 @@ from app.platform_api import router as platform_router
 from app.billing_api import router as billing_router
 from app.xdr_api import router as xdr_router
 from app.agents_api import router as agents_router
+from app.agent_gateway import router as agent_gateway_router
 from app.evidence_api import router as evidence_router
 from app.risk_api import router as risk_router
 from app.wazuh_api import router as wazuh_router
@@ -66,6 +67,9 @@ from app.sonarqube_api import router as sonarqube_router
 from app.scim_api import router as scim_router
 from app.stix_api import router as stix_router
 from app.exceptions_api import router as exceptions_router
+from app.cmmc_affirmation_api import router as cmmc_affirmation_router
+from app.compliance_attestation_api import router as compliance_attestation_router
+from app.canonical_controls_api import router as canonical_controls_router
 from app.commercial_ext import ensure_org_schema
 from app.gap_analysis import ensure_gap_schema
 from app.db import init_schema
@@ -215,6 +219,13 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         print(f"Realtime bus bind skipped: {exc}")
     try:
+        from app.agent_gateway import bind_loop as bind_agent_gateway_loop
+
+        bind_agent_gateway_loop()
+        print("Agent Gateway: WebSocket notify loop bound.")
+    except Exception as exc:
+        print(f"Agent Gateway bind skipped: {exc}")
+    try:
         from app import xdr_stream
 
         xdr_stream.start()
@@ -326,6 +337,8 @@ app.include_router(billing_router)
 app.include_router(xdr_router)
 app.include_router(wazuh_router, prefix="/api/siem")
 app.include_router(wazuh_router, prefix="/api/wazuh")  # compat alias
+# Gateway /ws must register before agents_api's /{agent_id}.
+app.include_router(agent_gateway_router)
 app.include_router(agents_router)
 app.include_router(evidence_router)
 app.include_router(risk_router)
@@ -338,6 +351,9 @@ app.include_router(sonarqube_router, prefix="/api/sonarqube")  # compat alias
 app.include_router(scim_router)
 app.include_router(stix_router)
 app.include_router(exceptions_router)
+app.include_router(cmmc_affirmation_router)
+app.include_router(compliance_attestation_router)
+app.include_router(canonical_controls_router)
 
 _PUBLIC_API_PREFIXES = (
     "/api/auth/login",
@@ -353,6 +369,12 @@ _PUBLIC_API_PREFIXES = (
     "/api/realtime",
     "/api/siem/webhook",
     "/api/wazuh/webhook",
+    "/api/agents/install-script",
+    "/api/agents/checkin",
+    "/api/agents/threat",
+    "/api/agents/gateway",
+    "/api/agents/ws",
+    "/api/agents/commands",  # agent-token result/ack; user routes still use require_user
 )
 
 
@@ -367,7 +389,8 @@ async def require_auth_when_enabled(request, call_next):
         return await call_next(request)
     auth = request.headers.get("authorization")
     key = request.headers.get("x-securaiq-key") or request.headers.get("x-hackgpt-key")
-    if resolve_user(auth, key):
+    cookie = request.cookies.get("securaiq_session") or request.cookies.get("hackgpt_session")
+    if resolve_user(auth, key, cookie):
         return await call_next(request)
     from fastapi.responses import JSONResponse
 
@@ -1349,12 +1372,28 @@ async def ingest_knowledge() -> IngestResponse:
 
 
 @app.get("/api/realtime")
-async def realtime_feed():
+async def realtime_feed(request: Request):
     """Server-Sent Events: live pulse for Mission Control + workspace panels.
 
     Wakes immediately on realtime_bus.publish(...) (notifications, jobs, XDR,
     etc.) and still emits a heartbeat snapshot every 5s when idle.
+
+    EventSource cannot set Authorization headers — prefer session cookie.
+    When AUTH_ENABLED, also accept ``?access_token=`` (same JWT/session token
+    the UI already stores) so lab dashboards stay live after login.
     """
+    from app.auth import resolve_user
+
+    q_token = (request.query_params.get("access_token") or request.query_params.get("token") or "").strip()
+    sse_user = resolve_user(
+        request.headers.get("authorization") or (f"Bearer {q_token}" if q_token else None),
+        request.headers.get("x-securaiq-key") or request.headers.get("x-hackgpt-key"),
+        request.cookies.get("securaiq_session") or request.cookies.get("hackgpt_session") or q_token or None,
+    )
+    if settings.auth_enabled:
+        sse_uid = sse_user.id if sse_user else None
+    else:
+        sse_uid = sse_user.id if sse_user else "local"
 
     async def event_gen():
         from app.realtime_bus import bind_loop, subscribe, unsubscribe
@@ -1430,45 +1469,83 @@ async def realtime_feed():
             try:
                 from app.notifications import unread_count
 
-                notif_unread = int(unread_count("local") or 0)
+                if sse_uid:
+                    notif_unread = int(unread_count(sse_uid) or 0)
             except Exception:
                 notif_unread = 0
 
             kpis = {"assets": 0, "vulns_open": 0, "incidents_open": 0}
             try:
                 from app.db import get_conn
+                from app.tenancy import tenant_visibility_sql
 
-                c = get_conn()
-                kpis["assets"] = int(
-                    (
-                        c.execute(
-                            "SELECT COUNT(*) AS n FROM assets WHERE user_id = ?", ("local",)
-                        ).fetchone()
-                        or {"n": 0}
-                    )["n"]
-                )
-                kpis["vulns_open"] = int(
-                    (
-                        c.execute(
-                            "SELECT COUNT(*) AS n FROM vulnerabilities WHERE user_id = ? "
-                            "AND status NOT IN ('closed','resolved','mitigated')",
-                            ("local",),
-                        ).fetchone()
-                        or {"n": 0}
-                    )["n"]
-                )
-                kpis["incidents_open"] = int(
-                    (
-                        c.execute(
-                            "SELECT COUNT(*) AS n FROM incidents WHERE user_id = ? "
-                            "AND status NOT IN ('closed','resolved')",
-                            ("local",),
-                        ).fetchone()
-                        or {"n": 0}
-                    )["n"]
-                )
+                if sse_uid:
+                    c = get_conn()
+                    where, args = tenant_visibility_sql(sse_uid)
+                    kpis["assets"] = int(
+                        (
+                            c.execute(
+                                f"SELECT COUNT(*) AS n FROM assets WHERE {where}",
+                                args,
+                            ).fetchone()
+                            or {"n": 0}
+                        )["n"]
+                    )
+                    kpis["vulns_open"] = int(
+                        (
+                            c.execute(
+                                f"SELECT COUNT(*) AS n FROM vulnerabilities WHERE ({where}) "
+                                "AND status NOT IN ('closed','resolved','mitigated')",
+                                args,
+                            ).fetchone()
+                            or {"n": 0}
+                        )["n"]
+                    )
+                    kpis["incidents_open"] = int(
+                        (
+                            c.execute(
+                                f"SELECT COUNT(*) AS n FROM incidents WHERE ({where}) "
+                                "AND status NOT IN ('closed','resolved')",
+                                args,
+                            ).fetchone()
+                            or {"n": 0}
+                        )["n"]
+                    )
             except Exception:
-                pass
+                try:
+                    from app.db import get_conn
+
+                    c = get_conn()
+                    kpis["assets"] = int(
+                        (
+                            c.execute(
+                                "SELECT COUNT(*) AS n FROM assets WHERE user_id = ?", (sse_uid,)
+                            ).fetchone()
+                            or {"n": 0}
+                        )["n"]
+                    )
+                    kpis["vulns_open"] = int(
+                        (
+                            c.execute(
+                                "SELECT COUNT(*) AS n FROM vulnerabilities WHERE user_id = ? "
+                                "AND status NOT IN ('closed','resolved','mitigated')",
+                                (sse_uid,),
+                            ).fetchone()
+                            or {"n": 0}
+                        )["n"]
+                    )
+                    kpis["incidents_open"] = int(
+                        (
+                            c.execute(
+                                "SELECT COUNT(*) AS n FROM incidents WHERE user_id = ? "
+                                "AND status NOT IN ('closed','resolved')",
+                                (sse_uid,),
+                            ).fetchone()
+                            or {"n": 0}
+                        )["n"]
+                    )
+                except Exception:
+                    pass
 
             payload: dict[str, Any] = {
                 "ts": now_t,
@@ -1490,6 +1567,7 @@ async def realtime_feed():
                 "notifications_unread": notif_unread,
                 "kpis": kpis,
                 "realtime_bus": snap.get("realtime_bus"),
+                "user_id": sse_uid,
             }
             if push:
                 payload["push"] = push

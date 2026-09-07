@@ -34,6 +34,10 @@ PERMISSIONS: dict[str, dict[str, Any]] = {
     "audit.read": {"global": {"admin"}, "org_min": "admin"},
     "settings.write": {"global": {"admin"}, "org_min": None},
     "tools.run": {"global": {"admin", "user"}, "org_min": "analyst"},
+    "agent.read": {"global": {"admin", "user"}, "org_min": "viewer"},
+    "agent.write": {"global": {"admin", "user"}, "org_min": "analyst"},
+    "agent.command": {"global": {"admin", "user"}, "org_min": "analyst"},
+    "agent.approve": {"global": {"admin"}, "org_min": "admin"},
 }
 
 

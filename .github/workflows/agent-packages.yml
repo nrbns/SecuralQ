@@ -1,0 +1,68 @@
+name: Agent packages
+
+# Build SecuraIQ native-agent install packages for Windows / Linux / macOS.
+# Artifacts land under dist/agent-packages/ and are uploaded per OS.
+#
+# Windows → .exe + .zip
+# Ubuntu  → .tar.gz (native binary)
+# macOS   → .tar.gz + .dmg
+#
+# Does not claim production scale. Authorized lab / owned-host agents only.
+
+on:
+  workflow_dispatch: {}
+  push:
+    tags:
+      - "agent-v*"
+      - "v*"
+  pull_request:
+    paths:
+      - "scripts/securaiq_agent.py"
+      - "scripts/build_agent_packages.py"
+      - "scripts/packaging/**"
+      - "packaging/securaiq_agent.spec"
+      - ".github/workflows/agent-packages.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: package (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+          - os: ubuntu-latest
+            platform: linux
+          - os: macos-latest
+            platform: macos
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build agent packages
+        shell: bash
+        run: |
+          python -m pip install -q "pyinstaller>=6.3"
+          python scripts/build_agent_packages.py --platform ${{ matrix.platform }}
+
+      - name: List artifacts
+        shell: bash
+        run: |
+          ls -la dist/agent-packages/ || true
+          cat dist/agent-packages/MANIFEST.txt || true
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: securaiq-agent-${{ matrix.platform }}
+          path: dist/agent-packages/*
+          if-no-files-found: error
+          retention-days: 14

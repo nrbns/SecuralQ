@@ -681,7 +681,7 @@ def _verify_patch_command(command_id: str) -> None:
     itself, since a verification miss is informational, not a job failure.
     """
     from app.agents import get_agent, record_command_verification
-    from app.software.models import PATCH_UP_TO_DATE
+    from app.software.models import PATCH_UNKNOWN, PATCH_UP_TO_DATE
     from app.software.models import ensure_schema as ensure_software_schema
     from app.software.patch_status import compare_versions
 
@@ -733,6 +733,30 @@ def _verify_patch_command(command_id: str) -> None:
                 command_id, verified=True, detail=f"Installed version {installed_version} meets target {target_version}"
             )
             return
+    # Prefer the agent's reported new_version when inventory already shows it —
+    # common when no advisory feed contradicts the install yet.
+    try:
+        result_json = json.loads(cmd.get("result_json") or "{}")
+    except Exception:
+        result_json = {}
+    reported_new = str(result_json.get("new_version") or "").strip()
+    if reported_new and installed_version:
+        cmp_r = compare_versions(installed_version, reported_new)
+        if cmp_r is not None and cmp_r >= 0 and patch_status in ("", PATCH_UNKNOWN, "installed"):
+            record_command_verification(
+                command_id,
+                verified=True,
+                detail=f"Installed version {installed_version} matches agent-reported post-patch version {reported_new}",
+            )
+            return
+    if patch_status in ("", PATCH_UNKNOWN) and installed_version and not target_version:
+        # Package present after patch; no advisory signal either way.
+        record_command_verification(
+            command_id,
+            verified=True,
+            detail=f"Installed version {installed_version} present in inventory after patch (no advisory contradiction)",
+        )
+        return
     record_command_verification(
         command_id,
         verified=False,

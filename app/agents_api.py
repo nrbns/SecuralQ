@@ -5,16 +5,20 @@ Mounted at /api/agents.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
+from app.agent_auth import parse_agent_bearer, verify_replay_and_signature
 from app.agents import (
+    ack_command,
     approve_campaign,
     approve_command,
     authenticate_agent,
+    agent_visible_to_user,
     checkin,
     create_campaign,
     delete_agent,
@@ -38,7 +42,9 @@ from app.auth import AuthUser
 from app.commercial_api import require_user
 from app.config import settings
 from app.db import audit
-from app.paths import resource_root
+from app.paths import project_root, resource_root
+from app.rbac import require_perm
+from app.tenancy import optional_org_header, resolve_request_org
 
 router = APIRouter(prefix="/api/agents", tags=["securaiq-agent"])
 
@@ -57,10 +63,19 @@ _INSTALLER_PATHS = {
     "macos": (_SCRIPTS_DIR / "install_agent_macos.sh", "text/x-shellscript", "install_agent_macos.sh"),
     "windows": (_SCRIPTS_DIR / "install_agent_windows.ps1", "text/plain", "install_agent_windows.ps1"),
 }
+_PACKAGE_DIR = project_root() / "dist" / "agent-packages"
+_PACKAGE_SUFFIXES = (".exe", ".zip", ".tar.gz", ".dmg", ".tgz")
+
+def _org_for(user: AuthUser, header_org: str | None) -> str | None:
+    try:
+        return resolve_request_org(user, header_org=header_org)
+    except Exception:
+        return (header_org or "").strip() or None
 
 
 class EnrollRequest(BaseModel):
     name: str = Field(default="", max_length=120)
+    org_id: str | None = None
 
 
 class ThreatDetection(BaseModel):
@@ -140,41 +155,72 @@ class CheckinPayload(BaseModel):
 
 
 def _parse_agent_bearer(value: str | None) -> tuple[str, str]:
-    """Agent auth header: `Authorization: Bearer <agent_id>.<agent_key>`."""
-    raw = (value or "").strip()
-    if raw.lower().startswith("bearer "):
-        raw = raw[7:].strip()
-    if "." not in raw:
-        return "", ""
-    aid, _, key = raw.partition(".")
-    return aid, key
+    return parse_agent_bearer(value)
+
+
+def _org(user: AuthUser, header_org: str | None = None) -> str | None:
+    return resolve_request_org(user, header_org=header_org)
+
+
+def _visible_agent(user: AuthUser, agent_id: str, *, org_id: str | None = None) -> dict[str, Any]:
+    agent = get_agent(agent_id)
+    if not agent or not agent_visible_to_user(user.id, agent):
+        raise HTTPException(status_code=404, detail="Agent not found")
+    if org_id and (agent.get("org_id") or "") != org_id:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return agent
+
+
+def _authenticate_agent_request(
+    authorization: str | None,
+    *,
+    body: bytes,
+    ts: str | None = None,
+    nonce: str | None = None,
+    sig: str | None = None,
+) -> dict[str, Any]:
+    agent_id, raw_key = parse_agent_bearer(authorization)
+    if not agent_id or not raw_key:
+        raise HTTPException(status_code=401, detail="Missing or malformed agent token")
+    agent = authenticate_agent(agent_id, raw_key)
+    if not agent:
+        raise HTTPException(status_code=401, detail="Invalid or revoked agent token")
+    err = verify_replay_and_signature(agent, ts_header=ts, nonce=nonce, sig=sig, body=body)
+    if err:
+        raise HTTPException(status_code=401, detail=err)
+    return agent
 
 
 @router.post("/enroll")
-async def api_enroll_agent(req: EnrollRequest, user: Annotated[AuthUser, Depends(require_user)]):
+async def api_enroll_agent(
+    req: EnrollRequest,
+    user: Annotated[AuthUser, Depends(require_user)],
+    header_org: Annotated[str | None, Depends(optional_org_header)] = None,
+):
     """Create a new agent identity. Returns the install one-liner + raw key ONCE."""
-    result = enroll_agent(user.id, name=req.name)
-    audit("agent_enroll", user.id, {"agent_id": result["agent_id"], "name": req.name})
+    oid = _org_for(user, req.org_id or header_org)
+    require_perm(user, "agent.write", org_id=oid)
+    result = enroll_agent(user.id, name=req.name, org_id=oid)
+    audit("agent_enroll", user.id, {"agent_id": result["agent_id"], "name": req.name, "org_id": oid})
     token = f"{result['agent_id']}.{result['agent_key']}"
     return {
         "agent_id": result["agent_id"],
         "agent_token": token,
+        "org_id": result.get("org_id"),
         "install_hint": (
-            "Manual (foreground, for testing):\n"
-            f"  curl -fsSL <this-server-url>/api/agents/install-script -o securaiq_agent.py\n"
+            "Save this token now — it is shown only once and cannot be recovered.\n"
+            "\n"
+            "Preferred — download a package from Agents → packages (no separate install scripts):\n"
+            "  Windows:  SecuraIQ-Agent-*-windows-x64.exe\n"
+            f"             .\\SecuraIQ-Agent.exe --server <this-server-url> --token {token}\n"
+            "             Or unzip the .zip and run .\\install.ps1 -Server <url> -Token <token> (Scheduled Task).\n"
+            "  Linux:    tar -xzf SecuraIQ-Agent-*-linux-*.tar.gz && cd SecuraIQ-Agent-*-linux-* &&\n"
+            f"             sudo ./install.sh --server <this-server-url> --token {token}\n"
+            "  macOS:    same with *-macos-*.tar.gz (+ .dmg when built on Mac/CI).\n"
+            "\n"
+            "Developer fallback (Python + raw install scripts — optional):\n"
             f"  python3 securaiq_agent.py --server <this-server-url> --token {token}\n"
-            "\n"
-            "As a persistent service (starts on boot, auto-restarts — like a Wazuh agent):\n"
-            "  Linux:   curl -fsSL <this-server-url>/api/agents/install-script -o securaiq_agent.py && "
-            "curl -fsSL <this-server-url>/api/agents/install-script/linux -o install_agent_linux.sh && "
-            f"chmod +x install_agent_linux.sh && sudo ./install_agent_linux.sh --server <this-server-url> --token {token}\n"
-            "  macOS:   same as Linux but with install-script/macos and install_agent_macos.sh\n"
-            "  Windows (elevated PowerShell):\n"
-            "    curl -fsSL <this-server-url>/api/agents/install-script -o securaiq_agent.py\n"
-            "    curl -fsSL <this-server-url>/api/agents/install-script/windows -o install_agent_windows.ps1\n"
-            f"    .\\install_agent_windows.ps1 -Server <this-server-url> -Token {token}\n"
-            "\n"
-            "Save this token now — it is shown only once and cannot be recovered."
+            "  Scripts: GET /api/agents/install-script/{windows|linux|macos}\n"
         ),
     }
 
@@ -193,9 +239,10 @@ async def api_agent_install_script():
 
 @router.get("/install-script/{platform}")
 async def api_agent_install_script_platform(platform: str):
-    """Serve a persistent-service installer (systemd / launchd / Scheduled
-    Task) for the given platform — no auth required, contains no secrets
-    (the enrollment token is supplied separately by whoever runs it)."""
+    """Developer fallback: serve persistent-service installers (systemd / launchd /
+    Scheduled Task). Prefer packaged .exe/.zip/.tar.gz from /api/agents/packages —
+    those archives already embed install.ps1 / install.sh. No secrets in these files.
+    """
     entry = _INSTALLER_PATHS.get(platform.lower())
     if not entry:
         raise HTTPException(status_code=404, detail=f"Unknown platform '{platform}'. Use linux, macos, or windows.")
@@ -205,34 +252,251 @@ async def api_agent_install_script_platform(platform: str):
     return PlainTextResponse(
         path.read_text(encoding="utf-8"),
         media_type=media_type,
-        headers={"Content-Disposition": f"attachment; filename={filename}"},
+        headers={
+            "Content-Disposition": f"attachment; filename={filename}",
+            "X-SecuraIQ-Install-Path": "developer_fallback",
+        },
     )
 
 
+def _classify_package(name: str) -> dict[str, str]:
+    lower = name.lower()
+    os_name = "unknown"
+    kind = "archive"
+    if "windows" in lower or lower.endswith(".exe"):
+        os_name = "windows"
+    elif "linux" in lower:
+        os_name = "linux"
+    elif "macos" in lower or "darwin" in lower:
+        os_name = "macos"
+    if lower.endswith(".exe"):
+        kind = "exe"
+    elif lower.endswith(".dmg"):
+        kind = "dmg"
+    elif lower.endswith(".tar.gz") or lower.endswith(".tgz"):
+        kind = "tar"
+    elif lower.endswith(".zip"):
+        kind = "zip"
+    return {"os": os_name, "kind": kind}
+
+
+def _list_built_packages() -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    if not _PACKAGE_DIR.is_dir():
+        return out
+    for path in sorted(_PACKAGE_DIR.iterdir()):
+        if not path.is_file():
+            continue
+        name = path.name
+        if name.startswith("_") or name.startswith("."):
+            continue
+        if not any(name.lower().endswith(suf) for suf in _PACKAGE_SUFFIXES):
+            continue
+        meta = _classify_package(name)
+        kind = meta["kind"]
+        label = name
+        if kind == "exe":
+            label = f"Windows agent (.exe) — {name}"
+        elif kind == "zip":
+            label = f"Windows package (.zip + install.ps1) — {name}"
+        elif kind == "tar":
+            label = f"{meta['os'].title()} package (.tar.gz) — {name}"
+        elif kind == "dmg":
+            label = f"macOS disk image (.dmg) — {name}"
+        out.append(
+            {
+                "filename": name,
+                "os": meta["os"],
+                "kind": kind,
+                "size_bytes": path.stat().st_size,
+                "download_url": f"/api/agents/packages/{name}",
+                "built": True,
+                "primary": True,
+                "label": label,
+            }
+        )
+    return out
+
+
+@router.get("/packages")
+async def api_agent_packages(user: Annotated[AuthUser, Depends(require_user)]):
+    """Package-first catalog: built .exe / .zip / .tar.gz / .dmg, plus developer script fallbacks.
+
+    Built packages come from dist/agent-packages/ (see scripts/build_agent_packages.py).
+    Raw install_agent_*.ps1/sh and securaiq_agent.py remain available for labs without a
+    native build, but are marked developer_fallback — not the primary install path.
+    """
+    require_perm(user, "agent.read", org_id=_org_for(user, None))
+    packages = _list_built_packages()
+    scripts = [
+        {
+            "filename": "securaiq_agent.py",
+            "os": "all",
+            "kind": "script",
+            "download_url": "/api/agents/install-script",
+            "built": _AGENT_SCRIPT_PATH.is_file(),
+            "label": "Developer: Python agent script",
+            "primary": False,
+            "role": "developer_fallback",
+        },
+        {
+            "filename": "install_agent_windows.ps1",
+            "os": "windows",
+            "kind": "installer",
+            "download_url": "/api/agents/install-script/windows",
+            "built": (_INSTALLER_PATHS["windows"][0]).is_file(),
+            "label": "Developer: Windows install script",
+            "primary": False,
+            "role": "developer_fallback",
+        },
+        {
+            "filename": "install_agent_linux.sh",
+            "os": "linux",
+            "kind": "installer",
+            "download_url": "/api/agents/install-script/linux",
+            "built": (_INSTALLER_PATHS["linux"][0]).is_file(),
+            "label": "Developer: Linux install script",
+            "primary": False,
+            "role": "developer_fallback",
+        },
+        {
+            "filename": "install_agent_macos.sh",
+            "os": "macos",
+            "kind": "installer",
+            "download_url": "/api/agents/install-script/macos",
+            "built": (_INSTALLER_PATHS["macos"][0]).is_file(),
+            "label": "Developer: macOS install script",
+            "primary": False,
+            "role": "developer_fallback",
+        },
+    ]
+    by_os = {"windows": [], "linux": [], "macos": [], "all": []}
+    for p in packages + scripts:
+        by_os.setdefault(p.get("os") or "unknown", []).append(p)
+
+    dmg_available = any(p.get("kind") == "dmg" for p in packages)
+    online = 0
+    total = 0
+    try:
+        fleet = list_agents(user.id)
+        total = len(fleet)
+        online = sum(1 for a in fleet if (a.get("status") or "") == "online")
+    except Exception:
+        pass
+
+    notes = [
+        "Prefer packaged .exe / .zip / .tar.gz (install.ps1 / install.sh are inside the archive). Raw install_agent_* scripts are developer fallback only.",
+        "Windows .exe builds on Windows/CI; Linux/macOS native binaries need matching OS or CI.",
+        "Enroll first (token once), download the OS package, then set SECURAIQ_SERVER + SECURAIQ_TOKEN (or pass --server / --token).",
+    ]
+    if dmg_available:
+        notes.insert(
+            1,
+            "macOS .dmg is available in this catalog — unsigned builds may need Gatekeeper Open Anyway.",
+        )
+    else:
+        notes.insert(
+            1,
+            "macOS .dmg is not present on this server (requires macOS or CI macos-latest). Use the .tar.gz package (includes install.sh).",
+        )
+
+    return {
+        "packages": packages,
+        "scripts": scripts,
+        "by_os": by_os,
+        "package_dir": str(_PACKAGE_DIR),
+        "package_dir_exists": _PACKAGE_DIR.is_dir(),
+        "build_hint": "python scripts/build_agent_packages.py",
+        "dmg_available": dmg_available,
+        "install_path": "package",
+        "realtime": {
+            "sse": "/api/realtime",
+            "agent_websocket": "/api/agents/ws",
+            "http_fallback": "/api/agents/gateway/wait + /api/agents/checkin",
+            "fleet_online": online,
+            "fleet_total": total,
+        },
+        "notes": notes,
+    }
+
+
+@router.get("/packages/{filename}")
+async def api_agent_package_download(filename: str):
+    """Download a built agent artifact from dist/agent-packages (no secrets)."""
+    safe = Path(filename).name
+    if safe != filename or ".." in filename or "/" in filename or "\\" in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    if not any(safe.lower().endswith(suf) for suf in _PACKAGE_SUFFIXES):
+        raise HTTPException(status_code=400, detail="Unsupported package type")
+    path = (_PACKAGE_DIR / safe).resolve()
+    try:
+        path.relative_to(_PACKAGE_DIR.resolve())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid path") from exc
+    if not path.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Package not found. Build with: python scripts/build_agent_packages.py  (looking in {_PACKAGE_DIR})",
+        )
+    media = "application/octet-stream"
+    if safe.lower().endswith(".exe"):
+        media = "application/vnd.microsoft.portable-executable"
+    elif safe.lower().endswith(".zip"):
+        media = "application/zip"
+    elif safe.lower().endswith(".dmg"):
+        media = "application/x-apple-diskimage"
+    elif safe.lower().endswith(".tar.gz") or safe.lower().endswith(".tgz"):
+        media = "application/gzip"
+    return FileResponse(path, media_type=media, filename=safe)
+
+
 @router.get("")
-async def api_list_agents(user: Annotated[AuthUser, Depends(require_user)]):
-    return {"agents": list_agents(user.id)}
+async def api_list_agents(
+    user: Annotated[AuthUser, Depends(require_user)],
+    header_org: Annotated[str | None, Depends(optional_org_header)] = None,
+):
+    oid = _org_for(user, header_org)
+    require_perm(user, "agent.read", org_id=oid)
+    return {"agents": list_agents(user.id, org_id=oid)}
 
 
 @router.get("/threats")
-async def api_list_all_threats(user: Annotated[AuthUser, Depends(require_user)], limit: int = 200):
+async def api_list_all_threats(
+    user: Annotated[AuthUser, Depends(require_user)],
+    limit: int = 200,
+    header_org: Annotated[str | None, Depends(optional_org_header)] = None,
+):
     # Registered before /{agent_id} on purpose — a single literal path
     # segment would otherwise be swallowed by the dynamic agent_id route.
-    return {"threats": list_threats(user.id, limit=limit)}
+    oid = _org_for(user, header_org)
+    require_perm(user, "agent.read", org_id=oid)
+    return {"threats": list_threats(user.id, limit=limit, org_id=oid)}
 
 
 @router.get("/commands/pending")
-async def api_list_pending_commands(user: Annotated[AuthUser, Depends(require_user)], limit: int = 200):
+async def api_list_pending_commands(
+    user: Annotated[AuthUser, Depends(require_user)],
+    limit: int = 200,
+    header_org: Annotated[str | None, Depends(optional_org_header)] = None,
+):
     # Registered before /{agent_id} on purpose — same reason as /threats above.
-    return {"commands": list_pending_commands(user.id, limit=limit)}
+    oid = _org_for(user, header_org)
+    require_perm(user, "agent.read", org_id=oid)
+    return {"commands": list_pending_commands(user.id, limit=limit, org_id=oid)}
 
 
 @router.post("/campaigns")
-async def api_create_campaign(req: CampaignCreate, user: Annotated[AuthUser, Depends(require_user)]):
+async def api_create_campaign(
+    req: CampaignCreate,
+    user: Annotated[AuthUser, Depends(require_user)],
+    header_org: Annotated[str | None, Depends(optional_org_header)] = None,
+):
     """Create a patch campaign targeting multiple agents with one shared
     package+manager upgrade. Each targeted agent gets its own
     'pending_approval' command — nothing is queued for delivery until those
     are approved (individually or via /campaigns/{id}/approve)."""
+    oid = _org_for(user, header_org)
+    require_perm(user, "agent.command", org_id=oid)
     try:
         result = create_campaign(
             user.id,
@@ -247,6 +511,7 @@ async def api_create_campaign(req: CampaignCreate, user: Annotated[AuthUser, Dep
             window_end_hour=req.window_end_hour,
             window_days=req.window_days,
             requested_by=user.id,
+            org_id=oid,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -254,12 +519,24 @@ async def api_create_campaign(req: CampaignCreate, user: Annotated[AuthUser, Dep
 
 
 @router.get("/campaigns")
-async def api_list_campaigns(user: Annotated[AuthUser, Depends(require_user)], limit: int = 100):
-    return {"campaigns": list_campaigns(user.id, limit=limit)}
+async def api_list_campaigns(
+    user: Annotated[AuthUser, Depends(require_user)],
+    limit: int = 100,
+    header_org: Annotated[str | None, Depends(optional_org_header)] = None,
+):
+    oid = _org_for(user, header_org)
+    require_perm(user, "agent.read", org_id=oid)
+    return {"campaigns": list_campaigns(user.id, limit=limit, org_id=oid)}
 
 
 @router.get("/campaigns/{campaign_id}")
-async def api_get_campaign(campaign_id: str, user: Annotated[AuthUser, Depends(require_user)]):
+async def api_get_campaign(
+    campaign_id: str,
+    user: Annotated[AuthUser, Depends(require_user)],
+    header_org: Annotated[str | None, Depends(optional_org_header)] = None,
+):
+    oid = _org_for(user, header_org)
+    require_perm(user, "agent.read", org_id=oid)
     campaign = get_campaign(user.id, campaign_id)
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
@@ -267,8 +544,13 @@ async def api_get_campaign(campaign_id: str, user: Annotated[AuthUser, Depends(r
 
 
 @router.post("/campaigns/{campaign_id}/approve")
-async def api_approve_campaign(campaign_id: str, user: Annotated[AuthUser, Depends(require_user)]):
-    _require_admin_for_approval(user)
+async def api_approve_campaign(
+    campaign_id: str,
+    user: Annotated[AuthUser, Depends(require_user)],
+    header_org: Annotated[str | None, Depends(optional_org_header)] = None,
+):
+    oid = _org_for(user, header_org)
+    _require_admin_for_approval(user, org_id=oid)
     try:
         result = approve_campaign(user.id, campaign_id, approver_id=user.id)
     except ValueError as exc:
@@ -291,13 +573,21 @@ async def api_reject_campaign(
 @router.get("/{agent_id}")
 async def api_get_agent(agent_id: str, user: Annotated[AuthUser, Depends(require_user)]):
     agent = get_agent(agent_id)
-    if not agent or agent.get("user_id") != user.id:
+    if not agent_visible_to_user(user.id, agent):
         raise HTTPException(status_code=404, detail="Agent not found")
-    return agent
+    require_perm(user, "agent.read", org_id=agent.get("org_id"))
+    view = dict(agent)
+    view.pop("key_hash", None)
+    view.pop("key_enc", None)
+    return view
 
 
 @router.post("/{agent_id}/revoke")
 async def api_revoke_agent(agent_id: str, user: Annotated[AuthUser, Depends(require_user)]):
+    agent = get_agent(agent_id)
+    if not agent_visible_to_user(user.id, agent):
+        raise HTTPException(status_code=404, detail="Agent not found")
+    require_perm(user, "agent.write", org_id=agent.get("org_id") if agent else None)
     ok = revoke_agent(user.id, agent_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Agent not found")
@@ -307,6 +597,10 @@ async def api_revoke_agent(agent_id: str, user: Annotated[AuthUser, Depends(requ
 
 @router.delete("/{agent_id}")
 async def api_delete_agent(agent_id: str, user: Annotated[AuthUser, Depends(require_user)]):
+    agent = get_agent(agent_id)
+    if not agent_visible_to_user(user.id, agent):
+        raise HTTPException(status_code=404, detail="Agent not found")
+    require_perm(user, "agent.write", org_id=agent.get("org_id") if agent else None)
     ok = delete_agent(user.id, agent_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Agent not found")
@@ -318,16 +612,17 @@ async def api_delete_agent(agent_id: str, user: Annotated[AuthUser, Depends(requ
 async def api_agent_checkin(
     payload: CheckinPayload,
     authorization: Annotated[str | None, Header(alias="Authorization")] = None,
+    x_securaiq_ts: Annotated[str | None, Header(alias="X-SecuraIQ-Ts")] = None,
+    x_securaiq_nonce: Annotated[str | None, Header(alias="X-SecuraIQ-Nonce")] = None,
+    x_securaiq_sig: Annotated[str | None, Header(alias="X-SecuraIQ-Sig")] = None,
 ):
     """Real telemetry check-in from an installed agent. Agent-token auth only
     (no user session) — this is what runs unattended on a monitored server."""
-    agent_id, raw_key = _parse_agent_bearer(authorization)
-    if not agent_id or not raw_key:
-        raise HTTPException(status_code=401, detail="Missing or malformed agent token")
-    agent = authenticate_agent(agent_id, raw_key)
-    if not agent:
-        raise HTTPException(status_code=401, detail="Invalid or revoked agent token")
-    result = checkin(agent_id, payload.model_dump())
+    body = payload.model_dump_json().encode("utf-8")
+    agent = _authenticate_agent_request(
+        authorization, body=body, ts=x_securaiq_ts, nonce=x_securaiq_nonce, sig=x_securaiq_sig
+    )
+    result = checkin(str(agent["id"]), payload.model_dump())
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("error") or "Check-in failed")
     return result
@@ -341,13 +636,10 @@ async def api_agent_threat(
     """Real-time threat/malware detections from an agent's SecuraIQ Sentinel
     watcher — a live push, not a check-in field, so it reaches the SOC and
     creates a finding/incident the moment it's ingested."""
-    agent_id, raw_key = _parse_agent_bearer(authorization)
-    if not agent_id or not raw_key:
-        raise HTTPException(status_code=401, detail="Missing or malformed agent token")
-    agent = authenticate_agent(agent_id, raw_key)
-    if not agent:
-        raise HTTPException(status_code=401, detail="Invalid or revoked agent token")
-    result = record_threat_detections(agent_id, [d.model_dump() for d in payload.detections])
+    agent = _authenticate_agent_request(
+        authorization, body=payload.model_dump_json().encode("utf-8")
+    )
+    result = record_threat_detections(str(agent["id"]), [d.model_dump() for d in payload.detections])
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("error") or "Threat report failed")
     return result
@@ -358,8 +650,9 @@ async def api_list_agent_threats(
     agent_id: str, user: Annotated[AuthUser, Depends(require_user)], limit: int = 100
 ):
     agent = get_agent(agent_id)
-    if not agent or agent.get("user_id") != user.id:
+    if not agent_visible_to_user(user.id, agent):
         raise HTTPException(status_code=404, detail="Agent not found")
+    require_perm(user, "agent.read", org_id=agent.get("org_id") if agent else None)
     return {"threats": list_threats(user.id, agent_id=agent_id, limit=limit)}
 
 
@@ -370,6 +663,8 @@ async def api_queue_agent_command(
     """Request a command for this agent — lands in 'pending_approval', not
     delivered yet. A second call to the approve endpoint is required before
     it is ever handed to the agent (see api_approve_agent_command below)."""
+    agent = get_agent(agent_id)
+    require_perm(user, "agent.command", org_id=agent.get("org_id") if agent else None)
     try:
         result = request_command(user.id, agent_id, kind=req.kind, payload=req.payload, requested_by=user.id)
     except ValueError as exc:
@@ -384,6 +679,8 @@ async def api_request_agent_upgrade(agent_id: str, user: Annotated[AuthUser, Dep
     any other command -- computes the server's current agent-script sha256
     now and attaches it to the command so the agent verifies it's fetching
     exactly what was approved (see request_agent_upgrade)."""
+    agent = get_agent(agent_id)
+    require_perm(user, "agent.command", org_id=agent.get("org_id") if agent else None)
     try:
         result = request_agent_upgrade(user.id, agent_id, requested_by=user.id)
     except ValueError as exc:
@@ -397,27 +694,33 @@ async def api_list_agent_commands(
     agent_id: str, user: Annotated[AuthUser, Depends(require_user)], limit: int = 100
 ):
     agent = get_agent(agent_id)
-    if not agent or agent.get("user_id") != user.id:
+    if not agent_visible_to_user(user.id, agent):
         raise HTTPException(status_code=404, detail="Agent not found")
+    require_perm(user, "agent.read", org_id=agent.get("org_id") if agent else None)
     return {"commands": list_commands(user.id, agent_id, limit=limit)}
 
 
-def _require_admin_for_approval(user: AuthUser) -> None:
+def _require_admin_for_approval(user: AuthUser, *, org_id: str | None = None) -> None:
     """Approving/rejecting a queued OS-package-manager command is the real
-    approval gate for patch execution, so once RBAC/auth is turned on it is
-    restricted to admins — same inline-check convention as the rest of the
-    codebase (e.g. app/commercial_api.py). In local/lab mode (auth disabled)
-    the synthetic local user is already role="admin", so this never blocks
-    normal solo-operator usage."""
-    if settings.auth_enabled and user.role != "admin" and user.id != "local":
-        raise HTTPException(status_code=403, detail="Admin role required to approve or reject agent commands")
+    approval gate for patch execution. Prefer agent.approve RBAC; keep legacy
+    admin role check as a floor when AUTH is enabled."""
+    try:
+        require_perm(user, "agent.approve", org_id=org_id)
+        return
+    except HTTPException:
+        if settings.auth_enabled and user.role != "admin" and user.id != "local":
+            raise
+        if not settings.auth_enabled or user.id == "local" or user.role == "admin":
+            return
+        raise
 
 
 @router.post("/{agent_id}/commands/{command_id}/approve")
 async def api_approve_agent_command(
     agent_id: str, command_id: str, user: Annotated[AuthUser, Depends(require_user)]
 ):
-    _require_admin_for_approval(user)
+    agent = get_agent(agent_id)
+    _require_admin_for_approval(user, org_id=agent.get("org_id") if agent else None)
     try:
         result = approve_command(user.id, agent_id, command_id, approver_id=user.id)
     except ValueError as exc:
@@ -429,7 +732,8 @@ async def api_approve_agent_command(
 async def api_reject_agent_command(
     agent_id: str, command_id: str, req: CommandReject, user: Annotated[AuthUser, Depends(require_user)]
 ):
-    _require_admin_for_approval(user)
+    agent = get_agent(agent_id)
+    _require_admin_for_approval(user, org_id=agent.get("org_id") if agent else None)
     try:
         result = reject_command(user.id, agent_id, command_id, approver_id=user.id, reason=req.reason)
     except ValueError as exc:
@@ -446,13 +750,22 @@ async def api_report_command_result(
     """Agent reports the outcome of a command it executed — agent-token auth
     only, same as /checkin and /threat (this runs unattended, no user
     session)."""
-    agent_id, raw_key = _parse_agent_bearer(authorization)
-    if not agent_id or not raw_key:
-        raise HTTPException(status_code=401, detail="Missing or malformed agent token")
-    agent = authenticate_agent(agent_id, raw_key)
-    if not agent:
-        raise HTTPException(status_code=401, detail="Invalid or revoked agent token")
-    result = report_command_result(agent_id, command_id, status=req.status, result=req.result)
+    agent = _authenticate_agent_request(
+        authorization, body=req.model_dump_json().encode("utf-8")
+    )
+    result = report_command_result(str(agent["id"]), command_id, status=req.status, result=req.result)
+    if not result.get("ok"):
+        raise HTTPException(status_code=404, detail=result.get("error") or "Unknown command")
+    return result
+
+
+@router.post("/commands/{command_id}/ack")
+async def api_ack_command(
+    command_id: str,
+    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
+):
+    agent = _authenticate_agent_request(authorization, body=b"")
+    result = ack_command(str(agent["id"]), command_id)
     if not result.get("ok"):
         raise HTTPException(status_code=404, detail=result.get("error") or "Unknown command")
     return result

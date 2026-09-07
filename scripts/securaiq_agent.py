@@ -22,23 +22,79 @@ real, freshly-collected snapshot — not cached/replayed data.
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
 import platform
 import re
+import secrets
 import socket
 import ssl
+import struct
 import sys
 import threading
 import time
 import urllib.error
 import urllib.request
 
-AGENT_VERSION = "1.0.0"
+AGENT_VERSION = "1.1.0"
 DEFAULT_INTERVAL_SEC = 60
 SENTINEL_VERSION = "1.0.0"
 DEFAULT_SENTINEL_INTERVAL_SEC = 10
+
+# Config filenames looked up next to the agent binary/script (never baked secrets).
+_CONFIG_FILENAMES = ("agent.env", "securaiq-agent.env", ".env")
+
+
+def _is_frozen() -> bool:
+    return bool(getattr(sys, "frozen", False))
+
+
+def _agent_home() -> str:
+    """Directory that holds the runnable agent + optional agent.env.
+
+    When packaged (PyInstaller), this is the folder containing the .exe /
+    binary — not the temporary extract dir — so operators can drop a config
+    file next to the download and double-click to run.
+    """
+    if _is_frozen():
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def _load_env_file(path: str) -> None:
+    """Load KEY=VALUE lines into os.environ if the key is not already set."""
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                key = key.strip()
+                val = val.strip().strip('"').strip("'")
+                if key and key not in os.environ:
+                    os.environ[key] = val
+    except OSError:
+        pass
+
+
+def _autoload_config() -> str | None:
+    """Load the first agent.env found next to the binary or in CWD. Returns path used."""
+    candidates = [
+        os.path.join(_agent_home(), name) for name in _CONFIG_FILENAMES
+    ] + [os.path.join(os.getcwd(), name) for name in _CONFIG_FILENAMES]
+    seen: set[str] = set()
+    for path in candidates:
+        ap = os.path.abspath(path)
+        if ap in seen:
+            continue
+        seen.add(ap)
+        if os.path.isfile(ap):
+            _load_env_file(ap)
+            return ap
+    return None
 
 # ---------------------------------------------------------------------------
 # SecuraIQ Sentinel — the agent's real-time threat/malware detection engine.
@@ -867,7 +923,7 @@ _FIM_MAX_HASH_BYTES = 5_000_000
 
 def _fim_state_path() -> str:
     try:
-        base = os.path.dirname(os.path.abspath(__file__))
+        base = _agent_home()
         if os.access(base, os.W_OK):
             return os.path.join(base, ".securaiq_fim_baseline.json")
     except Exception:
@@ -1269,6 +1325,14 @@ def execute_agent_upgrade(payload: dict, *, server: str, insecure: bool = False)
             "expected_sha256": expected,
             "actual_sha256": actual,
         }
+    if _is_frozen():
+        return {
+            "ok": False,
+            "error": "Packaged binary agents cannot self-upgrade in place. "
+            "Download a new SecuraIQ-Agent package from your server / release and reinstall.",
+            "expected_sha256": expected,
+            "actual_sha256": actual,
+        }
     this_file = os.path.abspath(__file__)
     tmp_path = this_file + ".new"
     try:
@@ -1315,6 +1379,10 @@ def run_commands(server: str, token: str, commands: list, *, insecure: bool = Fa
         cid = cmd.get("id")
         if not cid:
             continue
+        try:
+            send_command_ack(server, token, cid, insecure=insecure)
+        except Exception:
+            pass
         if kind == "patch_package":
             print(f"[securaiq-agent] running command {cid}: patch_package {cmd.get('payload')}")
             result = execute_patch_package(cmd.get("payload") or {})
@@ -1338,9 +1406,49 @@ def run_commands(server: str, token: str, commands: list, *, insecure: bool = Fa
         sys.exit(0)
 
 
+def _replay_headers(token: str, body: bytes) -> dict:
+    """Timestamp + nonce so the server can reject replayed check-ins."""
+    _ = token, body
+    return {
+        "X-SecuraIQ-Ts": str(int(time.time())),
+        "X-SecuraIQ-Nonce": secrets.token_hex(16),
+    }
+
+
 def send_checkin(server: str, token: str, payload: dict, *, insecure: bool = False, timeout: float = 15.0) -> dict:
     url = server.rstrip("/") + "/api/agents/checkin"
     data = json.dumps(payload).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}",
+        "User-Agent": f"SecuraIQ-Agent/{AGENT_VERSION}",
+    }
+    headers.update(_replay_headers(token, data))
+    req = urllib.request.Request(
+        url,
+        data=data,
+        method="POST",
+        headers=headers,
+    )
+    ctx = None
+    if url.startswith("https://") and insecure:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def gateway_wait(
+    server: str,
+    token: str,
+    *,
+    timeout_sec: float = 25.0,
+    insecure: bool = False,
+) -> dict:
+    """Long-poll the Agent Gateway for near-instant command delivery."""
+    url = server.rstrip("/") + "/api/agents/gateway/wait"
+    data = json.dumps({"timeout_sec": timeout_sec, "limit": 5}).encode("utf-8")
     req = urllib.request.Request(
         url,
         data=data,
@@ -1356,12 +1464,221 @@ def send_checkin(server: str, token: str, payload: dict, *, insecure: bool = Fal
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
-    with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+    # Long-poll can sit until timeout_sec; add a small buffer.
+    with urllib.request.urlopen(req, timeout=max(35.0, timeout_sec + 10.0), context=ctx) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
+def send_command_ack(server: str, token: str, command_id: str, *, insecure: bool = False) -> dict:
+    url = server.rstrip("/") + f"/api/agents/commands/{command_id}/ack"
+    req = urllib.request.Request(
+        url, data=b"{}", method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+            "User-Agent": f"SecuraIQ-Agent/{AGENT_VERSION}",
+        },
+    )
+    ctx = None
+    if url.startswith("https://") and insecure:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    with urllib.request.urlopen(req, timeout=15.0, context=ctx) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _ws_url(server: str) -> str:
+    base = server.rstrip("/")
+    if base.startswith("https://"):
+        return "wss://" + base[8:] + "/api/agents/ws"
+    if base.startswith("http://"):
+        return "ws://" + base[7:] + "/api/agents/ws"
+    return "ws://" + base + "/api/agents/ws"
+
+
+def _ws_connect(server: str, token: str, *, insecure: bool = False, timeout: float = 15.0):
+    """Minimal RFC6455 client (stdlib only). Returns a connected socket or None."""
+    url = _ws_url(server)
+    tls = url.startswith("wss://")
+    rest = url.split("://", 1)[1]
+    hostport, _, path = rest.partition("/")
+    path = "/" + path
+    if ":" in hostport:
+        host, port_s = hostport.rsplit(":", 1)
+        port = int(port_s)
+    else:
+        host, port = hostport, (443 if tls else 80)
+    sock = socket.create_connection((host, port), timeout=timeout)
+    if tls:
+        ctx = ssl.create_default_context()
+        if insecure:
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+        sock = ctx.wrap_socket(sock, server_hostname=host)
+    key = base64.b64encode(os.urandom(16)).decode("ascii")
+    req = (
+        f"GET {path} HTTP/1.1\r\n"
+        f"Host: {hostport}\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        f"Sec-WebSocket-Key: {key}\r\n"
+        "Sec-WebSocket-Version: 13\r\n"
+        f"Authorization: Bearer {token}\r\n"
+        f"User-Agent: SecuraIQ-Agent/{AGENT_VERSION}\r\n"
+        "\r\n"
+    )
+    sock.sendall(req.encode("ascii"))
+    buf = b""
+    while b"\r\n\r\n" not in buf:
+        chunk = sock.recv(4096)
+        if not chunk:
+            sock.close()
+            return None
+        buf += chunk
+    header, _, rest = buf.partition(b"\r\n\r\n")
+    if b"101" not in header.split(b"\r\n", 1)[0]:
+        sock.close()
+        return None
+    return sock, rest
+
+
+def _ws_mask(payload: bytes) -> bytes:
+    mask = os.urandom(4)
+    masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+    return mask + masked
+
+
+def _ws_send_text(sock, text: str) -> None:
+    payload = text.encode("utf-8")
+    header = bytearray([0x81])
+    n = len(payload)
+    if n < 126:
+        header.append(0x80 | n)
+    elif n < 65536:
+        header.extend(struct.pack("!BH", 0x80 | 126, n))
+    else:
+        header.extend(struct.pack("!BQ", 0x80 | 127, n))
+    sock.sendall(bytes(header) + _ws_mask(payload))
+
+
+def _ws_recv_text(sock, leftover: bytearray, timeout: float) -> str | None:
+    sock.settimeout(timeout)
+    while True:
+        while len(leftover) < 2:
+            chunk = sock.recv(4096)
+            if not chunk:
+                return None
+            leftover.extend(chunk)
+        b1, b2 = leftover[0], leftover[1]
+        opcode = b1 & 0x0F
+        masked = b2 & 0x80
+        n = b2 & 0x7F
+        idx = 2
+        if n == 126:
+            while len(leftover) < 4:
+                leftover.extend(sock.recv(4096) or b"")
+            n = struct.unpack("!H", leftover[2:4])[0]
+            idx = 4
+        elif n == 127:
+            while len(leftover) < 10:
+                leftover.extend(sock.recv(4096) or b"")
+            n = struct.unpack("!Q", leftover[2:10])[0]
+            idx = 10
+        if masked:
+            while len(leftover) < idx + 4:
+                leftover.extend(sock.recv(4096) or b"")
+            mask = leftover[idx : idx + 4]
+            idx += 4
+        else:
+            mask = None
+        while len(leftover) < idx + n:
+            leftover.extend(sock.recv(4096) or b"")
+        data = bytes(leftover[idx : idx + n])
+        del leftover[: idx + n]
+        if mask:
+            data = bytes(b ^ mask[i % 4] for i, b in enumerate(data))
+        if opcode == 0x8:
+            return None
+        if opcode == 0x9:  # ping
+            # pong
+            hdr = bytearray([0x8A, 0x80 | len(data)])
+            sock.sendall(bytes(hdr) + _ws_mask(data))
+            continue
+        if opcode == 0x1:
+            return data.decode("utf-8", errors="replace")
+
+
+def websocket_session(server: str, token: str, *, insecure: bool = False, stop_event: threading.Event | None = None) -> bool:
+    """Persistent gateway session. Returns False if connect failed (caller should fall back)."""
+    try:
+        conn = _ws_connect(server, token, insecure=insecure)
+    except Exception as exc:
+        print(f"[securaiq-agent] websocket connect failed: {exc}", file=sys.stderr)
+        return False
+    if not conn:
+        print("[securaiq-agent] websocket handshake rejected — using HTTP fallback", file=sys.stderr)
+        return False
+    sock, rest = conn
+    leftover = bytearray(rest)
+    try:
+        hello = {"type": "hello", "token": token, "ts": str(int(time.time())), "nonce": secrets.token_hex(8)}
+        _ws_send_text(sock, json.dumps(hello))
+        raw = _ws_recv_text(sock, leftover, 15.0)
+        if not raw:
+            return False
+        welcome = json.loads(raw)
+        if welcome.get("type") != "welcome":
+            print(f"[securaiq-agent] websocket hello failed: {welcome}", file=sys.stderr)
+            return False
+        hb = int(welcome.get("heartbeat_sec") or 30)
+        print("[securaiq-agent] websocket connected — commands will be pushed")
+        snapshot = collect_snapshot()
+        _ws_send_text(sock, json.dumps({"type": "checkin", "payload": snapshot}))
+        last_hb = time.time()
+        while not (stop_event and stop_event.is_set()):
+            wait = max(5.0, hb - (time.time() - last_hb))
+            try:
+                raw = _ws_recv_text(sock, leftover, wait)
+            except socket.timeout:
+                _ws_send_text(sock, json.dumps({"type": "heartbeat", "ts": time.time()}))
+                last_hb = time.time()
+                continue
+            if raw is None:
+                return True  # disconnected after a successful session — reconnect
+            msg = json.loads(raw)
+            kind = msg.get("type")
+            if kind == "commands":
+                cmds = msg.get("commands") or []
+                for c in cmds:
+                    cid = c.get("id")
+                    if cid:
+                        _ws_send_text(sock, json.dumps({"type": "ack", "command_id": cid}))
+                if cmds:
+                    run_commands(server, token, cmds, insecure=insecure)
+            elif kind == "pong":
+                last_hb = time.time()
+            elif kind == "checkin_ok":
+                print(f"[securaiq-agent] ws check-in ok asset_id={msg.get('asset_id', '')}")
+        return True
+    except Exception as exc:
+        print(f"[securaiq-agent] websocket session ended: {exc}", file=sys.stderr)
+        return True
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
+
+
 def main() -> int:
+    # Load agent.env before argparse defaults so SECURAIQ_* from the file apply.
+    config_path = _autoload_config()
+
     ap = argparse.ArgumentParser(description="SecuraIQ native agent — real telemetry check-in")
+    ap.add_argument(
+        "--version", action="version", version=f"SecuraIQ-Agent {AGENT_VERSION}",
+    )
     ap.add_argument(
         "--server", default=os.environ.get("SECURAIQ_SERVER", ""),
         help="SecuraIQ server base URL, e.g. https://securaiq.example.com (or set SECURAIQ_SERVER)",
@@ -1377,8 +1694,29 @@ def main() -> int:
              "service account only (chmod 600 on Linux/macOS).",
     )
     ap.add_argument("--interval", type=int, default=DEFAULT_INTERVAL_SEC, help="Seconds between check-ins (default 60)")
+    ap.add_argument(
+        "--gateway",
+        action="store_true",
+        default=True,
+        help="Long-poll Agent Gateway between check-ins for faster command delivery (default on)",
+    )
+    ap.add_argument(
+        "--no-gateway",
+        action="store_true",
+        help="Disable gateway long-poll; rely on check-in interval only",
+    )
+    ap.add_argument(
+        "--no-websocket",
+        action="store_true",
+        help="Skip WebSocket Agent Gateway; use long-poll + HTTP check-in",
+    )
     ap.add_argument("--once", action="store_true", help="Check in once and exit (for cron/Task Scheduler use)")
-    ap.add_argument("--insecure", action="store_true", help="Skip TLS verification (self-signed server certs only)")
+    ap.add_argument(
+        "--insecure",
+        action="store_true",
+        default=os.environ.get("SECURAIQ_INSECURE", "").strip().lower() in ("1", "true", "yes"),
+        help="Skip TLS verification (self-signed server certs only; or SECURAIQ_INSECURE=1)",
+    )
     ap.add_argument("--no-sentinel", action="store_true", help="Disable the real-time Sentinel threat watcher")
     ap.add_argument(
         "--sentinel-interval", type=int, default=DEFAULT_SENTINEL_INTERVAL_SEC,
@@ -1400,10 +1738,19 @@ def main() -> int:
     if not args.server or not args.token:
         print(
             "[securaiq-agent] --server and --token are required (directly, via --token-file, "
-            "or via SECURAIQ_SERVER/SECURAIQ_TOKEN env vars)",
+            "via SECURAIQ_SERVER/SECURAIQ_TOKEN env vars, or agent.env next to the binary)",
+            file=sys.stderr,
+        )
+        home = _agent_home()
+        print(
+            f"[securaiq-agent] Copy agent.env.example to {os.path.join(home, 'agent.env')} "
+            "and set SECURAIQ_SERVER + SECURAIQ_TOKEN from Security Operations → Agents → Enroll.",
             file=sys.stderr,
         )
         return 2
+
+    if config_path:
+        print(f"[securaiq-agent] loaded config from {config_path}")
 
     watch_dirs = _default_watch_dirs() + [d for d in args.watch_dir if os.path.isdir(d)]
     known_hashes = dict(KNOWN_BAD_HASHES)
@@ -1461,9 +1808,36 @@ def main() -> int:
             daemon=True,
         )
         t.start()
+    backoff = 2.0
     while True:
+        if not args.no_websocket:
+            connected = websocket_session(args.server, args.token, insecure=args.insecure)
+            if connected:
+                backoff = 2.0
+                time.sleep(min(5.0, backoff))
+                continue
+            print("[securaiq-agent] websocket unavailable — HTTP check-in + long-poll fallback")
         _tick()
-        time.sleep(max(10, args.interval))
+        use_gateway = bool(args.gateway) and not bool(args.no_gateway)
+        remaining = max(10, args.interval)
+        if use_gateway:
+            deadline = time.time() + remaining
+            while time.time() < deadline:
+                slice_sec = min(25.0, max(1.0, deadline - time.time()))
+                try:
+                    gw = gateway_wait(
+                        args.server, args.token, timeout_sec=slice_sec, insecure=args.insecure
+                    )
+                    commands = gw.get("commands") or []
+                    if commands:
+                        print(f"[securaiq-agent] gateway delivered {len(commands)} command(s)")
+                        run_commands(args.server, args.token, commands, insecure=args.insecure)
+                except Exception as exc:
+                    print(f"[securaiq-agent] gateway wait failed: {exc}", file=sys.stderr)
+                    time.sleep(min(5.0, slice_sec))
+        else:
+            time.sleep(remaining)
+        backoff = min(30.0, backoff * 1.5)
 
 
 if __name__ == "__main__":

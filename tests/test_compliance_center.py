@@ -95,6 +95,9 @@ def test_compliance_overview_includes_top_gaps_and_disclaimer(tmp_path, monkeypa
     assert overview["hierarchy"][0] == "framework"
     assert overview["hierarchy"][-1] == "verification"
     assert "Live control tests" in overview["methodology"] or "live" in overview["methodology"].lower()
+    assert "evidence_queue_count" in overview
+    assert overview["evidence_queue_count"] >= 1
+    assert overview["evidence_queue_preview"]
 
 
 def test_audit_center_overview_empty_account(tmp_path, monkeypatch):

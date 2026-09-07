@@ -234,3 +234,138 @@ def run_live_tests_for_framework(user_id: str, framework_id: str, *, record_evid
     for cid in sorted(control_ids):
         out[cid] = run_live_tests_for_control(user_id, framework_id, cid, record_evidence=record_evidence)
     return out
+
+
+def mapped_framework_ids() -> list[str]:
+    """Framework ids that have at least one curated live-test mapping."""
+    return sorted({fid for (fid, _cid) in _CONTROL_TEST_MAP})
+
+
+def _failure_risk_score(test_result: dict[str, Any]) -> float:
+    """Heuristic risk weight for ranking live fails — higher = fix first.
+    Uses only numbers already present on the test result detail; does not
+    invent business impact currency values."""
+    status = (test_result.get("status") or "").lower()
+    base = 90.0 if status == "fail" else 55.0 if status == "partial" else 0.0
+    detail = test_result.get("detail") or {}
+    test = test_result.get("test") or ""
+    if test == TEST_VULNERABILITY_MANAGEMENT:
+        base += min(40.0, float(detail.get("sla_breaches") or 0) * 8.0)
+        base += min(20.0, float(detail.get("open") or 0) * 0.5)
+    elif test == TEST_PATCH_MANAGEMENT:
+        pct = detail.get("pct")
+        if pct is None:
+            base += 25.0
+        else:
+            base += max(0.0, (90.0 - float(pct)) * 0.6)
+    elif test == TEST_ASSET_INVENTORY:
+        if int(detail.get("total_assets") or 0) == 0:
+            base += 30.0
+        else:
+            cov = detail.get("coverage_pct")
+            if cov is not None:
+                base += max(0.0, (30.0 - float(cov)) * 0.5)
+    return round(min(99.0, base), 1)
+
+
+def list_live_control_failures(
+    user_id: str,
+    *,
+    framework_ids: list[str] | None = None,
+    record_evidence: bool = True,
+    include_partial: bool = True,
+) -> dict[str, Any]:
+    """Run curated live tests and return a risk-ranked fail/partial queue.
+
+    This is the continuous-compliance signal path: telemetry → control test
+    → evidence (optional) → ranked gaps ready for remediation. Only controls
+    in `_CONTROL_TEST_MAP` are tested — never fuzzy-inferred mappings.
+    """
+    from app.gap_analysis import load_framework
+
+    fids = framework_ids or mapped_framework_ids()
+    failures: list[dict[str, Any]] = []
+    tested = 0
+    passing = 0
+    partial = 0
+    failing = 0
+    evaluated_at = now()
+
+    for fid in fids:
+        try:
+            fw = load_framework(fid)
+        except ValueError:
+            continue
+        control_titles = {c["id"]: c.get("title") or c["id"] for c in fw.get("controls") or []}
+        results_by_control = run_live_tests_for_framework(user_id, fid, record_evidence=record_evidence)
+        for cid, tests in results_by_control.items():
+            for t in tests:
+                tested += 1
+                st = (t.get("status") or "").lower()
+                if st == "pass":
+                    passing += 1
+                    continue
+                if st == "partial":
+                    partial += 1
+                    if not include_partial:
+                        continue
+                elif st == "fail":
+                    failing += 1
+                else:
+                    continue
+                risk = _failure_risk_score(t)
+                fix_hint = "Investigate control evidence"
+                ws = "frameworks"
+                if t.get("test") == TEST_PATCH_MANAGEMENT:
+                    fix_hint = "Open Software & patches / create patch campaign"
+                    ws = "software"
+                elif t.get("test") == TEST_VULNERABILITY_MANAGEMENT:
+                    fix_hint = "Triage open critical/high findings and remediate"
+                    ws = "vulns"
+                elif t.get("test") == TEST_ASSET_INVENTORY:
+                    fix_hint = "Enroll agents or refresh asset inventory"
+                    ws = "assets"
+                failures.append(
+                    {
+                        "framework_id": fid,
+                        "framework_name": fw.get("name") or fid,
+                        "control_id": cid,
+                        "title": control_titles.get(cid, cid),
+                        "test": t.get("test"),
+                        "status": st,
+                        "summary": t.get("summary") or "",
+                        "detail": t.get("detail") or {},
+                        "tested_at": t.get("tested_at") or evaluated_at,
+                        "risk_score": risk,
+                        "why": [
+                            f"Live test `{t.get('test')}` status={st}",
+                            t.get("summary") or "",
+                        ],
+                        "fix_hint": fix_hint,
+                        "workspace": ws,
+                    }
+                )
+
+    failures.sort(
+        key=lambda x: (
+            0 if x["status"] == "fail" else 1,
+            -float(x["risk_score"]),
+            x["framework_id"],
+            x["control_id"],
+            x["test"] or "",
+        )
+    )
+    return {
+        "evaluated_at": evaluated_at,
+        "frameworks_tested": len(fids),
+        "controls_with_tests": sum(1 for _ in _CONTROL_TEST_MAP),
+        "tests_run": tested,
+        "passing": passing,
+        "partial": partial,
+        "failing": failing,
+        "failures": failures,
+        "disclaimer": (
+            "Live control tests are telemetry signals that help assess operating effectiveness — "
+            "not a certification that you are compliant with any framework."
+        ),
+    }

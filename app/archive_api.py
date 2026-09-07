@@ -7,7 +7,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, PlainTextResponse, Response
 
-from app.archive import find_archived_scan, list_archives, prototype_status
+from app.archive import delete_archived_scan, find_archived_scan, list_archives, prototype_status
 from app.auth import AuthUser
 from app.commercial_api import require_user
 
@@ -24,6 +24,19 @@ async def archive_status(user: Annotated[AuthUser, Depends(require_user)]):
 @router.get("/scans")
 async def archive_list(user: Annotated[AuthUser, Depends(require_user)], limit: int = 40):
     return {"archives": list_archives(user.id, limit=max(1, min(limit, 100)))}
+
+
+@router.delete("/scans/{scan_id}")
+async def archive_delete(scan_id: str, user: Annotated[AuthUser, Depends(require_user)]):
+    """Permanently delete one archived scan report (Markdown + PDF + evidence)."""
+    try:
+        return delete_archived_scan(scan_id, user.id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Delete failed: {exc}") from exc
 
 
 @router.get("/scans/{scan_id}/report")

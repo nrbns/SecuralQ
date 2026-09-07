@@ -11,18 +11,37 @@ _UPSTREAM: dict[str, dict[str, str]] = {
     "apache.httpd": {"source": "github", "repo": "apache/httpd", "ecosystem": "GitHub"},
     "openbsd.openssh": {"source": "github", "repo": "openssh/openssh-portable", "ecosystem": "GitHub"},
     "postgresql.postgresql": {"source": "github", "repo": "postgres/postgres", "ecosystem": "GitHub"},
-    "python.python": {"source": "pypi", "package": "pip", "ecosystem": "PyPI"},
-    "openjs.nodejs": {"source": "github", "repo": "nodejs/node", "ecosystem": "GitHub"},
-    "mozilla.firefox": {"source": "github", "repo": "mozilla/gecko-dev", "ecosystem": "GitHub"},
-    "google.chrome": {"source": "vendor", "ecosystem": "vendor"},
-    "microsoft.edge": {"source": "vendor", "ecosystem": "vendor"},
+    "python.python": {"source": "endoflife", "product": "python", "ecosystem": "Python"},
+    "openjs.nodejs": {"source": "endoflife", "product": "nodejs", "ecosystem": "Node.js"},
+    "mozilla.firefox": {"source": "endoflife", "product": "firefox", "ecosystem": "Firefox"},
+    "google.chrome": {"source": "endoflife", "product": "chrome", "ecosystem": "Chrome"},
+    "microsoft.edge": {"source": "endoflife", "product": "edge", "ecosystem": "Edge"},
     "oracle.mysql": {"source": "github", "repo": "mysql/mysql-server", "ecosystem": "GitHub"},
     "mariadb.mariadb": {"source": "github", "repo": "MariaDB/server", "ecosystem": "GitHub"},
+    "videolan.vlc": {"source": "github", "repo": "videolan/vlc", "ecosystem": "GitHub"},
+    "git.git": {"source": "github", "repo": "git/git", "ecosystem": "GitHub"},
+    "docker.docker": {"source": "github", "repo": "moby/moby", "ecosystem": "GitHub"},
 }
 
 # Normalized name hints for PyPI/npm when canonical_id is generic
 _PYPI_HINTS = frozenset({"semgrep", "pip", "ansible", "django", "flask", "requests"})
 _NPM_HINTS = frozenset({"express", "lodash", "react", "next", "axios"})
+
+# Product-name patterns → upstream (Windows Control Panel / agent inventory)
+_NAME_PATTERNS: list[tuple[re.Pattern[str], dict[str, str]]] = [
+    (re.compile(r"^node\.?js\b", re.I), {"source": "endoflife", "product": "nodejs", "ecosystem": "Node.js"}),
+    (re.compile(r"^python\b", re.I), {"source": "endoflife", "product": "python", "ecosystem": "Python"}),
+    (re.compile(r"^vlc\b", re.I), {"source": "github", "repo": "videolan/vlc", "ecosystem": "GitHub"}),
+    (re.compile(r"^git\b", re.I), {"source": "github", "repo": "git/git", "ecosystem": "GitHub"}),
+    (re.compile(r"^docker\b", re.I), {"source": "github", "repo": "moby/moby", "ecosystem": "GitHub"}),
+    (re.compile(r"^mozilla firefox|^firefox\b", re.I), {"source": "endoflife", "product": "firefox", "ecosystem": "Firefox"}),
+    (re.compile(r"^google chrome|^chrome\b", re.I), {"source": "endoflife", "product": "chrome", "ecosystem": "Chrome"}),
+    (re.compile(r"^microsoft edge|^edge\b", re.I), {"source": "endoflife", "product": "edge", "ecosystem": "Edge"}),
+    (re.compile(r"^nginx\b", re.I), {"source": "github", "repo": "nginx/nginx", "ecosystem": "GitHub"}),
+    (re.compile(r"^openssl\b", re.I), {"source": "github", "repo": "openssl/openssl", "ecosystem": "GitHub"}),
+    (re.compile(r"^postgresql\b|^postgres\b", re.I), {"source": "github", "repo": "postgres/postgres", "ecosystem": "GitHub"}),
+    (re.compile(r"^openssh\b", re.I), {"source": "github", "repo": "openssh/openssh-portable", "ecosystem": "GitHub"}),
+]
 
 
 def upstream_for(canonical_id: str, name: str = "") -> dict[str, str]:
@@ -35,6 +54,9 @@ def upstream_for(canonical_id: str, name: str = "") -> dict[str, str]:
         return {"source": "pypi", "package": key, "ecosystem": "PyPI"}
     if key in _NPM_HINTS:
         return {"source": "npm", "package": key, "ecosystem": "npm"}
+    for pat, meta in _NAME_PATTERNS:
+        if pat.search(name or "") or pat.search(key):
+            return dict(meta)
     return {}
 
 
@@ -49,4 +71,6 @@ def ecosystem_for(canonical_id: str, name: str = "", source: str = "") -> str:
         return "endpoint"
     if src in {"openaudit", "lan"}:
         return "inventory"
+    if src in {"securaiq_agent", "agent", "control_panel"}:
+        return "endpoint"
     return ""

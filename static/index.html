@@ -3,25 +3,26 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <meta name="theme-color" content="#1a222c" id="metaThemeColor" />
+  <meta name="theme-color" content="#003a63" id="metaThemeColor" />
   <meta name="color-scheme" content="light dark" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="SecuraIQ" />
   <meta name="mobile-web-app-capable" content="yes" />
-  <meta name="description" content="SecuraIQ — industrial security control assistant for authorized labs, compliance, and GRC." />
+  <meta name="description" content="SecuraIQ — security operations, risk remediation, and evidence-backed compliance." />
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="icon" href="/icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="/icon-180.png" />
   <link rel="icon" href="/icon-192.png" type="image/png" sizes="192x192" />
-  <title>SecuraIQ — Industrial Security Control</title>
+  <title>SecuraIQ — Security Platform</title>
   <script>
     (function () {
       try {
         var key = "securaiq.theme";
         var t = localStorage.getItem(key);
         if (t !== "light" && t !== "dark") {
-          t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+          // Wazuh-like product UI defaults to light; toggle still available.
+          t = "light";
         }
         document.documentElement.setAttribute("data-theme", t);
       } catch (e) {
@@ -32,7 +33,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/style.css?v=148" />
+  <link rel="stylesheet" href="/style.css?v=159" />
   <script src="/vendor/marked.min.js"></script>
 </head>
 <body>
@@ -42,7 +43,7 @@
         <div class="brand-mark" aria-hidden="true"><img src="/icon.svg" alt="" width="34" height="34" /></div>
         <div class="brand-copy">
           <p class="brand-name">SecuraIQ</p>
-          <p class="brand-tag">Industrial Security Control</p>
+          <p class="brand-tag">Open Security Platform</p>
         </div>
       </div>
       <div class="rail-live" id="railLive" data-state="live-off" aria-live="polite">
@@ -73,6 +74,7 @@
           <button type="button" class="nav-link" id="softwareBtn" data-workspace="software"><span class="nav-ico sm" data-ico="fw" aria-hidden="true"></span> Software &amp; patches</button>
           <button type="button" class="nav-link" id="vulnBtn" data-workspace="vulns"><span class="nav-ico sm" data-ico="vuln" aria-hidden="true"></span> Vulnerabilities</button>
           <button type="button" class="nav-link" data-workspace="soc"><span class="nav-ico sm" data-ico="soc" aria-hidden="true"></span> Incidents</button>
+          <button type="button" class="nav-link" id="agentsNavBtn" data-workspace="agents"><span class="nav-ico sm" data-ico="asset" aria-hidden="true"></span> Agents</button>
           <button type="button" class="nav-link" data-workspace="intel"><span class="nav-ico sm" data-ico="intel" aria-hidden="true"></span> Threat intelligence</button>
           <button type="button" class="nav-link" id="webscanBtn" data-workspace="webscan"><span class="nav-ico sm" data-ico="web" aria-hidden="true"></span> Web Scan</button>
           <button type="button" class="nav-link" data-workspace="reports"><span class="nav-ico sm" data-ico="rep" aria-hidden="true"></span> Scans</button>
@@ -101,7 +103,7 @@
         <button type="button" class="nav-group-toggle" aria-expanded="true"><span class="nav-ico" data-ico="comp" aria-hidden="true"></span> Compliance &amp; Governance</button>
         <div class="nav-group-body">
           <button type="button" class="nav-link" id="complianceCenterBtn" data-workspace="compliance_center"><span class="nav-ico sm" data-ico="comp" aria-hidden="true"></span> Compliance Center</button>
-          <button type="button" class="nav-link" id="frameworksBtn" data-workspace="frameworks"><span class="nav-ico sm" data-ico="fw" aria-hidden="true"></span> Frameworks &amp; control testing</button>
+          <button type="button" class="nav-link" id="frameworksBtn" data-workspace="frameworks"><span class="nav-ico sm" data-ico="fw" aria-hidden="true"></span> Frameworks</button>
           <button type="button" class="nav-link" id="gapBtn"><span class="nav-ico sm" data-ico="gap" aria-hidden="true"></span> Gap analysis</button>
           <button type="button" class="nav-link" id="exceptionsBtn" data-workspace="exceptions"><span class="nav-ico sm" data-ico="ev" aria-hidden="true"></span> Exceptions</button>
           <button type="button" class="nav-link" id="riskBtn" data-workspace="risks"><span class="nav-ico sm" data-ico="reg" aria-hidden="true"></span> Risk register</button>
@@ -253,7 +255,7 @@
       </section>
 
       <div class="stage">
-        <section id="viewCommand" class="workspace-view mc-is-empty hidden" data-view-panel="command">
+        <section id="viewCommand" class="workspace-view mc-is-empty" data-view-panel="command">
           <div class="mc-context" id="mcContext">
             <div class="mc-context-main">
               <p class="mc-kicker" id="mcGreeting">Mission Control</p>
@@ -292,76 +294,154 @@
             </ol>
           </section>
 
-          <div id="mcLiveDashboard" class="mc-live-dashboard sq-dashboard" hidden>
-          <header class="sq-hero">
+          <div id="mcLiveDashboard" class="mc-live-dashboard sq-dashboard wz-skin" hidden>
+          <header class="sq-hero wz-dash-header">
             <div class="sq-hero-main">
-              <p class="mc-kicker">Security Overview</p>
-              <h2 class="sq-hero-title">Here's what needs your attention today.</h2>
-              <p class="sq-hero-sub" id="wzLastUpdate">Live posture — updates via realtime stream</p>
+              <p class="mc-kicker">Security overview</p>
+              <h2 class="sq-hero-title">Threat Hunting</h2>
+              <p class="sq-hero-sub" id="wzLastUpdate">Unified detection, prioritized remediation, and evidence-backed verification.</p>
             </div>
             <div class="sq-hero-actions">
-              <button type="button" class="cc-action cc-action-primary" id="mcLiveScanQuick" data-action="new-scan">+ New Scan</button>
-              <button type="button" class="cc-action" id="sqAiInvestigate" data-view="chat" data-mode="ciso" data-prompt="From our current security posture, what are the top 3 risks that need attention today? For each: what happened, why it matters, and what I should do next.">AI Investigation</button>
+              <button type="button" class="cc-action cc-action-primary wz-cta-yellow" id="mcLiveScanQuick" data-action="new-scan">+ New Scan</button>
+              <button type="button" class="cc-action wz-cta-blue" id="sqAiInvestigate" data-view="chat" data-mode="ciso" data-prompt="From our current security posture, what are the top 3 risks that need attention today? For each: what happened, why it matters, evidence, and what I should do next.">AI Investigation</button>
               <button type="button" class="cc-action hidden" id="mcComboQuick" data-action="combo-assess">Combo assessment</button>
             </div>
           </header>
 
-          <div class="sq-stat-row" id="ccKpis">
-            <button type="button" class="sq-stat" data-workspace="assets">
-              <span class="sq-stat-label">Assets</span>
-              <strong id="ccAssets">0</strong>
-              <em class="mc-trend" id="ccAssetTrend"></em>
+          <div class="wz-dash-tabs" role="tablist" aria-label="Overview panels">
+            <button type="button" class="wz-dash-tab is-active" role="tab" aria-selected="true" data-wz-tab="dashboard">Dashboard</button>
+            <button type="button" class="wz-dash-tab" role="tab" aria-selected="false" data-wz-tab="events" data-scroll="sqLiveStream">Events</button>
+            <button type="button" class="wz-dash-tab" role="tab" aria-selected="false" data-workspace="vulns">Findings</button>
+            <button type="button" class="wz-dash-tab" role="tab" aria-selected="false" data-workspace="compliance_center">Compliance</button>
+          </div>
+
+          <div class="wz-filter-bar" aria-label="Dashboard filters">
+            <input type="search" id="wzDashSearch" class="wz-filter-search" placeholder="Search agents, CVEs, hosts…" autocomplete="off" />
+            <span class="wz-filter-range" id="wzFilterRange">Last 24 hours</span>
+            <button type="button" class="btn-secondary" data-workspace="agents">Explore agents</button>
+            <button type="button" class="btn-secondary" data-workspace="reports">Generate report</button>
+          </div>
+
+          <nav class="wz-module-grid" aria-label="Security modules">
+            <button type="button" class="wz-module-card" data-workspace="soc"><span class="wz-mod-ico" aria-hidden="true">◆</span><strong>Security events</strong><em>Incidents &amp; alerts</em></button>
+            <button type="button" class="wz-module-card" data-workspace="vulns"><span class="wz-mod-ico" aria-hidden="true">◆</span><strong>Vulnerability detection</strong><em>CVE · KEV · EPSS</em></button>
+            <button type="button" class="wz-module-card" data-workspace="software"><span class="wz-mod-ico" aria-hidden="true">◆</span><strong>IT hygiene</strong><em>Software &amp; patches</em></button>
+            <button type="button" class="wz-module-card" data-workspace="compliance_center"><span class="wz-mod-ico" aria-hidden="true">◆</span><strong>Regulatory compliance</strong><em>Evidence-backed controls</em></button>
+            <button type="button" class="wz-module-card" data-workspace="intel"><span class="wz-mod-ico" aria-hidden="true">◆</span><strong>Threat intelligence</strong><em>IOC · hunting</em></button>
+            <button type="button" class="wz-module-card" data-workspace="remediations"><span class="wz-mod-ico" aria-hidden="true">◆</span><strong>Incident response</strong><em>Remediate · verify</em></button>
+            <button type="button" class="wz-module-card" data-workspace="assets"><span class="wz-mod-ico" aria-hidden="true">◆</span><strong>Endpoint security</strong><em>Assets · agents</em></button>
+            <button type="button" class="wz-module-card" data-workspace="graph"><span class="wz-mod-ico" aria-hidden="true">◆</span><strong>Attack paths</strong><em>Business risk graph</em></button>
+          </nav>
+
+          <div class="sq-stat-row" id="ccKpis" aria-label="Summary metrics">
+            <button type="button" class="sq-stat sq-stat-sec" data-scroll="sqPostureCard" title="Security index from live workspace posture">
+              <span class="sq-stat-label">Security</span>
+              <strong id="ccScore">0</strong>
+              <em class="mc-trend" id="ccScoreTrend"></em>
+              <span class="sq-stat-sub" id="ccScoreLevel">—</span>
             </button>
-            <button type="button" class="sq-stat sq-stat-crit" data-workspace="vulns">
+            <button type="button" class="sq-stat sq-stat-risk" data-workspace="executive" title="Organizational exposure — open findings ranked by impact">
+              <span class="sq-stat-label">Risk</span>
+              <strong id="ccOrgRisk">—</strong>
+              <em class="mc-trend" id="ccRiskTrend"></em>
+              <span class="sq-stat-sub" id="ccOrgRiskBand">exposure</span>
+            </button>
+            <button type="button" class="sq-stat sq-stat-comp" data-workspace="compliance_center" title="Assessed frameworks only — evidence supporting controls, not certification">
+              <span class="sq-stat-label">Compliance</span>
+              <strong id="ccCompliance">—</strong>
+              <em class="mc-trend" id="ccCompTrend"></em>
+              <span class="sq-stat-sub" id="ccComplianceSub">not assessed</span>
+            </button>
+            <button type="button" class="sq-stat sq-stat-agents" data-workspace="agents" title="SecuraIQ Agents &amp; packages">
+              <span class="sq-stat-label">Agents</span>
+              <strong id="ccAgentsOnline">0</strong>
+              <em class="mc-trend" id="ccAgentTrend"></em>
+              <span class="sq-stat-sub" id="ccAgentsSub">0 enrolled</span>
+            </button>
+            <button type="button" class="sq-stat sq-stat-crit" data-workspace="vulns" title="Open critical findings">
               <span class="sq-stat-label">Critical</span>
               <strong id="ccCrit">0</strong>
               <em class="mc-trend" id="ccCritTrend"></em>
-            </button>
-            <button type="button" class="sq-stat sq-stat-high" data-workspace="vulns">
-              <span class="sq-stat-label">High</span>
-              <strong id="sqHighCount">0</strong>
-              <em class="mc-trend" id="ccFindingsTrend"></em>
-            </button>
-            <button type="button" class="sq-stat sq-stat-inc" data-workspace="soc">
-              <span class="sq-stat-label">Incidents</span>
-              <strong id="ccIncidents">0</strong>
-              <em class="mc-trend" id="ccIncidentTrend"></em>
-            </button>
-            <button type="button" class="sq-stat sq-stat-sw" data-workspace="software" title="Software &amp; patch inventory — live SSE">
-              <span class="sq-stat-label">Patch gaps</span>
-              <strong id="ccSoftwareIssues">0</strong>
-              <em class="mc-trend" id="ccSoftwareTrend"></em>
-              <span class="sq-stat-sub" id="ccSoftwareHealthPct">100%</span>
+              <span class="sq-stat-sub" id="ccFindingsHint">findings</span>
             </button>
           </div>
+          <!-- Hidden legacy KPI targets kept for SSE / trend helpers -->
+          <span id="ccAssets" class="hidden" hidden aria-hidden="true">0</span>
+          <span id="sqHighCount" class="hidden" hidden aria-hidden="true">0</span>
+          <span id="ccIncidents" class="hidden" hidden aria-hidden="true">0</span>
+          <span id="ccSoftwareIssues" class="hidden" hidden aria-hidden="true">0</span>
+          <span id="ccSoftwareHealthPct" class="hidden" hidden aria-hidden="true">—</span>
+          <span id="ccRisks" class="hidden" hidden aria-hidden="true">0</span>
+          <span id="ccRems" class="hidden" hidden aria-hidden="true">0</span>
+          <span id="ccComplianceBar" class="hidden" hidden aria-hidden="true" style="width:0"></span>
+          <span id="ccAssetTrend" class="hidden" hidden aria-hidden="true"></span>
+          <span id="ccFindingsTrend" class="hidden" hidden aria-hidden="true"></span>
+          <span id="ccIncidentTrend" class="hidden" hidden aria-hidden="true"></span>
+          <span id="ccSoftwareTrend" class="hidden" hidden aria-hidden="true"></span>
+          <span id="ccRemTrend" class="hidden" hidden aria-hidden="true"></span>
+          <span id="ccFindingsTotal" class="hidden" hidden aria-hidden="true">0</span>
+
+          <div class="wz-charts-grid" id="wzChartsGrid" aria-label="Dashboard visualizations">
+            <section class="sq-card wz-chart-card">
+              <header class="sq-card-head"><h3>Alerts level evolution</h3><span class="hint">7D</span></header>
+              <div id="wzChartEvolution" class="wz-chart-body wz-chart-loading" role="img" aria-label="Alerts evolution chart"><span class="wz-chart-spinner"></span></div>
+            </section>
+            <section class="sq-card wz-chart-card">
+              <header class="sq-card-head"><h3>Alerts by severity</h3><button type="button" class="btn-ghost sq-link-btn" data-workspace="vulns">Open →</button></header>
+              <div id="wzChartSeverity" class="wz-chart-body wz-chart-loading" role="img" aria-label="Severity donut"><span class="wz-chart-spinner"></span></div>
+            </section>
+            <section class="sq-card wz-chart-card">
+              <header class="sq-card-head"><h3>Top assets</h3><button type="button" class="btn-ghost sq-link-btn" data-workspace="assets">Inventory →</button></header>
+              <div id="wzChartAssets" class="wz-chart-body wz-chart-loading" role="img" aria-label="Top assets chart"><span class="wz-chart-spinner"></span></div>
+            </section>
+            <section class="sq-card wz-chart-card">
+              <header class="sq-card-head"><h3>Alert volume</h3><span class="hint">by severity</span></header>
+              <div id="wzChartVolume" class="wz-chart-body wz-chart-loading" role="img" aria-label="Alert volume bars"><span class="wz-chart-spinner"></span></div>
+            </section>
+          </div>
+
+          <section class="sq-card sq-fix-first" id="sqFixFirst">
+            <header class="sq-card-head">
+              <h3>What should I fix first?</h3>
+              <div class="sq-fix-filters" role="group" aria-label="Filter priority queue">
+                <button type="button" class="sq-filter-chip is-active" data-fix-filter="all">All</button>
+                <button type="button" class="sq-filter-chip" data-fix-filter="kev">KEV</button>
+                <button type="button" class="sq-filter-chip" data-fix-filter="quick">Quick wins</button>
+                <button type="button" class="btn-secondary" id="sqFixAllQuick" title="Open Agents to approve patch campaigns for quick wins">Patch via agents</button>
+                <button type="button" class="btn-secondary" data-workspace="executive">Full view</button>
+              </div>
+            </header>
+            <div id="sqFixFirstBody" class="sq-fix-body"><p class="hint">Loading ranked actions…</p></div>
+          </section>
 
           <div class="sq-hero-grid">
-            <section class="sq-card sq-posture">
+            <section class="sq-card sq-posture" id="sqPostureCard">
               <header class="sq-card-head"><h3>Security Posture</h3>
-                <button type="button" class="btn-ghost sq-link-btn" data-module="gap">View risk breakdown →</button>
+                <button type="button" class="btn-ghost sq-link-btn" data-workspace="executive">Exposure detail →</button>
               </header>
               <div class="sq-posture-score">
-                <strong class="sq-score-num" id="ccScore">0</strong>
-                <span class="sq-score-band" id="ccScoreLevel">—</span>
-                <em class="sq-score-trend mc-trend" id="ccScoreTrend"></em>
+                <strong class="sq-score-num" id="ccScoreMirror">0</strong>
+                <span class="sq-score-band" id="ccScoreLevelMirror">—</span>
+                <em class="sq-score-trend mc-trend" id="ccScoreTrendMirror"></em>
               </div>
               <div class="sq-posture-bars">
                 <div class="sq-pbar"><span>Assets</span><i style="width:0%" id="sqBarAssets"></i><em id="sqBarAssetsVal">0</em></div>
                 <div class="sq-pbar"><span>Vulns</span><i style="width:0%" id="sqBarVulns"></i><em id="sqBarVulnsVal">0</em></div>
                 <div class="sq-pbar"><span>Exposure</span><i style="width:0%" id="sqBarExposure"></i><em id="sqBarExposureVal">0</em></div>
-                <div class="sq-pbar"><span>Compliance</span><i style="width:0%" id="sqBarCompliance"></i><em id="sqBarComplianceVal">0</em></div>
+                <div class="sq-pbar"><span>Compliance</span><i style="width:0%" id="sqBarCompliance"></i><em id="sqBarComplianceVal">—</em></div>
               </div>
+              <p class="hint" id="sqPostureNote" style="margin:0.5rem 0 0">Summary → ranked actions → evidence → verify.</p>
             </section>
-            <section class="sq-card sq-ai-analyst" id="sqAiAnalyst">
-              <header class="sq-card-head"><h3>✦ AI Security Analyst</h3>
-                <button type="button" class="btn-secondary" id="sqInvestigateAll" data-view="chat" data-mode="ciso" data-prompt="Investigate all top risks from Mission Control: attack path, business impact, and remediation order">Investigate all</button>
+            <section class="sq-card sq-live-stream" id="sqLiveStream">
+              <header class="sq-card-head"><h3>Live security stream</h3>
+                <span class="hint" id="sqStreamPulse">SSE</span>
               </header>
-              <div id="sqAiAnalystBody" class="sq-ai-body"><p class="hint">Analyzing posture…</p></div>
+              <ul id="ccLiveStream" class="wz-events" aria-live="polite"><li class="hint">Waiting for events…</li></ul>
             </section>
           </div>
 
           <section class="sq-card sq-top-risks">
-            <header class="sq-card-head"><h3>Top Risks</h3>
+            <header class="sq-card-head"><h3>Security alerts</h3>
               <button type="button" class="btn-secondary" data-workspace="vulns">All findings</button>
             </header>
             <div id="sqTopRisksTable" class="sq-risks-table-wrap"><p class="hint">Loading risks…</p></div>
@@ -387,7 +467,7 @@
                 <button type="button" class="btn-secondary" data-workspace="compliance_center">Center</button>
               </header>
               <ul id="ccFrameworks" class="sq-fw-list"><li class="hint">—</li></ul>
-              <p class="hint sq-fw-evidence" id="sqComplianceEvidence">—</p>
+              <p class="hint sq-fw-evidence" id="sqComplianceEvidence">Security evidence supporting assessed controls — not certification.</p>
             </section>
             <section class="sq-card sq-integ-mini">
               <header class="sq-card-head"><h3>Connected Sources</h3>
@@ -410,6 +490,12 @@
                 <button type="button" class="btn-secondary" data-workspace="remediations">Review all</button>
               </header>
               <ul id="ccApprovals" class="sq-attention-list"><li class="hint">Nothing flagged</li></ul>
+            </section>
+            <section class="sq-card sq-ai-analyst" id="sqAiAnalyst">
+              <header class="sq-card-head"><h3>AI Analyst</h3>
+                <button type="button" class="btn-secondary" id="sqInvestigateAll" data-view="chat" data-mode="ciso" data-prompt="Investigate top risks from Command Center: what happened, why it matters, evidence, and remediation order">Investigate</button>
+              </header>
+              <div id="sqAiAnalystBody" class="sq-ai-body"><p class="hint">Analyzing posture…</p></div>
             </section>
           </div>
 
@@ -463,7 +549,7 @@
           </div>
         </section>
 
-        <section id="viewChat" class="workspace-view" data-view-panel="chat">
+        <section id="viewChat" class="workspace-view hidden" data-view-panel="chat">
           <div class="ai-tabs" role="tablist" aria-label="AI workspace">
             <button type="button" class="ai-tab active" data-ai-tab="chat">Assistant</button>
             <button type="button" class="ai-tab" data-ai-tab="memory">Memory</button>
@@ -518,19 +604,18 @@
 
         <section id="viewSoftware" class="workspace-view hidden" data-module-page data-view-panel="software">
           <div class="page-head">
-            <h1>Software &amp; patch inventory</h1>
+            <h1>Software &amp; patches</h1>
             <div class="page-head-actions">
               <button type="button" class="btn-primary-cc" id="softwareLocalRefreshBtn">Refresh this PC</button>
-              <button type="button" class="btn-primary-cc" id="softwareSyncAllBtn">Sync all &amp; rebuild</button>
-              <button type="button" class="btn-secondary" id="softwareRebuildBtn">Rebuild only</button>
+              <button type="button" class="btn-primary-cc" id="softwareSyncAllBtn">Sync &amp; rebuild</button>
+              <button type="button" class="btn-secondary" id="softwareVersionsRefreshBtn">Check latest versions</button>
               <button type="button" class="btn-secondary" id="softwareOpenExport">Export</button>
-              <button type="button" class="btn-secondary" data-workspace="soc">Open SOC / XDR</button>
               <button type="button" class="btn-primary-cc" data-action="new-scan">New scan</button>
             </div>
           </div>
-          <p class="hint">Installed software from Control Panel, Windows Update, scans, and connected sources — live on this dashboard.</p>
+          <p class="hint">Live inventory from agents, Control Panel, OS patches, and scans — installed vs latest when known.</p>
           <div class="sw-realtime-bar">
-            <label class="sw-live-toggle" title="Toggle live SSE updates (Google Play–style activity feed)">
+            <label class="sw-live-toggle" title="Live SSE updates">
               <input type="checkbox" id="softwareLiveToggle" checked />
               <span class="sw-live-toggle-ui" aria-hidden="true"></span>
               <span>Live updates</span>
@@ -637,10 +722,13 @@
           <div class="page-head">
             <h1>Automation</h1>
             <div class="page-head-actions">
-              <button type="button" class="btn-secondary" id="automationRefreshJobs">Refresh jobs</button>
-              <button type="button" class="btn-primary-cc" id="automationAskDesign" data-mode="ciso" data-prompt="Design an automation workflow: scan import → AI triage → risk score → approval → Jira ticket → Slack notify → verify close">Design with AI</button>
+              <span class="auto-live-pill" id="automationLivePill" aria-live="polite">○ Connecting</span>
+              <button type="button" class="btn-secondary" id="automationRefreshJobs">Refresh</button>
+              <button type="button" class="btn-primary-cc" data-action="new-scan">New scan</button>
+              <button type="button" class="btn-primary-cc" id="automationAskDesign" data-mode="ciso" data-prompt="Design an automation workflow: authorized web or network scan → AI triage → risk → approval → ticket → notify → verify close. Keep web and network scans separate.">Design with AI</button>
             </div>
           </div>
+          <p class="hint auto-page-lead">Live job queue and golden-path ops — web scans, network scans, intel, and connectors stay separate.</p>
           <div id="automationPageBody"></div>
         </section>
         <section id="viewRemediations" class="workspace-view hidden" data-module-page data-view-panel="remediations">
@@ -687,7 +775,7 @@
           <div class="page-head">
             <div>
               <h1>Web URL Scan</h1>
-              <p class="page-intro hint" style="margin:0.35rem 0 0">Point the SecuraIQ Web Scanner at a URL — headers, TLS, cookies, sensitive paths, and active checks. No install required.</p>
+              <p class="page-intro hint" style="margin:0.35rem 0 0">Point the SecuraIQ Web Scanner at a <strong>public</strong> http(s) URL — headers, TLS, cookies, sensitive paths. Private/LAN hosts belong under Network scan, not here.</p>
             </div>
           </div>
           <div id="webscanPageBody"></div>
@@ -695,6 +783,19 @@
         <section id="viewSoc" class="workspace-view hidden" data-module-page data-view-panel="soc">
           <div class="page-head"><h1>Security operations</h1></div>
           <div id="socPageBody"></div>
+        </section>
+        <section id="viewAgents" class="workspace-view hidden" data-module-page data-view-panel="agents">
+          <div class="page-head">
+            <div>
+              <h1>Agents &amp; packages</h1>
+              <p class="page-intro hint" style="margin:0.35rem 0 0">Download packaged agents (.exe / .zip / .tar.gz), enroll once, and watch fleet check-ins over realtime SSE + Agent Gateway. Install scripts are developer fallback only.</p>
+            </div>
+            <div class="page-head-actions" style="display:flex;gap:0.5rem;flex-wrap:wrap">
+              <button type="button" class="btn-secondary" id="agentsPageCampaignBtn">New patch campaign</button>
+              <button type="button" class="btn-primary-cc" id="agentsPageEnrollBtn">Enroll new agent</button>
+            </div>
+          </div>
+          <div id="agentsPageBody"></div>
         </section>
         <section id="viewExecutive" class="workspace-view hidden" data-module-page data-view-panel="executive">
           <div class="page-head">
@@ -717,25 +818,25 @@
           <div class="fw-page">
             <div class="page-head">
               <div>
-                <h1>Frameworks &amp; control testing</h1>
-                <p class="page-intro hint" style="margin:0.35rem 0 0">Assessed controls, linked evidence, live tests from product telemetry, and remediations — helps assess requirements; not a certification.</p>
+                <h1>Frameworks</h1>
+                <p class="page-intro hint" style="margin:0.35rem 0 0">Control posture · live tests · gaps</p>
               </div>
               <div class="page-head-actions">
-                <button type="button" class="btn-secondary" id="hkAuditBtn">HardeningKitty audit</button>
-                <button type="button" class="btn-primary-cc" id="frameworksRunGap">Run gap analysis</button>
+                <button type="button" class="btn-secondary" id="hkAuditBtn">Run hardening</button>
+                <button type="button" class="btn-primary-cc" id="frameworksRunGap">Assess gaps</button>
               </div>
             </div>
             <div class="fw-hero" id="fwHero">
               <div class="fw-hero-score">
-                <span class="fw-hero-label">Assessed posture</span>
+                <span class="fw-hero-label">Posture</span>
                 <strong id="fwHeroPct">0%</strong>
-                <em id="fwHeroMaturity" class="hint">Ad hoc · heuristic score</em>
+                <em id="fwHeroMaturity" class="hint">Ad hoc</em>
               </div>
               <ul class="fw-hero-stats" id="fwHeroStats">
-                <li><span>Implemented</span><strong id="fwStatImpl">0</strong></li>
-                <li><span>Partial</span><strong id="fwStatPartial">0</strong></li>
-                <li><span>Missing</span><strong id="fwStatMissing">0</strong></li>
-                <li><span>Open remediations</span><strong id="fwStatRems">0</strong></li>
+                <li class="is-ok"><span>Pass</span><strong id="fwStatImpl">0</strong></li>
+                <li class="is-warn"><span>Partial</span><strong id="fwStatPartial">0</strong></li>
+                <li class="is-fail"><span>Fail</span><strong id="fwStatMissing">0</strong></li>
+                <li><span>Remediations</span><strong id="fwStatRems">0</strong></li>
               </ul>
             </div>
             <div class="fw-page-grid">
@@ -746,8 +847,8 @@
                   <div id="hkPanelBody"><p class="hint">Loading…</p></div>
                 </section>
                 <section class="cc-panel" id="fwControlDetailPanel">
-                  <header><h2>Control detail</h2></header>
-                  <div id="fwControlDetail" class="fw-control-detail"><p class="hint">Select a framework to review controls.</p></div>
+                  <header><h2>Controls</h2></header>
+                  <div id="fwControlDetail" class="fw-control-detail"><p class="hint">Pick a framework.</p></div>
                 </section>
               </aside>
             </div>
@@ -2041,22 +2142,22 @@
         <h2 id="newScanTitle">New scan</h2>
         <button type="button" class="btn-ghost" id="newScanClose" aria-label="Close">Close</button>
       </div>
-      <p class="hint">Scanner engine runs in a background worker. AI does not perform the scan — it interprets evidence afterward.</p>
+      <p class="hint">Pick <strong>Network</strong> (discovery/nmap/combo) or <strong>Web</strong> (public URL DAST) — they stay separate. AI interprets evidence afterward; it does not perform the scan.</p>
       <form id="newScanForm" class="scan-form">
         <label>Target
           <input type="text" id="newScanTarget" required placeholder="hostname or IP you own" autocomplete="off" spellcheck="false" />
         </label>
         <fieldset class="scan-profile-set">
-          <legend>Scan profile</legend>
-          <label class="chip-toggle"><input type="radio" name="scanProfile" value="discovery" checked /> <span>Discovery</span></label>
+          <legend>Scan type</legend>
+          <label class="chip-toggle"><input type="radio" name="scanProfile" value="discovery" checked /> <span>Network</span></label>
           <label class="chip-toggle"><input type="radio" name="scanProfile" value="web" /> <span>Web</span></label>
           <label class="chip-toggle"><input type="radio" name="scanProfile" value="vulnerability" /> <span>Vulnerability</span></label>
           <label class="chip-toggle"><input type="radio" name="scanProfile" value="full" /> <span>Full</span></label>
         </fieldset>
         <label>Scanner
           <select id="newScanScanner">
-            <option value="combo">Combo workflow (scan → evidence → AI → triage)</option>
-            <option value="securaiq">SecuraIQ Scanner (built-in)</option>
+            <option value="combo">Combo workflow (network → evidence → AI → triage)</option>
+            <option value="securaiq">SecuraIQ Scanner (built-in network)</option>
             <option value="all">All available scanners</option>
             <option value="nmap">Nmap (if installed)</option>
             <option value="nuclei">Nuclei (if installed)</option>
@@ -2068,8 +2169,8 @@
           <input type="checkbox" id="newScanAutoTriage" checked />
           <span>Combo: auto-triage high/critical findings</span>
         </label>
-        <label>Scope (required for combo / Nmap / Nuclei / ZAP and VA/full — one host/CIDR per line)
-          <textarea id="newScanScope" rows="3" placeholder="example.com&#10;*.example.com&#10;10.0.0.0/24"></textarea>
+        <label>Scope (required for network combo / Nmap / Nuclei / Web — one host or URL per line)
+          <textarea id="newScanScope" rows="3" placeholder="example.com&#10;*.example.com&#10;10.0.0.0/24 (network only)"></textarea>
         </label>
         <label class="chip-toggle scan-auth-row">
           <input type="checkbox" id="newScanAuthorized" checked />
@@ -2088,7 +2189,7 @@
     </div>
   </div>
 
-  <script src="/app.js?v=192"></script>
-  <script src="/workspace.js?v=182"></script>
+  <script src="/app.js?v=202"></script>
+  <script src="/workspace.js?v=190"></script>
 </body>
 </html>

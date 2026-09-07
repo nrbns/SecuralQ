@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# SecuraIQ agent — macOS launchd installer.
+# SecuraIQ agent — macOS launchd installer (DEVELOPER FALLBACK).
+#
+# Prefer the packaged *.tar.gz / *.dmg from dist/agent-packages/ (embeds install.sh).
+# This script remains for labs without a built package.
 #
 # Installs the agent as a LaunchDaemon: starts at boot, restarts
 # automatically if it exits, runs unattended (no logged-in user needed) —

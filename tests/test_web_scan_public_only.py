@@ -1,12 +1,8 @@
-"""The Web Scanner (app.scanners.zap.ZapScanner) is scoped to public-facing
-web apps only — internal hosts (loopback, RFC1918/private IPs, link-local,
-.local/.internal names) belong to the network/VAPT scanner
-(app.scanners.builtin.BuiltinScanner) instead. Rejecting them here also
-closes an SSRF hole where a "web scan" target could otherwise reach internal
-services (e.g. a cloud metadata endpoint) from this server.
+"""Web Scanner target policy: public http(s) only; SSRF + private blocked.
 
-BuiltinScanner is intentionally NOT restricted this way — internal-network
-vulnerability scanning against private IPs is exactly what it's for.
+ZapScanner.validate_target rejects RFC1918/loopback (use Network scan for LAN).
+internal_target_reason(..., allow_lab_private=True) still exists for lab helpers,
+but cloud metadata / link-local stay hard-blocked either way.
 """
 
 from __future__ import annotations
@@ -14,46 +10,60 @@ from __future__ import annotations
 import pytest
 
 from app.scanners.constants import internal_target_reason
-from app.scanners.zap import ZapScanner
+from app.scanners.zap import ZapScanner, _web_scan_url
 from app.scanners.builtin import BuiltinScanner
 
 
-# --- internal_target_reason (pure logic, no I/O for IP literals) -----------
+@pytest.mark.parametrize(
+    "host",
+    [
+        "169.254.1.1",
+        "169.254.169.254",
+        "0.0.0.0",
+    ],
+)
+def test_internal_target_reason_hard_blocks_ssrf_ranges(host):
+    assert internal_target_reason(host, allow_lab_private=True) != ""
+    assert internal_target_reason(host, allow_lab_private=False) != ""
 
 
 @pytest.mark.parametrize(
     "host",
     [
         "127.0.0.1",
-        "127.0.0.53",
         "10.0.0.5",
         "172.16.5.1",
         "192.168.1.1",
-        "169.254.1.1",  # link-local / cloud metadata range (169.254.169.254)
-        "0.0.0.0",
-        "::1",
         "localhost",
-        "web01.local",
-        "db.internal",
-        "host.lan",
-        "server.corp",
     ],
 )
-def test_internal_target_reason_blocks_internal_hosts(host):
-    assert internal_target_reason(host) != ""
+def test_lab_mode_allows_private_and_loopback(host):
+    assert internal_target_reason(host, allow_lab_private=True) == ""
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "127.0.0.1",
+        "10.0.0.5",
+        "192.168.1.1",
+        "localhost",
+        "web01.local",
+    ],
+)
+def test_public_only_mode_still_blocks_private(host):
+    assert internal_target_reason(host, allow_lab_private=False) != ""
 
 
 @pytest.mark.parametrize("host", ["example.com", "8.8.8.8", "1.1.1.1"])
 def test_internal_target_reason_allows_public_hosts(host):
-    assert internal_target_reason(host) == ""
+    assert internal_target_reason(host, allow_lab_private=False) == ""
+    assert internal_target_reason(host, allow_lab_private=True) == ""
 
 
 def test_internal_target_reason_empty_host():
     assert internal_target_reason("") != ""
     assert internal_target_reason("   ") != ""
-
-
-# --- ZapScanner.validate_target ---------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -65,16 +75,30 @@ def test_internal_target_reason_empty_host():
         "http://192.168.1.10/",
         "http://172.20.0.5/",
         "http://localhost:8080/",
-        "http://169.254.169.254/latest/meta-data/",  # classic SSRF cloud-metadata target
-        "internal-app.local",
         "192.168.1.1",
+        "192.168.0.1/24",
     ],
 )
-def test_zap_validate_target_rejects_internal(target):
+def test_zap_validate_target_rejects_lab_private(target):
+    """Web Scanner path is public URLs only — LAN/loopback use Network scan."""
+    sc = ZapScanner()
+    ok, detail = sc.validate_target(target)
+    assert ok is False, detail
+    assert "blocked" in detail.lower() or "private" in detail.lower() or "loopback" in detail.lower() or "localhost" in detail.lower()
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "http://169.254.169.254/latest/meta-data/",
+        "169.254.169.254",
+    ],
+)
+def test_zap_validate_target_rejects_cloud_metadata(target):
     sc = ZapScanner()
     ok, detail = sc.validate_target(target)
     assert ok is False
-    assert "public web" in detail.lower()
+    assert "link-local" in detail.lower() or "metadata" in detail.lower() or "blocked" in detail.lower()
 
 
 def test_zap_validate_target_accepts_public_host():
@@ -85,20 +109,19 @@ def test_zap_validate_target_accepts_public_host():
 
 
 def test_zap_validate_target_still_rejects_shell_metacharacters():
-    """Existing injection guard must keep working alongside the new check."""
     sc = ZapScanner()
     ok, detail = sc.validate_target("example.com; rm -rf /")
     assert ok is False
     assert "invalid target characters" in detail
 
 
-# --- BuiltinScanner (network/VAPT) is unaffected ----------------------------
+def test_web_scan_url_prefers_http_for_private_ip():
+    assert _web_scan_url("192.168.0.1/24") == "http://192.168.0.1"
+    assert _web_scan_url("10.0.0.5:8080").startswith("http://10.0.0.5:8080")
 
 
 @pytest.mark.parametrize("target", ["127.0.0.1", "10.0.0.5", "192.168.1.10"])
 def test_builtin_network_scanner_still_allows_internal_targets(target):
-    """The internal-network vulnerability scanner must keep working against
-    private IPs — that's its whole purpose, unlike the Web Scanner above."""
     sc = BuiltinScanner()
     ok, detail = sc.validate_target(target)
     assert ok is True

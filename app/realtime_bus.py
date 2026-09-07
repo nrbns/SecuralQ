@@ -18,6 +18,8 @@ import json
 import os
 import threading
 import time
+import uuid
+from collections import OrderedDict
 from typing import Any
 
 _lock = threading.Lock()
@@ -26,6 +28,8 @@ _loop: asyncio.AbstractEventLoop | None = None
 _redis_task: asyncio.Task | None = None
 _CHANNEL = "securaiq:realtime"
 _PID = os.getpid()
+_RECENT_EVENT_IDS: OrderedDict[str, bool] = OrderedDict()
+_RECENT_EVENT_MAX = 2048
 
 
 def bind_loop(loop: asyncio.AbstractEventLoop | None = None) -> None:
@@ -93,7 +97,17 @@ def publish(event: dict[str, Any] | None = None, **kwargs: Any) -> None:
     payload = dict(event or {})
     payload.update(kwargs)
     payload.setdefault("ts", time.time())
+    payload.setdefault("seq", int(payload["ts"] * 1000))
+    eid = str(payload.get("event_id") or uuid.uuid4().hex)
+    payload["event_id"] = eid
     payload["_pid"] = _PID
+
+    with _lock:
+        if eid in _RECENT_EVENT_IDS:
+            return
+        _RECENT_EVENT_IDS[eid] = True
+        while len(_RECENT_EVENT_IDS) > _RECENT_EVENT_MAX:
+            _RECENT_EVENT_IDS.popitem(last=False)
 
     _fanout_local(payload)
 

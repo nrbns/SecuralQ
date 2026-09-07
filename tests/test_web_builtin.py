@@ -13,7 +13,7 @@ async def test_run_builtin_web_scan_writes_zap_json(tmp_path, monkeypatch):
     class _Resp:
         status_code = 200
         text = "<html><title>lab</title>SecuraIQCanary7x</html>"
-        url = "http://192.168.56.101/"
+        url = "http://example.com/"
 
         @property
         def headers(self):
@@ -28,7 +28,7 @@ async def test_run_builtin_web_scan_writes_zap_json(tmp_path, monkeypatch):
     monkeypatch.setattr("app.scanners.web_builtin._tls_probe", lambda *a, **k: {"tls_version": "TLSv1.3"})
 
     out = await run_builtin_web_scan(
-        target_url="http://192.168.56.101",
+        target_url="http://example.com",
         profile="vulnerability",
         evidence_dir=tmp_path,
         scan_id="scan-web-1",

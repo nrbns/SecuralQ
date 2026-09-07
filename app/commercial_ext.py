@@ -296,43 +296,156 @@ def _pdf_escape(text: str) -> str:
     return text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
 
 
-def markdown_to_simple_pdf(md: str, title: str = "SecuraIQ Report") -> bytes:
-    lines: list[str] = [title, "=" * min(60, max(10, len(title))), ""]
-    for raw in (md or "").splitlines():
-        line = re.sub(r"[#>*`]+", "", raw).strip()
-        if not line:
-            lines.append("")
-            continue
-        while len(line) > 90:
-            lines.append(line[:90])
-            line = line[90:]
-        lines.append(line)
+def _pdf_wrap(text: str, width: int = 92) -> list[str]:
+    text = re.sub(r"\s+", " ", (text or "").strip())
+    if not text:
+        return [""]
+    out: list[str] = []
+    while len(text) > width:
+        cut = text.rfind(" ", 0, width)
+        if cut < 40:
+            cut = width
+        out.append(text[:cut].rstrip())
+        text = text[cut:].lstrip()
+    if text:
+        out.append(text)
+    return out
 
-    pages: list[list[str]] = []
-    chunk: list[str] = []
-    for ln in lines:
-        chunk.append(ln)
-        if len(chunk) >= 48:
+
+def _pdf_plain(line: str) -> str:
+    s = re.sub(r"[#>*`]+", "", line or "")
+    s = re.sub(r"\*\*([^*]+)\*\*", r"\1", s)
+    s = re.sub(r"\*([^*]+)\*", r"\1", s)
+    return s.strip()
+
+
+def markdown_to_simple_pdf(md: str, title: str = "SecuraIQ Report") -> bytes:
+    """Render Markdown VA/scan reports as a structured multi-page PDF.
+
+    Layout: branded header, severity summary when present, section headings,
+    per-finding detail, and a footer with title + page number. Pure stdlib —
+    no reportlab dependency.
+    """
+    from datetime import datetime, timezone
+
+    generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    body_rows: list[tuple[str, str]] = []  # (style, text) style: h1|h2|h3|body|bullet|rule|blank
+
+    body_rows.append(("h1", title))
+    body_rows.append(("body", f"Generated {generated}  |  SecuraIQ authorized security report"))
+    body_rows.append(("rule", ""))
+
+    for raw in (md or "").splitlines():
+        plain = raw.rstrip()
+        if not plain.strip():
+            body_rows.append(("blank", ""))
+            continue
+        if plain.startswith("### "):
+            body_rows.append(("h3", _pdf_plain(plain[4:])))
+            continue
+        if plain.startswith("## "):
+            body_rows.append(("blank", ""))
+            body_rows.append(("h2", _pdf_plain(plain[3:])))
+            body_rows.append(("rule", ""))
+            continue
+        if plain.startswith("# "):
+            # Skip duplicate top-level title when it matches our header.
+            t = _pdf_plain(plain[2:])
+            if t.lower() not in {title.lower(), "securaiq scan report", "securaiq va report"}:
+                body_rows.append(("h1", t))
+            continue
+        if plain.lstrip().startswith(("- ", "* ")):
+            body_rows.append(("bullet", _pdf_plain(plain.lstrip()[2:])))
+            continue
+        if re.match(r"^\d+\.\s+", plain.lstrip()):
+            body_rows.append(("bullet", _pdf_plain(re.sub(r"^\d+\.\s+", "", plain.lstrip()))))
+            continue
+        body_rows.append(("body", _pdf_plain(plain)))
+
+    # Expand wrapped lines into draw ops (style, text).
+    draw: list[tuple[str, str]] = []
+    for style, text in body_rows:
+        if style in {"blank", "rule"}:
+            draw.append((style, ""))
+            continue
+        width = 88 if style == "bullet" else 92
+        wrapped = _pdf_wrap(text, width=width)
+        for i, w in enumerate(wrapped):
+            st = style if i == 0 else ("body" if style != "bullet" else "bullet")
+            draw.append((st, w))
+
+    # Paginate (~48 content lines / page, leave room for header/footer).
+    lines_per_page = 46
+    pages: list[list[tuple[str, str]]] = []
+    chunk: list[tuple[str, str]] = []
+    for row in draw:
+        chunk.append(row)
+        if len(chunk) >= lines_per_page:
             pages.append(chunk)
             chunk = []
     if chunk:
         pages.append(chunk)
     if not pages:
-        pages = [[title, "", "(empty report)"]]
+        pages = [[("h1", title), ("body", "(empty report)")]]
+
+    def _page_stream(page_lines: list[tuple[str, str]], page_no: int, page_count: int) -> bytes:
+        # Content stream with bold/regular fonts and a footer.
+        parts: list[str] = []
+        y = 752
+        # Top header bar (simple line)
+        parts.append("0.15 0.25 0.45 rg 40 770 532 18 re f")
+        parts.append("1 1 1 rg BT /F2 10 Tf 48 775 Td (SecuraIQ) Tj ET")
+        parts.append("0 0 0 rg")
+        parts.append("BT")
+        first = True
+        for style, text in page_lines:
+            if style == "blank":
+                y -= 10
+                continue
+            if style == "rule":
+                parts.append("ET")
+                parts.append(f"0.75 0.75 0.75 rg 50 {y} 512 0.8 re f 0 0 0 rg")
+                parts.append("BT")
+                first = True
+                y -= 12
+                continue
+            if y < 72:
+                break
+            esc = _pdf_escape(text[:220])
+            if style == "h1":
+                font, size, leading = "/F2", 16, 20
+            elif style == "h2":
+                font, size, leading = "/F2", 13, 17
+            elif style == "h3":
+                font, size, leading = "/F2", 11, 15
+            elif style == "bullet":
+                font, size, leading = "/F1", 10, 13
+                esc = _pdf_escape(("• " + text)[:220])
+            else:
+                font, size, leading = "/F1", 10, 13
+            if first:
+                parts.append(f"{font} {size} Tf 50 {y} Td")
+                first = False
+            else:
+                parts.append(f"0 -{leading} Td {font} {size} Tf")
+            parts.append(f"({esc}) Tj")
+            y -= leading
+        parts.append("ET")
+        # Footer
+        foot = _pdf_escape(f"{title[:60]}  |  page {page_no}/{page_count}  |  {generated}")
+        parts.append(f"0.45 0.45 0.45 rg BT /F1 8 Tf 50 36 Td ({foot}) Tj ET 0 0 0 rg")
+        parts.append(f"0.8 0.8 0.8 rg 50 48 512 0.6 re f")
+        stream = "\n".join(parts).encode("latin-1", errors="replace")
+        return stream
 
     pdf_objs: dict[int, bytes] = {}
     pdf_objs[1] = b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"
-    next_id = 2
+    pdf_objs[2] = b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>"
+    next_id = 3
     content_refs: list[int] = []
-    for page_lines in pages:
-        parts = ["BT /F1 11 Tf 50 800 Td 14 TL"]
-        first = True
-        for ln in page_lines:
-            esc = _pdf_escape(ln[:200])
-            parts.append(("" if first else "T* ") + f"({esc}) Tj")
-            first = False
-        parts.append("ET")
-        stream = "\n".join(parts).encode("latin-1", errors="replace")
+    page_count = len(pages)
+    for idx, page_lines in enumerate(pages, start=1):
+        stream = _page_stream(page_lines, idx, page_count)
         pdf_objs[next_id] = (
             f"<< /Length {len(stream)} >>\nstream\n".encode() + stream + b"\nendstream"
         )
@@ -347,7 +460,7 @@ def markdown_to_simple_pdf(md: str, title: str = "SecuraIQ Report") -> bytes:
         page_ids.append(pid)
         pdf_objs[pid] = (
             f"<< /Type /Page /Parent {pages_id} 0 R /MediaBox [0 0 612 792] "
-            f"/Contents {cref} 0 R /Resources << /Font << /F1 1 0 R >> >> >>"
+            f"/Contents {cref} 0 R /Resources << /Font << /F1 1 0 R /F2 2 0 R >> >> >>"
         ).encode()
     kids = " ".join(f"{pid} 0 R" for pid in page_ids)
     pdf_objs[pages_id] = f"<< /Type /Pages /Kids [{kids}] /Count {len(page_ids)} >>".encode()

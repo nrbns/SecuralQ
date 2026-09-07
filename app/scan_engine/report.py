@@ -8,12 +8,23 @@ from typing import Any
 from app.db import now
 
 
+def _finding_field(f: dict[str, Any], *keys: str) -> str:
+    raw = f.get("raw") if isinstance(f.get("raw"), dict) else {}
+    for k in keys:
+        v = f.get(k)
+        if v:
+            return str(v).strip()
+        if isinstance(raw, dict) and raw.get(k):
+            return str(raw.get(k)).strip()
+    return ""
+
+
 def build_scan_report_md(
     scan: dict[str, Any],
     *,
     findings: list[dict[str, Any]] | None = None,
 ) -> str:
-    """Build a human-readable scan report (Markdown)."""
+    """Build a human-readable scan report (Markdown) with per-finding detail."""
     summary = scan.get("summary") or {}
     if isinstance(summary, str):
         try:
@@ -31,8 +42,23 @@ def build_scan_report_md(
     created = scan.get("created_at")
     completed = scan.get("completed_at")
 
+    sev_counts: dict[str, int] = {
+        "critical": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0,
+        "info": 0,
+    }
+    for f in findings:
+        sev = str(f.get("severity") or "info").lower()
+        if sev not in sev_counts:
+            sev = "info"
+        sev_counts[sev] += 1
+
     lines = [
-        f"# SecuraIQ Scan Report",
+        "# SecuraIQ Scan Report",
+        "",
+        "## Scan metadata",
         "",
         f"- **Scan ID:** `{scan_id}`",
         f"- **Target:** `{target}`",
@@ -45,8 +71,18 @@ def build_scan_report_md(
         lines.append(f"- **Created:** {created}")
     if completed:
         lines.append(f"- **Completed:** {completed}")
+
     lines.extend(
         [
+            "",
+            "## Severity summary",
+            "",
+            f"- Critical: **{sev_counts['critical']}**",
+            f"- High: **{sev_counts['high']}**",
+            f"- Medium: **{sev_counts['medium']}**",
+            f"- Low: **{sev_counts['low']}**",
+            f"- Info: **{sev_counts['info']}**",
+            f"- Total findings: **{len(findings)}**",
             "",
             "## Summary",
             "",
@@ -67,13 +103,25 @@ def build_scan_report_md(
             title = f.get("title") or "Untitled"
             cve = f.get("cve") or ""
             src = f.get("source") or ""
+            asset = _finding_field(f, "asset_name", "asset", "host", "url")
+            evidence = _finding_field(f, "evidence", "description", "detail", "proof")
+            remediation = _finding_field(f, "remediation", "solution", "recommendation")
+            param = _finding_field(f, "param", "parameter", "plugin")
             extra = f" · {cve}" if cve else ""
-            lines.append(f"{i}. **[{sev}]** {title}{extra}")
+            lines.append(f"### {i}. [{sev}] {title}{extra}")
+            lines.append("")
+            if asset:
+                lines.append(f"- **URL / asset:** `{asset}`")
+            if param:
+                lines.append(f"- **Param / plugin:** `{param}`")
             if src:
-                lines.append(f"   - Source: `{src}`")
-            rem = (f.get("raw") or {}).get("remediation") if isinstance(f.get("raw"), dict) else None
-            if rem:
-                lines.append(f"   - Remediation: {rem}")
+                lines.append(f"- **Source:** `{src}`")
+            if evidence:
+                lines.append(f"- **Evidence:** {evidence}")
+            if remediation:
+                lines.append(f"- **Remediation:** {remediation}")
+            if not (asset or evidence or remediation):
+                lines.append("- _(limited detail recorded for this finding)_")
             lines.append("")
 
     arts = summary.get("artifacts") or []
@@ -88,6 +136,7 @@ def build_scan_report_md(
             "## Notes",
             "",
             "- Only scan systems you own or are authorized to test.",
+            "- Web Scanner targets public http(s) URLs only; Network scan covers private/LAN.",
             "- Private Windows ports 135/139/445 are down-ranked to info on RFC1918 networks.",
             f"- Generated at `{now()}`.",
             "",

@@ -48,3 +48,25 @@ def test_dashboard_with_asset(tmp_path, monkeypatch):
     today = (dash.get("mission_control") or {}).get("today") or {}
     assert "critical_findings" in today
     assert "open_risks" in today
+    posture = dash.get("compliance_posture") or {}
+    assert posture.get("overall_percent") is None
+    assert "fix_first" in dash
+    assert isinstance(dash["fix_first"], list)
+    fleet = dash.get("agents_fleet") or {}
+    assert "total" in fleet
+    assert "online" in fleet
+    assert "org_risk" in dash
+
+
+def test_dashboard_empty_honest_compliance(tmp_path, monkeypatch):
+    _boot(tmp_path, monkeypatch)
+    from app.enterprise import enterprise_dashboard
+
+    dash = enterprise_dashboard("local")
+    assert dash["is_empty"] is True
+    posture = dash.get("compliance_posture") or {}
+    assert posture.get("overall_percent") is None
+    assert posture.get("frameworks_assessed") == 0
+    assert dash.get("fix_first") == []
+    assert "evidence_queue_count" in posture
+    assert posture.get("evidence_queue_count") == 0

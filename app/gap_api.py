@@ -34,8 +34,11 @@ from app.services.compliance_documents import (
     generate_report_markdown,
 )
 from app.services.compliance_center import audit_center_overview, compliance_overview
-from app.services.control_testing import controls_with_live_tests, run_live_tests_for_framework
-
+from app.services.control_testing import (
+    controls_with_live_tests,
+    list_live_control_failures,
+    run_live_tests_for_framework,
+)
 router = APIRouter(prefix="/api", tags=["gap-analysis"])
 
 
@@ -210,6 +213,40 @@ async def compliance_overview_route(
     hardcoded, and never counting an unassessed framework toward the
     percentage."""
     return compliance_overview(user.id, org_id=org_id)
+
+
+@router.get("/compliance/live-failures")
+async def compliance_live_failures(
+    user: Annotated[AuthUser, Depends(require_user)],
+    include_partial: bool = True,
+):
+    """Risk-ranked live control fails/partials from curated telemetry tests.
+    Separates continuous operating-effectiveness signals from pasted-evidence
+    posture %. Does not claim certification."""
+    return list_live_control_failures(
+        user.id, record_evidence=False, include_partial=include_partial
+    )
+
+
+@router.post("/compliance/run-live-tests")
+async def compliance_run_live_tests(user: Annotated[AuthUser, Depends(require_user)]):
+    """Re-run all curated live control tests and record derived evidence."""
+    return list_live_control_failures(user.id, record_evidence=True, include_partial=True)
+
+
+@router.post("/compliance/live-failures/fix")
+async def compliance_fix_live_failures(user: Annotated[AuthUser, Depends(require_user)]):
+    """Create remediation tasks from current live failures (Fix with SecuraIQ)."""
+    from app.enterprise import create_remediations_from_live_failures
+
+    live = list_live_control_failures(user.id, record_evidence=True, include_partial=True)
+    created = create_remediations_from_live_failures(user.id, live.get("failures") or [])
+    return {
+        "created": len(created),
+        "remediations": created,
+        "failures_considered": len(live.get("failures") or []),
+        "disclaimer": live.get("disclaimer"),
+    }
 
 
 @router.get("/compliance/audit-center")

@@ -41,53 +41,74 @@ _INTERNAL_DOMAIN_SUFFIXES = (
 )
 
 
-def _blocked_ip_reason(ip: "ipaddress.IPv4Address | ipaddress.IPv6Address") -> str:
-    """Empty string = fine to reach; non-empty = why it's blocked."""
+def _ssrf_blocked_ip_reason(ip: "ipaddress.IPv4Address | ipaddress.IPv6Address") -> str:
+    """Hard SSRF denylist — always blocked even for authorized lab web scans.
+
+    Cloud metadata / link-local (e.g. 169.254.169.254), multicast, and
+    unspecified addresses must never be reachable via the web scanner.
+    Loopback is allowed in lab mode (handled by the caller).
+    """
     if ip.is_loopback:
-        return "loopback address"
-    if ip.is_private:
-        return "private/internal IP address"
+        return ""
     if ip.is_link_local:
-        return "link-local address"
-    if ip.is_reserved:
-        return "reserved address"
+        return "link-local / cloud-metadata address"
     if ip.is_multicast:
         return "multicast address"
     if ip.is_unspecified:
         return "unspecified address"
+    # Some Python builds mark ::1 etc. as reserved; loopback already returned.
+    if ip.is_reserved and not ip.is_private:
+        return "reserved address"
     return ""
 
 
-def internal_target_reason(host: str) -> str:
-    """Empty string = `host` looks like a real public web target. Otherwise
-    the reason it was rejected.
+def _blocked_ip_reason(
+    ip: "ipaddress.IPv4Address | ipaddress.IPv6Address",
+    *,
+    allow_lab_private: bool = False,
+) -> str:
+    """Empty string = fine to reach; non-empty = why it's blocked."""
+    hard = _ssrf_blocked_ip_reason(ip)
+    if hard:
+        return hard
+    if allow_lab_private:
+        # Authorized lab / owned-LAN web apps (RFC1918 + loopback) are OK.
+        return ""
+    if ip.is_loopback:
+        return "loopback address"
+    if ip.is_private:
+        return "private/internal IP address"
+    return ""
 
-    Used by the Web Scanner (app/scanners/zap.py) — that tool is scoped to
-    public-facing web apps, not internal infrastructure (the network/VAPT
-    scanner in app/scanners/builtin.py legitimately targets private IPs, so
-    this check is intentionally NOT applied there). Rejecting loopback,
-    RFC1918/private, link-local, and internal-only-suffix hosts before any
-    request is made also closes the SSRF hole where a web-scan target could
-    otherwise be pointed at internal services (e.g. a cloud metadata
-    endpoint or an internal admin panel) reachable from this server.
 
-    Resolves the hostname and checks every returned address, not just the
-    first, since a name can round-robin between a public and an internal
-    IP. DNS resolution happens again independently at actual fetch time in
-    app/scanners/web_builtin.py, so this is a pre-flight check, not the
-    only line of defense against DNS-rebinding.
+def internal_target_reason(host: str, *, allow_lab_private: bool = False) -> str:
+    """Empty string = host is allowed for the Web Scanner. Otherwise why not.
+
+    With ``allow_lab_private=False`` (legacy public-only): reject loopback,
+    RFC1918, link-local, and internal-only DNS suffixes.
+
+    With ``allow_lab_private=True`` (authorized checkbox / API gate): allow
+    private LAN and loopback for owned labs, but still hard-block cloud
+    metadata / link-local SSRF targets (e.g. 169.254.169.254).
+
+    Resolves hostnames and checks every returned address (DNS rebinding).
     """
     h = (host or "").strip().lower().rstrip(".")
     if not h:
         return "empty host"
-    if h == "localhost" or h.endswith(".localhost"):
-        return "localhost is not a public web target"
-    if h.endswith(_INTERNAL_DOMAIN_SUFFIXES):
-        return "internal-only domain suffix — not a public web target"
+    if not allow_lab_private:
+        if h == "localhost" or h.endswith(".localhost"):
+            return "localhost is not a public web target"
+        if h.endswith(_INTERNAL_DOMAIN_SUFFIXES):
+            return "internal-only domain suffix — not a public web target"
+    elif h.endswith(_INTERNAL_DOMAIN_SUFFIXES) and not h.endswith((".local", ".lan", ".home", ".localdomain")):
+        # Keep .corp/.internal/.intranet blocked even in lab mode unless
+        # they resolve — handled below via DNS. Suffixes common on labs OK.
+        pass
 
     # Direct IP literal (IPv4 or IPv6, brackets stripped by caller already).
     try:
-        return _blocked_ip_reason(ipaddress.ip_address(h))
+        return _blocked_ip_reason(ipaddress.ip_address(h), allow_lab_private=allow_lab_private)
     except ValueError:
         pass
 
@@ -105,7 +126,7 @@ def internal_target_reason(host: str) -> str:
             ip = ipaddress.ip_address(raw_addr.split("%")[0])
         except ValueError:
             continue
-        reason = _blocked_ip_reason(ip)
+        reason = _blocked_ip_reason(ip, allow_lab_private=allow_lab_private)
         if reason:
             return reason
     return ""

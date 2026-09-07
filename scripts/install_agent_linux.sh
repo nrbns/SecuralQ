@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# SecuraIQ agent — Linux systemd service installer.
+# SecuraIQ agent — Linux systemd service installer (DEVELOPER FALLBACK).
+#
+# Prefer the packaged *.tar.gz from dist/agent-packages/ (embeds install.sh).
+# This script remains for labs without a built package.
 #
 # Installs the agent as a real systemd service: starts on boot, restarts
 # automatically if it crashes, runs unattended (no logged-in user needed) —

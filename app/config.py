@@ -153,6 +153,13 @@ class Settings(BaseSettings):
     # Infra (beta SaaS — Postgres/Redis via compose profiles)
     database_url: str = ""  # empty = SQLite at DATA_DIR/securaiq.db
     redis_url: str = ""
+    # Native agent gateway (WebSocket) + replay protection
+    agent_gateway_enabled: bool = True
+    agent_require_replay_protection: bool = False  # true in production: require ts+nonce
+    agent_command_ttl_sec: int = 86400
+    agent_command_ack_timeout_sec: int = 180
+    agent_replay_max_skew_sec: int = 300
+    agent_signing_key: str = ""  # HMAC for sealed commands; empty = derived lab default
     # production / DEPLOYMENT_MODE=production requires PostgreSQL (never SQLite for SaaS)
     require_postgres_in_production: bool = True
     # Security hardening

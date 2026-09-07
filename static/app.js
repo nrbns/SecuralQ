@@ -191,12 +191,12 @@ async function openNewScanModal() {
           }),
         ];
         sel.innerHTML = opts.join("");
-        // Prefer combo for Discovery; Web profile → SecuraIQ Web Scanner.
+        // Prefer combo for Network/Discovery; Web profile → SecuraIQ Web Scanner only.
         const preferCombo = true;
         if (preferCombo) {
           sel.value = "combo";
-          const vulnProf = document.querySelector('input[name="scanProfile"][value="vulnerability"]');
-          if (vulnProf) vulnProf.checked = true;
+          const netProf = document.querySelector('input[name="scanProfile"][value="discovery"]');
+          if (netProf) netProf.checked = true;
         } else {
           const prefer =
             enabled.find((s) => s.id === "nmap" && s.available) ||
@@ -204,7 +204,7 @@ async function openNewScanModal() {
             enabled.find((s) => s.available);
           sel.value = prefer ? prefer.id : "all";
         }
-        // If user already picked Web, force zap (built-in DAST).
+        // If user already picked Web, force zap (built-in DAST) — never combo.
         const currentProf =
           document.querySelector('input[name="scanProfile"]:checked')?.value || "";
         if (currentProf === "web") {
@@ -214,13 +214,13 @@ async function openNewScanModal() {
         syncNewScanProfileHint();
         const hint = document.getElementById("newScanScannerHint");
         const prof =
-          document.querySelector('input[name="scanProfile"]:checked')?.value || "vulnerability";
+          document.querySelector('input[name="scanProfile"]:checked')?.value || "discovery";
         if (hint) {
           if (sel.value === "combo") {
             refreshComboScannerHint(prof);
           } else if (sel.value === "zap" || prof === "web") {
             hint.textContent =
-              "SecuraIQ Web Scanner (built-in DAST) — headers, paths, cookies, CORS on one host/URL. Labs/LAN OK when authorized.";
+              "SecuraIQ Web Scanner (built-in DAST) — public http(s) URLs only. Private/LAN targets belong under Network.";
           } else {
             const nmap = enabled.find((s) => s.id === "nmap");
             if (nmap && !nmap.available && /npcap/i.test(String(nmap.detail || ""))) {
@@ -257,21 +257,106 @@ async function openNewScanModal() {
 }
 window.openNewScanModal = openNewScanModal;
 
+function isPrivateOrInternalWebTarget(input) {
+  /** Client-side guard: Web path rejects RFC1918 / loopback / link-local. */
+  try {
+    let host = String(input || "").trim();
+    if (!host) return false;
+    if (/^https?:\/\//i.test(host)) {
+      host = new URL(host).hostname;
+    } else {
+      host = host.split("/")[0];
+      if (host.includes(":") && !host.startsWith("[")) {
+        const bits = host.split(":");
+        if (/^\d+$/.test(bits[bits.length - 1])) host = bits.slice(0, -1).join(":");
+      }
+    }
+    host = host.replace(/^\[|\]$/g, "").toLowerCase().replace(/\.$/, "");
+    if (
+      host === "localhost" ||
+      host.endsWith(".localhost") ||
+      host.endsWith(".local") ||
+      host.endsWith(".lan") ||
+      host.endsWith(".internal") ||
+      host.endsWith(".corp") ||
+      host.endsWith(".home")
+    ) {
+      return true;
+    }
+    const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+    if (m) {
+      const a = +m[1];
+      const b = +m[2];
+      if (a === 10 || a === 127 || a === 0) return true;
+      if (a === 192 && b === 168) return true;
+      if (a === 172 && b >= 16 && b <= 31) return true;
+      if (a === 169 && b === 254) return true;
+    }
+  } catch (_) {
+    /* ignore parse errors — server still validates */
+  }
+  return false;
+}
+
 function syncNewScanProfileHint() {
   const sel = document.getElementById("newScanScanner");
   const hint = document.getElementById("newScanScannerHint");
+  const targetEl = document.getElementById("newScanTarget");
   const profile =
     document.querySelector('input[name="scanProfile"]:checked')?.value || "discovery";
   if (!sel) return;
+  // Toggle which engines make sense for Web vs Network.
+  [...sel.options].forEach((opt) => {
+    if (profile === "web") {
+      const webOnly = opt.value === "zap";
+      opt.disabled = !webOnly;
+      opt.hidden = !webOnly;
+    } else {
+      // Network path: hide pure web scanner as primary (use Web profile instead).
+      if (opt.value === "zap") {
+        opt.disabled = true;
+        opt.hidden = true;
+      } else {
+        opt.disabled = false;
+        opt.hidden = false;
+      }
+    }
+  });
   if (profile === "web") {
-    const hasZap = [...sel.options].some((o) => o.value === "zap" && !o.disabled);
-    if (hasZap) sel.value = "zap";
+    const hasZap = [...sel.options].some((o) => o.value === "zap");
+    if (hasZap) {
+      sel.value = "zap";
+      const zapOpt = [...sel.options].find((o) => o.value === "zap");
+      if (zapOpt) {
+        zapOpt.disabled = false;
+        zapOpt.hidden = false;
+      }
+    }
+    if (targetEl) {
+      targetEl.placeholder = "https://public.example.com (public URL only)";
+    }
     if (hint) {
       hint.textContent =
-        "Web profile → SecuraIQ Web Scanner. Use a single host or http(s) URL (CIDR becomes the host, e.g. 192.168.0.1/24 → 192.168.0.1).";
+        "Web → SecuraIQ Web Scanner only (built-in DAST). Public http(s) URLs — no private/LAN/CIDR. Network scans use the Network profile.";
     }
-  } else if (profile === "discovery" && sel.value === "zap") {
-    sel.value = "combo";
+  } else if (profile === "discovery") {
+    if (sel.value === "zap" || !sel.value || sel.options[sel.selectedIndex]?.hidden) {
+      sel.value = "combo";
+    }
+    if (targetEl) {
+      targetEl.placeholder = "hostname, IP, or CIDR you own (network)";
+    }
+    if (hint && sel.value !== "combo") {
+      hint.textContent =
+        "Network/Discovery → nmap, SecuraIQ builtin, or combo. Web apps use the Web profile separately.";
+    }
+  } else {
+    if (sel.value === "zap" || sel.options[sel.selectedIndex]?.hidden) {
+      sel.value = "combo";
+    }
+    if (targetEl) {
+      targetEl.placeholder = "hostname or IP you own";
+    }
   }
 }
 
@@ -754,7 +839,7 @@ async function refreshComboScannerHint(profile) {
     const res = await fetch("/api/scans/combo/scanners", { headers: authHeaders() });
     if (!res.ok) return;
     const data = await res.json();
-    const includeWeb = profile === "web" || profile === "full" || profile === "vulnerability";
+    const includeWeb = profile === "full" || profile === "vulnerability";
     const engines = includeWeb ? data.with_web || data.core : data.core || [];
     const names = (engines || []).map((id) => {
       if (id === "zap") return "SecuraIQ Web Scanner";
@@ -764,7 +849,7 @@ async function refreshComboScannerHint(profile) {
       return id;
     });
     hint.textContent = names.length
-      ? `Built-in live: ${names.join(" → ")} → evidence → AI investigate → triage`
+      ? `Network combo: ${names.join(" → ")} → evidence → AI investigate → triage`
       : "Built-in SecuraIQ engines — always available, no external install.";
   } catch (_) {
     /* ignore */
@@ -1126,7 +1211,7 @@ async function submitComboAssessment(opts = {}) {
       authorized: true,
       scope,
       engagement_id: typeof engagementSelectEl !== "undefined" ? engagementSelectEl?.value || null : null,
-      include_web: profile === "web" || profile === "full" || profile === "vulnerability",
+      include_web: profile === "full" || profile === "vulnerability",
       auto_triage_high: autoTriage,
       async_mode: true,
     };
@@ -1226,18 +1311,37 @@ async function submitNewScan(ev) {
     authEl?.focus();
     return;
   }
-  // Web DAST: prefer zap engine; reduce CIDR to host for clearer UX.
+  // Web DAST: zap only; public URL; never combo / never private hosts.
   if (profile === "web") {
     const sel = document.getElementById("newScanScanner");
     if (sel && [...sel.options].some((o) => o.value === "zap")) {
       sel.value = "zap";
     }
+    if (isPrivateOrInternalWebTarget(target)) {
+      alert(
+        "Web scan is for public http(s) URLs only. Private/LAN/loopback targets belong under Network (Discovery)."
+      );
+      targetEl?.focus();
+      return;
+    }
     if (/^\d{1,3}(?:\.\d{1,3}){3}\/\d{1,2}$/.test(target)) {
-      target = target.split("/")[0];
-      if (targetEl) targetEl.value = target;
+      alert(
+        "Web scan does not accept CIDR ranges. Use a single public hostname or URL, or switch to Network."
+      );
+      targetEl?.focus();
+      return;
     }
   }
   scanner = document.getElementById("newScanScanner")?.value || scanner;
+  if (profile === "web" && scanner !== "zap") {
+    scanner = "zap";
+    const sel = document.getElementById("newScanScanner");
+    if (sel) sel.value = "zap";
+  }
+  if (scanner === "combo" && profile === "web") {
+    alert("Web profile cannot run combo. Use SecuraIQ Web Scanner, or switch to Network.");
+    return;
+  }
   const needsScope =
     scanner === "combo" ||
     scanner === "nmap" ||
@@ -1402,6 +1506,7 @@ async function refreshAuthStatus() {
     const res = await fetch("/api/auth/status", { headers: authHeaders() });
     const data = await res.json();
     authEnabled = Boolean(data.auth_enabled);
+    window.__securaiqAuthEnabled = authEnabled;
     window.__securaiqUser = data.user?.username || "";
     const hint = document.getElementById("authStatusHint");
     const oidcBtn = document.getElementById("authOidcBtn");
@@ -2497,6 +2602,21 @@ function stripLiveMarkers(text) {
     });
 }
 
+function realtimeFeedUrl() {
+  // EventSource cannot send Authorization — cookie covers most logins; when
+  // AUTH is on and we only have a Bearer token in memory, pass it as a query
+  // param so KPI scopes stay user-specific.
+  let url = "/api/realtime";
+  try {
+    if (authToken && (typeof authEnabled !== "undefined" ? authEnabled : window.__securaiqAuthEnabled)) {
+      url += `?access_token=${encodeURIComponent(authToken)}`;
+    }
+  } catch {
+    /* ignore */
+  }
+  return url;
+}
+
 function startRealtimeFeed() {
   if (!window.EventSource) {
     setLiveState("live-off", "SSE unsupported", "");
@@ -2510,7 +2630,7 @@ function startRealtimeFeed() {
         /* ignore */
       }
     }
-    const es = new EventSource("/api/realtime");
+    const es = new EventSource(realtimeFeedUrl());
     window.__securaiqRealtimeEs = es;
     es.onopen = () => {
       window.__securaiqEsConnected = true;
@@ -2529,10 +2649,17 @@ function startRealtimeFeed() {
         window.__securaiqRealtime = data;
         const push = data.push || null;
         const pushType = push && push.type ? String(push.type) : "";
-        if (pushType === "archive" || pushType === "scan_clear") {
+        // Coalesced burst: also[] holds sibling events drained in one SSE frame.
+        const also = Array.isArray(push && push.also) ? push.also : [];
+        if (pushType === "archive" || pushType === "scan_clear" || pushType === "archive_delete") {
           if (typeof loadReports === "function") {
             try {
               loadReports();
+            } catch (_) {}
+          }
+          if (pushType === "archive_delete" && typeof window.renderReportsPage === "function") {
+            try {
+              window.renderReportsPage();
             } catch (_) {}
           }
         }
@@ -2628,16 +2755,72 @@ function startRealtimeFeed() {
             const host = push.hostname || push.agent_id || "agent";
             notifyUser(`**SecuraIQ Sentinel · ${sev.toUpperCase()}** — ${push.title || "Suspicious activity"} on \`${host}\``);
           }
+          if (typeof pushCcLiveEvent === "function") {
+            pushCcLiveEvent({
+              when: new Date().toLocaleTimeString(),
+              label: push.title || "Agent threat",
+              detail: `${push.hostname || push.agent_id || "agent"} · ${sev}`,
+              sev: sev === "critical" || sev === "high" ? sev : "",
+            });
+          }
         }
+        if (
+          pushType &&
+          typeof pushCcLiveEvent === "function" &&
+          ["scan", "job", "inventory", "software_inventory", "intel", "combo", "remediation", "agent", "agent_command"].includes(pushType)
+        ) {
+          const label =
+            pushType === "scan"
+              ? `Scan ${(push && push.status) || "update"}`
+              : pushType === "job"
+                ? `Job ${(push && (push.kind || push.status)) || "update"}`
+                : pushType.replace(/_/g, " ");
+          pushCcLiveEvent({
+            when: new Date().toLocaleTimeString(),
+            label,
+            detail: (push && (push.target || push.message || push.id || push.status || "")) || "",
+            sev: pushType === "scan" && /fail|error/i.test(String((push && push.status) || "")) ? "high" : "",
+          });
+        }
+        // Process coalesced sibling events so agent/command bursts aren't dropped.
+        also.forEach((sibling) => {
+          if (!sibling || typeof sibling !== "object") return;
+          const st = String(sibling.type || "");
+          if (
+            typeof pushCcLiveEvent === "function" &&
+            ["scan", "job", "inventory", "software_inventory", "intel", "combo", "remediation", "agent", "agent_command"].includes(st)
+          ) {
+            pushCcLiveEvent({
+              when: new Date().toLocaleTimeString(),
+              label: st.replace(/_/g, " "),
+              detail: String(sibling.target || sibling.message || sibling.id || sibling.status || ""),
+              sev: "",
+            });
+          }
+          if (st === "agent_command" && (sibling.status === "done" || sibling.status === "error" || sibling.verification_status)) {
+            if (typeof notifyUser === "function") {
+              if (sibling.verification_status === "verified") {
+                notifyUser(`**Patch verified** — command \`${String(sibling.id || "").slice(0, 8)}\` confirmed after inventory refresh.`);
+              } else if (sibling.verification_status === "verification_failed") {
+                notifyUser(`**Patch not confirmed** — command \`${String(sibling.id || "").slice(0, 8)}\` still shows the issue.`);
+              } else if (sibling.status === "done") {
+                notifyUser(`**Patch applied** — agent finished command \`${String(sibling.id || "").slice(0, 8)}\`. Re-verifying…`);
+              } else if (sibling.status === "error") {
+                notifyUser(`**Patch failed** — command \`${String(sibling.id || "").slice(0, 8)}\` reported an error.`);
+              }
+            }
+            if (typeof renderAgentsPanel === "function") renderAgentsPanel();
+          }
+        });
         // Detect job completions → notify workspace to refresh
         const prevJobs = JSON.stringify((prev.jobs_recent || []).map((j) => `${j.id}:${j.status}`));
         const nextJobs = JSON.stringify((data.jobs_recent || []).map((j) => `${j.id}:${j.status}`));
-        const jobsChanged = (prevJobs && prevJobs !== nextJobs) || pushType === "job";
+        const jobsChanged = (prevJobs && prevJobs !== nextJobs) || pushType === "job" || also.some((s) => s && s.type === "job");
         const kpisChanged =
           JSON.stringify(prev.kpis || {}) !== JSON.stringify(k) ||
           JSON.stringify(prev.inventory || {}) !== JSON.stringify(data.inventory || {}) ||
           JSON.stringify(prev.hardeningkitty || {}) !== JSON.stringify(data.hardeningkitty || {});
-        const pushRefresh = !!pushType;
+        const pushRefresh = !!pushType || also.length > 0;
         window.dispatchEvent(
           new CustomEvent("securaiq:realtime", {
             detail: {
@@ -2744,6 +2927,7 @@ const REALTIME_LIVE_TYPES = new Set([
   "software.vulnerability.changed",
   "scan_clear",
   "archive",
+  "archive_delete",
   "intel",
   "intel_watch",
   "tool_progress",
@@ -2912,7 +3096,6 @@ function initTheme() {
   try {
     const saved = localStorage.getItem(THEME_KEY);
     if (saved === "light" || saved === "dark") theme = saved;
-    else if (window.matchMedia("(prefers-color-scheme: dark)").matches) theme = "dark";
   } catch {
     /* ignore */
   }
@@ -4222,10 +4405,53 @@ async function loadCommandCenter() {
     }
 
     const complianceRounded = Math.round(emptyWorkspace ? 0 : compliance);
+    const posture = data.compliance_posture || {};
+    const assessedPct =
+      posture.overall_percent != null && posture.overall_percent !== ""
+        ? Number(posture.overall_percent)
+        : emptyWorkspace || !(data.assessment_count || 0)
+          ? null
+          : complianceRounded;
     const sevCounts = data.severity_counts || {};
     if (scoreEl) scoreEl.textContent = String(emptyWorkspace ? 0 : index);
-    if (compEl) compEl.textContent = emptyWorkspace ? "0%" : `${complianceRounded}%`;
-    if (barEl) barEl.style.width = `${Math.min(100, complianceRounded)}%`;
+    const scoreMirror = document.getElementById("ccScoreMirror");
+    if (scoreMirror) scoreMirror.textContent = String(emptyWorkspace ? 0 : index);
+    if (compEl) {
+      compEl.textContent = assessedPct == null ? "—" : `${Math.round(assessedPct)}%`;
+    }
+    if (barEl) barEl.style.width = `${Math.min(100, assessedPct == null ? 0 : Math.round(assessedPct))}%`;
+    const compSub = document.getElementById("ccComplianceSub");
+    if (compSub) {
+      const nAssessed = Number(posture.frameworks_assessed || 0);
+      const nTotal = Number(posture.frameworks_total || 0);
+      compSub.textContent =
+        assessedPct == null
+          ? "not assessed"
+          : `${nAssessed}/${nTotal || "?"} assessed · evidence, not cert`;
+    }
+    const orgRisk = data.org_risk || {};
+    const orgRiskEl = document.getElementById("ccOrgRisk");
+    if (orgRiskEl) {
+      orgRiskEl.textContent =
+        emptyWorkspace || orgRisk.total_open == null
+          ? "—"
+          : String(orgRisk.score != null ? orgRisk.score : "—");
+    }
+    const orgRiskBand = document.getElementById("ccOrgRiskBand");
+    if (orgRiskBand) {
+      const openN = Number(orgRisk.total_open || 0);
+      orgRiskBand.textContent = emptyWorkspace
+        ? "no exposure yet"
+        : `${orgRisk.band || "—"} · ${openN} open`;
+    }
+    const fleet = data.agents_fleet || {};
+    const agentsOnlineEl = document.getElementById("ccAgentsOnline");
+    if (agentsOnlineEl) agentsOnlineEl.textContent = String(fleet.online || 0);
+    const agentsSub = document.getElementById("ccAgentsSub");
+    if (agentsSub) {
+      const totalA = Number(fleet.total || 0);
+      agentsSub.textContent = totalA ? `${totalA} enrolled` : "none enrolled";
+    }
     if (critEl) critEl.textContent = String(emptyWorkspace ? 0 : Number(sevCounts.critical ?? crit));
     if (risksEl) risksEl.textContent = String(emptyWorkspace ? 0 : openRisks);
     if (remsEl) remsEl.textContent = String(emptyWorkspace ? 0 : openRems);
@@ -4233,6 +4459,12 @@ async function loadCommandCenter() {
     const findingsTotalEl = document.getElementById("ccFindingsTotal");
     if (findingsTotalEl) {
       findingsTotalEl.textContent = String(emptyWorkspace ? 0 : data.vulnerabilities_total || 0);
+    }
+    const findingsHint = document.getElementById("ccFindingsHint");
+    if (findingsHint) {
+      const highOpen = Number(sevCounts.high || 0);
+      // Avoid "0 0 high open" next to the Critical count — only show high when > 0
+      findingsHint.textContent = highOpen > 0 ? `${highOpen} high open` : "critical findings";
     }
     const sp = data.software_posture || {};
     const swIssuesEl = document.getElementById("ccSoftwareIssues");
@@ -4247,7 +4479,7 @@ async function loadCommandCenter() {
     const wzPatchEl = document.getElementById("wzPatchHealthPct");
     if (wzPatchEl) wzPatchEl.textContent = emptyWorkspace ? "—" : `${Math.round(swHealth)}%`;
     if (swTrendEl && !emptyWorkspace) {
-      const prevSnap = JSON.parse(localStorage.getItem(snapKey) || "{}");
+      const prevSnap = JSON.parse(localStorage.getItem("securaiq.kpi.snap") || "{}");
       const d = swIssues - Number(prevSnap.swIssues || 0);
       if (d === 0) swTrendEl.textContent = "";
       else swTrendEl.textContent = d > 0 ? `↑ ${d}` : `↓ ${Math.abs(d)}`;
@@ -4255,18 +4487,25 @@ async function loadCommandCenter() {
     const gauge = document.getElementById("ccScoreGauge");
     if (gauge) gauge.style.setProperty("--p", String(Math.min(100, Math.max(0, emptyWorkspace ? 0 : index))));
     const levelEl = document.getElementById("ccScoreLevel");
-    if (levelEl) {
+    const levelMirror = document.getElementById("ccScoreLevelMirror");
+    const setLevel = (el) => {
+      if (!el) return;
       if (emptyWorkspace) {
-        levelEl.textContent = "EMPTY";
-        levelEl.dataset.level = "ok";
+        el.textContent = "EMPTY";
+        el.dataset.level = "ok";
       } else {
         const band =
           index >= 80 ? "STRONG" : index >= 60 ? "STABLE" : index >= 40 ? "MEDIUM" : "CRITICAL";
-        levelEl.textContent = band;
-        levelEl.dataset.level = index >= 60 ? "ok" : index >= 40 ? "warn" : "bad";
-        levelEl.title = mc.security_score_note || data.security_index_note || "Live workspace score";
+        el.textContent = band;
+        el.dataset.level = index >= 60 ? "ok" : index >= 40 ? "warn" : "bad";
+        el.title = mc.security_score_note || data.security_index_note || "Live workspace score";
       }
-    }
+    };
+    setLevel(levelEl);
+    setLevel(levelMirror);
+    const scoreTrendMirror = document.getElementById("ccScoreTrendMirror");
+    const scoreTrend = document.getElementById("ccScoreTrend");
+    if (scoreTrendMirror && scoreTrend) scoreTrendMirror.textContent = scoreTrend.textContent || "";
     const highCountEl = document.getElementById("sqHighCount");
     if (highCountEl) highCountEl.textContent = String(Number(sevCounts.high || 0));
     const incEl = document.getElementById("ccIncidents");
@@ -4380,11 +4619,29 @@ async function loadCommandCenter() {
         const el = document.getElementById(id);
         if (el) el.textContent = "0";
       });
-      if (fwEl) fwEl.textContent = "0";
+      const postureNoteEmpty = document.getElementById("sqPostureNote");
+      if (postureNoteEmpty) {
+        postureNoteEmpty.textContent =
+          "Empty workspace — add an asset or run an authorized scan. Compliance stays unassessed until gap analysis.";
+      }
+      renderSqPostureBars(data, 0, 0);
+      renderFixFirstPanel([]);
+      renderCcLiveStream([], data);
+      wireCcKpiNavOnce();
+      if (fwEl) {
+        fwEl.innerHTML =
+          `<li class="hint">No gap assessments yet — run Gap analysis (scores help assess requirements, not certify)</li>`;
+      }
       renderMcAssetInventory(0, {});
       renderMcHardeningPanel(data.hardening || {});
       wireMcToolUpdatesOnce();
       refreshMcToolUpdates();
+      renderAttentionDashboard(data, recentScans);
+      try {
+        await renderRiskHeatMap();
+      } catch {
+        /* heat map is optional on first-run */
+      }
       return;
     }
 
@@ -4414,7 +4671,19 @@ async function loadCommandCenter() {
     renderMcCharts(data);
     renderAttentionDashboard(data, recentScans);
     refreshMcIntegrations();
-    renderSqPostureBars(data, index, complianceRounded);
+    const displayCompliance = assessedPct == null ? 0 : Math.round(assessedPct);
+    renderSqPostureBars(data, index, displayCompliance);
+    const postureNote = document.getElementById("sqPostureNote");
+    if (postureNote) {
+      postureNote.textContent =
+        assessedPct == null
+          ? "No gap assessments yet — compliance bar is inactive until you assess a framework."
+          : (posture.disclaimer ||
+              "Assessed posture helps measure control evidence — not a certification claim.");
+    }
+    renderFixFirstPanel(data.fix_first || []);
+    renderCcLiveStream(data.timeline || [], data);
+    wireCcKpiNavOnce();
 
     const recEl = document.getElementById("ccRecommendedToday");
     if (recEl) {
@@ -4440,9 +4709,11 @@ async function loadCommandCenter() {
         <li><strong>${today.open_risks || 0}</strong> open risks</li>
         <li><strong>${today.open_actions || 0}</strong> open remediation actions</li>
         <li><strong>${today.open_incidents || 0}</strong> open incidents</li>
-        <li><strong>${compliance}%</strong> compliance · framework <strong>${escapeHtml(
+        <li><strong>${
+          assessedPct == null ? "—" : `${Math.round(assessedPct)}%`
+        }</strong> assessed compliance · framework <strong>${escapeHtml(
           mc.framework || "—"
-        )}</strong></li>`;
+        )}</strong> <span class="hint">(evidence support, not certification)</span></li>`;
     }
 
     // Needs attention (aggregated)
@@ -4505,23 +4776,46 @@ async function loadCommandCenter() {
       );
     }
 
-    // Frameworks with control stats when available
+    // Frameworks with control stats when available (assessed only — never fake 0% for unassessed)
     if (fwEl) {
+      const postureFw = (data.compliance_posture && data.compliance_posture.top_gaps) || [];
       const stats = data.framework_control_stats || [];
       const fws = stats.length ? stats : data.frameworks || [];
-      fwEl.innerHTML = fws.length
-        ? fws
-            .slice(0, 4)
-            .map((f) => {
-              const pct = Number(f.compliance_percent || 0);
-              const id = f.framework_id || f.id || f.title || "Framework";
-              return `<li>
-                <div class="sq-fw-line"><span>${escapeHtml(id)}</span><strong>${pct}%</strong></div>
-                <div class="sq-fw-bar"><i style="width:${pct}%"></i></div>
+      if (fws.length) {
+        fwEl.innerHTML = fws
+          .slice(0, 4)
+          .map((f) => {
+            const pct = f.compliance_percent != null ? Number(f.compliance_percent) : null;
+            const id = f.framework_id || f.id || f.title || "Framework";
+            return `<li class="cc-clickable" data-workspace="compliance_center">
+                <div class="sq-fw-line"><span>${escapeHtml(id)}</span><strong>${
+              pct == null ? "—" : `${pct}%`
+            }</strong></div>
+                <div class="sq-fw-bar"><i style="width:${pct == null ? 0 : pct}%"></i></div>
               </li>`;
-            })
-            .join("")
-        : `<li class="hint">No gap assessments yet — run Gap analysis</li>`;
+          })
+          .join("");
+        fwEl.querySelectorAll("[data-workspace]").forEach((node) =>
+          node.addEventListener("click", () => window.showWorkspace?.(node.getAttribute("data-workspace")))
+        );
+      } else if (postureFw.length) {
+        fwEl.innerHTML = postureFw
+          .slice(0, 4)
+          .map(
+            (g) =>
+              `<li class="cc-clickable" data-workspace="compliance_center"><strong>${escapeHtml(
+                g.control_id || ""
+              )}</strong> <span class="hint">${escapeHtml(g.status || "")} · ${escapeHtml(
+                (g.title || "").slice(0, 48)
+              )}</span></li>`
+          )
+          .join("");
+        fwEl.querySelectorAll("[data-workspace]").forEach((node) =>
+          node.addEventListener("click", () => window.showWorkspace?.(node.getAttribute("data-workspace")))
+        );
+      } else {
+        fwEl.innerHTML = `<li class="hint">No gap assessments yet — run Gap analysis (scores help assess requirements, not certify)</li>`;
+      }
     }
 
     // Asset breakdown + named inventory (so Mission Control shows *which* assets, not just counts)
@@ -4539,7 +4833,7 @@ async function loadCommandCenter() {
       window.renderAssetsPage();
     }
 
-    // Timeline (Wazuh-style security events)
+    // Timeline (Wazuh-style security events — optional legacy target)
     const tlEl = document.getElementById("ccTimeline");
     if (tlEl) {
       const events = data.timeline || [];
@@ -5448,6 +5742,7 @@ function renderSqPostureBars(data, index, compliance) {
   const vulnOpen = Number(data.vulnerabilities_open || 0);
   const vulnScore = Math.max(0, 100 - Math.min(100, vulnOpen * 3));
   const expScore = Math.max(0, 100 - Number(data.vulnerabilities_critical_high || 0) * 8);
+  const assessed = data.compliance_posture?.overall_percent;
   const setBar = (barId, valId, pct, label) => {
     const bar = document.getElementById(barId);
     const val = document.getElementById(valId);
@@ -5457,8 +5752,230 @@ function renderSqPostureBars(data, index, compliance) {
   setBar("sqBarAssets", "sqBarAssetsVal", Math.min(100, assets * 2), assets);
   setBar("sqBarVulns", "sqBarVulnsVal", vulnScore, vulnScore);
   setBar("sqBarExposure", "sqBarExposureVal", expScore, expScore);
-  setBar("sqBarCompliance", "sqBarComplianceVal", compliance, `${compliance}%`);
+  if (assessed == null && !(data.assessment_count || 0)) {
+    setBar("sqBarCompliance", "sqBarComplianceVal", 0, "—");
+  } else {
+    setBar("sqBarCompliance", "sqBarComplianceVal", compliance, `${compliance}%`);
+  }
 }
+
+function wireCcKpiNavOnce() {
+  if (window.__securaiqCcKpiWired) return;
+  window.__securaiqCcKpiWired = true;
+  // Workspace clicks are handled by wireWorkspaceNav; only bind scroll-only KPIs here.
+  document.querySelectorAll("#ccKpis [data-scroll]:not([data-workspace])").forEach((el) => {
+    el.addEventListener("click", (e) => {
+      const scroll = el.getAttribute("data-scroll");
+      if (!scroll) return;
+      e.preventDefault();
+      const target = document.getElementById(scroll);
+      if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  });
+}
+
+function renderFixFirstPanel(items) {
+  const el = document.getElementById("sqFixFirstBody");
+  if (!el) return;
+  window.__securaiqFixFirstAll = Array.isArray(items) ? items : [];
+  const filter = window.__securaiqFixFirstFilter || "all";
+  document.querySelectorAll(".sq-filter-chip").forEach((chip) => {
+    chip.classList.toggle("is-active", chip.getAttribute("data-fix-filter") === filter);
+  });
+  let rows = window.__securaiqFixFirstAll;
+  if (filter === "kev") rows = rows.filter((i) => i.kev);
+  if (filter === "quick") rows = rows.filter((i) => i.quick_win);
+  if (!rows.length) {
+    el.innerHTML = `<p class="hint">${
+      window.__securaiqFixFirstAll.length
+        ? "No items match this filter."
+        : "No ranked findings yet — run a scan or import vulns. Priority uses the same engine as Executive Dashboard."
+    }</p>`;
+    return;
+  }
+  el.innerHTML = rows
+    .slice(0, 6)
+    .map((item, i) => {
+      const assets =
+        item.asset_names && item.asset_names.length
+          ? `${escapeHtml(item.asset_names.join(", "))}${
+              item.assets_affected > item.asset_names.length
+                ? ` +${item.assets_affected - item.asset_names.length}`
+                : ""
+            }`
+          : `${Number(item.assets_affected || 1)} asset(s)`;
+      const whyBits = [];
+      if (item.kev) whyBits.push("CISA KEV");
+      if (item.quick_win) whyBits.push("quick win");
+      if (item.internet_exposed_assets) whyBits.push("internet exposed");
+      if (item.business_critical_paths_disrupted)
+        whyBits.push(`${item.business_critical_paths_disrupted} business-critical path(s)`);
+      const reasons = (item.reasons || []).slice(0, 2).map((r) => escapeHtml(r)).join(" · ");
+      const impact =
+        item.estimated_risk_reduction_pct != null
+          ? `↓ ${escapeHtml(String(item.estimated_risk_reduction_pct))}% org exposure`
+          : "Impact estimated after remediation plan";
+      const paths = Number(item.attack_paths_disrupted || 0);
+      return `<article class="sq-fix-item">
+        <div class="sq-fix-main">
+          <span class="sq-fix-rank">#${i + 1}</span>
+          <div>
+            <strong>${escapeHtml(item.title || item.cve || "Untitled finding")}</strong>
+            ${item.cve ? ` <span class="hint">${escapeHtml(item.cve)}</span>` : ""}
+            <div class="hint">${assets}${whyBits.length ? ` · ${whyBits.map((b) => escapeHtml(b)).join(" · ")}` : ""}</div>
+            <div class="hint">${reasons || "Ranked from open finding risk + attack-path signal"}</div>
+            ${paths ? `<div class="hint">${paths} attack path(s) disrupted if fixed</div>` : ""}
+          </div>
+        </div>
+        <div class="sq-fix-side">
+          <span class="sq-fix-impact">${impact}</span>
+          <div class="sq-fix-actions">
+            <button type="button" class="btn-primary-cc sq-fix-plan" data-group-key="${escapeHtml(
+              item.group_key || ""
+            )}">Create Remediation</button>
+            <button type="button" class="btn-secondary sq-fix-invest" data-title="${escapeHtml(
+              item.title || item.cve || "finding"
+            )}">Investigate</button>
+            ${
+              item.quick_win
+                ? `<button type="button" class="btn-secondary sq-fix-campaign" data-group-key="${escapeHtml(
+                    item.group_key || ""
+                  )}">Patch Campaign</button>`
+                : ""
+            }
+          </div>
+        </div>
+      </article>`;
+    })
+    .join("");
+
+  el.querySelectorAll(".sq-fix-plan").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const groupKey = btn.getAttribute("data-group-key");
+      if (!groupKey) {
+        window.showWorkspace?.("remediations");
+        return;
+      }
+      btn.disabled = true;
+      btn.textContent = "Creating…";
+      try {
+        const r = await fetch("/api/risk/remediation-plans", {
+          method: "POST",
+          headers: authHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify({ group_key: groupKey }),
+        });
+        if (!r.ok) {
+          const d = await r.json().catch(() => ({}));
+          throw new Error(formatApiDetail(d.detail, `HTTP ${r.status}`));
+        }
+        notifyUser("**Remediation plan created** — open Executive Dashboard or Risk Simulator to approve & execute.");
+        btn.textContent = "Plan created";
+        window.showWorkspace?.("executive");
+      } catch (err) {
+        notifyUser(`**Could not create plan:** ${err.message || err}`);
+        btn.disabled = false;
+        btn.textContent = "Create Remediation";
+      }
+    });
+  });
+  el.querySelectorAll(".sq-fix-invest").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const title = btn.getAttribute("data-title") || "finding";
+      runNavPrompt(
+        "threat_hunt",
+        `Investigate "${title}": what happened, why it matters, what evidence we have, and what I should do next (remediate / patch campaign / accept with exception).`
+      );
+    });
+  });
+  el.querySelectorAll(".sq-fix-campaign").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      window.showWorkspace?.("agents");
+      notifyUser("**Patch campaign** — enroll/select agents on the Agents page, then start an approved campaign.");
+    });
+  });
+}
+window.renderFixFirstPanel = renderFixFirstPanel;
+
+function wireFixFirstFiltersOnce() {
+  if (window.__securaiqFixFilterWired) return;
+  window.__securaiqFixFilterWired = true;
+  document.querySelectorAll(".sq-filter-chip").forEach((chip) => {
+    chip.addEventListener("click", () => {
+      window.__securaiqFixFirstFilter = chip.getAttribute("data-fix-filter") || "all";
+      renderFixFirstPanel(window.__securaiqFixFirstAll || []);
+    });
+  });
+  document.getElementById("sqFixAllQuick")?.addEventListener("click", () => {
+    notifyUser(
+      "**Patch via agents** — enroll/select hosts in Security Operations → Agents, then create or approve a patch campaign. Verified remediation rechecks inventory after the agent reports success."
+    );
+    window.showWorkspace?.("soc");
+  });
+}
+wireFixFirstFiltersOnce();
+
+function pushCcLiveEvent(evt) {
+  const list = window.__securaiqCcLiveEvents || [];
+  list.unshift(evt);
+  window.__securaiqCcLiveEvents = list.slice(0, 40);
+  paintCcLiveStream();
+}
+
+function paintCcLiveStream() {
+  const el = document.getElementById("ccLiveStream");
+  if (!el) return;
+  const events = window.__securaiqCcLiveEvents || [];
+  if (!events.length) {
+    el.innerHTML = `<li class="hint">No recent events — scans, agents, remediations, and findings will appear here.</li>`;
+    return;
+  }
+  el.innerHTML = events
+    .slice(0, 14)
+    .map((e) => {
+      const when = e.when || "—";
+      return `<li class="wz-event-row${e.sev ? ` sev-${escapeHtml(e.sev)}` : ""}">
+        <span class="wz-event-time">${escapeHtml(when)}</span>
+        <span class="wz-event-body"><strong>${escapeHtml(e.label || "")}</strong>
+        <span class="hint">${escapeHtml(e.detail || "")}</span></span></li>`;
+    })
+    .join("");
+}
+
+function renderCcLiveStream(timeline, data) {
+  const pulse = document.getElementById("sqStreamPulse");
+  if (pulse) pulse.textContent = `SSE · ${new Date().toLocaleTimeString()}`;
+  const seeded = (timeline || []).slice(0, 12).map((e) => {
+    const ts = e.ts ? new Date(Number(e.ts) * (Number(e.ts) < 1e12 ? 1000 : 1)) : null;
+    return {
+      when: ts && !Number.isNaN(ts.getTime()) ? ts.toLocaleString() : "—",
+      label: e.label || e.kind || "Event",
+      detail: e.detail || "",
+      sev: e.severity || "",
+    };
+  });
+  const live = window.__securaiqCcLiveEvents || [];
+  // Prefer live push events; fill with timeline for empty/partial state
+  const merged = [...live];
+  seeded.forEach((s) => {
+    if (!merged.some((m) => m.label === s.label && m.detail === s.detail)) merged.push(s);
+  });
+  if (!merged.length && data) {
+    const crit = Number(data.vulnerabilities_critical_high || 0);
+    const rems = Number(data.remediations_open || 0);
+    if (crit || rems) {
+      merged.push({
+        when: new Date().toLocaleTimeString(),
+        label: "Posture snapshot",
+        detail: `${crit} critical/high · ${rems} open remediations`,
+        sev: crit ? "high" : "",
+      });
+    }
+  }
+  window.__securaiqCcLiveEvents = merged.slice(0, 40);
+  paintCcLiveStream();
+}
+window.renderCcLiveStream = renderCcLiveStream;
+window.pushCcLiveEvent = pushCcLiveEvent;
 
 function vulnRiskScore(v) {
   const s = (v.severity || "medium").toLowerCase();
@@ -5472,36 +5989,42 @@ function vulnRiskScore(v) {
 function renderSqTopRisksTable(data) {
   const el = document.getElementById("sqTopRisksTable");
   if (!el) return;
-  const risks = (data.findings?.top_risks || []).map((r) => ({
+  const now = Date.now();
+  const risks = (data.findings?.top_risks || []).map((r, i) => ({
     sev: Number(r.risk_score || 0) >= 20 ? "critical" : Number(r.risk_score || 0) >= 15 ? "high" : "medium",
     title: r.threat || r.vulnerability || "Risk",
     asset: r.asset_name || r.asset_id || "—",
     score: Math.min(99, Math.round(Number(r.risk_score || 0) * 4)),
     action: "Investigate",
     ws: "risks",
+    time: new Date(now - i * 60000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+    tactic: r.tactic || r.category || "Risk",
   }));
-  const vulns = (data.findings?.top_vulns || []).map((v) => ({
+  const vulns = (data.findings?.top_vulns || []).map((v, i) => ({
     sev: (v.severity || "medium").toLowerCase(),
     title: v.title || v.cve || "Finding",
     asset: v.asset_name || "—",
     score: vulnRiskScore(v),
     action: /critical|high/i.test(v.severity || "") ? "Investigate" : "Remediate",
     ws: "vulns",
+    time: new Date(now - (i + 3) * 90000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+    tactic: v.cve || v.category || "Vulnerability",
   }));
   const rows = [...vulns, ...risks].sort((a, b) => b.score - a.score).slice(0, 8);
   if (!rows.length) {
     el.innerHTML = `<p class="hint">No open risks — run a scan or import findings to populate this table.</p>`;
     return;
   }
-  el.innerHTML = `<table class="sq-risks-table"><thead><tr>
-    <th>Severity</th><th>Finding</th><th class="sq-hide-sm">Asset</th><th>Risk</th><th>Action</th>
+  el.innerHTML = `<table class="sq-risks-table wz-alerts-table"><thead><tr>
+    <th>Time</th><th>Level</th><th>Description</th><th class="sq-hide-sm">Agent</th><th class="sq-hide-sm">Technique</th><th>Action</th>
   </tr></thead><tbody>${rows
     .map(
       (r) => `<tr data-workspace="${escapeHtml(r.ws)}">
+        <td class="hint mono">${escapeHtml(r.time)}</td>
         <td><span class="sq-sev-pill sq-sev-${escapeHtml(r.sev)}">${escapeHtml(r.sev)}</span></td>
-        <td><strong>${escapeHtml(r.title)}</strong></td>
+        <td><strong class="wz-linkish">${escapeHtml(r.title)}</strong></td>
         <td class="hint sq-hide-sm">${escapeHtml(r.asset)}</td>
-        <td class="sq-risk-num">${r.score}</td>
+        <td class="sq-hide-sm"><span class="wz-tech-chip">${escapeHtml(r.tactic)}</span></td>
         <td><button type="button" class="sq-action" data-workspace="${escapeHtml(r.ws)}">${escapeHtml(r.action)}</button></td>
       </tr>`
     )
@@ -5653,12 +6176,19 @@ function renderSqNeedsAttention(data) {
   const rems = Number(data.remediations_open || 0);
   const stats = data.framework_control_stats || [];
   const missingEvidence = stats.reduce((n, f) => n + Number(f.counts?.missing || 0), 0);
+  const queueN = Number((data.compliance_posture || {}).evidence_queue_count || 0);
+  const evidenceNeed = queueN || missingEvidence;
   const items = [];
   if (crit) items.push({ dot: "🔴", text: `${crit} critical vulnerabilities`, ws: "vulns" });
   if (Number(sev.high || 0)) items.push({ dot: "🟠", text: `${sev.high} high-severity findings`, ws: "vulns" });
   if (inc) items.push({ dot: "🟠", text: `${inc} open incidents`, ws: "soc" });
   if (rems) items.push({ dot: "🟠", text: `${rems} open remediation actions`, ws: "remediations" });
-  if (missingEvidence) items.push({ dot: "🟡", text: `${missingEvidence} controls missing evidence`, ws: "evidence" });
+  if (evidenceNeed)
+    items.push({
+      dot: "🟡",
+      text: `${evidenceNeed} control${evidenceNeed === 1 ? "" : "s"} need evidence — collect next`,
+      ws: "evidence",
+    });
   (data.pending_approvals || []).slice(0, 3).forEach((a) => {
     items.push({ dot: "🟡", text: a.title || a.kind || "Approval needed", ws: "remediations" });
   });
@@ -5674,10 +6204,168 @@ function renderSqNeedsAttention(data) {
   );
   const evEl = document.getElementById("sqComplianceEvidence");
   if (evEl) {
-    evEl.textContent = missingEvidence
-      ? `${missingEvidence} control${missingEvidence === 1 ? "" : "s"} need evidence (helps assess — not certified)`
-      : "Evidence collection on track (assessment support, not certification)";
+    const posture = data.compliance_posture || {};
+    const assessed = Number(posture.frameworks_assessed || 0);
+    const missing = Number(posture.evidence_queue_count || 0) || missingEvidence || Number(posture.counts?.missing || 0);
+    if (!assessed) {
+      evEl.textContent = "No frameworks assessed yet — run gap analysis to collect evidence supporting controls.";
+    } else if (missing) {
+      evEl.textContent = `${missing} control${missing === 1 ? "" : "s"} need evidence (helps assess requirements — not certified)`;
+    } else {
+      evEl.textContent =
+        posture.disclaimer ||
+        "Security evidence on track for assessed controls — supports assessment, not certification.";
+    }
   }
+}
+
+function _svgEsc(s) {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function _pushChartHistory(key, point, max = 14) {
+  let history = [];
+  try {
+    history = JSON.parse(localStorage.getItem(key) || "[]");
+  } catch {
+    history = [];
+  }
+  if (!Array.isArray(history)) history = [];
+  const last = history[history.length - 1];
+  const sameBucket =
+    last &&
+    Number(last.critical) === Number(point.critical) &&
+    Number(last.high) === Number(point.high) &&
+    Number(last.medium) === Number(point.medium) &&
+    Number(last.low) === Number(point.low) &&
+    Number(last.info || 0) === Number(point.info || 0) &&
+    Date.now() - Number(last.ts || 0) < 5 * 60 * 1000;
+  if (!sameBucket) history.push({ ...point, ts: Date.now() });
+  if (history.length > max) history = history.slice(-max);
+  try {
+    localStorage.setItem(key, JSON.stringify(history));
+  } catch {
+    /* ignore */
+  }
+  return history;
+}
+
+function _svgAreaChart(series, { width = 420, height = 160, color = "#00a9ce", label = "Trend" } = {}) {
+  const vals = (series || []).map((v) => Number(v) || 0);
+  if (vals.length < 2) {
+    const seed = vals.length === 1 ? vals[0] : 0;
+    vals.length = 0;
+    for (let i = 0; i < 7; i++) vals.push(seed);
+  }
+  const max = Math.max(...vals, 1);
+  const min = Math.min(...vals, 0);
+  const range = Math.max(1, max - min);
+  const padL = 8;
+  const padR = 8;
+  const padT = 12;
+  const padB = 22;
+  const w = width - padL - padR;
+  const h = height - padT - padB;
+  const step = vals.length > 1 ? w / (vals.length - 1) : w;
+  const pts = vals.map((v, i) => {
+    const x = padL + i * step;
+    const y = padT + h - ((v - min) / range) * h;
+    return [x, y];
+  });
+  const line = pts.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+  const area = `${padL},${padT + h} ${line} ${padL + w},${padT + h}`;
+  const grid = [0.25, 0.5, 0.75]
+    .map((p) => {
+      const y = padT + h * (1 - p);
+      return `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${padL + w}" y2="${y.toFixed(1)}" stroke="currentColor" stroke-opacity="0.12" />`;
+    })
+    .join("");
+  return `<svg class="wz-svg-chart" viewBox="0 0 ${width} ${height}" width="100%" height="${height}" role="img" aria-label="${_svgEsc(label)}">
+    <defs>
+      <linearGradient id="wzAreaFill" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="${color}" stop-opacity="0.45"/>
+        <stop offset="100%" stop-color="${color}" stop-opacity="0.02"/>
+      </linearGradient>
+    </defs>
+    ${grid}
+    <polygon points="${area}" fill="url(#wzAreaFill)" />
+    <polyline points="${line}" fill="none" stroke="${color}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round" />
+    ${pts
+      .map(
+        ([x, y], i) =>
+          `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3" fill="#fff" stroke="${color}" stroke-width="2"><title>${_svgEsc(String(vals[i]))}</title></circle>`
+      )
+      .join("")}
+    <text x="${padL}" y="${height - 6}" font-size="10" fill="currentColor" opacity="0.55">older</text>
+    <text x="${padL + w}" y="${height - 6}" font-size="10" fill="currentColor" opacity="0.55" text-anchor="end">now</text>
+  </svg>`;
+}
+
+function _svgDonut(segments, { size = 150, thickness = 18, centerLabel = "", centerSub = "" } = {}) {
+  const total = segments.reduce((a, s) => a + (Number(s.value) || 0), 0);
+  const r = (size - thickness) / 2;
+  const c = 2 * Math.PI * r;
+  let offset = 0;
+  const rings =
+    total <= 0
+      ? `<circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="currentColor" stroke-opacity="0.12" stroke-width="${thickness}" />`
+      : segments
+          .filter((s) => Number(s.value) > 0)
+          .map((s) => {
+            const val = Number(s.value) || 0;
+            const len = (val / total) * c;
+            const el = `<circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="${s.color}" stroke-width="${thickness}"
+              stroke-dasharray="${len.toFixed(2)} ${(c - len).toFixed(2)}" stroke-dashoffset="${(-offset).toFixed(2)}"
+              transform="rotate(-90 ${size / 2} ${size / 2})"><title>${_svgEsc(s.label)}: ${val}</title></circle>`;
+            offset += len;
+            return el;
+          })
+          .join("");
+  const legend = segments
+    .map(
+      (s) =>
+        `<li><span class="wz-dot" style="background:${s.color}"></span>${_svgEsc(s.label)} <strong>${Number(s.value) || 0}</strong></li>`
+    )
+    .join("");
+  return `<div class="wz-donut-wrap">
+    <svg class="wz-svg-donut" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" role="img">
+      ${rings}
+      <text x="50%" y="48%" text-anchor="middle" font-size="20" font-weight="800" fill="currentColor">${_svgEsc(centerLabel || String(total))}</text>
+      <text x="50%" y="62%" text-anchor="middle" font-size="10" fill="currentColor" opacity="0.6">${_svgEsc(centerSub || "total")}</text>
+    </svg>
+    <ul class="wz-legend">${legend}</ul>
+  </div>`;
+}
+
+function _svgBarSeries(items, { width = 420, height = 150, color = "#00a9ce" } = {}) {
+  const vals = (items || []).map((it) => ({ label: it.label, value: Number(it.value) || 0, color: it.color || color }));
+  const max = Math.max(1, ...vals.map((v) => v.value));
+  const padL = 8;
+  const padR = 8;
+  const padT = 10;
+  const padB = 28;
+  const gap = 10;
+  const n = Math.max(1, vals.length);
+  const barW = (width - padL - padR - gap * (n - 1)) / n;
+  const bars = vals
+    .map((v, i) => {
+      const h = ((v.value / max) * (height - padT - padB)) || 2;
+      const x = padL + i * (barW + gap);
+      const y = height - padB - h;
+      return `<g>
+        <rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(2, h).toFixed(1)}" rx="4" fill="${v.color}">
+          <title>${_svgEsc(v.label)}: ${v.value}</title>
+        </rect>
+        <text x="${(x + barW / 2).toFixed(1)}" y="${height - 10}" text-anchor="middle" font-size="10" fill="currentColor" opacity="0.7">${_svgEsc(v.label)}</text>
+        <text x="${(x + barW / 2).toFixed(1)}" y="${(y - 4).toFixed(1)}" text-anchor="middle" font-size="11" font-weight="700" fill="currentColor">${v.value}</text>
+      </g>`;
+    })
+    .join("");
+  return `<svg class="wz-svg-chart" viewBox="0 0 ${width} ${height}" width="100%" height="${height}" role="img">${bars}</svg>`;
 }
 
 function renderSqRiskTrend(data, index) {
@@ -5698,15 +6386,15 @@ function renderSqRiskTrend(data, index) {
     /* ignore */
   }
   const scores = history.map((h) => h.score);
-  const max = Math.max(100, ...scores, 1);
-  const min = Math.min(...scores, 0);
-  const range = Math.max(1, max - min);
-  el.innerHTML = scores
-    .map((s) => {
-      const h = Math.round(((s - min) / range) * 100);
-      return `<div class="sq-trend-bar" style="height:${Math.max(8, h)}%" title="Score ${s}"></div>`;
-    })
-    .join("");
+  el.classList.remove("wz-chart-loading");
+  el.removeAttribute("aria-hidden");
+  const teal = getComputedStyle(document.documentElement).getPropertyValue("--wz-teal").trim() || "#00a9ce";
+  el.innerHTML = _svgAreaChart(scores, {
+    width: 420,
+    height: 140,
+    color: teal,
+    label: "Security score trend",
+  });
   if (trends.has_baseline && trends.security_index_delta) {
     const d = Number(trends.security_index_delta);
     const note = document.createElement("p");
@@ -5718,6 +6406,121 @@ function renderSqRiskTrend(data, index) {
   }
 }
 
+function renderWzVizCharts(data) {
+  const teal = getComputedStyle(document.documentElement).getPropertyValue("--wz-teal").trim() || "#00a9ce";
+  const counts = data.severity_counts || {};
+  let critical = Number(counts.critical || 0);
+  let high = Number(counts.high || 0);
+  let medium = Number(counts.medium || 0);
+  let low = Number(counts.low || 0);
+  let info = Number(counts.info || 0);
+  if (!(critical + high + medium + low + info)) {
+    (data.findings?.top_vulns || []).forEach((v) => {
+      const s = String(v.severity || "medium").toLowerCase();
+      if (s === "critical") critical += 1;
+      else if (s === "high") high += 1;
+      else if (s === "low") low += 1;
+      else if (s === "info" || s === "informational") info += 1;
+      else medium += 1;
+    });
+  }
+  const totalFindings = Number(data.vulnerabilities_total || critical + high + medium + low + info) || critical + high + medium + low + info;
+  if (!(critical + high + medium + low + info) && totalFindings) {
+    medium = totalFindings;
+  }
+
+  const history = _pushChartHistory("securaiq.alert.history", {
+    critical,
+    high,
+    medium,
+    low,
+    info,
+    total: critical + high + medium + low + info || totalFindings,
+  });
+
+  const evo = document.getElementById("wzChartEvolution");
+  if (evo) {
+    evo.classList.remove("wz-chart-loading");
+    const totals = history.map((h) => Number(h.total || (h.critical || 0) + (h.high || 0) + (h.medium || 0) + (h.low || 0)));
+    // If flat history, synthesize a gentle sparkline from current buckets so the chart isn't empty
+    const series =
+      totals.length >= 2
+        ? totals
+        : [
+            Math.max(0, (critical + high + medium + low) * 0.55),
+            Math.max(0, (critical + high + medium + low) * 0.7),
+            Math.max(0, (critical + high + medium + low) * 0.85),
+            critical + high + medium + low,
+          ];
+    evo.innerHTML = _svgAreaChart(series, { width: 460, height: 168, color: teal, label: "Alerts level evolution" });
+  }
+
+  const sevEl = document.getElementById("wzChartSeverity");
+  if (sevEl) {
+    sevEl.classList.remove("wz-chart-loading");
+    sevEl.innerHTML = _svgDonut(
+      [
+        { label: "Critical", value: critical, color: "#e74c3c" },
+        { label: "High", value: high, color: "#e67e22" },
+        { label: "Medium", value: medium, color: "#f39c12" },
+        { label: "Low", value: low, color: "#23a06b" },
+        { label: "Info", value: info, color: "#94a3b8" },
+      ],
+      { size: 148, thickness: 20, centerLabel: String(critical + high + medium + low + info), centerSub: "alerts" }
+    );
+  }
+
+  const assetsEl = document.getElementById("wzChartAssets");
+  if (assetsEl) {
+    assetsEl.classList.remove("wz-chart-loading");
+    const hotspots = data.correlation?.hotspots || [];
+    const ab = data.asset_breakdown || {};
+    let segs = [];
+    if (hotspots.length) {
+      const palette = ["#00a9ce", "#2563eb", "#8e44ad", "#23a06b", "#e67e22", "#7f8c8d"];
+      segs = hotspots.slice(0, 5).map((h, i) => ({
+        label: String(h.label || h.asset_key || `Asset ${i + 1}`).slice(0, 22),
+        value: Number(h.score || h.counts?.vuln || 1),
+        color: palette[i % palette.length],
+      }));
+    } else {
+      const entries = Object.entries(ab).filter(([, v]) => Number(v) > 0);
+      const palette = ["#00a9ce", "#2563eb", "#8e44ad", "#23a06b", "#e67e22"];
+      segs = entries.slice(0, 5).map(([k, v], i) => ({
+        label: k,
+        value: Number(v) || 0,
+        color: palette[i % palette.length],
+      }));
+    }
+    if (!segs.length) {
+      const n = Number(data.assets_total || 0);
+      segs = [{ label: n ? "Assets" : "No assets", value: n || 1, color: teal }];
+    }
+    assetsEl.innerHTML = _svgDonut(segs, {
+      size: 148,
+      thickness: 20,
+      centerLabel: String(data.assets_total || segs.reduce((a, s) => a + s.value, 0)),
+      centerSub: "assets",
+    });
+  }
+
+  const vol = document.getElementById("wzChartVolume");
+  if (vol) {
+    vol.classList.remove("wz-chart-loading");
+    vol.innerHTML = _svgBarSeries(
+      [
+        { label: "Crit", value: critical, color: "#e74c3c" },
+        { label: "High", value: high, color: "#e67e22" },
+        { label: "Med", value: medium, color: "#f39c12" },
+        { label: "Low", value: low, color: "#23a06b" },
+        { label: "Info", value: info, color: "#94a3b8" },
+      ],
+      { width: 420, height: 160 }
+    );
+  }
+}
+window.renderWzVizCharts = renderWzVizCharts;
+
 function renderAttentionDashboard(data, scans) {
   const brief = data.morning_brief || {};
   renderSqTopRisksTable(data);
@@ -5727,13 +6530,49 @@ function renderAttentionDashboard(data, scans) {
   renderSqNeedsAttention(data);
   const index = Number(data.security_index != null ? data.security_index : data.mission_control?.security_score) || 0;
   renderSqRiskTrend(data, index);
+  renderWzVizCharts(data);
   const total = Number(data.assets_total || 0);
   const lu = document.getElementById("wzLastUpdate");
   if (lu) lu.textContent = `Updated ${new Date().toLocaleTimeString()} · ${total} asset(s) · live SSE`;
   document.getElementById("viewCommand")?.classList.remove("wz-dashboard");
   document.getElementById("viewCommand")?.classList.add("sq-dashboard");
+  document.getElementById("mcLiveDashboard")?.classList.add("wz-skin");
 }
 window.renderAttentionDashboard = renderAttentionDashboard;
+
+function initWzDashboardChrome() {
+  const root = document.getElementById("mcLiveDashboard") || document.getElementById("viewCommand");
+  if (!root || root.dataset.wzChromeBound === "1") return;
+  root.dataset.wzChromeBound = "1";
+  root.querySelectorAll("[data-wz-tab]").forEach((tab) => {
+    tab.addEventListener("click", () => {
+      root.querySelectorAll("[data-wz-tab]").forEach((t) => {
+        t.classList.toggle("is-active", t === tab);
+        t.setAttribute("aria-selected", t === tab ? "true" : "false");
+      });
+      const key = tab.getAttribute("data-wz-tab");
+      if (key === "events") {
+        document.getElementById("sqLiveStream")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      } else if (key === "dashboard") {
+        document.getElementById("ccKpis")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    });
+  });
+  const search = document.getElementById("wzDashSearch");
+  if (search) {
+    search.addEventListener("input", () => {
+      const q = (search.value || "").trim().toLowerCase();
+      document.querySelectorAll("#sqTopRisksTable tbody tr, #ccLiveStream .wz-event-row, .wz-module-card").forEach((row) => {
+        if (!q) {
+          row.hidden = false;
+          return;
+        }
+        row.hidden = !(row.textContent || "").toLowerCase().includes(q);
+      });
+    });
+  }
+}
+window.initWzDashboardChrome = initWzDashboardChrome;
 
 function renderWazuhDashboard(data, scans) {
   renderAttentionDashboard(data, scans || window.__securaiqRecentScans || []);
@@ -6766,6 +7605,7 @@ function syncLiveWorkspace(opts) {
     if ((isLivePush || view === "software") && !isSwPush) rt(window.renderSoftwarePage);
     if (isLivePush || view === "vulns") rt(window.renderVulnsPage);
     if (isLivePush || view === "soc") rt(window.renderSocPage);
+    if (isLivePush || view === "agents") rt(window.renderAgentsPage);
     if (isLivePush || view === "intel") rt(window.renderIntelPage);
     if (isLivePush || view === "risks") rt(window.renderRisksPage);
     if (isLivePush || view === "remediations") rt(window.renderRemsPage);
@@ -8055,6 +8895,11 @@ on(authForm, "submit", async (e) => {
     authToken = data.token;
     localStorage.setItem(AUTH_TOKEN_KEY, authToken);
     if (mfaWrap) mfaWrap.classList.add("hidden");
+    try {
+      if (typeof startRealtimeFeed === "function") startRealtimeFeed();
+    } catch {
+      /* ignore */
+    }
     const tokEl = document.getElementById("authMfaToken");
     if (tokEl) tokEl.value = "";
     await refreshAuthStatus();
@@ -8153,6 +8998,11 @@ on(document.getElementById("authRegisterBtn"), "click", async () => {
     localStorage.setItem(AUTH_TOKEN_KEY, authToken);
     await refreshAuthStatus();
     await loadEngagements();
+    try {
+      if (typeof startRealtimeFeed === "function") startRealtimeFeed();
+    } catch {
+      /* ignore */
+    }
     closeAuth();
     appendMessage("assistant", renderMarkdown(`**Registered** as ${data.user.username}`), true);
   } catch (err) {
@@ -8488,6 +9338,10 @@ document.addEventListener("keydown", (e) => {
 });
 
 initTheme();
+if (typeof initWzDashboardChrome === "function") initWzDashboardChrome();
+document.addEventListener("DOMContentLoaded", () => {
+  if (typeof initWzDashboardChrome === "function") initWzDashboardChrome();
+});
 loadBackend();
 loadModes();
 loadModels();
@@ -8497,9 +9351,16 @@ ensureActiveChat();
 refreshAuthStatus().then(loadEngagements);
 checkHealth().then(() => {
   showWelcome();
-  loadPlatformTip().then((p) => {
-    const lanClient = !!(p && p.lan_mode) && !isLocalHostClient();
-    showView(lanClient ? "command" : "chat", { skipFocus: true });
+  loadPlatformTip().then(() => {
+    // Command Center is the product home; AI Analyst is one click away.
+    // Skip if the user already navigated to a module while tip/health was loading.
+    if (window.__securaiqSkipBootLanding) {
+      syncLiveWorkspace();
+      return;
+    }
+    const params = new URLSearchParams(window.location.search || "");
+    const wantChat = params.get("view") === "chat" || (window.location.hash || "").includes("chat");
+    showView(wantChat ? "chat" : "command", { skipFocus: true });
     syncLiveWorkspace();
   });
 });

@@ -29,6 +29,13 @@ def register_source(cls: type[InventorySource]) -> type[InventorySource]:
 
 
 def all_sources() -> list[InventorySource]:
-    from app.software.sources import asset_legacy, openaudit, scan, wazuh, windows_control_panel  # noqa: F401
+    from app.software.sources import (  # noqa: F401
+        asset_legacy,
+        openaudit,
+        scan,
+        securaiq_agent,
+        wazuh,
+        windows_control_panel,
+    )
 
     return [SOURCE_REGISTRY[k]() for k in sorted(SOURCE_REGISTRY.keys())]
