@@ -1,4 +1,4 @@
-"""Integrity checks for data/frameworks/canonical_controls.json -- the
+"""Integrity checks for data/registries/canonical_controls.json -- the
 cross-framework control registry (task: 'connect security -> risk ->
 compliance -> remediation -> verification' rather than 14 disconnected
 checklists).
@@ -9,7 +9,14 @@ genuinely cover that concept -- never padded to inflate framework coverage.
 These tests lock in that every referenced (framework_id, control_id) pair
 actually exists in that framework's real catalog, so a future edit can't
 silently introduce a typo'd or fabricated cross-reference.
-"""
+
+The registry deliberately lives in data/registries/, NOT data/frameworks/ --
+app.gap_analysis.list_frameworks()/load_framework() glob every *.json in
+data/frameworks/ and treat each as a framework catalog (id/name/controls),
+so a registry file with a different schema sitting in that directory would
+silently show up as a bogus 15th "framework" with 0 controls everywhere the
+app lists frameworks (see tests/test_all_frameworks_full_verification.py's
+own catalog-discovery test, which caught exactly this)."""
 
 from __future__ import annotations
 
@@ -18,20 +25,26 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 FRAMEWORKS_DIR = REPO_ROOT / "data" / "frameworks"
+REGISTRIES_DIR = REPO_ROOT / "data" / "registries"
 
 
 def _load_registry() -> dict:
-    return json.loads((FRAMEWORKS_DIR / "canonical_controls.json").read_text(encoding="utf-8"))
+    return json.loads((REGISTRIES_DIR / "canonical_controls.json").read_text(encoding="utf-8"))
 
 
 def _load_all_catalogs() -> dict[str, set[str]]:
     catalogs = {}
     for path in FRAMEWORKS_DIR.glob("*.json"):
         data = json.loads(path.read_text(encoding="utf-8"))
-        if data["id"] == "canonical_controls":
-            continue
         catalogs[data["id"]] = {c["id"] for c in data["controls"]}
     return catalogs
+
+
+def test_registry_lives_outside_frameworks_dir():
+    """Regression guard: this file must NOT be in data/frameworks/, or
+    app.gap_analysis.list_frameworks() picks it up as a bogus framework."""
+    assert not (FRAMEWORKS_DIR / "canonical_controls.json").exists()
+    assert (REGISTRIES_DIR / "canonical_controls.json").exists()
 
 
 def test_registry_has_unique_canonical_ids():

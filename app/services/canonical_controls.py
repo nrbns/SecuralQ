@@ -3,7 +3,7 @@
 SecuraIQ's 14 framework catalogs (657 controls) each score independently
 today: enabling MFA satisfies cmmc_l2's IA.L2-3.5.3 and iso27001's A.8.5 as
 two unrelated facts, even though they're the same real-world control. This
-module is the layer that connects them: data/frameworks/canonical_controls.json
+module is the layer that connects them: data/registries/canonical_controls.json
 defines ~20 real, universally-recognized security controls (MFA, encryption
 at rest/in transit, vulnerability management, backups, ...), each mapped to
 the specific control IDs that genuinely cover it in every framework where
@@ -35,7 +35,7 @@ from typing import Any
 from app.gap_analysis import get_assessment, list_assessments
 from app.paths import resource_root
 
-_REGISTRY_PATH = resource_root() / "data" / "frameworks" / "canonical_controls.json"
+_REGISTRY_PATH = resource_root() / "data" / "registries" / "canonical_controls.json"
 
 _STATUS_RANK = {"implemented": 3, "partial": 2, "missing": 1, "not_applicable": 0}
 
