@@ -33,15 +33,26 @@ def create_notification(
     title: str,
     body: str = "",
     link: str = "",
+    *,
+    org_id: str | None = None,
 ) -> dict[str, Any]:
+    """Create an inbox notification for a specific recipient.
+
+    Notifications stay recipient-scoped (list/mark-read by user_id). org_id is
+    stamped for audit/tenant context only — inboxes are not org-shared.
+    """
+    from app.tenancy import ensure_tenant_schema, primary_org_id
+
+    ensure_tenant_schema()
     kind = kind if kind in VALID_KINDS else "info"
+    oid = org_id or primary_org_id(user_id)
     nid = new_id()
     t = now()
     c = get_conn()
     c.execute(
-        "INSERT INTO notifications (id, user_id, kind, title, body, link, read, emailed, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?)",
-        (nid, user_id, kind, title[:200], body[:2000], link[:500], t),
+        "INSERT INTO notifications (id, user_id, org_id, kind, title, body, link, read, emailed, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?)",
+        (nid, user_id, oid, kind, title[:200], body[:2000], link[:500], t),
     )
     c.commit()
     return row_to_dict(

@@ -842,7 +842,9 @@ _HEADER_CHECKS = (
 )
 
 
-async def _tool_hardening_baseline(host: str, ip: str, open_ports: list[int] | None) -> dict[str, Any]:
+async def _tool_hardening_baseline(
+    host: str, ip: str, open_ports: list[int] | None, *, user_id: str = "local"
+) -> dict[str, Any]:
     """Composite CIS-style hardening/patch-exposure baseline.
 
     Combines signals SecuraIQ can verify directly against any authorized
@@ -952,7 +954,7 @@ async def _tool_hardening_baseline(host: str, ip: str, open_ports: list[int] | N
                 "missing-patch data instead of this remote heuristic baseline."
             )
         else:
-            summary = patch_compliance_summary()
+            summary = patch_compliance_summary(user_id)
             host_gaps = (summary.get("by_host") or {}).get(host) or (summary.get("by_host") or {}).get(ip)
             if host_gaps:
                 findings.append(f"[FAIL] Missing patches for this host (from XDR): {host_gaps}")
@@ -2314,7 +2316,7 @@ async def iter_security_tools(
             elif tid == "whois":
                 result = await _tool_whois(host, ip)
             elif tid == "hardening_baseline":
-                result = await _tool_hardening_baseline(host, ip, ports_hint)
+                result = await _tool_hardening_baseline(host, ip, ports_hint, user_id=user_id or "local")
             elif tid == "netvuln_scan":
                 result = await _tool_netvuln_scan(host, ip, ports_hint)
             elif tid == "openvas":

@@ -34,6 +34,29 @@ DEFAULT_PROGRESS = [
     {"id": "report", "label": "Report ready", "status": "pending"},
 ]
 
+# Same step ids as DEFAULT_PROGRESS (executor + web_builtin map onto them),
+# but labels match SecuraIQ Web Scanner work — not nmap port/service phases.
+WEB_DEFAULT_PROGRESS = [
+    {"id": "queued", "label": "Queued", "status": "pending"},
+    {"id": "scope", "label": "Scope check", "status": "pending"},
+    {"id": "discovery", "label": "Fetching URL", "status": "pending"},
+    {"id": "port_scan", "label": "Headers & cookies", "status": "pending"},
+    {"id": "service_detect", "label": "Path probes", "status": "pending"},
+    {"id": "collecting", "label": "Active checks", "status": "pending"},
+    {"id": "parsing", "label": "Parsing findings", "status": "pending"},
+    {"id": "normalizing", "label": "Normalization", "status": "pending"},
+    {"id": "risk", "label": "Risk analysis", "status": "pending"},
+    {"id": "report", "label": "Report ready", "status": "pending"},
+]
+
+
+def progress_template_for(*, scanner: str = "", profile: str = "") -> list[dict[str, str]]:
+    sid = (scanner or "").lower().strip()
+    prof = (profile or "").lower().strip()
+    if sid == "zap" or prof == "web":
+        return [dict(s) for s in WEB_DEFAULT_PROGRESS]
+    return [dict(s) for s in DEFAULT_PROGRESS]
+
 
 def ensure_scans_schema() -> None:
     c = get_conn()
@@ -81,10 +104,16 @@ def create_scan(
     org_id: str | None = None,
     authorized: bool = False,
 ) -> dict[str, Any]:
+    from app.tenancy import ensure_tenant_schema, primary_org_id
+
     ensure_scans_schema()
+    ensure_tenant_schema()
+    oid = org_id or primary_org_id(user_id)
     sid = new_id()
     ev = evidence_root(sid)
-    progress = json.dumps(DEFAULT_PROGRESS)
+    scanner_id = (scanner or "securaiq").lower()
+    profile_id = (profile or "discovery").lower()
+    progress = json.dumps(progress_template_for(scanner=scanner_id, profile=profile_id))
     c = get_conn()
     c.execute(
         """
@@ -95,13 +124,13 @@ def create_scan(
         """,
         (
             sid,
-            org_id,
+            oid,
             engagement_id,
             user_id,
             target.strip(),
             json.dumps(scope or []),
-            (scanner or "securaiq").lower(),
-            (profile or "discovery").lower(),
+            scanner_id,
+            profile_id,
             1 if authorized else 0,
             progress,
             str(ev),
@@ -118,24 +147,31 @@ def get_scan(scan_id: str) -> dict[str, Any] | None:
     return _hydrate(row_to_dict(row) if row else None)
 
 
+def get_scan_for_user(user_id: str, scan_id: str) -> dict[str, Any] | None:
+    """Fail-closed get — only return scans visible to the caller."""
+    from app.tenancy import row_visible_to_user
+
+    scan = get_scan(scan_id)
+    if not scan or not row_visible_to_user(user_id, scan):
+        return None
+    return scan
+
+
 def list_scans(
     user_id: str,
     *,
     org_id: str | None = None,
     limit: int = 50,
 ) -> list[dict[str, Any]]:
+    from app.tenancy import ensure_tenant_schema, tenant_visibility_sql
+
     ensure_scans_schema()
-    c = get_conn()
-    if org_id:
-        rows = c.execute(
-            "SELECT * FROM scans WHERE user_id = ? AND org_id = ? ORDER BY created_at DESC LIMIT ?",
-            (user_id, org_id, max(1, min(limit, 200))),
-        ).fetchall()
-    else:
-        rows = c.execute(
-            "SELECT * FROM scans WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
-            (user_id, max(1, min(limit, 200))),
-        ).fetchall()
+    ensure_tenant_schema()
+    where, args = tenant_visibility_sql(user_id, org_id=org_id)
+    rows = get_conn().execute(
+        f"SELECT * FROM scans WHERE {where} ORDER BY created_at DESC LIMIT ?",
+        [*args, max(1, min(limit, 200))],
+    ).fetchall()
     return [_hydrate(dict(r)) for r in rows]
 
 

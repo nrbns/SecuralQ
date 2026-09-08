@@ -46,39 +46,95 @@ def status() -> dict[str, Any]:
     return out
 
 
-def _upsert_event(item: dict[str, Any], user_id: str) -> tuple[dict[str, Any], bool]:
+def _upsert_event(item: dict[str, Any], user_id: str, *, org_id: str | None = None) -> tuple[dict[str, Any], bool]:
     """Insert if new; returns (row, is_new). Existing events are left alone
     (we don't overwrite analyst-modified status on a resync)."""
+    from app.tenancy import ensure_tenant_schema, primary_org_id
+
+    ensure_tenant_schema()
+    oid = org_id or primary_org_id(user_id)
+    uid = user_id or "local"
     c = get_conn()
+    # Prefer tenant-scoped dedupe; fall back to legacy global unique rows
     existing = c.execute(
-        "SELECT * FROM xdr_events WHERE vendor = ? AND external_id = ?",
-        (item["vendor"], item["external_id"]),
+        """
+        SELECT * FROM xdr_events
+        WHERE vendor = ? AND external_id = ?
+          AND (user_id = ? OR (user_id IS NULL AND ? = 'local'))
+        ORDER BY created_at DESC LIMIT 1
+        """,
+        (item["vendor"], item["external_id"], uid, uid),
     ).fetchone()
     if existing:
         return dict(existing), False
 
     eid = new_id()
     ts = now()
-    c.execute(
-        """
-        INSERT INTO xdr_events
-        (id, vendor, external_id, kind, severity, host, title, status, raw_json, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)
-        """,
-        (
-            eid,
-            item["vendor"],
-            item["external_id"],
-            item.get("kind", "detection"),
-            item.get("severity", "medium"),
-            item.get("host", ""),
-            item.get("title", ""),
-            json.dumps(item.get("raw") or {}),
-            ts,
-            ts,
-        ),
-    )
-    c.commit()
+    try:
+        c.execute(
+            """
+            INSERT INTO xdr_events
+            (id, user_id, org_id, vendor, external_id, kind, severity, host, title, status, raw_json, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)
+            """,
+            (
+                eid,
+                uid,
+                oid,
+                item["vendor"],
+                item["external_id"],
+                item.get("kind", "detection"),
+                item.get("severity", "medium"),
+                item.get("host", ""),
+                item.get("title", ""),
+                json.dumps(item.get("raw") or {}),
+                ts,
+                ts,
+            ),
+        )
+        c.commit()
+    except Exception:
+        # Legacy UNIQUE(vendor, external_id) DBs: adopt the colliding row for this tenant if unowned
+        c.rollback()
+        legacy = c.execute(
+            "SELECT * FROM xdr_events WHERE vendor = ? AND external_id = ?",
+            (item["vendor"], item["external_id"]),
+        ).fetchone()
+        if legacy:
+            ld = dict(legacy)
+            if not ld.get("user_id") or ld.get("user_id") == uid:
+                c.execute(
+                    "UPDATE xdr_events SET user_id = COALESCE(user_id, ?), org_id = COALESCE(org_id, ?) WHERE id = ?",
+                    (uid, oid, ld["id"]),
+                )
+                c.commit()
+                return dict(c.execute("SELECT * FROM xdr_events WHERE id = ?", (ld["id"],)).fetchone()), False
+            # Another tenant owns this global unique key — namespace external_id
+            namespaced = f"{uid}:{item['external_id']}"
+            c.execute(
+                """
+                INSERT INTO xdr_events
+                (id, user_id, org_id, vendor, external_id, kind, severity, host, title, status, raw_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)
+                """,
+                (
+                    eid,
+                    uid,
+                    oid,
+                    item["vendor"],
+                    namespaced,
+                    item.get("kind", "detection"),
+                    item.get("severity", "medium"),
+                    item.get("host", ""),
+                    item.get("title", ""),
+                    json.dumps(item.get("raw") or {}),
+                    ts,
+                    ts,
+                ),
+            )
+            c.commit()
+        else:
+            raise
     row = c.execute("SELECT * FROM xdr_events WHERE id = ?", (eid,)).fetchone()
     result = dict(row)
     try:
@@ -90,6 +146,8 @@ def _upsert_event(item: dict[str, Any], user_id: str) -> tuple[dict[str, Any], b
             id=eid,
             severity=item.get("severity"),
             title=(item.get("title") or "")[:120],
+            user_id=uid,
+            org_id=oid,
         )
     except Exception:
         pass
@@ -101,9 +159,13 @@ def ingest_detections(
     user_id: str = "local",
     *,
     auto_incidents: bool | None = None,
+    org_id: str | None = None,
 ) -> dict[str, Any]:
     """Normalize + upsert push/webhook detections (lab or vendor inbound)."""
+    from app.tenancy import primary_org_id
+
     do_auto = settings.xdr_auto_create_incidents if auto_incidents is None else auto_incidents
+    oid = org_id or primary_org_id(user_id)
     new_count = 0
     created: list[dict[str, Any]] = []
     for raw in items:
@@ -121,7 +183,7 @@ def ingest_detections(
             "description": raw.get("description") or "",
             "raw": raw.get("raw") or raw,
         }
-        row, is_new = _upsert_event(item, user_id)
+        row, is_new = _upsert_event(item, user_id, org_id=oid)
         if not is_new:
             continue
         new_count += 1
@@ -140,6 +202,7 @@ def ingest_detections(
                     "source": f"xdr:{vendor}",
                     "status": "open",
                     "raw": item.get("raw"),
+                    "org_id": oid,
                 },
             )
             _link_vuln(row["id"], vuln["id"])
@@ -154,13 +217,14 @@ def ingest_detections(
                 source=f"xdr:{vendor}",
                 summary=item.get("description", "")
                 + (f" | host={item.get('host')}" if item.get("host") else ""),
+                org_id=oid,
             )
             _link_incident(row["id"], inc["id"])
     if new_count:
         try:
             from app.realtime_bus import publish
 
-            publish(type="xdr_batch", new=new_count, user_id=user_id)
+            publish(type="xdr_batch", new=new_count, user_id=user_id, org_id=oid)
         except Exception:
             pass
     return {"new": new_count, "total": len(items), "events": created[:20]}
@@ -184,15 +248,18 @@ def _link_vuln(event_id: str, vuln_id: str) -> None:
     c.commit()
 
 
-async def sync_vendor(vendor: str, user_id: str = "local") -> dict[str, Any]:
+async def sync_vendor(vendor: str, user_id: str = "local", *, org_id: str | None = None) -> dict[str, Any]:
+    from app.tenancy import primary_org_id
+
     m = _vendor_module(vendor)
     if not m.is_configured():
         return {"vendor": vendor, "configured": False, "new": 0, "total": 0}
 
+    oid = org_id or primary_org_id(user_id)
     items = await m.fetch_detections()
     new_count = 0
     for item in items:
-        row, is_new = _upsert_event(item, user_id)
+        row, is_new = _upsert_event(item, user_id, org_id=oid)
         if not is_new:
             continue
         new_count += 1
@@ -210,6 +277,7 @@ async def sync_vendor(vendor: str, user_id: str = "local") -> dict[str, Any]:
                     "source": f"xdr:{vendor}",
                     "status": "open",
                     "raw": item.get("raw"),
+                    "org_id": oid,
                 },
             )
             _link_vuln(row["id"], vuln["id"])
@@ -223,6 +291,7 @@ async def sync_vendor(vendor: str, user_id: str = "local") -> dict[str, Any]:
                 status="open",
                 source=f"xdr:{vendor}",
                 summary=item.get("description", "") + (f" | host={item.get('host')}" if item.get("host") else ""),
+                org_id=oid,
             )
             _link_incident(row["id"], inc["id"])
 
@@ -233,7 +302,7 @@ async def sync_vendor(vendor: str, user_id: str = "local") -> dict[str, Any]:
         except Exception:
             patches = []
         for item in patches:
-            row, is_new = _upsert_event(item, user_id)
+            row, is_new = _upsert_event(item, user_id, org_id=oid)
             if not is_new:
                 continue
             new_count += 1
@@ -249,6 +318,7 @@ async def sync_vendor(vendor: str, user_id: str = "local") -> dict[str, Any]:
                         "source": f"xdr:{vendor}",
                         "status": "open",
                         "raw": item.get("raw"),
+                        "org_id": oid,
                     },
                 )
                 _link_vuln(row["id"], vuln["id"])
@@ -257,11 +327,11 @@ async def sync_vendor(vendor: str, user_id: str = "local") -> dict[str, Any]:
     return {"vendor": vendor, "configured": True, "new": new_count, "total": len(items)}
 
 
-async def sync_all(user_id: str = "local") -> dict[str, Any]:
+async def sync_all(user_id: str = "local", *, org_id: str | None = None) -> dict[str, Any]:
     results = []
     for v in VENDORS:
         try:
-            results.append(await sync_vendor(v, user_id))
+            results.append(await sync_vendor(v, user_id, org_id=org_id))
         except Exception as exc:
             results.append({"vendor": v, "configured": True, "error": str(exc), "new": 0, "total": 0})
     return {
@@ -270,21 +340,28 @@ async def sync_all(user_id: str = "local") -> dict[str, Any]:
     }
 
 
-def list_events(limit: int = 100, vendor: str | None = None, kind: str | None = None) -> list[dict[str, Any]]:
-    c = get_conn()
-    q = "SELECT * FROM xdr_events"
-    conds, args = [], []
+def list_events(
+    user_id: str = "local",
+    *,
+    limit: int = 100,
+    vendor: str | None = None,
+    kind: str | None = None,
+    org_id: str | None = None,
+) -> list[dict[str, Any]]:
+    from app.tenancy import ensure_tenant_schema, tenant_visibility_sql
+
+    ensure_tenant_schema()
+    where, args = tenant_visibility_sql(user_id, org_id=org_id)
+    q = f"SELECT * FROM xdr_events WHERE {where}"
     if vendor:
-        conds.append("vendor = ?")
+        q += " AND vendor = ?"
         args.append(vendor)
     if kind:
-        conds.append("kind = ?")
+        q += " AND kind = ?"
         args.append(kind)
-    if conds:
-        q += " WHERE " + " AND ".join(conds)
     q += " ORDER BY created_at DESC LIMIT ?"
     args.append(max(1, min(limit, 500)))
-    rows = [dict(r) for r in c.execute(q, args).fetchall()]
+    rows = [dict(r) for r in get_conn().execute(q, args).fetchall()]
     for r in rows:
         try:
             r["raw"] = json.loads(r.get("raw_json") or "{}")
@@ -293,14 +370,18 @@ def list_events(limit: int = 100, vendor: str | None = None, kind: str | None = 
     return rows
 
 
-def patch_compliance_summary() -> dict[str, Any]:
+def patch_compliance_summary(user_id: str = "local", *, org_id: str | None = None) -> dict[str, Any]:
     """Aggregate missing-patch events by host and severity — the "is patching
     working" view. Populated once the Defender connector (or a future
     vendor's patch feed) is configured and synced at least once."""
-    c = get_conn()
-    rows = c.execute(
-        "SELECT host, severity, COUNT(*) AS n FROM xdr_events WHERE kind = 'patch_missing' "
-        "AND status = 'open' GROUP BY host, severity"
+    from app.tenancy import ensure_tenant_schema, tenant_visibility_sql
+
+    ensure_tenant_schema()
+    where, args = tenant_visibility_sql(user_id, org_id=org_id)
+    rows = get_conn().execute(
+        f"SELECT host, severity, COUNT(*) AS n FROM xdr_events WHERE ({where}) AND kind = 'patch_missing' "
+        "AND status = 'open' GROUP BY host, severity",
+        args,
     ).fetchall()
     by_host: dict[str, dict[str, int]] = {}
     total = 0

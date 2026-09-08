@@ -21,13 +21,15 @@ import httpx
 from app.scanners.nuclei import _hostname_from_target
 from app.scanners.constants import internal_target_reason
 
+# Plugin ids are SecuraIQ-owned (seciq-*) — not OWASP ZAP plugin numbers.
+# ZAP-compatible JSON shape is only for the shared parse pipeline.
 _SECURITY_HEADERS = (
-    ("strict-transport-security", "Strict-Transport-Security Missing", "2", "10035"),
-    ("content-security-policy", "Content Security Policy Missing", "2", "10038"),
-    ("x-frame-options", "Missing Anti-clickjacking Header", "1", "10020"),
-    ("x-content-type-options", "X-Content-Type-Options Missing", "1", "10021"),
-    ("referrer-policy", "Referrer Policy Not Set", "0", "10027"),
-    ("permissions-policy", "Permissions Policy Not Set", "0", "10063"),
+    ("strict-transport-security", "Strict-Transport-Security Missing", "2", "seciq-hsts"),
+    ("content-security-policy", "Content Security Policy Missing", "2", "seciq-csp"),
+    ("x-frame-options", "Missing Anti-clickjacking Header", "1", "seciq-xfo"),
+    ("x-content-type-options", "X-Content-Type-Options Missing", "1", "seciq-xcto"),
+    ("referrer-policy", "Referrer Policy Not Set", "0", "seciq-referrer"),
+    ("permissions-policy", "Permissions Policy Not Set", "0", "seciq-permissions"),
 )
 
 _DISCOVERY_PATHS = ("robots.txt", "sitemap.xml")
@@ -60,6 +62,7 @@ def _alert(
         "riskcode": riskcode,
         "riskdesc": riskdesc,
         "pluginid": pluginid,
+        "engine": "securaiq_web",
         "instances": [{"uri": url}] if url else [{}],
     }
 
@@ -104,6 +107,16 @@ async def _emit(scan_id: str | None, step: str, *, pct: int | None = None) -> No
         }
         if pct is not None:
             payload["pct"] = pct
+        # Also stamp a human-friendly phase for the New Scan / Web Scan status line.
+        label_map = {
+            "web_fetch": "Fetching URL",
+            "web_headers": "Headers & cookies",
+            "web_paths": "Path probes",
+            "web_active": "Active checks",
+            "web_done": "Checks complete",
+        }
+        if step in label_map:
+            payload["phase"] = label_map[step]
         publish(**payload)
     except Exception:
         pass
@@ -281,17 +294,33 @@ async def run_builtin_web_scan(
                 if pr is None:
                     continue
                 if pr.status_code in {200, 401, 403} and path in _VULN_PATHS:
-                    snippet = (pr.text or "")[:400].lower()
-                    interesting = path.endswith(".env") and "=" in snippet
-                    interesting = interesting or (path.endswith("HEAD") and "ref:" in snippet)
-                    interesting = interesting or ("phpinfo" in path and "php version" in snippet)
-                    interesting = interesting or pr.status_code == 200
+                    snippet = (pr.text or "")[:800].lower()
+                    # Require content signals — bare 200 on /login or /admin is
+                    # not a vulnerability and previously padded inaccurate findings.
+                    interesting = False
+                    riskcode = "1"
+                    if path.endswith(".env") and "=" in snippet and pr.status_code == 200:
+                        interesting, riskcode = True, "2"
+                    elif path.endswith("HEAD") and "ref:" in snippet and pr.status_code == 200:
+                        interesting, riskcode = True, "2"
+                    elif "phpinfo" in path and "php version" in snippet and pr.status_code == 200:
+                        interesting, riskcode = True, "2"
+                    elif path == "actuator/health" and pr.status_code == 200 and (
+                        "status" in snippet or "up" in snippet
+                    ):
+                        interesting, riskcode = True, "1"
+                    elif path == "api/swagger.json" and pr.status_code == 200 and (
+                        "swagger" in snippet or "openapi" in snippet
+                    ):
+                        interesting, riskcode = True, "1"
+                    elif path == "server-status" and pr.status_code == 200 and "apache" in snippet:
+                        interesting, riskcode = True, "1"
                     if interesting:
                         alerts.append(
                             _alert(
                                 f"Sensitive path exposed: /{path} [{pr.status_code}]",
-                                riskcode="2" if path in {".env", ".git/HEAD", "phpinfo.php"} else "1",
-                                riskdesc="Medium" if path in {".env", ".git/HEAD", "phpinfo.php"} else "Low",
+                                riskcode=riskcode,
+                                riskdesc=_risk_label(riskcode),
                                 pluginid=f"seciq-path-{path.replace('/', '-')[:20]}",
                                 url=probe,
                             )
@@ -379,8 +408,17 @@ async def run_builtin_web_scan(
     if parsed.scheme == "https":
         tls = await asyncio.to_thread(_tls_probe, parsed.hostname or host, parsed.port or 443)
         await _log("tls", tls)
-        ver = (tls.get("tls_version") or "").upper()
-        if ver and ver < "TLSv1.2":
+        ver = (tls.get("tls_version") or "").strip()
+        ver_u = ver.upper().replace(" ", "")
+        # Case-safe check: NEVER compare mixed-case strings ("TLSV1.3" < "TLSv1.2"
+        # is True in ASCII because 'V' < 'v') — that falsely flagged modern TLS.
+        weak_tls = bool(ver_u) and (
+            "1.0" in ver_u
+            or "1.1" in ver_u
+            or ver_u.startswith("SSL")
+            or ver_u in {"TLSV1", "TLS1", "TLSV1.0", "TLSV1.1", "TLS1.0", "TLS1.1"}
+        )
+        if weak_tls:
             alerts.append(
                 _alert(
                     f"Weak TLS protocol: {ver}",

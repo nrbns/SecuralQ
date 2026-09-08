@@ -142,8 +142,27 @@ async def execute_scan(scan_id: str) -> dict[str, Any]:
     )
 
     update_scan(scan_id, status="running")
-    set_progress(scan_id, "discovery", "active")
-    set_progress(scan_id, "port_scan", "active")
+    # Web/DAST: only mark the first live phase active — web_builtin advances
+    # headers/paths/active via set_progress during execute(). Network scanners
+    # still light discovery + port_scan together (nmap-style).
+    if scanner_id == "zap":
+        set_progress(scan_id, "discovery", "active")
+        try:
+            from app.realtime_bus import publish
+
+            publish(
+                type="scan",
+                id=scan_id,
+                status="running",
+                step="web_fetch",
+                scanner="securaiq_web",
+                pct=0,
+            )
+        except Exception:
+            pass
+    else:
+        set_progress(scan_id, "discovery", "active")
+        set_progress(scan_id, "port_scan", "active")
 
     raw = await scanner.execute(ctx)
 

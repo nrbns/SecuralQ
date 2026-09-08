@@ -45,7 +45,7 @@ def public_settings() -> dict[str, Any]:
         "local_tools_allow_heavy": settings.local_tools_allow_heavy,
         "zap_api_url": getattr(settings, "zap_api_url", "") or "http://127.0.0.1:8090",
         "zap_api_key_set": bool(getattr(settings, "zap_api_key", "")),
-        "zap_prefer_api": bool(getattr(settings, "zap_prefer_api", True)),
+        "zap_prefer_api": bool(getattr(settings, "zap_prefer_api", False)),
         "jira_base_url": settings.jira_base_url or "",
         "jira_email": settings.jira_email or "",
         "jira_project_key": settings.jira_project_key or "",

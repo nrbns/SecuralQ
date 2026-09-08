@@ -386,6 +386,23 @@ def parse_sonarqube(data: dict[str, Any], *, engagement_id: str | None, filename
 
 def parse_zap(data: dict[str, Any], *, engagement_id: str | None, filename: str) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
+    report_ver = str(data.get("@version") or "").strip()
+    ver_u = report_ver.upper()
+    # Honest source: builtin SecuraIQ report vs optional ZAP API / classic ZAP export.
+    if "SECURAIQ" in ver_u:
+        source_prefix = "securaiq_web"
+        default_title = "Web finding"
+    elif "ZAP-API" in ver_u or ver_u.startswith("ZAP"):
+        source_prefix = "zap_api"
+        default_title = "ZAP alert"
+    elif report_ver and report_ver[0].isdigit():
+        # Classic OWASP ZAP JSON export (e.g. "2.14.0").
+        source_prefix = "zap_api"
+        default_title = "ZAP alert"
+    else:
+        # Ambiguous / missing @version — do not claim OWASP ZAP.
+        source_prefix = "securaiq_web"
+        default_title = "Web finding"
     for site in data.get("site") or []:
         if not isinstance(site, dict):
             continue
@@ -393,8 +410,10 @@ def parse_zap(data: dict[str, Any], *, engagement_id: str | None, filename: str)
         for alert in site.get("alerts") or []:
             if not isinstance(alert, dict):
                 continue
-            name = alert.get("name") or alert.get("alert") or "ZAP alert"
+            name = alert.get("name") or alert.get("alert") or default_title
             plugin = alert.get("pluginid") or alert.get("pluginId") or ""
+            engine = str(alert.get("engine") or source_prefix)
+            row_prefix = "zap_api" if engine == "zap_api" else source_prefix
             items.append(
                 {
                     "title": str(name)[:300],
@@ -403,8 +422,9 @@ def parse_zap(data: dict[str, Any], *, engagement_id: str | None, filename: str)
                     "asset_name": str(host)[:200],
                     "cvss": None,
                     "engagement_id": engagement_id,
-                    "source": f"zap:{filename}",
-                    "raw": {k: v for k, v in alert.items() if k != "instances"} | {"instances_count": len(alert.get("instances") or [])},
+                    "source": f"{row_prefix}:{filename}",
+                    "raw": {k: v for k, v in alert.items() if k != "instances"}
+                    | {"instances_count": len(alert.get("instances") or []), "engine": engine},
                 }
             )
     return items

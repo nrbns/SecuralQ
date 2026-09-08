@@ -51,6 +51,10 @@ SOURCE_LABELS: dict[str, str] = {
     "control_panel": "Control Panel",
     "securaiq_agent": "SecuraIQ Agent",
     "agent": "SecuraIQ Agent",
+    "securaiq_web": "SecuraIQ Web Scanner",
+    "web_builtin": "SecuraIQ Web Scanner",
+    "zap": "SecuraIQ Web Scanner",
+    "zap_api": "OWASP ZAP (API)",
 }
 
 _SEV_WEIGHT = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
@@ -321,7 +325,7 @@ def build_server_posture(user_id: str, rows: list[dict[str, Any]]) -> dict[str, 
 
     assets = list_assets(user_id)
     assets_by_id = {str(a.get("id") or ""): a for a in assets if a.get("id")}
-    xdr_by_host = (_xdr_patch_summary().get("by_host") or {}) if rows else {}
+    xdr_by_host = (_xdr_patch_summary(user_id).get("by_host") or {}) if rows else {}
 
     grouped: dict[str, dict[str, Any]] = {}
 
@@ -1408,7 +1412,7 @@ def _posture_summary_inner(user_id: str, *, rebuild_if_empty: bool = True) -> di
         "by_source": by_source,
         "by_source_label": by_source_label,
         "source_labels": SOURCE_LABELS,
-        "patch_compliance": _xdr_patch_summary(),
+        "patch_compliance": _xdr_patch_summary(user_id),
         "status_labels": STATUS_LABELS,
         "server_posture": server_posture,
         "server_summary": server_posture.get("summary") or {},
@@ -1430,11 +1434,11 @@ def _posture_summary_inner(user_id: str, *, rebuild_if_empty: bool = True) -> di
     }
 
 
-def _xdr_patch_summary() -> dict[str, Any]:
+def _xdr_patch_summary(user_id: str = "local") -> dict[str, Any]:
     try:
         from app.xdr import patch_compliance_summary
 
-        return patch_compliance_summary()
+        return patch_compliance_summary(user_id)
     except Exception:
         return {"total_missing_patches": 0, "hosts_with_gaps": 0, "by_host": {}}
 

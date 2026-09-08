@@ -915,6 +915,9 @@ function watchScanRealtime(scanId) {
 function unwatchScanRealtime(scanId) {
   window.__securaiqWatchingScans?.delete(String(scanId));
 }
+window.watchScanRealtime = watchScanRealtime;
+window.unwatchScanRealtime = unwatchScanRealtime;
+window.isPrivateOrInternalWebTarget = isPrivateOrInternalWebTarget;
 
 async function applyScanRecordToUi(scan) {
   if (!scan || !scan.id) return scan;
@@ -929,6 +932,12 @@ async function applyScanRecordToUi(scan) {
   if (statusLabel) statusLabel.textContent = (scan.status || "").toUpperCase();
   renderScanSteps(scan.progress);
   const terminal = ["completed", "failed", "blocked"].includes(scan.status);
+  if (!terminal && summaryEl) {
+    const active = (scan.progress || []).find((s) => s.status === "active");
+    if (active) {
+      summaryEl.textContent = `Live: ${active.label || active.id}…`;
+    }
+  }
   if (terminal && summaryEl) {
     const sum = scan.summary || {};
     if (scan.status === "completed") {
@@ -1007,14 +1016,119 @@ async function applyScanRecordToUi(scan) {
   return scan;
 }
 
+function scannerDisplayName(scannerId) {
+  const id = String(scannerId || "").toLowerCase();
+  if (id === "zap" || id === "securaiq_web" || id === "web_builtin") return "SecuraIQ Web Scanner";
+  if (id === "zap_api") return "OWASP ZAP (API)";
+  if (id === "securaiq") return "SecuraIQ";
+  if (id === "nmap") return "Nmap";
+  if (id === "nuclei") return "Nuclei";
+  return scannerId || "scan";
+}
+window.scannerDisplayName = scannerDisplayName;
+
+/** Map SSE web-scan step ids onto DEFAULT_PROGRESS / WEB_DEFAULT_PROGRESS ids. */
+const WEB_SSE_STEP_TO_PROGRESS = {
+  web_fetch: "discovery",
+  web_headers: "port_scan",
+  web_paths: "service_detect",
+  web_active: "collecting",
+  web_done: "collecting",
+  discovery: "discovery",
+  port_scan: "port_scan",
+  service_detect: "service_detect",
+  collecting: "collecting",
+  parsing: "parsing",
+  normalizing: "normalizing",
+  risk: "risk",
+  report: "report",
+};
+
+function optimisticWebProgressFromPush(push) {
+  const rawStep = String((push && (push.step || push.phase)) || "").trim();
+  if (!rawStep) return null;
+  const mapped =
+    WEB_SSE_STEP_TO_PROGRESS[rawStep] ||
+    WEB_SSE_STEP_TO_PROGRESS[rawStep.toLowerCase().replace(/\s+/g, "_")] ||
+    null;
+  // Human phase labels from builtin ("Fetching URL") — map via known phrases.
+  const phaseMap = {
+    "fetching url": "discovery",
+    "headers & cookies": "port_scan",
+    "path probes": "service_detect",
+    "active checks": "collecting",
+    "checks complete": "collecting",
+  };
+  const progressId = mapped || phaseMap[rawStep.toLowerCase()] || null;
+  if (!progressId) return null;
+  const labels = {
+    queued: "Queued",
+    scope: "Scope check",
+    discovery: "Fetching URL",
+    port_scan: "Headers & cookies",
+    service_detect: "Path probes",
+    collecting: "Active checks",
+    parsing: "Parsing findings",
+    normalizing: "Normalization",
+    risk: "Risk analysis",
+    report: "Report ready",
+  };
+  const seq = ["queued", "scope", "discovery", "port_scan", "service_detect", "collecting", "parsing", "normalizing", "risk", "report"];
+  const idx = seq.indexOf(progressId);
+  if (idx < 0) return null;
+  return seq.map((id, i) => ({
+    id,
+    label: labels[id] || id,
+    status: i < idx ? "done" : i === idx ? (String(push.step || "") === "web_done" ? "done" : "active") : "pending",
+  }));
+}
+
 async function pulseActiveScanFromPush(push) {
-  const scanId = push && push.id ? String(push.id) : "";
+  const scanId = push && (push.id || push.scan_id) ? String(push.id || push.scan_id) : "";
   if (!scanId || !window.__securaiqWatchingScans?.has(scanId)) return null;
+
+  // Immediate live hint from the SSE payload (before the GET round-trip).
+  const stepHint = [
+    push.phase || push.step,
+    push.pct != null ? `${push.pct}%` : "",
+  ].filter(Boolean).join(" · ");
+  const statusLabel = document.getElementById("newScanStatusLabel");
+  const summaryEl = document.getElementById("newScanSummary");
+  const webStatus = document.getElementById("webscanStatusLabel");
+  const webSummary = document.getElementById("webscanSummary");
+  if (push.status || stepHint) {
+    const st = String(push.status || "active").toUpperCase();
+    const line = stepHint ? `${st} · ${stepHint}` : st;
+    if (statusLabel) statusLabel.textContent = line;
+    if (webStatus) webStatus.textContent = line;
+  }
+  if (stepHint) {
+    const live = `Live: ${stepHint}`;
+    if (summaryEl && !["completed", "failed", "blocked"].includes(String(push.status || "").toLowerCase())) {
+      summaryEl.textContent = live;
+    }
+    if (webSummary) webSummary.textContent = live;
+  }
+  // Paint step lists immediately from phase/step — do not wait on poll/GET.
+  const optimistic = optimisticWebProgressFromPush(push);
+  if (optimistic) {
+    if (typeof renderScanSteps === "function") renderScanSteps(optimistic);
+    if (typeof window.renderWebScanSteps === "function") window.renderWebScanSteps(optimistic);
+  }
+
   try {
     const res = await fetch(`/api/scans/${encodeURIComponent(scanId)}`, { headers: authHeaders() });
     if (!res.ok) return null;
     const scan = await res.json();
-    return applyScanRecordToUi(scan);
+    const progressEl = document.getElementById("newScanProgress");
+    const modalProgressVisible = progressEl && !progressEl.classList.contains("hidden");
+    if (modalProgressVisible) {
+      await applyScanRecordToUi(scan);
+    }
+    if (typeof window.applyWebScanRecordToUi === "function") {
+      window.applyWebScanRecordToUi(scan);
+    }
+    return scan;
   } catch {
     return null;
   }
@@ -2724,6 +2838,8 @@ function startRealtimeFeed() {
         }
         if (pushType === "scan") {
           pulseVaScanFromPush(push);
+          // Immediate New Scan / Web Scan step UI from phase/step/pct (don't wait on poll).
+          if (typeof pulseActiveScanFromPush === "function") pulseActiveScanFromPush(push);
         }
         if (pushType === "combo" && typeof pulseComboFromPush === "function") {
           pulseComboFromPush(push);
@@ -2786,15 +2902,24 @@ function startRealtimeFeed() {
         also.forEach((sibling) => {
           if (!sibling || typeof sibling !== "object") return;
           const st = String(sibling.type || "");
+          // Same-type scan siblings are skipped by the alsoPushes replay loop below
+          // (subType === pushType). Still advance live step UI so the newest
+          // phase/step/pct in the burst is not lost.
+          if (st === "scan") {
+            if (typeof pulseVaScanFromPush === "function") pulseVaScanFromPush(sibling);
+            if (typeof pulseActiveScanFromPush === "function") pulseActiveScanFromPush(sibling);
+          }
           if (
             typeof pushCcLiveEvent === "function" &&
             ["scan", "job", "inventory", "software_inventory", "intel", "combo", "remediation", "agent", "agent_command"].includes(st)
           ) {
             pushCcLiveEvent({
               when: new Date().toLocaleTimeString(),
-              label: st.replace(/_/g, " "),
-              detail: String(sibling.target || sibling.message || sibling.id || sibling.status || ""),
-              sev: "",
+              label: st === "scan"
+                ? `Scan ${(sibling && sibling.status) || "update"}`
+                : st.replace(/_/g, " "),
+              detail: String(sibling.target || sibling.message || sibling.id || sibling.status || sibling.phase || sibling.step || ""),
+              sev: st === "scan" && /fail|error/i.test(String((sibling && sibling.status) || "")) ? "high" : "",
             });
           }
           if (st === "agent_command" && (sibling.status === "done" || sibling.status === "error" || sibling.verification_status)) {
@@ -6075,7 +6200,9 @@ function renderSqRecentScans(scans) {
       const summary = s.summary || {};
       const findings = summary.findings_count ?? summary.findings ?? "—";
       const assets = summary.assets_count ?? summary.assets ?? "—";
-      const scanner = (s.scanner || "scan").toUpperCase();
+      const scanner = typeof scannerDisplayName === "function"
+        ? scannerDisplayName(s.scanner)
+        : (s.scanner || "scan").toUpperCase();
       const label = s.target || s.id || "Scan";
       return `<article class="sq-scan-card${running ? " is-running" : ""}" data-scan-id="${escapeHtml(s.id || "")}">
         <div class="sq-scan-head"><div><strong>${escapeHtml(label)}</strong>
@@ -7257,7 +7384,8 @@ function setVaScanLive(text, show) {
 function pulseVaScanFromPush(push) {
   if (!push) return;
   const st = String(push.status || "").toLowerCase();
-  const step = push.step || "";
+  const step = push.phase || push.step || "";
+  const pct = push.pct != null ? `${push.pct}%` : "";
   const findings = push.findings ?? push.summary?.findings_created ?? push.summary?.findings;
   if (["completed", "failed", "blocked"].includes(st)) {
     setVaScanLive("", false);
@@ -7269,6 +7397,7 @@ function pulseVaScanFromPush(push) {
   const bits = [];
   if (st) bits.push(st.toUpperCase());
   if (step) bits.push(String(step).replace(/_/g, " "));
+  if (pct) bits.push(pct);
   if (findings != null) bits.push(`${findings} finding(s)`);
   const label = bits.length ? `VA scan · ${bits.join(" · ")}` : "VA scan running…";
   setVaScanLive(label, true);

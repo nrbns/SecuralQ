@@ -4,7 +4,8 @@ Do **not** market this product as enterprise-ready or production SaaS until
 every item below is **done**. Partial work is tracked honestly. Scores and
 checkboxes here are based on the current codebase, not a wishlist.
 
-Related: [priority-checklist.md](./priority-checklist.md) ·
+Related: [control-plane-roadmap.md](./control-plane-roadmap.md) ·
+[priority-checklist.md](./priority-checklist.md) ·
 [launch-readiness.md](./launch-readiness.md) ·
 [security-baseline.md](./security-baseline.md) ·
 [backup-dr.md](./backup-dr.md)
@@ -21,7 +22,7 @@ Status key: **done** · **partial** · **missing**
 
 | Item | Status | Evidence / gap |
 |------|--------|----------------|
-| Tenant isolation | **partial** | `org_id` + `tenant_visibility_sql` on assets/vulns/risks/chats/engagements/RAG; **agents, commands, patch campaigns** now stamped and scoped (`app/agents.py`). Reports/incidents/evidence still mostly user-scoped. |
+| Tenant isolation | **partial→near-done** | Core product rows use `org_id` + `tenant_visibility_sql` / fail-closed get: assets/vulns/risks/chats/engagements/RAG, agents/commands/campaigns, **scans, incidents, evidence, archives, gap remediations, intel watch, XDR events, compliance attestations/CMMC affirmations**. **Intentional leftovers:** notifications stay recipient-scoped (personal inbox; `org_id` stamped only); lab `local` / `AUTH_ENABLED=false` still sees own/lab rows. |
 | RBAC enforcement | **partial** | `require_perm` on enterprise/scans; **agent APIs** now use `agent.read` / `agent.write` / `agent.command` / `agent.approve`. Lab mode (`AUTH_ENABLED=false`) is still global admin. |
 | Agent authentication | **done** | Bearer `agent_id.agent_key`; only SHA-256 of the key is used for compare; optional encrypted key copy enables HMAC on new enrollments. Revoke invalidates immediately. |
 | Certificate rotation | **missing** | Next: per-agent mTLS or short-lived client certs. Token revoke + re-enroll is the current rotation path. |
@@ -36,7 +37,7 @@ Status key: **done** · **partial** · **missing**
 | Command acknowledgement | **done** | HTTP `POST /api/agents/commands/{id}/ack` and WebSocket `{type: ack}`. Status `sent` → `acked`. |
 | Command timeout | **done** | `expires_at` on queue; un-acked `sent`/`acked` commands flip to `timeout` after `AGENT_COMMAND_ACK_TIMEOUT_SEC`. |
 | Patch verification | **done** | Execution `done` ≠ verified; `verification_status` + advisory refresh job. |
-| Evidence generation | **partial** | `app/services/evidence.py` records threat/command paths; not automatically org-scoped for all entity types. |
+| Evidence generation | **partial** | Evidence store stamps `org_id` and filters with `tenant_visibility_sql`; confirm/list/get fail closed. Not every product claim auto-records evidence yet. |
 | Immutable audit trail | **partial** | Append-only `audit_log` + SIEM forward option. SQLite rows are not WORM/object-lock immutable. |
 | PostgreSQL backup/restore | **partial** | SQLite scripts in `scripts/backup.*`. Postgres path documented (`pg_dump`) in `docs/backup-dr.md` — operator-owned, not a product HA test. |
 | Redis HA/recovery | **missing** | `REDIS_URL` is optional SSE fan-out. No Sentinel/Cluster runbook or failover test. |
@@ -57,7 +58,7 @@ Status key: **done** · **partial** · **missing**
 
 | Module | v1 target | Now |
 |--------|-----------|-----|
-| Multi-tenant architecture | Org-isolated agents + APIs | **partial** — agents/commands/campaigns scoped; other tables still catching up |
+| Multi-tenant architecture | Org-isolated agents + APIs | **partial→near-done** — high-value tables scoped; notifications remain per-recipient; lab `local` bypass intentional |
 | Real Agent Gateway | Persistent WS + heartbeat + push commands | **done** (v1) — `WS /api/agents/ws`; HTTP check-in remains fallback |
 | Event pipeline | Agent → detection → risk → dashboard | **partial** — threat ingest + realtime bus + SSE; no durable queue |
 | Agent installers | MSI / deb / rpm / pkg | **partial** — scripts only |

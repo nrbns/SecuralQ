@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from app.auth import AuthUser
@@ -22,6 +22,7 @@ from app.ops import (
     soc_overview,
     update_incident,
 )
+from app.tenancy import resolve_request_org
 
 router = APIRouter(prefix="/api", tags=["ops"])
 
@@ -64,14 +65,24 @@ async def incidents_list(
     user: Annotated[AuthUser, Depends(require_user)],
     engagement_id: str | None = None,
     status: str | None = None,
+    x_securaiq_org: str | None = Header(default=None, alias="X-SecuraIQ-Org"),
 ):
     purge_demo_seed(user.id)
-    return {"incidents": list_incidents(user.id, engagement_id=engagement_id, status=status)}
+    oid = resolve_request_org(user, org_id=None, header_org=x_securaiq_org)
+    return {
+        "incidents": list_incidents(user.id, engagement_id=engagement_id, status=status, org_id=oid),
+        "org_id": oid,
+    }
 
 
 @router.post("/incidents")
-async def incidents_create(req: IncidentCreate, user: Annotated[AuthUser, Depends(require_user)]):
-    return create_incident(user.id, **req.model_dump())
+async def incidents_create(
+    req: IncidentCreate,
+    user: Annotated[AuthUser, Depends(require_user)],
+    x_securaiq_org: str | None = Header(default=None, alias="X-SecuraIQ-Org"),
+):
+    oid = resolve_request_org(user, org_id=None, header_org=x_securaiq_org)
+    return create_incident(user.id, org_id=oid, **req.model_dump())
 
 
 @router.patch("/incidents/{incident_id}")
@@ -92,13 +103,22 @@ async def incidents_delete(incident_id: str, user: Annotated[AuthUser, Depends(r
 
 
 @router.get("/intel/watch")
-async def intel_list(user: Annotated[AuthUser, Depends(require_user)]):
-    return {"watch": list_intel_watch(user.id)}
+async def intel_list(
+    user: Annotated[AuthUser, Depends(require_user)],
+    x_securaiq_org: str | None = Header(default=None, alias="X-SecuraIQ-Org"),
+):
+    oid = resolve_request_org(user, org_id=None, header_org=x_securaiq_org)
+    return {"watch": list_intel_watch(user.id, org_id=oid), "org_id": oid}
 
 
 @router.post("/intel/watch")
-async def intel_add(req: IntelWatchCreate, user: Annotated[AuthUser, Depends(require_user)]):
-    return add_intel_watch(user.id, kind=req.kind, value=req.value, notes=req.notes)
+async def intel_add(
+    req: IntelWatchCreate,
+    user: Annotated[AuthUser, Depends(require_user)],
+    x_securaiq_org: str | None = Header(default=None, alias="X-SecuraIQ-Org"),
+):
+    oid = resolve_request_org(user, org_id=None, header_org=x_securaiq_org)
+    return add_intel_watch(user.id, kind=req.kind, value=req.value, notes=req.notes, org_id=oid)
 
 
 @router.delete("/intel/watch/{watch_id}")

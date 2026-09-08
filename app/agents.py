@@ -773,6 +773,7 @@ def record_threat_detections(agent_id: str, detections: list[dict[str, Any]]) ->
                     status="open",
                     source="agent:sentinel",
                     summary=f"Host: {hostname} · Category: {category} · {detail}"[:900],
+                    org_id=org_id,
                 )
                 incident_id = str((irow or {}).get("id") or "")
             except Exception:
@@ -799,6 +800,7 @@ def record_threat_detections(agent_id: str, detections: list[dict[str, Any]]) ->
                 summary=f"{category}: {title} on {hostname}",
                 detail={"agent_id": agent_id, "hostname": hostname, "severity": severity, "raw": det},
                 created_by=f"agent:{agent_id}",
+                org_id=org_id,
             )
         except Exception:
             pass  # evidence recording is best-effort — never block threat ingestion

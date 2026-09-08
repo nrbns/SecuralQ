@@ -78,9 +78,25 @@ def _sev_from_zap_risk(riskcode: str | int | None, riskdesc: str = "") -> str:
     return "info"
 
 
+def _report_engine_tag(version: str) -> str:
+    """Map report @version to honest engine id (never claim ZAP for builtin)."""
+    ver = (version or "").strip().upper()
+    if "SECURAIQ" in ver:
+        return "securaiq_web"
+    if "ZAP-API" in ver or ver.startswith("ZAP"):
+        return "zap_api"
+    # Classic OWASP ZAP JSON exports use numeric versions like "2.14.0".
+    if ver and ver[0].isdigit():
+        return "zap_api"
+    return "securaiq_web"
+
+
 def parse_zap_json(data: dict[str, Any]) -> list[dict[str, Any]]:
     """Parse ZAP / SecuraIQ web JSON report (site[].alerts[]) into intermediate rows."""
     items: list[dict[str, Any]] = []
+    report_src = str(data.get("@version") or "")
+    # Honest source tag: builtin report vs optional ZAP API / classic ZAP export.
+    default_engine = _report_engine_tag(report_src)
     for site in data.get("site") or []:
         if not isinstance(site, dict):
             continue
@@ -90,21 +106,79 @@ def parse_zap_json(data: dict[str, Any]) -> list[dict[str, Any]]:
                 continue
             name = alert.get("name") or alert.get("alert") or "Web finding"
             plugin = alert.get("pluginid") or alert.get("pluginId") or ""
+            instances = alert.get("instances") or []
+            uri = ""
+            if isinstance(instances, list) and instances:
+                first = instances[0] if isinstance(instances[0], dict) else {}
+                uri = str(first.get("uri") or first.get("url") or "")[:500]
+            evidence_url = uri or str(host)
+            engine = str(alert.get("engine") or default_engine)
             items.append(
                 {
                     "title": str(name)[:300],
                     "severity": _sev_from_zap_risk(alert.get("riskcode"), str(alert.get("riskdesc") or "")),
                     "asset_name": str(host)[:200],
                     "plugin": str(plugin),
+                    "evidence": evidence_url,
+                    "engine": engine,
                     "raw": {
                         k: v
                         for k, v in alert.items()
                         if k != "instances"
                     }
-                    | {"instances_count": len(alert.get("instances") or [])},
+                    | {
+                        "instances_count": len(instances) if isinstance(instances, list) else 0,
+                        "uri": uri,
+                        "engine": engine,
+                    },
                 }
             )
     return items[:150]
+
+
+def _alert_dedupe_key(alert: dict[str, Any]) -> str:
+    name = str(alert.get("name") or alert.get("alert") or "").strip().lower()
+    plugin = str(alert.get("pluginid") or alert.get("pluginId") or "").strip()
+    instances = alert.get("instances") or []
+    uri = ""
+    if isinstance(instances, list) and instances and isinstance(instances[0], dict):
+        uri = str(instances[0].get("uri") or instances[0].get("url") or "")
+    return f"{plugin}|{name}|{uri}"
+
+
+def merge_web_alert_reports(*reports: dict[str, Any] | None) -> dict[str, Any]:
+    """Merge SecuraIQ builtin + optional ZAP API alert reports without inventing rows."""
+    merged_alerts: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    site_name = ""
+    versions: list[str] = []
+    for report in reports:
+        if not isinstance(report, dict):
+            continue
+        ver = str(report.get("@version") or "").strip()
+        if ver:
+            versions.append(ver)
+        for site in report.get("site") or []:
+            if not isinstance(site, dict):
+                continue
+            if not site_name:
+                site_name = str(site.get("@name") or site.get("name") or "")
+            engine = _report_engine_tag(ver)
+            for alert in site.get("alerts") or []:
+                if not isinstance(alert, dict):
+                    continue
+                row = dict(alert)
+                row.setdefault("engine", engine)
+                key = _alert_dedupe_key(row)
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged_alerts.append(row)
+    version = "+".join(dict.fromkeys(versions)) if versions else "SecuraIQ-WebScanner"
+    return {
+        "@version": version,
+        "site": [{"@name": site_name or "web-app", "alerts": merged_alerts}],
+    }
 
 
 def parse_zap_baseline_text(text: str, *, asset: str) -> list[dict[str, Any]]:
@@ -223,7 +297,18 @@ class ZapScanner(Scanner):
         mode = "securaiq_web_builtin"
         cmd = f"SecuraIQ Web Scanner (built-in) profile={profile} target={url}"
 
-        # Optional deep scan when external ZAP daemon is configured and reachable.
+        builtin_report: dict[str, Any] | None = None
+        zap_path = ctx.evidence_dir / "zap.json"
+        if zap_path.exists():
+            try:
+                loaded = json.loads(zap_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    builtin_report = loaded
+            except Exception:
+                builtin_report = None
+
+        # Optional deep scan ONLY when ZAP_PREFER_API=true and daemon is up.
+        # Otherwise findings stay SecuraIQ Web Scanner — never labeled as ZAP.
         if bool(getattr(settings, "zap_prefer_api", False)):
             api_ok, api_detail = await _probe_zap_api_sync()
             if api_ok:
@@ -243,8 +328,27 @@ class ZapScanner(Scanner):
                     mode = "securaiq_web_builtin+zap_api"
                     cmd = f"{cmd} + ZAP REST {base}"
                     out = {**out, "zap_api": ext, "zap_api_detail": api_detail}
+                    api_report: dict[str, Any] | None = None
+                    api_json = ctx.evidence_dir / "zap_api_report.json"
+                    if api_json.exists():
+                        try:
+                            loaded_api = json.loads(api_json.read_text(encoding="utf-8"))
+                            if isinstance(loaded_api, dict):
+                                api_report = loaded_api
+                        except Exception:
+                            api_report = None
+                    merged = merge_web_alert_reports(builtin_report, api_report)
+                    zap_path.write_text(json.dumps(merged, indent=2), encoding="utf-8")
+                    out["alerts"] = len((merged.get("site") or [{}])[0].get("alerts") or [])
                 except Exception as exc:
                     (ctx.evidence_dir / "zap_api.stderr").write_text(str(exc), encoding="utf-8")
+                    # Keep builtin zap.json intact on ZAP failure.
+            else:
+                (ctx.evidence_dir / "zap_api.skipped").write_text(
+                    f"ZAP_PREFER_API set but daemon unreachable: {api_detail}\n"
+                    "Using SecuraIQ Web Scanner (built-in) only.\n",
+                    encoding="utf-8",
+                )
 
         (ctx.evidence_dir / "command.txt").write_text(cmd, encoding="utf-8")
         (ctx.evidence_dir / "stdout.log").write_text(json.dumps(out, indent=2), encoding="utf-8")
@@ -262,7 +366,7 @@ class ZapScanner(Scanner):
             stdout=(ctx.evidence_dir / "stdout.log").read_text(encoding="utf-8"),
             stderr="",
             artifact_paths=artifacts,
-            meta={"mode": mode, "timeout": timeout, "builtin": True},
+            meta={"mode": mode, "timeout": timeout, "builtin": True, "scanner": "securaiq_web"},
         )
 
     def parse(self, raw: RawScanResult, ctx: ScanContext) -> list[dict[str, Any]]:
@@ -296,13 +400,17 @@ class ZapScanner(Scanner):
             if not isinstance(row, dict):
                 continue
             asset = _hostname_from_target(str(row.get("asset_name") or "")) or host
+            engine = str(row.get("engine") or "securaiq_web")
+            plugin = row.get("plugin") or "scan"
+            source_prefix = "zap_api" if engine == "zap_api" else "securaiq_web"
+            evidence = str(row.get("evidence") or row.get("asset_name") or (url if ok_t else ctx.target))[:500]
             findings.append(
                 NormalizedFinding(
                     title=str(row.get("title") or "Web finding")[:300],
                     severity=str(row.get("severity") or "info"),
                     asset_name=asset[:200],
-                    source=f"securaiq_web:{row.get('plugin') or 'scan'}",
-                    evidence=str(row.get("asset_name") or url if ok_t else ctx.target)[:500],
+                    source=f"{source_prefix}:{plugin}",
+                    evidence=evidence,
                     raw=row.get("raw") if isinstance(row.get("raw"), dict) else row,
                 )
             )

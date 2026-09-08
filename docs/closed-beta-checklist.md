@@ -5,7 +5,7 @@
 ## Week 1 — Production hardening
 
 - [x] Harden Compose (CORS, secrets, internal DB/Redis) — `docs/production-hardening.md`
-- [x] Cross-tenant isolation tests — assets/vulns/risks/chats/engagements
+- [x] Cross-tenant isolation tests — assets/vulns/risks/chats/engagements; scans/incidents/evidence/archives (P0.1)
 - [x] Engagement tool-scope enforcement tests
 - [x] TLS runbook — `docs/tls-deploy.md` (DNS/cert still operator-owned)
 - [x] Backup → restore drill doc — `docs/backup-dr.md`

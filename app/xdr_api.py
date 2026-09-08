@@ -83,13 +83,26 @@ async def get_detections(
     limit: int = 100,
     vendor: str | None = None,
     kind: str | None = None,
+    x_securaiq_org: str | None = Header(default=None, alias="X-SecuraIQ-Org"),
 ):
-    return {"events": list_events(limit=limit, vendor=vendor, kind=kind)}
+    from app.tenancy import resolve_request_org
+
+    oid = resolve_request_org(user, org_id=None, header_org=x_securaiq_org)
+    return {
+        "events": list_events(user.id, limit=limit, vendor=vendor, kind=kind, org_id=oid),
+        "org_id": oid,
+    }
 
 
 @router.get("/patches")
-async def get_patch_compliance(user: Annotated[AuthUser, Depends(require_user)]):
-    return patch_compliance_summary()
+async def get_patch_compliance(
+    user: Annotated[AuthUser, Depends(require_user)],
+    x_securaiq_org: str | None = Header(default=None, alias="X-SecuraIQ-Org"),
+):
+    from app.tenancy import resolve_request_org
+
+    oid = resolve_request_org(user, org_id=None, header_org=x_securaiq_org)
+    return patch_compliance_summary(user.id, org_id=oid)
 
 
 @router.post("/hunting/run")

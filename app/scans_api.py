@@ -12,7 +12,7 @@ from app.auth import AuthUser
 from app.commercial_api import require_user
 from app.rbac import require_perm
 from app.scan_engine.executor import enqueue_scan_job
-from app.scan_engine.models import create_scan, ensure_scans_schema, get_scan, list_scans
+from app.scan_engine.models import create_scan, ensure_scans_schema, get_scan_for_user, list_scans
 from app.scan_engine.report import build_scan_report_md, findings_for_scan, write_scan_report
 from app.scanners.registry import ENGINE_ENABLED, get_scanner, list_scanners
 from app.services.tenancy import resolve_request_org
@@ -268,10 +268,8 @@ async def scans_report(scan_id: str, user: Annotated[AuthUser, Depends(require_u
     from pathlib import Path
 
     ensure_scans_schema()
-    scan = get_scan(scan_id)
+    scan = get_scan_for_user(user.id, scan_id)
     if not scan:
-        raise HTTPException(status_code=404, detail="Scan not found")
-    if user.role != "admin" and scan.get("user_id") != user.id:
         raise HTTPException(status_code=404, detail="Scan not found")
 
     ev = Path(scan.get("evidence_dir") or "")
@@ -305,10 +303,8 @@ async def scans_report_pdf(scan_id: str, user: Annotated[AuthUser, Depends(requi
     from app.commercial_ext import markdown_to_simple_pdf
 
     ensure_scans_schema()
-    scan = get_scan(scan_id)
+    scan = get_scan_for_user(user.id, scan_id)
     if not scan:
-        raise HTTPException(status_code=404, detail="Scan not found")
-    if user.role != "admin" and scan.get("user_id") != user.id:
         raise HTTPException(status_code=404, detail="Scan not found")
 
     ev = Path(scan.get("evidence_dir") or "")
@@ -341,10 +337,8 @@ async def scans_report_pdf(scan_id: str, user: Annotated[AuthUser, Depends(requi
 @router.get("/{scan_id}")
 async def scans_get(scan_id: str, user: Annotated[AuthUser, Depends(require_user)]):
     ensure_scans_schema()
-    scan = get_scan(scan_id)
+    scan = get_scan_for_user(user.id, scan_id)
     if not scan:
-        raise HTTPException(status_code=404, detail="Scan not found")
-    if user.role != "admin" and scan.get("user_id") != user.id:
         raise HTTPException(status_code=404, detail="Scan not found")
     return scan
 

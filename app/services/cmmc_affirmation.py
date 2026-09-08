@@ -116,6 +116,9 @@ def create_affirmation(
         level=level, score=score, assessment_date=assessment_date, affirming_official=affirming_official
     )
     ensure_schema()
+    from app.tenancy import primary_org_id
+
+    oid = org_id or primary_org_id(user_id)
 
     next_affirmation_due = assessment_date + ANNUAL_DAYS * DAY
     cycle_days = ANNUAL_DAYS if level == "Level 1" else LEVEL2_ASSESSMENT_CYCLE_DAYS
@@ -132,7 +135,7 @@ def create_affirmation(
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            aid, user_id, org_id, framework_id.strip() or "cmmc_l2", assessment_id, level, score,
+            aid, user_id, oid, framework_id.strip() or "cmmc_l2", assessment_id, level, score,
             assessment_date, affirming_official.strip()[:200], next_affirmation_due, next_assessment_due,
             (notes or "").strip()[:4000], ts, ts,
         ),
@@ -160,6 +163,7 @@ def create_affirmation(
             + (f" (score {score})" if score is not None else ""),
             detail={"level": level, "score": score, "framework_id": framework_id, "assessment_id": assessment_id},
             created_by=user_id,
+            org_id=oid,
         )
     except Exception:
         pass
@@ -180,39 +184,49 @@ def _decorate(d: dict[str, Any]) -> dict[str, Any]:
 
 
 def get_affirmation(user_id: str, affirmation_id: str) -> dict[str, Any] | None:
+    from app.tenancy import row_visible_to_user
+
     ensure_schema()
     row = get_conn().execute(
-        "SELECT * FROM cmmc_affirmations WHERE id = ? AND user_id = ?", (affirmation_id, user_id)
+        "SELECT * FROM cmmc_affirmations WHERE id = ?", (affirmation_id,)
     ).fetchone()
     if not row:
         return None
-    return _decorate(row_to_dict(row))
+    d = row_to_dict(row)
+    if not row_visible_to_user(user_id, d):
+        return None
+    return _decorate(d)
 
 
-def list_affirmations(user_id: str, framework_id: str | None = None) -> list[dict[str, Any]]:
+def list_affirmations(
+    user_id: str, framework_id: str | None = None, *, org_id: str | None = None
+) -> list[dict[str, Any]]:
+    from app.tenancy import tenant_visibility_sql
+
     ensure_schema()
-    c = get_conn()
+    where, args = tenant_visibility_sql(user_id, org_id=org_id)
+    q = f"SELECT * FROM cmmc_affirmations WHERE {where}"
     if framework_id:
-        rows = c.execute(
-            "SELECT * FROM cmmc_affirmations WHERE user_id = ? AND framework_id = ? ORDER BY assessment_date DESC",
-            (user_id, framework_id),
-        ).fetchall()
-    else:
-        rows = c.execute(
-            "SELECT * FROM cmmc_affirmations WHERE user_id = ? ORDER BY assessment_date DESC", (user_id,)
-        ).fetchall()
+        q += " AND framework_id = ?"
+        args.append(framework_id)
+    q += " ORDER BY assessment_date DESC"
+    rows = get_conn().execute(q, args).fetchall()
     return [_decorate(row_to_dict(r)) for r in rows]
 
 
-def latest_affirmation(user_id: str, framework_id: str = "cmmc_l2") -> dict[str, Any] | None:
-    rows = list_affirmations(user_id, framework_id=framework_id)
+def latest_affirmation(
+    user_id: str, framework_id: str = "cmmc_l2", *, org_id: str | None = None
+) -> dict[str, Any] | None:
+    rows = list_affirmations(user_id, framework_id=framework_id, org_id=org_id)
     return rows[0] if rows else None
 
 
 def delete_affirmation(user_id: str, affirmation_id: str) -> bool:
+    if not get_affirmation(user_id, affirmation_id):
+        return False
     ensure_schema()
     c = get_conn()
-    cur = c.execute("DELETE FROM cmmc_affirmations WHERE id = ? AND user_id = ?", (affirmation_id, user_id))
+    cur = c.execute("DELETE FROM cmmc_affirmations WHERE id = ?", (affirmation_id,))
     c.commit()
     if cur.rowcount:
         try:

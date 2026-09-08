@@ -29,7 +29,7 @@ bash scripts/backup.sh /mnt/nas/backups  # or a custom destination
 **Linux/macOS (cron)** — nightly at 02:00, keep 14 days:
 
 ```cron
-0 2 * * * cd /path/to/Hackgpt-ai && bash scripts/backup.sh /var/backups/securaiq >> /var/log/securaiq-backup.log 2>&1
+0 2 * * * cd /path/to/SecuralQ && bash scripts/backup.sh /var/backups/securaiq >> /var/log/securaiq-backup.log 2>&1
 ```
 
 Add a retention line (or use `find -mtime +14 -delete` on the backup root) — the scripts do not prune old backups themselves.
@@ -37,7 +37,7 @@ Add a retention line (or use `find -mtime +14 -delete` on the backup root) — t
 **Windows (Task Scheduler)** — create a daily trigger running:
 
 ```
-powershell.exe -File "C:\path\to\Hackgpt-ai\scripts\backup.ps1" -BackupRoot "D:\Backups\SecuraIQ"
+powershell.exe -File "C:\path\to\SecuralQ\scripts\backup.ps1" -BackupRoot "D:\Backups\SecuraIQ"
 ```
 
 ## Restoring

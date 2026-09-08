@@ -190,11 +190,14 @@ def create_attestation(
     notes: str = "",
     org_id: str | None = None,
 ) -> dict[str, Any]:
+    from app.tenancy import primary_org_id
+
     framework_id = (framework_id or "").strip()
     if not framework_id:
         raise ValueError("framework_id is required")
     _validate(assessment_date=assessment_date, attesting_official=attesting_official)
     ensure_schema()
+    oid = org_id or primary_org_id(user_id)
 
     profile = attestation_profile(framework_id)
     next_affirmation_due = assessment_date + profile["affirmation_cycle_days"] * DAY
@@ -211,7 +214,7 @@ def create_attestation(
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            aid, user_id, org_id, framework_id, assessment_id, assessment_date,
+            aid, user_id, oid, framework_id, assessment_id, assessment_date,
             attesting_official.strip()[:200], next_affirmation_due, next_reassessment_due,
             (notes or "").strip()[:4000], ts, ts,
         ),
@@ -223,7 +226,7 @@ def create_attestation(
         audit(
             "compliance_attestation_create",
             user_id,
-            {"id": aid, "framework_id": framework_id, "attesting_official": attesting_official.strip()},
+            {"id": aid, "framework_id": framework_id, "attesting_official": attesting_official.strip(), "org_id": oid},
         )
     except Exception:
         pass
@@ -238,6 +241,7 @@ def create_attestation(
             summary=f"{profile['attestation_label']} for {framework_id} by {attesting_official.strip()}",
             detail={"framework_id": framework_id, "assessment_id": assessment_id},
             created_by=user_id,
+            org_id=oid,
         )
     except Exception:
         pass
@@ -259,39 +263,47 @@ def _decorate(d: dict[str, Any]) -> dict[str, Any]:
 
 
 def get_attestation(user_id: str, attestation_id: str) -> dict[str, Any] | None:
+    from app.tenancy import row_visible_to_user
+
     ensure_schema()
     row = get_conn().execute(
-        "SELECT * FROM compliance_attestations WHERE id = ? AND user_id = ?", (attestation_id, user_id)
+        "SELECT * FROM compliance_attestations WHERE id = ?", (attestation_id,)
     ).fetchone()
     if not row:
         return None
-    return _decorate(row_to_dict(row))
+    d = row_to_dict(row)
+    if not row_visible_to_user(user_id, d):
+        return None
+    return _decorate(d)
 
 
-def list_attestations(user_id: str, framework_id: str | None = None) -> list[dict[str, Any]]:
+def list_attestations(
+    user_id: str, framework_id: str | None = None, *, org_id: str | None = None
+) -> list[dict[str, Any]]:
+    from app.tenancy import tenant_visibility_sql
+
     ensure_schema()
-    c = get_conn()
+    where, args = tenant_visibility_sql(user_id, org_id=org_id)
+    q = f"SELECT * FROM compliance_attestations WHERE {where}"
     if framework_id:
-        rows = c.execute(
-            "SELECT * FROM compliance_attestations WHERE user_id = ? AND framework_id = ? ORDER BY assessment_date DESC",
-            (user_id, framework_id),
-        ).fetchall()
-    else:
-        rows = c.execute(
-            "SELECT * FROM compliance_attestations WHERE user_id = ? ORDER BY assessment_date DESC", (user_id,)
-        ).fetchall()
+        q += " AND framework_id = ?"
+        args.append(framework_id)
+    q += " ORDER BY assessment_date DESC"
+    rows = get_conn().execute(q, args).fetchall()
     return [_decorate(row_to_dict(r)) for r in rows]
 
 
-def latest_attestation(user_id: str, framework_id: str) -> dict[str, Any] | None:
-    rows = list_attestations(user_id, framework_id=framework_id)
+def latest_attestation(user_id: str, framework_id: str, *, org_id: str | None = None) -> dict[str, Any] | None:
+    rows = list_attestations(user_id, framework_id=framework_id, org_id=org_id)
     return rows[0] if rows else None
 
 
 def delete_attestation(user_id: str, attestation_id: str) -> bool:
+    if not get_attestation(user_id, attestation_id):
+        return False
     ensure_schema()
     c = get_conn()
-    cur = c.execute("DELETE FROM compliance_attestations WHERE id = ? AND user_id = ?", (attestation_id, user_id))
+    cur = c.execute("DELETE FROM compliance_attestations WHERE id = ?", (attestation_id,))
     c.commit()
     if cur.rowcount:
         try:

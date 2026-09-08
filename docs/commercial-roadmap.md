@@ -1,23 +1,25 @@
-# SecuraIQ — AI Security Operating System
+# SecuraIQ — Continuous Security, Risk & Compliance Control Plane
 
 **Positioning (do not market as a chatbot):**
 
-> An **AI Security Operating System** that helps organizations understand posture, track compliance, manage risk, review code, analyze findings, generate reports, and coordinate remediation — with AI as the orchestration layer over structured workflows.
+> An **operating control plane** that discovers, detects, prioritizes, remediates, verifies, and proves — updating risk and compliance from real evidence. AI orchestrates; humans approve; agents execute; verification closes the loop.
 
-**Not** “ChatGPT for cyber.” **Not** a SIEM/EDR/GRC replacement.  
-**Yes** an orchestration layer that connects tools → unified analysis → reports · tasks · compliance · AI.
+**Not** “ChatGPT for cyber.” **Not** a Wazuh clone feature-for-feature.  
+**Yes** Security → Risk → Compliance → Remediation → Verification → Evidence.
+
+Canonical roadmap: [control-plane-roadmap.md](./control-plane-roadmap.md) · Ship gate: [production-readiness.md](./production-readiness.md)
 
 ```
-Security Tools / Evidence / Scans
+Security Tools / Agents / Evidence / Scans
               │
               ▼
-     SecuraIQ AI Platform
+     SecuraIQ Control Plane
               │
               ▼
-        Unified Analysis
+ Detection · Risk · Compliance engines
               │
               ▼
- Reports · Tasks · Compliance · AI
+ Remediate → Approve → Verify → Evidence
 ```
 
 ---

@@ -247,13 +247,15 @@ def create_plan(
     Raises ValueError if the group has no open findings right now (already
     resolved, or the group_key was never valid)."""
     from app.services.risk_priority import _mean_score, _scored_open_items
+    from app.tenancy import primary_org_id
 
-    group, asset_ids = _find_group(user_id, group_key, org_id=org_id, engagement_id=engagement_id)
+    oid = org_id or primary_org_id(user_id)
+    group, asset_ids = _find_group(user_id, group_key, org_id=oid, engagement_id=engagement_id)
     if group is None:
         raise ValueError("No open findings match this group -- it may already be resolved.")
 
     patchable_ids = _agent_patchable_asset_ids(user_id) & asset_ids
-    biz_critical_ids = _business_critical_asset_ids(user_id, asset_ids, org_id=org_id, engagement_id=engagement_id)
+    biz_critical_ids = _business_critical_asset_ids(user_id, asset_ids, org_id=oid, engagement_id=engagement_id)
 
     band = _disruption_band(
         assets_affected=group["assets_affected"],
@@ -262,7 +264,7 @@ def create_plan(
     )
     explanation = _explain(group, business_critical_assets=len(biz_critical_ids), agent_patchable_assets=len(patchable_ids))
 
-    baseline_score = _mean_score(_scored_open_items(user_id, org_id=org_id, engagement_id=engagement_id))
+    baseline_score = _mean_score(_scored_open_items(user_id, org_id=oid, engagement_id=engagement_id))
 
     pid = new_id()
     ts = now()
@@ -281,7 +283,7 @@ def create_plan(
         ) VALUES (?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, NULL, '', NULL, ?, ?)
         """,
         (
-            pid, user_id, engagement_id, org_id, group_key, group["title"], group["cve"],
+            pid, user_id, engagement_id, oid, group_key, group["title"], group["cve"],
             group["vulns_removed"], group["assets_affected"], json.dumps(sorted(asset_ids)),
             group["internet_exposed_assets"], len(biz_critical_ids), len(patchable_ids),
             1 if group["kev"] else 0, 1 if group["quick_win"] else 0, group["critical_high_count"],
@@ -292,7 +294,7 @@ def create_plan(
         ),
     )
     c.commit()
-    audit("remediation_plan_create", user_id, {"id": pid, "group_key": group_key, "title": group["title"]})
+    audit("remediation_plan_create", user_id, {"id": pid, "group_key": group_key, "title": group["title"], "org_id": oid})
     try:
         from app.services.evidence import record_evidence
 
@@ -318,6 +320,7 @@ def create_plan(
                 "verified_attack_paths_disrupted": group["verified_attack_paths_disrupted"],
                 "estimated_risk_reduction_pct": group["estimated_risk_reduction_pct"],
             },
+            org_id=oid,
         )
     except Exception:
         pass  # evidence recording is best-effort — never block plan creation
@@ -441,7 +444,7 @@ def delete_plan(user_id: str, plan_id: str) -> bool:
     if not plan:
         return False
     c = get_conn()
-    cur = c.execute("DELETE FROM remediation_plans WHERE id = ? AND user_id = ?", (plan_id, user_id))
+    cur = c.execute("DELETE FROM remediation_plans WHERE id = ?", (plan_id,))
     c.commit()
     if cur.rowcount:
         audit("remediation_plan_delete", user_id, {"id": plan_id})

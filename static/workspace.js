@@ -156,6 +156,172 @@
     }
   }
 
+  // ---- Cross-Framework Impact (canonical control registry) ----
+  // Backend: app/canonical_controls_api.py + app/services/canonical_controls.py.
+  // 22 canonical controls (MFA, encryption, vuln mgmt, ...), each mapped to
+  // real control IDs across every framework catalog. Status here is always
+  // computed server-side from the user's real gap assessments and live
+  // telemetry -- this module only renders it, never invents a number.
+  let __canonicalRegistryPromise = null;
+  window.__securaiqCanonicalReverseIndex = window.__securaiqCanonicalReverseIndex || null;
+
+  async function ensureCanonicalRegistryCache() {
+    if (window.__securaiqCanonicalReverseIndex) return window.__securaiqCanonicalReverseIndex;
+    if (!__canonicalRegistryPromise) {
+      __canonicalRegistryPromise = fetch("/api/canonical-controls", { headers: authHeaders() })
+        .then((res) => (res.ok ? res.json() : { canonical_controls: [] }))
+        .then((data) => {
+          const idx = {};
+          (data.canonical_controls || []).forEach((cc) => {
+            Object.entries(cc.frameworks || {}).forEach(([fid, ids]) => {
+              (ids || []).forEach((cid) => {
+                const key = `${fid}|${String(cid).toUpperCase()}`;
+                if (!idx[key]) idx[key] = [];
+                idx[key].push({ id: cc.id, name: cc.name });
+              });
+            });
+          });
+          window.__securaiqCanonicalReverseIndex = idx;
+          return idx;
+        })
+        .catch(() => {
+          window.__securaiqCanonicalReverseIndex = {};
+          return {};
+        });
+    }
+    return __canonicalRegistryPromise;
+  }
+
+  function canonicalBadgeHtml(frameworkId, controlId) {
+    const idx = window.__securaiqCanonicalReverseIndex || {};
+    const hits = idx[`${frameworkId}|${String(controlId || "").toUpperCase()}`] || [];
+    if (!hits.length) return "";
+    const names = hits.map((h) => h.name).join(", ");
+    return `<span class="impact-badge-inline" data-workspace="impact" title="Also satisfies: ${escapeHtml(
+      names
+    )} — see Cross-Framework Impact">⟡ ${hits.length} fw${hits.length > 1 ? "s" : ""}</span>`;
+  }
+  window.canonicalBadgeHtml = canonicalBadgeHtml;
+  window.ensureCanonicalRegistryCache = ensureCanonicalRegistryCache;
+
+  const IMPACT_STATUS_LABELS = {
+    implemented: "Implemented",
+    partial: "Partial",
+    missing: "Missing",
+    not_assessed: "Not assessed",
+    unknown: "Unknown",
+  };
+
+  function impactStatusChipHtml(status) {
+    const s = status || "not_assessed";
+    return `<span class="impact-chip impact-chip-${escapeHtml(s)}">${escapeHtml(IMPACT_STATUS_LABELS[s] || s)}</span>`;
+  }
+
+  function impactLiveBadgeHtml(live) {
+    if (!live) return "";
+    const cls =
+      live.status === "pass" ? "impact-live-pass" : live.status === "partial" ? "impact-live-partial" : "impact-live-fail";
+    const icon = live.status === "pass" ? "✓" : live.status === "partial" ? "•" : "!";
+    return `<span class="impact-live-badge ${cls}" title="${escapeHtml(
+      live.summary || ""
+    )}">${icon} Live telemetry: ${escapeHtml(live.status)}</span>`;
+  }
+
+  function impactCardHtml(s) {
+    const fwEntries = Object.entries(s.frameworks || {});
+    const fwRows = fwEntries
+      .map(
+        ([fid, fw]) =>
+          `<div class="impact-fw-row"><span class="impact-fw-id">${escapeHtml(fid)}</span>${impactStatusChipHtml(
+            fw.status
+          )}</div>`
+      )
+      .join("");
+    return `
+      <article class="impact-card status-${escapeHtml(s.overall_status || "not_assessed")}" data-canonical-id="${escapeHtml(
+        s.id
+      )}">
+        <div class="impact-card-head">
+          <div>
+            <div class="impact-cat">${escapeHtml(s.category || "")}</div>
+            <h4>${escapeHtml(s.name)}</h4>
+          </div>
+          ${impactStatusChipHtml(s.overall_status)}
+        </div>
+        <p class="impact-desc">${escapeHtml(s.description || "")}</p>
+        <div class="impact-meta">
+          <span>${s.frameworks_total_mapped} framework${s.frameworks_total_mapped === 1 ? "" : "s"} mapped</span>
+          <span>·</span>
+          <span>${s.frameworks_assessed} assessed</span>
+          <span>·</span>
+          <span>${s.frameworks_satisfied} satisfied</span>
+        </div>
+        ${impactLiveBadgeHtml(s.live_signal)}
+        <div class="impact-fw-breakdown">${fwRows || '<p class="hint">No frameworks mapped.</p>'}</div>
+      </article>`;
+  }
+
+  async function renderImpactPage() {
+    const body = qs("impactPageBody");
+    if (!body) return;
+    body.innerHTML = '<p class="hint">Loading…</p>';
+    try {
+      const res = await fetch("/api/canonical-controls/status", { headers: authHeaders() });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error((data && data.detail) || `HTTP ${res.status}`);
+      const statuses = data.statuses || [];
+      window.__securaiqImpactStatuses = statuses;
+      const counts = { implemented: 0, partial: 0, missing: 0, not_assessed: 0 };
+      statuses.forEach((s) => {
+        const k = s.overall_status || "not_assessed";
+        counts[k] = (counts[k] || 0) + 1;
+      });
+      const liveChecked = statuses.filter((s) => s.live_signal).length;
+      const hero = `
+        <div class="impact-hero">
+          <span class="impact-hero-icon" aria-hidden="true">⟡</span>
+          <div>
+            <strong style="font-size:0.95rem">Implement one control, satisfy it everywhere it applies.</strong>
+            <p class="hint" style="margin:0.2rem 0 0">Each canonical control below maps to its real, verified control ID across every framework you track — status is computed from your actual gap assessments and live telemetry, never guessed.</p>
+          </div>
+        </div>
+        <div class="impact-summary-row">
+          <div class="impact-summary-tile"><span class="impact-summary-label">Canonical controls</span><strong>${statuses.length}</strong></div>
+          <div class="impact-summary-tile"><span class="impact-summary-label">Implemented</span><strong style="color:#23a06b">${counts.implemented || 0}</strong></div>
+          <div class="impact-summary-tile"><span class="impact-summary-label">Partial / gaps</span><strong style="color:#c4a035">${
+            (counts.partial || 0) + (counts.missing || 0)
+          }</strong></div>
+          <div class="impact-summary-tile"><span class="impact-summary-label">Live-telemetry checked</span><strong>${liveChecked}</strong></div>
+        </div>`;
+      const cardsHtml = statuses.map(impactCardHtml).join("");
+      body.innerHTML = hero + `<div class="impact-grid">${cardsHtml || '<p class="hint">No canonical controls in the registry.</p>'}</div>`;
+      body.querySelectorAll(".impact-card").forEach((card) => {
+        card.addEventListener("click", () => card.classList.toggle("is-expanded"));
+      });
+    } catch (err) {
+      body.innerHTML = `<p class="hint">Could not load cross-framework impact: ${escapeHtml(err.message || String(err))}</p>`;
+    }
+  }
+  window.renderImpactPage = renderImpactPage;
+
+  async function loadImpactHeroStat() {
+    const strongEl = qs("ccImpactValue");
+    const subEl = qs("ccImpactSub");
+    if (!strongEl && !subEl) return;
+    try {
+      const res = await fetch("/api/canonical-controls/status", { headers: authHeaders() });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return;
+      const statuses = data.statuses || [];
+      const implemented = statuses.filter((s) => s.overall_status === "implemented").length;
+      if (strongEl) strongEl.textContent = `${implemented}/${statuses.length}`;
+      if (subEl) subEl.textContent = statuses.length ? "implemented cross-framework" : "no controls yet";
+    } catch {
+      /* dashboard tile is best-effort */
+    }
+  }
+  window.loadImpactHeroStat = loadImpactHeroStat;
+
   window.showWorkspace = function showWorkspace(view, opts) {
     opts = opts || {};
     // User opened a module before boot landing finished — don't steal the view later.
@@ -182,6 +348,7 @@
       orgs: "viewOrgs",
       frameworks: "viewFrameworks",
       compliance_center: "viewComplianceCenter",
+      impact: "viewImpact",
       exceptions: "viewExceptions",
       audit_center: "viewAuditCenter",
       integrations: "viewIntegrations",
@@ -226,6 +393,7 @@
         orgs: "Organizations",
         frameworks: "Frameworks",
         compliance_center: "Compliance Center",
+        impact: "Cross-Framework Impact",
         exceptions: "Exceptions",
         audit_center: "Audit Center",
         integrations: "Integrations",
@@ -238,6 +406,7 @@
     }
     window.__securaiqWorkspaceView = view;
     if (view === "command" && typeof loadCommandCenter === "function") loadCommandCenter();
+    if (view === "command") loadImpactHeroStat();
     if (view === "chat" && typeof syncEmptyState === "function") syncEmptyState();
     if (view === "assets") renderAssetsPage();
     if (view === "software") renderSoftwarePage();
@@ -258,6 +427,7 @@
       renderFrameworksPage();
     }
     if (view === "compliance_center") renderComplianceCenterPage();
+    if (view === "impact") renderImpactPage();
     if (view === "exceptions") renderExceptionsPage();
     if (view === "audit_center") renderAuditCenterPage();
     if (view === "integrations") renderIntegrationsPage();
@@ -404,8 +574,9 @@
       if (item.source && /openaudit/i.test(item.source)) return "Open-AudIT";
     }
     const src = (item.source || "").split(":")[0] || "";
-    if (/^zap$/i.test(src)) return "SecuraIQ Web Scanner live";
-    if (/^nmap|nuclei|zap$/i.test(src)) return `${src} live`;
+    if (/^zap$/i.test(src) || /^securaiq_web$/i.test(src) || /^web_builtin$/i.test(src)) return "SecuraIQ Web Scanner live";
+    if (/^zap_api$/i.test(src)) return "OWASP ZAP (API) live";
+    if (/^nmap|nuclei$/i.test(src)) return `${src} live`;
     return "securaiq live";
   }
 
@@ -1833,6 +2004,12 @@
     }
     const age = vulnAgeDays(v);
     const src = (v.source || "").split(":")[0] || "import";
+    const scannerLabel =
+      typeof scannerDisplayName === "function"
+        ? scannerDisplayName(src === "zap" || src === "securaiq_web" || src === "web_builtin" ? "zap" : src === "zap_api" ? "zap_api" : src)
+        : /^zap$/i.test(src) || /^securaiq_web$/i.test(src)
+          ? "SecuraIQ Web Scanner"
+          : src;
     const refs = [];
     if (v.cve) refs.push(`https://nvd.nist.gov/vuln/detail/${encodeURIComponent(v.cve)}`);
     let raw = v.raw;
@@ -1868,7 +2045,7 @@
         <div><dt>Status</dt><dd>${escapeHtml(v.status || "open")}</dd></div>
         ${v.sla_due ? `<div><dt>SLA</dt><dd>${escapeHtml(v.sla_due)}</dd></div>` : ""}
         ${age != null ? `<div><dt>Age</dt><dd>${age}d</dd></div>` : ""}
-        <div><dt>Scanner</dt><dd>${escapeHtml(src)}</dd></div>
+        <div><dt>Scanner</dt><dd>${escapeHtml(scannerLabel)}</dd></div>
         ${scope ? `<div><dt>Exposure</dt><dd>${escapeHtml(scope)}</dd></div>` : v.cve ? `<div><dt>Exposure</dt><dd>Check KEV / advisory</dd></div>` : ""}
       </dl>
       ${
@@ -2075,11 +2252,14 @@
     const rows = list
       .map((v) => {
         const src = (v.source || "").split(":")[0] || "—";
-        const srcLabel = /^zap$/i.test(src)
-          ? "SecuraIQ Web Scanner live"
-          : /^securaiq|nmap|nuclei|zap$/i.test(src)
-            ? `${src} live`
-            : src;
+        const srcLabel =
+          /^zap$/i.test(src) || /^securaiq_web$/i.test(src) || /^web_builtin$/i.test(src)
+            ? "SecuraIQ Web Scanner"
+            : /^zap_api$/i.test(src)
+              ? "OWASP ZAP (API)"
+              : /^securaiq|nmap|nuclei$/i.test(src)
+                ? `${src} live`
+                : src;
         const selected = v.id === _vulnSelectedId ? " is-selected" : "";
         const assetCell = v.display_asset_name || v.asset_name
           ? `<button type="button" class="vuln-asset-link" data-workspace="assets">${escapeHtml(
@@ -5382,6 +5562,31 @@
       .join("");
   }
 
+  function applyWebScanRecordToUi(scan) {
+    if (!scan || !scan.id || !qs("webscanSteps")) return scan;
+    const statusLabel = qs("webscanStatusLabel");
+    const summaryEl = qs("webscanSummary");
+    if (statusLabel) statusLabel.textContent = (scan.status || "").toUpperCase();
+    renderWebScanSteps(scan.progress);
+    const terminal = ["completed", "failed", "blocked"].includes(scan.status);
+    if (!terminal && summaryEl) {
+      const active = (scan.progress || []).find((s) => s.status === "active");
+      summaryEl.textContent = active
+        ? `Live: ${active.label || active.id} on ${scan.target || ""}…`
+        : `Scanning ${scan.target || ""}…`;
+    }
+    if (terminal) {
+      renderWebScanResult(scan);
+      if (summaryEl) {
+        summaryEl.textContent =
+          scan.status === "completed" ? `Scan complete on ${scan.target || ""}` : scan.error || scan.status;
+      }
+    }
+    return scan;
+  }
+  window.applyWebScanRecordToUi = applyWebScanRecordToUi;
+  window.renderWebScanSteps = renderWebScanSteps;
+
   function renderWebScanResult(scan) {
     const resultPanel = qs("webscanResultPanel");
     const body = qs("webscanResultBody");
@@ -5458,21 +5663,15 @@
       }
       if (!res.ok) break;
       const scan = await res.json().catch(() => ({}));
-      if (statusLabel) statusLabel.textContent = (scan.status || "").toUpperCase();
-      renderWebScanSteps(scan.progress);
+      applyWebScanRecordToUi(scan);
       const terminal = ["completed", "failed", "blocked"].includes(scan.status);
       if (terminal) {
         if (typeof window.unwatchScanRealtime === "function") window.unwatchScanRealtime(scanId);
-        renderWebScanResult(scan);
-        if (summaryEl) {
-          summaryEl.textContent =
-            scan.status === "completed" ? `Scan complete on ${scan.target || ""}` : scan.error || scan.status;
-        }
         if (typeof syncLiveWorkspace === "function") syncLiveWorkspace({ pushType: "scan" });
         return scan;
       }
-      if (summaryEl) summaryEl.textContent = `Scanning ${scan.target || ""}…`;
-      await new Promise((r) => setTimeout(r, 800));
+      // SSE drives most updates; light poll remains a safety net.
+      await new Promise((r) => setTimeout(r, 1200));
     }
     if (summaryEl) summaryEl.textContent = "Still running — check Reports or refresh later.";
     return null;
@@ -6251,10 +6450,13 @@
           </div>
         </section>
         <section class="cc-panel">
-          <header><h2>Link evidence</h2></header>
+          <header><h2>Upload &amp; link evidence</h2></header>
           <form id="evidenceLinkForm" class="inline-form inline-form-col" style="gap:0.5rem">
-            <select id="evidenceFileId" required ${files.length ? "" : "disabled"}>
-              <option value="">Select file</option>${fileOpts}
+            <label class="hint" for="evidenceUploadFile" style="margin:0">Upload a new file…</label>
+            <input id="evidenceUploadFile" type="file" />
+            <label class="hint" for="evidenceFileId" style="margin:0">…or pick an already-uploaded file</label>
+            <select id="evidenceFileId" ${files.length ? "" : "disabled"}>
+              <option value="">${files.length ? "Select file" : "No files uploaded yet"}</option>${fileOpts}
             </select>
             <select id="evidenceRemId">
               <option value="">No remediation (control note only)</option>${remOpts}
@@ -6270,7 +6472,8 @@
             </select>
             <input id="evidenceExpiry" type="date" title="Expiry" />
             <input id="evidenceNotes" placeholder="Comments" />
-            <button type="submit" ${files.length ? "" : "disabled"}>Link evidence</button>
+            <button type="submit" id="evidenceLinkSubmit">Upload &amp; link evidence</button>
+            <p class="hint" id="evidenceUploadStatus" style="margin:0"></p>
           </form>
         </section>
       </div>
@@ -6282,22 +6485,55 @@
       </div>`;
     qs("evidenceLinkForm")?.addEventListener("submit", async (e) => {
       e.preventDefault();
-      const fileId = qs("evidenceFileId")?.value;
-      if (!fileId) return;
-      await fetch("/api/evidence", {
-        method: "POST",
-        headers: authHeaders({ "Content-Type": "application/json" }),
-        body: JSON.stringify({
-          file_id: fileId,
-          remediation_id: qs("evidenceRemId")?.value || null,
-          control_id: qs("evidenceControlId")?.value?.trim() || "",
-          owner: qs("evidenceOwner")?.value?.trim() || "",
-          status: qs("evidenceStatus")?.value || "accepted",
-          expiry: qs("evidenceExpiry")?.value || "",
-          notes: qs("evidenceNotes")?.value?.trim() || "",
-        }),
-      });
-      renderEvidencePage();
+      const statusEl = qs("evidenceUploadStatus");
+      const submitBtn = qs("evidenceLinkSubmit");
+      const fileInput = qs("evidenceUploadFile");
+      const pickedFile = fileInput?.files && fileInput.files[0];
+      let fileId = qs("evidenceFileId")?.value || "";
+      if (!pickedFile && !fileId) {
+        if (statusEl) statusEl.textContent = "Choose a file to upload, or pick an existing one.";
+        return;
+      }
+      if (submitBtn) submitBtn.disabled = true;
+      try {
+        if (pickedFile) {
+          if (statusEl) statusEl.textContent = `Uploading ${pickedFile.name}…`;
+          const fd = new FormData();
+          fd.append("file", pickedFile);
+          const upRes = await fetch("/api/files", {
+            method: "POST",
+            headers: authHeaders(), // no Content-Type — browser sets the multipart boundary
+            body: fd,
+          });
+          const upData = await upRes.json().catch(() => ({}));
+          if (!upRes.ok) throw new Error(upData.detail || `Upload failed (HTTP ${upRes.status})`);
+          fileId = upData.id || upData.file_id || upData.file?.id;
+          if (!fileId) throw new Error("Upload succeeded but no file id was returned");
+        }
+        if (statusEl) statusEl.textContent = "Linking evidence…";
+        const linkRes = await fetch("/api/evidence", {
+          method: "POST",
+          headers: authHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify({
+            file_id: fileId,
+            remediation_id: qs("evidenceRemId")?.value || null,
+            control_id: qs("evidenceControlId")?.value?.trim() || "",
+            owner: qs("evidenceOwner")?.value?.trim() || "",
+            status: qs("evidenceStatus")?.value || "accepted",
+            expiry: qs("evidenceExpiry")?.value || "",
+            notes: qs("evidenceNotes")?.value?.trim() || "",
+          }),
+        });
+        const linkData = await linkRes.json().catch(() => ({}));
+        if (!linkRes.ok) throw new Error(linkData.detail || `Link failed (HTTP ${linkRes.status})`);
+        if (typeof notifyUser === "function") {
+          notifyUser(pickedFile ? `**Evidence uploaded and linked.**` : `**Evidence linked.**`);
+        }
+        renderEvidencePage();
+      } catch (err) {
+        if (statusEl) statusEl.textContent = err.message || "Upload/link failed";
+        if (submitBtn) submitBtn.disabled = false;
+      }
     });
     body.querySelectorAll(".ws-del-ev").forEach((btn) => {
       btn.addEventListener("click", async () => {
@@ -7045,6 +7281,7 @@
       }
       const rows = data.results || data.top_gaps || [];
       const counts = data.counts || {};
+      await ensureCanonicalRegistryCache().catch(() => {});
       detailEl.innerHTML = `
         <header class="fw-detail-head">
           <div>
@@ -7098,7 +7335,7 @@
                             )}">${escapeHtml((t.test || "").replace(/_/g, " "))}: ${escapeHtml(t.status)}</span>`
                         ).join(" ");
                         return `<tr>
-                          <td><strong>${escapeHtml(cid)}</strong>
+                          <td><strong>${escapeHtml(cid)}</strong>${canonicalBadgeHtml(frameworkId, cid)}
                             <div class="hint">${escapeHtml(r.title || "")}</div></td>
                           <td>${
                             evs.length
@@ -7128,6 +7365,13 @@
         </div>`;
       qs("fwDetailClose")?.addEventListener("click", () => {
         detailEl.innerHTML = `<p class="hint">Select a framework to review controls.</p>`;
+      });
+      detailEl.querySelectorAll(".impact-badge-inline[data-workspace]").forEach((el) => {
+        el.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (typeof showWorkspace === "function") showWorkspace("impact");
+        });
       });
       qs("fwExportAssessment")?.addEventListener("click", async () => {
         try {

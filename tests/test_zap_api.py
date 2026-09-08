@@ -80,7 +80,8 @@ async def test_run_zap_api_assessment_writes_evidence(tmp_path):
             timeout_sec=30.0,
         )
     assert out["ok"] is True
-    assert (tmp_path / "zap.json").is_file()
+    assert (tmp_path / "zap_api_report.json").is_file()
     assert (tmp_path / "zap_api_trace.json").is_file()
-    data = json.loads((tmp_path / "zap.json").read_text(encoding="utf-8"))
+    data = json.loads((tmp_path / "zap_api_report.json").read_text(encoding="utf-8"))
     assert data["site"][0]["alerts"][0]["name"].startswith("Cross Site")
+    assert data["site"][0]["alerts"][0].get("engine") == "zap_api"

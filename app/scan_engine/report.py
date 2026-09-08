@@ -35,7 +35,13 @@ def build_scan_report_md(
             summary = {}
     findings = findings or []
     target = scan.get("target") or "—"
-    scanner = scan.get("scanner") or "—"
+    scanner_id = str(scan.get("scanner") or "—")
+    # Engine id "zap" is the SecuraIQ Web Scanner adapter — only say ZAP when
+    # findings actually came from an optional ZAP daemon / import.
+    if scanner_id == "zap":
+        scanner = "SecuraIQ Web Scanner (built-in DAST)"
+    else:
+        scanner = scanner_id
     profile = scan.get("profile") or "—"
     status = scan.get("status") or "—"
     scan_id = scan.get("id") or "—"
@@ -115,7 +121,13 @@ def build_scan_report_md(
             if param:
                 lines.append(f"- **Param / plugin:** `{param}`")
             if src:
-                lines.append(f"- **Source:** `{src}`")
+                src_disp = str(src)
+                root = src_disp.split(":", 1)[0].lower()
+                if root in ("zap", "securaiq_web", "web_builtin"):
+                    src_disp = f"SecuraIQ Web Scanner ({src_disp})"
+                elif root == "zap_api":
+                    src_disp = f"OWASP ZAP API ({src_disp})"
+                lines.append(f"- **Source:** `{src_disp}`")
             if evidence:
                 lines.append(f"- **Evidence:** {evidence}")
             if remediation:

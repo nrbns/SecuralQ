@@ -21,10 +21,27 @@ def ensure_tenant_schema() -> None:
 
     ensure_org_schema()
     c = get_conn()
-    for table in ("assets", "vulnerabilities", "risks", "gap_remediations", "chats", "playbooks", "campaigns"):
+    for table in (
+        "assets",
+        "vulnerabilities",
+        "risks",
+        "gap_remediations",
+        "chats",
+        "playbooks",
+        "campaigns",
+        "incidents",
+        "scans",
+        "intel_watch",
+        "xdr_events",
+        "notifications",
+    ):
         cols = table_columns(c, table)
-        if "org_id" not in cols:
+        if cols and "org_id" not in cols:
             c.execute(f"ALTER TABLE {table} ADD COLUMN org_id TEXT")
+    # xdr_events historically had no user_id — stamp ownership for tenant filters
+    xdr_cols = table_columns(c, "xdr_events")
+    if xdr_cols and "user_id" not in xdr_cols:
+        c.execute("ALTER TABLE xdr_events ADD COLUMN user_id TEXT")
     # Note: users.email already exists via app.db._migrate_users (NOT NULL
     # DEFAULT '') — no migration needed here, just don't insert/compare NULL
     # against it (use '' as the "no email" sentinel).

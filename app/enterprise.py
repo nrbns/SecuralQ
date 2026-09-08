@@ -442,6 +442,7 @@ def create_asset_dependency(
             confidence=confidence,
             detail={"source_asset_id": source_asset_id, "target_asset_id": target_asset_id, "relationship": relationship, "notes": notes},
             created_by=user_id if source == "declared" else "system",
+            org_id=org_id,
         )
     except Exception:
         pass  # evidence recording is best-effort — never block the real write
@@ -1216,7 +1217,12 @@ def create_remediation(
     recommendation: str = "",
     engagement_id: str | None = None,
     assessment_id: str | None = None,
+    org_id: str | None = None,
 ) -> dict[str, Any]:
+    from app.tenancy import ensure_tenant_schema, primary_org_id
+
+    ensure_tenant_schema()
+    oid = org_id or primary_org_id(user_id)
     rid = new_id()
     ts = now()
     c = get_conn()
@@ -1225,8 +1231,8 @@ def create_remediation(
         """
         INSERT INTO gap_remediations
         (id, assessment_id, user_id, engagement_id, control_id, title, status,
-         owner, due_date, notes, recommendation, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, '', ?, ?, ?)
+         owner, due_date, notes, recommendation, created_at, updated_at, org_id)
+        VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, '', ?, ?, ?, ?)
         """,
         (
             rid,
@@ -1240,18 +1246,78 @@ def create_remediation(
             (recommendation or title or "")[:2000],
             ts,
             ts,
+            oid,
         ),
     )
     c.commit()
-    audit("remediation_create", user_id, {"id": rid, "title": title})
+    audit("remediation_create", user_id, {"id": rid, "title": title, "org_id": oid})
     try:
         from app.realtime_bus import publish
 
-        publish(type="remediation", id=rid, user_id=user_id)
+        publish(type="remediation", id=rid, user_id=user_id, org_id=oid)
     except Exception:
         pass
-    rows = list_remediations(user_id)
-    return next((r for r in rows if r.get("id") == rid), {"id": rid, "title": title, "status": "open"})
+    rows = list_remediations(user_id, org_id=oid)
+    return next((r for r in rows if r.get("id") == rid), {"id": rid, "title": title, "status": "open", "org_id": oid})
+
+
+def get_remediation(user_id: str, rem_id: str) -> dict[str, Any] | None:
+    from app.tenancy import ensure_tenant_schema, row_visible_to_user
+
+    ensure_tenant_schema()
+    row = get_conn().execute("SELECT * FROM gap_remediations WHERE id = ?", (rem_id,)).fetchone()
+    d = row_to_dict(row)
+    if d and not row_visible_to_user(user_id, d):
+        return None
+    return d
+
+
+def update_remediation(user_id: str, rem_id: str, patch: dict[str, Any]) -> dict[str, Any] | None:
+    row = get_remediation(user_id, rem_id)
+    if not row:
+        return None
+    fields = {"status", "owner", "due_date", "notes"}
+    data = {k: patch[k] for k in fields if k in patch}
+    if not data:
+        return row
+    data["updated_at"] = now()
+    sets = ", ".join(f"{k} = ?" for k in data)
+    get_conn().execute(
+        f"UPDATE gap_remediations SET {sets} WHERE id = ?",
+        (*data.values(), rem_id),
+    )
+    get_conn().commit()
+    audit("gap_remediation_update", user_id, {"id": rem_id, **data})
+    result = get_remediation(user_id, rem_id)
+    try:
+        from app.realtime_bus import publish
+
+        publish(
+            type="remediation",
+            id=rem_id,
+            status=(result or {}).get("status") or "",
+            user_id=user_id,
+        )
+    except Exception:
+        pass
+    return result
+
+
+def delete_remediation(user_id: str, rem_id: str) -> bool:
+    if not get_remediation(user_id, rem_id):
+        return False
+    cur = get_conn().execute("DELETE FROM gap_remediations WHERE id = ?", (rem_id,))
+    get_conn().commit()
+    if cur.rowcount:
+        audit("gap_remediation_delete", user_id, {"id": rem_id})
+        try:
+            from app.realtime_bus import publish
+
+            publish(type="remediation", id=rem_id, user_id=user_id, action="delete")
+        except Exception:
+            pass
+        return True
+    return False
 
 
 def create_remediations_from_live_failures(
@@ -1447,64 +1513,6 @@ def list_remediations(
         args.append(status)
     q += " ORDER BY updated_at DESC LIMIT 500"
     return [row_to_dict(r) for r in c.execute(q, args).fetchall()]  # type: ignore[misc]
-
-
-def update_remediation(user_id: str, rem_id: str, patch: dict[str, Any]) -> dict[str, Any] | None:
-    row = get_conn().execute(
-        "SELECT * FROM gap_remediations WHERE id = ? AND user_id = ?", (rem_id, user_id)
-    ).fetchone()
-    if not row:
-        return None
-    fields = {"status", "owner", "due_date", "notes"}
-    data = {k: patch[k] for k in fields if k in patch}
-    if not data:
-        return row_to_dict(row)
-    data["updated_at"] = now()
-    sets = ", ".join(f"{k} = ?" for k in data)
-    get_conn().execute(
-        f"UPDATE gap_remediations SET {sets} WHERE id = ? AND user_id = ?",
-        (*data.values(), rem_id, user_id),
-    )
-    get_conn().commit()
-    audit("gap_remediation_update", user_id, {"id": rem_id, **data})
-    updated = get_conn().execute(
-        "SELECT * FROM gap_remediations WHERE id = ? AND user_id = ?", (rem_id, user_id)
-    ).fetchone()
-    result = row_to_dict(updated)
-    try:
-        from app.realtime_bus import publish
-
-        publish(
-            type="remediation",
-            id=rem_id,
-            status=(result or {}).get("status") or "",
-            user_id=user_id,
-        )
-    except Exception:
-        pass
-    return result
-
-
-def delete_remediation(user_id: str, rem_id: str) -> bool:
-    row = get_conn().execute(
-        "SELECT id FROM gap_remediations WHERE id = ? AND user_id = ?", (rem_id, user_id)
-    ).fetchone()
-    if not row:
-        return False
-    cur = get_conn().execute(
-        "DELETE FROM gap_remediations WHERE id = ? AND user_id = ?", (rem_id, user_id)
-    )
-    get_conn().commit()
-    if cur.rowcount:
-        audit("gap_remediation_delete", user_id, {"id": rem_id})
-        try:
-            from app.realtime_bus import publish
-
-            publish(type="remediation", id=rem_id, user_id=user_id, action="delete")
-        except Exception:
-            pass
-        return True
-    return False
 
 
 def evidence_from_files(user_id: str, file_ids: list[str]) -> str:

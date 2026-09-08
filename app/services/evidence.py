@@ -36,7 +36,7 @@ import hashlib
 import json
 from typing import Any
 
-from app.db import get_conn, new_id, now
+from app.db import get_conn, new_id, now, table_columns
 
 VALID_SOURCES = {"declared", "derived", "inferred", "observed"}
 
@@ -48,6 +48,7 @@ def ensure_schema() -> None:
         CREATE TABLE IF NOT EXISTS securaiq_evidence (
             id TEXT PRIMARY KEY,
             user_id TEXT NOT NULL DEFAULT 'local',
+            org_id TEXT,
             fingerprint TEXT NOT NULL DEFAULT '',
             entity_type TEXT NOT NULL DEFAULT '',
             entity_id TEXT NOT NULL DEFAULT '',
@@ -64,6 +65,9 @@ def ensure_schema() -> None:
         )
         """
     )
+    cols = table_columns(c, "securaiq_evidence")
+    if cols and "org_id" not in cols:
+        c.execute("ALTER TABLE securaiq_evidence ADD COLUMN org_id TEXT")
     c.execute(
         "CREATE INDEX IF NOT EXISTS idx_evidence_entity ON securaiq_evidence(user_id, entity_type, entity_id)"
     )
@@ -92,6 +96,7 @@ def record_evidence(
     detail: dict[str, Any] | None = None,
     verified: bool | None = None,
     created_by: str = "system",
+    org_id: str | None = None,
 ) -> dict[str, Any]:
     """Record one piece of evidence backing a claim made elsewhere in the
     product. Idempotent on (entity_type, entity_id, source, summary) within
@@ -107,7 +112,10 @@ def record_evidence(
         raise ValueError(f"Unknown evidence source '{source}'. Must be one of {sorted(VALID_SOURCES)}")
     if not entity_type or not entity_id:
         raise ValueError("entity_type and entity_id are required")
+    from app.tenancy import primary_org_id
+
     ensure_schema()
+    oid = org_id or primary_org_id(user_id)
     conf = 0.0 if confidence is None else max(0.0, min(1.0, float(confidence)))
     is_verified = (source == "declared") if verified is None else bool(verified)
     fp = _fingerprint(entity_type, entity_id, source, summary)
@@ -120,10 +128,11 @@ def record_evidence(
         c.execute(
             """
             UPDATE securaiq_evidence
-            SET last_seen = ?, hit_count = hit_count + 1, confidence = ?, verified = ?, detail_json = ?
+            SET last_seen = ?, hit_count = hit_count + 1, confidence = ?, verified = ?, detail_json = ?,
+                org_id = COALESCE(org_id, ?)
             WHERE id = ?
             """,
-            (ts, conf, 1 if is_verified else 0, json.dumps(detail or {})[:8000], existing["id"]),
+            (ts, conf, 1 if is_verified else 0, json.dumps(detail or {})[:8000], oid, existing["id"]),
         )
         c.commit()
         return get_evidence(user_id, existing["id"])
@@ -131,12 +140,12 @@ def record_evidence(
     c.execute(
         """
         INSERT INTO securaiq_evidence
-        (id, user_id, fingerprint, entity_type, entity_id, source, confidence, verified,
+        (id, user_id, org_id, fingerprint, entity_type, entity_id, source, confidence, verified,
          summary, detail_json, created_by, first_seen, last_seen, hit_count, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
         """,
         (
-            eid, user_id, fp, entity_type, entity_id, source, conf, 1 if is_verified else 0,
+            eid, user_id, oid, fp, entity_type, entity_id, source, conf, 1 if is_verified else 0,
             summary[:500], json.dumps(detail or {})[:8000], created_by, ts, ts, ts,
         ),
     )
@@ -151,12 +160,10 @@ def confirm_evidence(user_id: str, evidence_id: str, *, confirmed_by: str) -> di
     human action, same discipline as the attack graph's confirm-connection
     flow."""
     ensure_schema()
-    c = get_conn()
-    row = c.execute(
-        "SELECT * FROM securaiq_evidence WHERE id = ? AND user_id = ?", (evidence_id, user_id)
-    ).fetchone()
+    row = get_evidence(user_id, evidence_id)
     if not row:
         return None
+    c = get_conn()
     c.execute(
         "UPDATE securaiq_evidence SET verified = 1, last_seen = ? WHERE id = ?", (now(), evidence_id)
     )
@@ -171,31 +178,56 @@ def confirm_evidence(user_id: str, evidence_id: str, *, confirmed_by: str) -> di
 
 
 def get_evidence(user_id: str, evidence_id: str) -> dict[str, Any] | None:
+    from app.tenancy import row_visible_to_user
+
     ensure_schema()
     row = get_conn().execute(
-        "SELECT * FROM securaiq_evidence WHERE id = ? AND user_id = ?", (evidence_id, user_id)
+        "SELECT * FROM securaiq_evidence WHERE id = ?", (evidence_id,)
     ).fetchone()
     if not row:
         return None
-    return _row_to_dict(row)
+    d = _row_to_dict(row)
+    if not row_visible_to_user(user_id, d):
+        return None
+    return d
 
 
-def get_evidence_for(user_id: str, *, entity_type: str, entity_id: str, limit: int = 100) -> list[dict[str, Any]]:
+def get_evidence_for(
+    user_id: str,
+    *,
+    entity_type: str,
+    entity_id: str,
+    limit: int = 100,
+    org_id: str | None = None,
+) -> list[dict[str, Any]]:
     """The full evidence trail for one entity -- what a "why did SecuraIQ
     say that?" answer should read from."""
+    from app.tenancy import tenant_visibility_sql
+
     ensure_schema()
+    where, args = tenant_visibility_sql(user_id, org_id=org_id)
     rows = get_conn().execute(
-        "SELECT * FROM securaiq_evidence WHERE user_id = ? AND entity_type = ? AND entity_id = ? "
+        f"SELECT * FROM securaiq_evidence WHERE {where} AND entity_type = ? AND entity_id = ? "
         "ORDER BY last_seen DESC LIMIT ?",
-        (user_id, entity_type, entity_id, max(1, min(limit, 500))),
+        [*args, entity_type, entity_id, max(1, min(limit, 500))],
     ).fetchall()
     return [_row_to_dict(r) for r in rows]
 
 
-def list_evidence(user_id: str, *, entity_type: str = "", source: str = "", verified: bool | None = None, limit: int = 200) -> list[dict[str, Any]]:
+def list_evidence(
+    user_id: str,
+    *,
+    entity_type: str = "",
+    source: str = "",
+    verified: bool | None = None,
+    limit: int = 200,
+    org_id: str | None = None,
+) -> list[dict[str, Any]]:
+    from app.tenancy import tenant_visibility_sql
+
     ensure_schema()
-    q = "SELECT * FROM securaiq_evidence WHERE user_id = ?"
-    args: list[Any] = [user_id]
+    where, args = tenant_visibility_sql(user_id, org_id=org_id)
+    q = f"SELECT * FROM securaiq_evidence WHERE {where}"
     if entity_type:
         q += " AND entity_type = ?"
         args.append(entity_type)

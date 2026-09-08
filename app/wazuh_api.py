@@ -112,7 +112,7 @@ async def get_overview(user: Annotated[AuthUser, Depends(require_user)]):
             "sca": [],
             "fim": [],
             "agents_cached": list_agents(limit=50),
-            "alerts": list_events(limit=12, vendor="wazuh"),
+            "alerts": list_events(user.id, limit=12, vendor="wazuh"),
         }
     overview = await wazuh_conn.fetch_manager_overview()
     groups = await wazuh_conn.fetch_groups(limit=40)
@@ -131,7 +131,7 @@ async def get_overview(user: Annotated[AuthUser, Depends(require_user)]):
         "sca": sca,
         "fim": fim,
         "agents_cached": list_agents(limit=50),
-        "alerts": list_events(limit=20, vendor="wazuh"),
+        "alerts": list_events(user.id, limit=20, vendor="wazuh"),
     }
 
 
@@ -150,7 +150,7 @@ async def get_agents(user: Annotated[AuthUser, Depends(require_user)], limit: in
 
 @router.get("/alerts")
 async def get_alerts(user: Annotated[AuthUser, Depends(require_user)], limit: int = 50):
-    return {"events": list_events(limit=limit, vendor="wazuh"), "product": "SecuraIQ SIEM"}
+    return {"events": list_events(user.id, limit=limit, vendor="wazuh"), "product": "SecuraIQ SIEM"}
 
 
 @router.get("/groups")

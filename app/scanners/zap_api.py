@@ -38,11 +38,16 @@ def api_alerts_to_report_json(base_url: str, alerts: list[dict[str, Any]]) -> di
             continue
         rows.append(
             {
-                "name": alert.get("name") or alert.get("alert") or "ZAP alert",
+                "name": alert.get("name") or alert.get("alert") or "Web finding",
                 "riskcode": alert.get("riskcode") or _risk_name_to_code(str(alert.get("risk") or "")),
                 "riskdesc": alert.get("riskdesc") or alert.get("risk") or "",
                 "pluginid": str(alert.get("pluginId") or alert.get("pluginid") or ""),
-                "instances": alert.get("instances") or [{}],
+                "engine": "zap_api",
+                "instances": alert.get("instances") or (
+                    [{"uri": alert.get("url") or alert.get("uri") or base_url}]
+                    if (alert.get("url") or alert.get("uri"))
+                    else [{}]
+                ),
             }
         )
     return {"@version": "ZAP-API", "site": [{"@name": base_url, "alerts": rows}]}
@@ -54,7 +59,7 @@ def parse_zap_api_alerts(alerts: list[dict[str, Any]], *, asset: str) -> list[di
     for alert in alerts:
         if not isinstance(alert, dict):
             continue
-        name = alert.get("name") or alert.get("alert") or "ZAP alert"
+        name = alert.get("name") or alert.get("alert") or "Web finding"
         plugin = alert.get("pluginId") or alert.get("pluginid") or ""
         risk = alert.get("risk") or alert.get("riskdesc") or ""
         riskcode = alert.get("riskcode") or _risk_name_to_code(str(risk))
@@ -65,12 +70,14 @@ def parse_zap_api_alerts(alerts: list[dict[str, Any]], *, asset: str) -> list[di
                 "severity": _sev_from_zap_risk(riskcode, str(risk)),
                 "asset_name": host,
                 "plugin": str(plugin),
+                "evidence": host,
+                "engine": "zap_api",
                 "raw": {
                     k: v
                     for k, v in alert.items()
                     if k != "instances"
                 }
-                | {"instances_count": len(alert.get("instances") or [])},
+                | {"instances_count": len(alert.get("instances") or []), "engine": "zap_api"},
             }
         )
     return out[:150]
@@ -213,7 +220,7 @@ async def run_zap_api_assessment(
                 "id": scan_id,
                 "step": step,
                 "status": "active",
-                "scanner": "zap",
+                "scanner": "zap_api",
             }
             if pct is not None:
                 payload["pct"] = pct
@@ -280,14 +287,16 @@ async def run_zap_api_assessment(
         "trace": trace,
     }
     (evidence_dir / "zap_api_trace.json").write_text(json.dumps(api_dump, indent=2), encoding="utf-8")
-    (evidence_dir / "zap.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    # Write ZAP-only report beside builtin evidence — ZapScanner.execute merges
+    # into zap.json. Do not wipe SecuraIQ Web Scanner findings here.
+    (evidence_dir / "zap_api_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     (evidence_dir / "zap_api.json").write_text(json.dumps({"alerts": alerts}, indent=2), encoding="utf-8")
     return {
         "ok": True,
         "mode": "zap_api",
         "alerts": len(alerts),
         "artifacts": [
-            str(evidence_dir / "zap.json"),
+            str(evidence_dir / "zap_api_report.json"),
             str(evidence_dir / "zap_api.json"),
             str(evidence_dir / "zap_api_trace.json"),
         ],

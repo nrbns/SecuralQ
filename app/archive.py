@@ -49,6 +49,29 @@ def _safe_name(value: str) -> str:
     return (out or "item")[:80]
 
 
+def _archive_visible_to_user(user_id: str, meta: dict[str, Any]) -> bool:
+    """Fail-closed visibility for filesystem archive cards."""
+    uid = (user_id or "").strip()
+    if not uid or uid == "local":
+        return True
+    owner = str(meta.get("user_id") or "").strip()
+    if owner and owner in {uid, "local"}:
+        return True
+    if not owner:
+        # Legacy archives without owner — only visible in lab / same batch prefix
+        return False
+    org_id = str(meta.get("org_id") or "").strip()
+    if org_id:
+        try:
+            from app.tenancy import user_org_ids
+
+            if org_id in user_org_ids(uid):
+                return True
+        except Exception:
+            pass
+    return False
+
+
 def archive_user_scans(user_id: str) -> dict[str, Any]:
     """Copy each scan's evidence + JSON manifest into data/archive before wipe."""
     from app.scan_engine.models import ensure_scans_schema, evidence_root as scan_evidence_root
@@ -102,6 +125,7 @@ def archive_user_scans(user_id: str) -> dict[str, Any]:
             meta = {
                 "scan_id": sid,
                 "user_id": user_id,
+                "org_id": scan.get("org_id"),
                 "target": scan.get("target"),
                 "scanner": scan.get("scanner"),
                 "profile": scan.get("profile"),
@@ -130,6 +154,7 @@ def archive_user_scans(user_id: str) -> dict[str, Any]:
                     "path": str(dest),
                     "has_report": (dest / "report.md").is_file(),
                     "has_pdf": (dest / "report.pdf").is_file(),
+                    "org_id": scan.get("org_id"),
                 }
             )
         except Exception as exc:
@@ -168,7 +193,7 @@ def archive_user_scans(user_id: str) -> dict[str, Any]:
     }
 
 
-def list_archives(user_id: str, *, limit: int = 40) -> list[dict[str, Any]]:
+def list_archives(user_id: str, *, limit: int = 40, org_id: str | None = None) -> list[dict[str, Any]]:
     """List archived scan report cards for Reports / prototype demos."""
     ensure_data_layout()
     root = archive_root()
@@ -182,10 +207,6 @@ def list_archives(user_id: str, *, limit: int = 40) -> list[dict[str, Any]]:
     )
     uid = (user_id or "").strip()
     for batch in batches:
-        if uid and uid != "local" and not batch.name.startswith(f"{_safe_name(uid)}_"):
-            # Still allow local open-mode archives
-            if not batch.name.startswith("local_"):
-                continue
         for scan_dir in sorted(batch.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
             if not scan_dir.is_dir() or scan_dir.name.startswith("."):
                 continue
@@ -196,8 +217,14 @@ def list_archives(user_id: str, *, limit: int = 40) -> list[dict[str, Any]]:
                     meta = json.loads(meta_path.read_text(encoding="utf-8"))
                 except Exception:
                     meta = {}
-            if uid and meta.get("user_id") and meta.get("user_id") not in {uid, "local"}:
+            if not _archive_visible_to_user(uid, meta):
                 continue
+            if org_id:
+                row_org = str(meta.get("org_id") or "").strip()
+                if row_org and row_org != org_id:
+                    continue
+                if not row_org and str(meta.get("user_id") or "") != uid:
+                    continue
             sid = meta.get("scan_id") or scan_dir.name
             target = meta.get("target") or "target"
             scanner = meta.get("scanner") or "scan"
@@ -225,6 +252,7 @@ def list_archives(user_id: str, *, limit: int = 40) -> list[dict[str, Any]]:
                         "scan_id": sid,
                         "created_at": meta.get("archived_at") or meta.get("created_at"),
                         "path": str(scan_dir),
+                        "org_id": meta.get("org_id"),
                     }
                 )
             # Mirror the live-scan report listing (app/ops.py reports_catalog):
@@ -245,6 +273,7 @@ def list_archives(user_id: str, *, limit: int = 40) -> list[dict[str, Any]]:
                         "scan_id": sid,
                         "created_at": meta.get("archived_at") or meta.get("created_at"),
                         "path": str(scan_dir),
+                        "org_id": meta.get("org_id"),
                     }
                 )
             if len(items) >= limit:
@@ -269,14 +298,34 @@ def find_archived_scan(scan_id: str) -> Path | None:
     return None
 
 
+def find_archived_scan_for_user(scan_id: str, user_id: str) -> Path | None:
+    """Fail-closed lookup — path only when archive_meta is visible to the caller."""
+    path = find_archived_scan(scan_id)
+    if not path:
+        return None
+    meta: dict[str, Any] = {}
+    meta_path = path / "archive_meta.json"
+    if meta_path.is_file():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            meta = {}
+    if not _archive_visible_to_user(user_id, meta):
+        return None
+    return path
+
+
 def delete_archived_scan(scan_id: str, user_id: str) -> dict[str, Any]:
     """Permanently remove one archived scan folder (Markdown/PDF/evidence).
 
-    Ownership: allow when archive_meta.user_id matches the caller, is missing
-    (legacy), or either side is local open-mode. Reject cross-user deletes.
+    Ownership: allow when archive_meta is tenant-visible to the caller.
+    Reject cross-org deletes (fail closed).
     """
-    path = find_archived_scan(scan_id)
+    path = find_archived_scan_for_user(scan_id, user_id)
     if not path:
+        # Distinguish missing vs forbidden for API mapping
+        if find_archived_scan(scan_id):
+            raise PermissionError("Not allowed to delete this archive")
         raise FileNotFoundError("Archived scan not found")
 
     meta: dict[str, Any] = {}
@@ -289,8 +338,6 @@ def delete_archived_scan(scan_id: str, user_id: str) -> dict[str, Any]:
 
     uid = (user_id or "").strip()
     owner = str(meta.get("user_id") or "").strip()
-    if owner and uid and owner not in {uid, "local"} and uid != "local":
-        raise PermissionError("Not allowed to delete this archive")
 
     batch = path.parent
     shutil.rmtree(path, ignore_errors=False)

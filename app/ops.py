@@ -26,20 +26,26 @@ def create_incident(
     playbook_id: str | None = None,
     summary: str = "",
     engagement_id: str | None = None,
+    org_id: str | None = None,
 ) -> dict[str, Any]:
+    from app.tenancy import ensure_tenant_schema, primary_org_id
+
+    ensure_tenant_schema()
+    oid = org_id or primary_org_id(user_id)
     iid = new_id()
     ts = now()
     c = get_conn()
     c.execute(
         """
         INSERT INTO incidents
-        (id, user_id, engagement_id, title, severity, status, source, owner, playbook_id, summary, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (id, user_id, engagement_id, org_id, title, severity, status, source, owner, playbook_id, summary, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             iid,
             user_id,
             engagement_id,
+            oid,
             title.strip(),
             severity,
             status,
@@ -52,7 +58,7 @@ def create_incident(
         ),
     )
     c.commit()
-    audit("incident_create", user_id, {"id": iid, "title": title})
+    audit("incident_create", user_id, {"id": iid, "title": title, "org_id": oid})
 
     from app.notifications import notify
 
@@ -68,7 +74,7 @@ def create_incident(
     try:
         from app.realtime_bus import publish
 
-        publish(type="incident", id=iid, severity=severity, user_id=user_id)
+        publish(type="incident", id=iid, severity=severity, user_id=user_id, org_id=oid)
     except Exception:
         pass
 
@@ -87,16 +93,28 @@ def create_incident(
 
 
 def get_incident(user_id: str, incident_id: str) -> dict[str, Any] | None:
-    row = get_conn().execute(
-        "SELECT * FROM incidents WHERE id = ? AND user_id = ?", (incident_id, user_id)
-    ).fetchone()
-    return row_to_dict(row)
+    from app.tenancy import ensure_tenant_schema, row_visible_to_user
+
+    ensure_tenant_schema()
+    row = get_conn().execute("SELECT * FROM incidents WHERE id = ?", (incident_id,)).fetchone()
+    d = row_to_dict(row)
+    if d and not row_visible_to_user(user_id, d):
+        return None
+    return d
 
 
-def list_incidents(user_id: str, engagement_id: str | None = None, status: str | None = None) -> list[dict[str, Any]]:
-    c = get_conn()
-    q = "SELECT * FROM incidents WHERE user_id = ?"
-    args: list[Any] = [user_id]
+def list_incidents(
+    user_id: str,
+    engagement_id: str | None = None,
+    status: str | None = None,
+    *,
+    org_id: str | None = None,
+) -> list[dict[str, Any]]:
+    from app.tenancy import ensure_tenant_schema, tenant_visibility_sql
+
+    ensure_tenant_schema()
+    where, args = tenant_visibility_sql(user_id, org_id=org_id)
+    q = f"SELECT * FROM incidents WHERE {where}"
     if engagement_id:
         q += " AND engagement_id = ?"
         args.append(engagement_id)
@@ -104,7 +122,7 @@ def list_incidents(user_id: str, engagement_id: str | None = None, status: str |
         q += " AND status = ?"
         args.append(status)
     q += " ORDER BY updated_at DESC LIMIT 200"
-    return [row_to_dict(r) for r in c.execute(q, args).fetchall()]  # type: ignore[misc]
+    return [row_to_dict(r) for r in get_conn().execute(q, args).fetchall()]  # type: ignore[misc]
 
 
 def update_incident(user_id: str, incident_id: str, patch: dict[str, Any]) -> dict[str, Any] | None:
@@ -118,8 +136,8 @@ def update_incident(user_id: str, incident_id: str, patch: dict[str, Any]) -> di
     data["updated_at"] = now()
     sets = ", ".join(f"{k} = ?" for k in data)
     get_conn().execute(
-        f"UPDATE incidents SET {sets} WHERE id = ? AND user_id = ?",
-        (*data.values(), incident_id, user_id),
+        f"UPDATE incidents SET {sets} WHERE id = ?",
+        (*data.values(), incident_id),
     )
     get_conn().commit()
     audit("incident_update", user_id, {"id": incident_id, **data})
@@ -127,9 +145,9 @@ def update_incident(user_id: str, incident_id: str, patch: dict[str, Any]) -> di
 
 
 def delete_incident(user_id: str, incident_id: str) -> bool:
-    cur = get_conn().execute(
-        "DELETE FROM incidents WHERE id = ? AND user_id = ?", (incident_id, user_id)
-    )
+    if not get_incident(user_id, incident_id):
+        return False
+    cur = get_conn().execute("DELETE FROM incidents WHERE id = ?", (incident_id,))
     get_conn().commit()
     if cur.rowcount:
         audit("incident_delete", user_id, {"id": incident_id})
@@ -187,38 +205,53 @@ def purge_demo_seed(user_id: str) -> dict[str, int]:
     return {"incidents": removed_inc, "playbooks": removed_pb}
 
 
-def add_intel_watch(user_id: str, *, kind: str, value: str, notes: str = "") -> dict[str, Any]:
+def add_intel_watch(
+    user_id: str, *, kind: str, value: str, notes: str = "", org_id: str | None = None
+) -> dict[str, Any]:
+    from app.tenancy import ensure_tenant_schema, primary_org_id
+
+    ensure_tenant_schema()
+    oid = org_id or primary_org_id(user_id)
     wid = new_id()
     ts = now()
     get_conn().execute(
-        "INSERT INTO intel_watch (id, user_id, kind, value, notes, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-        (wid, user_id, kind.strip() or "cve", value.strip(), notes, ts),
+        "INSERT INTO intel_watch (id, user_id, org_id, kind, value, notes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (wid, user_id, oid, kind.strip() or "cve", value.strip(), notes, ts),
     )
     get_conn().commit()
-    audit("intel_watch_add", user_id, {"id": wid, "value": value})
+    audit("intel_watch_add", user_id, {"id": wid, "value": value, "org_id": oid})
     row = get_conn().execute("SELECT * FROM intel_watch WHERE id = ?", (wid,)).fetchone()
     result = row_to_dict(row)
     try:
         from app.realtime_bus import publish
 
-        publish(type="intel_watch", id=wid, kind=kind, value=value, user_id=user_id)
+        publish(type="intel_watch", id=wid, kind=kind, value=value, user_id=user_id, org_id=oid)
     except Exception:
         pass
     return result  # type: ignore[return-value]
 
 
-def list_intel_watch(user_id: str) -> list[dict[str, Any]]:
+def list_intel_watch(user_id: str, *, org_id: str | None = None) -> list[dict[str, Any]]:
+    from app.tenancy import ensure_tenant_schema, tenant_visibility_sql
+
+    ensure_tenant_schema()
+    where, args = tenant_visibility_sql(user_id, org_id=org_id)
     rows = get_conn().execute(
-        "SELECT * FROM intel_watch WHERE user_id = ? ORDER BY created_at DESC LIMIT 100",
-        (user_id,),
+        f"SELECT * FROM intel_watch WHERE {where} ORDER BY created_at DESC LIMIT 100",
+        args,
     ).fetchall()
     return [row_to_dict(r) for r in rows]  # type: ignore[misc]
 
 
 def delete_intel_watch(user_id: str, watch_id: str) -> bool:
-    cur = get_conn().execute(
-        "DELETE FROM intel_watch WHERE id = ? AND user_id = ?", (watch_id, user_id)
-    )
+    from app.tenancy import ensure_tenant_schema, row_visible_to_user
+
+    ensure_tenant_schema()
+    row = get_conn().execute("SELECT * FROM intel_watch WHERE id = ?", (watch_id,)).fetchone()
+    d = row_to_dict(row)
+    if not d or not row_visible_to_user(user_id, d):
+        return False
+    cur = get_conn().execute("DELETE FROM intel_watch WHERE id = ?", (watch_id,))
     get_conn().commit()
     ok = bool(cur.rowcount)
     if ok:
