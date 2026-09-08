@@ -7796,7 +7796,7 @@ html[data-theme="dark"] .sw-view-tab {
 }
 .sq-stat-row {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 0.6rem;
   margin-bottom: 1rem;
 }
@@ -7985,6 +7985,7 @@ html[data-theme="dark"] .sw-view-tab {
 
 @media (max-width: 1100px) {
   .wz-module-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .sq-stat-row { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 @media (max-width: 640px) {
   .wz-module-grid { grid-template-columns: 1fr; }
@@ -8484,4 +8485,166 @@ a.agents-pkg-dl {
   width: 100%;
   margin: 0;
   padding: 0;
+}
+
+/* ============================================================
+   Cross-Framework Impact — signature visual identity.
+   Violet/indigo is used nowhere else in the product, so this is
+   the one place the eye learns "this number is a real, computed
+   cross-framework fact, not a per-framework guess."
+   ============================================================ */
+.nav-link-signature {
+  position: relative;
+}
+.nav-link-signature::after {
+  content: "";
+  position: absolute;
+  top: 0.55rem;
+  right: 0.6rem;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #7c3aed;
+  box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.18);
+}
+
+.sq-stat-impact {
+  border-left-color: transparent;
+  background: linear-gradient(135deg, rgba(124, 58, 237, 0.14), rgba(59, 130, 246, 0.06));
+  border: 1px solid rgba(124, 58, 237, 0.32);
+}
+.sq-stat-impact strong { color: #7c3aed; }
+.sq-stat-impact:hover {
+  border-color: #7c3aed;
+  box-shadow: 0 0 0 1px rgba(124, 58, 237, 0.3);
+}
+
+.impact-hero {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.85rem;
+  padding: 1rem 1.15rem;
+  border-radius: var(--sq-radius);
+  background: linear-gradient(135deg, rgba(124, 58, 237, 0.13), rgba(59, 130, 246, 0.05));
+  border: 1px solid rgba(124, 58, 237, 0.28);
+  margin-bottom: 1rem;
+}
+.impact-hero-icon {
+  font-size: 1.6rem;
+  color: #7c3aed;
+  line-height: 1;
+}
+.impact-summary-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.6rem;
+  margin-bottom: 1.1rem;
+}
+.impact-summary-tile {
+  padding: 0.75rem 0.9rem;
+  border-radius: var(--sq-radius);
+  border: 1px solid var(--border);
+  background: var(--sq-card);
+}
+.impact-summary-label {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+  display: block;
+  margin-bottom: 0.15rem;
+}
+.impact-summary-tile strong { font-size: 1.5rem; font-weight: 800; color: #7c3aed; }
+
+.impact-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 0.75rem;
+}
+.impact-card {
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--border);
+  border-radius: var(--sq-radius);
+  background: var(--sq-card);
+  padding: 0.9rem 1rem;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.impact-card:hover { border-color: #7c3aed; box-shadow: 0 0 0 1px rgba(124, 58, 237, 0.22); }
+.impact-card.status-implemented { border-left-color: #23a06b; }
+.impact-card.status-partial { border-left-color: #c4a035; }
+.impact-card.status-missing { border-left-color: #d64545; }
+.impact-card.status-not_assessed { border-left-color: var(--border); }
+.impact-card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 0.5rem; }
+.impact-card h4 { margin: 0.1rem 0 0; font-size: 0.95rem; }
+.impact-card .impact-cat {
+  font-size: 0.66rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.impact-card .impact-desc { font-size: 0.78rem; color: var(--muted); margin: 0.45rem 0 0.6rem; }
+.impact-card .impact-meta { display: flex; flex-wrap: wrap; gap: 0.35rem; font-size: 0.7rem; color: var(--muted); }
+
+.impact-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.66rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+.impact-chip-implemented { background: rgba(35, 160, 107, 0.15); color: #1c8a5c; }
+.impact-chip-partial { background: rgba(196, 160, 53, 0.15); color: #a3801f; }
+.impact-chip-missing { background: rgba(214, 69, 69, 0.15); color: #b83636; }
+.impact-chip-not_assessed, .impact-chip-unknown { background: rgba(124, 124, 138, 0.15); color: var(--muted); }
+
+.impact-live-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 0.14rem 0.5rem;
+  border-radius: 999px;
+  margin-top: 0.55rem;
+}
+.impact-live-pass { background: rgba(35, 160, 107, 0.15); color: #1c8a5c; }
+.impact-live-partial { background: rgba(196, 160, 53, 0.15); color: #a3801f; }
+.impact-live-fail { background: rgba(214, 69, 69, 0.15); color: #b83636; }
+
+.impact-fw-breakdown {
+  margin-top: 0.7rem;
+  padding-top: 0.6rem;
+  border-top: 1px dashed var(--border);
+  display: none;
+}
+.impact-card.is-expanded .impact-fw-breakdown { display: block; }
+.impact-fw-row { display: flex; justify-content: space-between; align-items: center; font-size: 0.74rem; padding: 0.22rem 0; }
+.impact-fw-row .impact-fw-id { color: var(--fg); font-weight: 600; }
+
+.impact-badge-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  font-size: 0.62rem;
+  font-weight: 700;
+  padding: 0.08rem 0.42rem;
+  border-radius: 999px;
+  background: rgba(124, 58, 237, 0.14);
+  color: #7c3aed;
+  margin-left: 0.4rem;
+  cursor: pointer;
+  vertical-align: middle;
+}
+.impact-badge-inline:hover { background: rgba(124, 58, 237, 0.24); }
+
+@media (max-width: 900px) {
+  .impact-summary-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

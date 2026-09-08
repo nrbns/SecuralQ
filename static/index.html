@@ -33,7 +33,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/style.css?v=159" />
+  <link rel="stylesheet" href="/style.css?v=160" />
   <script src="/vendor/marked.min.js"></script>
 </head>
 <body>
@@ -103,6 +103,7 @@
         <button type="button" class="nav-group-toggle" aria-expanded="true"><span class="nav-ico" data-ico="comp" aria-hidden="true"></span> Compliance &amp; Governance</button>
         <div class="nav-group-body">
           <button type="button" class="nav-link" id="complianceCenterBtn" data-workspace="compliance_center"><span class="nav-ico sm" data-ico="comp" aria-hidden="true"></span> Compliance Center</button>
+          <button type="button" class="nav-link nav-link-signature" id="impactBtn" data-workspace="impact"><span class="nav-ico sm" data-ico="fw" aria-hidden="true"></span> Cross-Framework Impact</button>
           <button type="button" class="nav-link" id="frameworksBtn" data-workspace="frameworks"><span class="nav-ico sm" data-ico="fw" aria-hidden="true"></span> Frameworks</button>
           <button type="button" class="nav-link" id="gapBtn"><span class="nav-ico sm" data-ico="gap" aria-hidden="true"></span> Gap analysis</button>
           <button type="button" class="nav-link" id="exceptionsBtn" data-workspace="exceptions"><span class="nav-ico sm" data-ico="ev" aria-hidden="true"></span> Exceptions</button>
@@ -351,6 +352,11 @@
               <strong id="ccCompliance">—</strong>
               <em class="mc-trend" id="ccCompTrend"></em>
               <span class="sq-stat-sub" id="ccComplianceSub">not assessed</span>
+            </button>
+            <button type="button" class="sq-stat sq-stat-impact" data-workspace="impact" title="Canonical controls implemented across every framework they genuinely map to — real cross-framework impact, not a theoretical claim">
+              <span class="sq-stat-label">Cross-framework impact</span>
+              <strong id="ccImpactValue">—</strong>
+              <span class="sq-stat-sub" id="ccImpactSub">loading…</span>
             </button>
             <button type="button" class="sq-stat sq-stat-agents" data-workspace="agents" title="SecuraIQ Agents &amp; packages">
               <span class="sq-stat-label">Agents</span>
@@ -679,7 +685,7 @@
                   </header>
                   <div class="code-scan-form" id="codeScanForm">
                     <label class="sr-only" for="codeScanPath">Project path</label>
-                    <input type="text" id="codeScanPath" placeholder="Local project path (e.g. E:\Hackgpt\Hackgpt-ai)" autocomplete="off" />
+                    <input type="text" id="codeScanPath" placeholder="Local project path (e.g. E:\SecuralQ)" autocomplete="off" />
                     <label class="code-scan-auth"><input type="checkbox" id="codeScanAuth" checked /> Auth</label>
                   </div>
                   <p class="hint code-scan-live" id="codeScanLive" hidden></p>
@@ -862,6 +868,15 @@
             </div>
           </div>
           <div id="complianceCenterPageBody"><p class="hint">Loading…</p></div>
+        </section>
+        <section id="viewImpact" class="workspace-view hidden" data-module-page data-view-panel="impact">
+          <div class="page-head">
+            <div>
+              <h1>Cross-Framework Impact</h1>
+              <p class="page-intro hint" style="margin:0.35rem 0 0">A canonical control (MFA, encryption, vulnerability management, ...) maps to its real, verified control ID in every framework you track. Status here is computed from your actual gap assessments and live telemetry — implement it once, see it satisfied everywhere it genuinely applies.</p>
+            </div>
+          </div>
+          <div id="impactPageBody"><p class="hint">Loading…</p></div>
         </section>
         <section id="viewExceptions" class="workspace-view hidden" data-module-page data-view-panel="exceptions">
           <div class="page-head">
@@ -2189,7 +2204,7 @@
     </div>
   </div>
 
-  <script src="/app.js?v=202"></script>
-  <script src="/workspace.js?v=190"></script>
+  <script src="/app.js?v=204"></script>
+  <script src="/workspace.js?v=193"></script>
 </body>
 </html>
