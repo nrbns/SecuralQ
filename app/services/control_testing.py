@@ -949,6 +949,23 @@ def _ensure_host_firewall_remediation(
                 update_remediation(user_id, rid, {"notes": marker})
             except Exception:
                 pass
+        try:
+            from app.realtime_bus import publish
+
+            publish(
+                event_type="remediation.recommended",
+                type="remediation.recommended",
+                user_id=user_id,
+                agent_id=agent_id,
+                test=TEST_HOST_FIREWALL,
+                remediation_id=rid,
+                title=title,
+                recommendation=recommendation[:500],
+                auto_execute=False,
+                source="rt11_host_firewall",
+            )
+        except Exception:
+            pass
         return rem
     except Exception:
         # Fallback: publish remediation-needed only (no DB row).
@@ -1081,12 +1098,30 @@ def evaluate_agent_host_controls(
                     except Exception:
                         pass
 
-                    if test_name == TEST_HOST_FIREWALL:
-                        rem = _ensure_host_firewall_remediation(
-                            user_id, agent_id=agent_id, hostname=hostname, result=result
+                    # Sprint 4/5: POA&M-like open for any host FAIL (incl. firewall RT-11)
+                    try:
+                        from app.controls.poam import open_poam_for_host_fail
+
+                        rem = open_poam_for_host_fail(
+                            user_id,
+                            agent_id=agent_id,
+                            hostname=hostname,
+                            test_name=test_name,
+                            result=result,
+                            control_id=primary[1] if primary else None,
+                            framework_id=primary[0] if primary else None,
                         )
-                        if rem:
+                        if rem and rem.get("id"):
                             out["remediation_id"] = rem.get("id")
+                            out.setdefault("remediation_ids", []).append(rem.get("id"))
+                    except Exception:
+                        # Legacy RT-11 firewall-only fallback
+                        if test_name == TEST_HOST_FIREWALL:
+                            rem = _ensure_host_firewall_remediation(
+                                user_id, agent_id=agent_id, hostname=hostname, result=result
+                            )
+                            if rem:
+                                out["remediation_id"] = rem.get("id")
 
                 elif status == "pass" and prev == "fail":
                     # RT-11 verify: prior FAIL → PASS evidence + risk-reduction hint
@@ -1112,8 +1147,15 @@ def evaluate_agent_host_controls(
                         out["events"].append({"type": "risk", "hint": "reduction", "test": test_name})
                     except Exception:
                         pass
-                    if test_name == TEST_HOST_FIREWALL:
-                        _close_host_firewall_remediation(user_id, agent_id)
+                    try:
+                        from app.controls.poam import close_poam_for_host_pass
+
+                        close_poam_for_host_pass(
+                            user_id, agent_id=agent_id, test_name=test_name
+                        )
+                    except Exception:
+                        if test_name == TEST_HOST_FIREWALL:
+                            _close_host_firewall_remediation(user_id, agent_id)
             except Exception:
                 continue
     except Exception as exc:

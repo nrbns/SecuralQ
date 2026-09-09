@@ -322,3 +322,42 @@ def test_list_live_failures_includes_host_firewall_when_agent_online(tmp_path, m
     assert fw_fails
     assert fw_fails[0]["status"] == "fail"
     assert fw_fails[0]["control_id"] == "CIS-12"
+
+def test_host_ssh_root_fail_opens_poam_and_pass_closes(tmp_path, monkeypatch):
+    """Sprint 4/5 — non-firewall host FAIL also opens POA&M stub; PASS closes."""
+    from app.agents import enroll_agent
+    from app.controls.poam import poam_marker
+    from app.enterprise import list_remediations
+    from app.services.control_testing import evaluate_agent_host_controls
+
+    uid = _setup(monkeypatch, tmp_path, username="poam_ssh_tester")
+    agent = enroll_agent(uid, name="ssh-agent")
+    aid = agent["agent_id"]
+    bad = {
+        "hostname": "ssh-host",
+        "os": "linux",
+        "firewall_status": {"collected": True, "enabled": True, "backend": "ufw"},
+        "defender_status": {"collected": False, "reason": "Not applicable on linux"},
+        "ssh_config": {"collected": True, "settings": {"PermitRootLogin": "yes"}},
+    }
+    out = evaluate_agent_host_controls(uid, aid, bad)
+    assert out["ok"] is True
+    ssh = next(r for r in out["results"] if r["test"] == "host_ssh_root")
+    assert ssh["status"] == "fail"
+    marker = poam_marker("host_ssh_root", aid)
+    assert any(
+        marker in (r.get("notes") or "") or marker in (r.get("recommendation") or "")
+        for r in list_remediations(uid, status="open")
+    )
+
+    good = {
+        **bad,
+        "ssh_config": {"collected": True, "settings": {"PermitRootLogin": "no"}},
+    }
+    out2 = evaluate_agent_host_controls(uid, aid, good)
+    ssh2 = next(r for r in out2["results"] if r["test"] == "host_ssh_root")
+    assert ssh2["status"] == "pass"
+    assert not any(
+        marker in (r.get("notes") or "") or marker in (r.get("recommendation") or "")
+        for r in list_remediations(uid, status="open")
+    )

@@ -20,8 +20,8 @@ _CTRL_DEFENDER = [
     {"framework_id": "nist_800_171", "control_id": "3.14.2"},
 ]
 _CTRL_SSH_ROOT = [
-    {"framework_id": "cmmc_l2", "control_id": "CM.L2-3.4.2"},
-    {"framework_id": "nist_800_171", "control_id": "3.4.2"},
+    {"framework_id": "cmmc_l2", "control_id": "AC.L2-3.1.5"},
+    {"framework_id": "nist_800_171", "control_id": "3.1.5"},
 ]
 
 BASELINE_CMMC_WINDOWS_WORKSTATION: dict[str, Any] = {

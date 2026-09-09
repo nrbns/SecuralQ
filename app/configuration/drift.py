@@ -1,14 +1,35 @@
-"""Baseline vs observed config drift + realtime publish helpers.
-
-No auto-remediation. Drift is an operating-effectiveness signal only —
-not a CMMC certification claim.
-"""
+"""Compare observed host configuration against seeded baselines."""
 
 from __future__ import annotations
 
 from typing import Any
 
 from app.configuration.baselines import default_baseline_id, get_baseline
+from app.configuration.observe import extract_observed_config, list_observations
+
+
+def _control_id_labels(control_ids: list[Any]) -> list[str]:
+    out: list[str] = []
+    for c in control_ids or []:
+        if isinstance(c, dict):
+            fid = c.get("framework_id") or ""
+            cid = c.get("control_id") or ""
+            if fid and cid:
+                out.append(f"{fid}:{cid}")
+            elif cid:
+                out.append(str(cid))
+        elif c:
+            out.append(str(c))
+    return out
+
+
+def _as_observed_map(payload_or_observed: dict[str, Any] | None) -> tuple[dict[str, Any], str]:
+    """Accept raw agent payload or extract_observed_config output."""
+    raw = payload_or_observed if isinstance(payload_or_observed, dict) else {}
+    # Already-normalized map: keys like firewall.enabled → {value, raw}
+    if any(isinstance(v, dict) and "value" in v for v in raw.values()):
+        return raw, str(raw.get("os") or "") if isinstance(raw.get("os"), str) else ""
+    return extract_observed_config(raw), str(raw.get("os") or "")
 
 
 def drifts_vs_baseline(
@@ -18,119 +39,90 @@ def drifts_vs_baseline(
     previous_values: dict[str, Any] | None = None,
     agent_id: str = "",
     asset_id: str = "",
+    os_name: str = "",
 ) -> list[dict[str, Any]]:
-    """Compare extracted observed entries to a baseline's expected values.
+    """Return drift events where observed value != baseline expected.
 
-    ``observed`` maps setting key → ``{"value": ..., "raw": ...}``.
+    ``observed`` is the map from ``extract_observed_config`` (key → {value, raw}).
+    When ``previous_values`` is provided, each event includes previous/current.
+    Status is ``fail`` when out of baseline (UI / tests); ``changed`` is reserved
+    for history-only flips that still match the baseline.
     """
     bid = (baseline_id or default_baseline_id()).strip()
-    baseline = get_baseline(bid) or {}
-    settings = baseline.get("settings") if isinstance(baseline.get("settings"), dict) else {}
-    prev_map = previous_values if isinstance(previous_values, dict) else {}
-    out: list[dict[str, Any]] = []
+    baseline = get_baseline(bid)
+    if not baseline:
+        return []
+    settings = baseline.get("settings") or {}
+    prev_map = previous_values or {}
+    os_l = (os_name or "").lower()
+    events: list[dict[str, Any]] = []
 
-    for key, entry in (observed or {}).items():
-        if not isinstance(entry, dict):
-            continue
-        spec = settings.get(key)
+    for key, spec in settings.items():
         if not isinstance(spec, dict):
             continue
-        expected = spec.get("expected")
-        current = entry.get("value")
-        if expected is None or current is None:
+        scope = (spec.get("os_scope") or "any").lower()
+        if scope == "windows" and os_l and "win" not in os_l:
             continue
+        if scope == "linux" and os_l and (
+            "linux" not in os_l and "ubuntu" not in os_l and "debian" not in os_l
+        ):
+            if "win" in os_l or "darwin" in os_l or "mac" in os_l:
+                continue
+
+        entry = observed.get(key)
+        if not isinstance(entry, dict) or "value" not in entry:
+            continue
+        current = entry.get("value")
+        expected = spec.get("expected")
         if current == expected:
             continue
-        controls = list(spec.get("control_ids") or [])
-        out.append(
+        ctrl = list(spec.get("control_ids") or [])
+        events.append(
             {
                 "key": key,
                 "expected": expected,
                 "current": current,
                 "previous": prev_map.get(key),
                 "status": "fail",
+                "severity": "high" if key in {"defender.enabled", "ssh.permit_root_login"} else "medium",
                 "history_changed": key in prev_map and prev_map.get(key) != current,
                 "agent_id": agent_id,
                 "asset_id": asset_id or "",
                 "baseline_id": bid,
-                "control_ids": controls,
+                "control_ids": _control_id_labels(ctrl),
+                "control_refs": ctrl,
+                "os_scope": scope,
                 "summary": (
-                    f"{key}: expected {expected!r}, observed {current!r}"
-                    f" — {(spec.get('summary') or '').strip()}"
-                ).strip(" —"),
-                "severity": "high" if key.startswith("firewall") else "medium",
+                    f"{key} drift vs baseline {bid}: expected={expected!r}, "
+                    f"current={current!r}"
+                    + (f", previous={prev_map.get(key)!r}" if key in prev_map else "")
+                ),
             }
         )
-    return out
+    return events
 
 
 def compare_to_baseline(
-    observed_flat: dict[str, Any],
+    payload_or_observed: dict[str, Any] | None,
     *,
     baseline_id: str | None = None,
+    previous_values: dict[str, Any] | None = None,
+    agent_id: str = "",
+    asset_id: str = "",
 ) -> list[dict[str, Any]]:
-    """Compare flat key→value map (or observe entries) to baseline."""
-    normalized: dict[str, Any] = {}
-    for k, v in (observed_flat or {}).items():
-        if isinstance(v, dict) and "value" in v:
-            normalized[k] = v
-        else:
-            normalized[k] = {"value": v, "raw": {}}
-    return drifts_vs_baseline(normalized, baseline_id=baseline_id)
-
-
-def list_drift_for_user(
-    user_id: str,
-    *,
-    org_id: str | None = None,
-    baseline_id: str | None = None,
-    limit: int = 50,
-) -> list[dict[str, Any]]:
-    """Latest observation per (agent_id, key) that fails the baseline."""
-    from app.configuration.observe import list_observations
-
-    bid = (baseline_id or default_baseline_id()).strip()
-    baseline = get_baseline(bid) or {}
-    settings = baseline.get("settings") if isinstance(baseline.get("settings"), dict) else {}
-    rows = list_observations(user_id, org_id=org_id, limit=max(limit * 4, 100))
-    latest: dict[tuple[str, str], dict[str, Any]] = {}
-    for row in rows:
-        key = str(row.get("key") or "")
-        aid = str(row.get("agent_id") or row.get("asset_id") or "")
-        ck = (aid, key)
-        if ck in latest:
-            continue
-        latest[ck] = row
-
-    drifts: list[dict[str, Any]] = []
-    for (_aid, key), row in latest.items():
-        spec = settings.get(key)
-        if not isinstance(spec, dict):
-            continue
-        expected = spec.get("expected")
-        val_wrap = row.get("value") if isinstance(row.get("value"), dict) else {}
-        current = val_wrap.get("value") if val_wrap else None
-        if expected is None or current is None or current == expected:
-            continue
-        drifts.append(
-            {
-                "key": key,
-                "expected": expected,
-                "current": current,
-                "previous": None,
-                "status": "fail",
-                "agent_id": row.get("agent_id") or "",
-                "asset_id": row.get("asset_id") or "",
-                "baseline_id": bid,
-                "control_ids": list(spec.get("control_ids") or []),
-                "summary": f"{key}: expected {expected!r}, observed {current!r}",
-                "observed_at": row.get("observed_at"),
-                "severity": "high" if key.startswith("firewall") else "medium",
-            }
-        )
-        if len(drifts) >= limit:
-            break
-    return drifts
+    """Compare payload (or extract_observed_config map) to baseline; return fail list."""
+    observed, os_guess = _as_observed_map(payload_or_observed)
+    os_name = os_guess
+    if isinstance(payload_or_observed, dict) and payload_or_observed.get("os"):
+        os_name = str(payload_or_observed.get("os") or os_name)
+    return drifts_vs_baseline(
+        observed,
+        baseline_id=baseline_id,
+        previous_values=previous_values,
+        agent_id=agent_id,
+        asset_id=asset_id,
+        os_name=os_name,
+    )
 
 
 def publish_drift_events(
@@ -141,7 +133,10 @@ def publish_drift_events(
     asset_id: str = "",
     org_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Publish configuration.drift_detected (+ flat compliance/configuration)."""
+    """Publish configuration.drift_detected plus flat compliance/configuration types.
+
+    No auto-remediation. Never raises to callers.
+    """
     published: list[dict[str, Any]] = []
     if not drift_events:
         return published
@@ -153,44 +148,117 @@ def publish_drift_events(
     except Exception:
         return published
 
-    for d in drift_events:
+    for ev in drift_events:
+        key = ev.get("key") or ""
+        summary = ev.get("summary") or f"Configuration drift: {key}"
+        base_kwargs = dict(
+            user_id=user_id,
+            org_id=oid,
+            agent_id=agent_id or ev.get("agent_id") or "",
+            asset_id=asset_id or ev.get("asset_id") or "",
+            key=key,
+            expected=ev.get("expected"),
+            current=ev.get("current"),
+            previous=ev.get("previous"),
+            baseline_id=ev.get("baseline_id") or "",
+            control_ids=ev.get("control_ids") or [],
+            summary=summary,
+            reason="configuration_drift",
+            source="securaiq_agent",
+            _from_processor=True,
+        )
         try:
-            payload = {
-                "type": "configuration",
-                "event_type": "configuration.drift_detected",
-                "user_id": user_id,
-                "org_id": oid,
-                "organization_id": oid,
-                "agent_id": d.get("agent_id") or agent_id,
-                "asset_id": d.get("asset_id") or asset_id,
-                "severity": d.get("severity") or "medium",
-                "source": "securaiq_configuration",
-                "key": d.get("key"),
-                "expected": d.get("expected"),
-                "current": d.get("current"),
-                "previous": d.get("previous"),
-                "status": d.get("status") or "fail",
-                "baseline_id": d.get("baseline_id"),
-                "control_ids": d.get("control_ids") or [],
-                "summary": d.get("summary") or "",
-                "also_types": ["compliance"],
-            }
-            publish(**payload)
-            # Dual flat compliance for existing LIVE_TYPES
             publish(
-                type="compliance",
                 event_type="configuration.drift_detected",
-                user_id=user_id,
-                org_id=oid,
-                organization_id=oid,
-                agent_id=payload["agent_id"],
-                asset_id=payload["asset_id"],
-                severity=payload["severity"],
-                status="drift",
-                key=d.get("key"),
-                summary=d.get("summary") or "",
+                severity=ev.get("severity") or "medium",
+                title=f"Config drift: {key}",
+                **base_kwargs,
             )
-            published.append(payload)
+            published.append({"type": "configuration.drift_detected", "key": key})
         except Exception:
-            continue
+            pass
+        for flat in ("compliance", "configuration"):
+            try:
+                publish(
+                    type=flat,
+                    severity=ev.get("severity") or "medium",
+                    title=f"Config drift: {key}",
+                    status=ev.get("status") or "fail",
+                    **base_kwargs,
+                )
+                published.append({"type": flat, "key": key})
+            except Exception:
+                pass
     return published
+
+
+def list_drift_for_user(
+    user_id: str,
+    *,
+    baseline_id: str | None = None,
+    org_id: str | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """User-scoped list of current baseline failures (from agent last_payload).
+
+    Shape matches Control Center UI: flat list with key/expected/current/agent_id.
+    """
+    bid = (baseline_id or default_baseline_id()).strip()
+    drifts: list[dict[str, Any]] = []
+
+    try:
+        from app.agents import list_agents
+
+        agents = list_agents(user_id, org_id=org_id, limit=200)
+    except Exception:
+        agents = []
+
+    for agent in agents:
+        payload = agent.get("last_payload") if isinstance(agent.get("last_payload"), dict) else {}
+        aid = str(agent.get("id") or "")
+        asset = str(agent.get("asset_id") or "")
+        for d in compare_to_baseline(payload, baseline_id=bid, agent_id=aid, asset_id=asset):
+            d["hostname"] = agent.get("hostname") or agent.get("name") or ""
+            drifts.append(d)
+            if len(drifts) >= limit:
+                return drifts
+
+    # Supplement with recent history flips that are still out of baseline.
+    if len(drifts) < limit:
+        try:
+            obs = list_observations(user_id, org_id=org_id, limit=max(20, limit * 4))
+            by_ak: dict[tuple[str, str], list[dict[str, Any]]] = {}
+            for row in obs:
+                ak = (str(row.get("agent_id") or ""), str(row.get("key") or ""))
+                by_ak.setdefault(ak, []).append(row)
+            seen = {(d.get("agent_id"), d.get("key")) for d in drifts}
+            for (agent_id, key), rows in by_ak.items():
+                if len(rows) < 2 or (agent_id, key) in seen:
+                    continue
+                newer = rows[0]
+                older = rows[1]
+                nv = newer.get("value")
+                ov = older.get("value")
+                nval = nv.get("value") if isinstance(nv, dict) else nv
+                oval = ov.get("value") if isinstance(ov, dict) else ov
+                if nval == oval:
+                    continue
+                # Only surface if current still fails baseline
+                fake_obs = {key: {"value": nval, "raw": {}}}
+                fails = drifts_vs_baseline(
+                    fake_obs,
+                    baseline_id=bid,
+                    previous_values={key: oval},
+                    agent_id=agent_id,
+                    asset_id=str(newer.get("asset_id") or ""),
+                )
+                for d in fails:
+                    d["previous"] = oval
+                    d["history_changed"] = True
+                    drifts.append(d)
+                    if len(drifts) >= limit:
+                        return drifts
+        except Exception:
+            pass
+
+    return drifts[:limit]

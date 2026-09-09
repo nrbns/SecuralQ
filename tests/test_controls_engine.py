@@ -97,3 +97,81 @@ def test_run_control_tests_persists_and_summary_updates(tmp_path, monkeypatch):
     asserted = summary["passing"] + summary["failing"] + summary["unknown"] + summary["na"]
     assert asserted >= 1
     assert summary.get("last_test") is not None
+
+
+def test_get_control_with_live_results_exposes_why_and_deviations(tmp_path, monkeypatch):
+    """Sprint 3 — failing stored results surface clear why / deviations."""
+    from app.controls.results import record_test_result
+    from app.controls.test_engine import get_control_with_live_results
+
+    uid = _setup(monkeypatch, tmp_path, username="why_fail_tester")
+    record_test_result(
+        uid,
+        "cmmc_l2",
+        "SC.L2-3.13.1",
+        test_name="host_firewall",
+        status="fail",
+        summary="Firewall disabled on 1 agent",
+        detail={
+            "failing_agents": [{"agent_id": "agt-1", "hostname": "lab-1"}],
+            "expected": True,
+            "actual": False,
+            "deviations": [
+                {"setting": "firewall.enabled", "expected": True, "actual": False},
+            ],
+        },
+    )
+    payload = get_control_with_live_results(uid, "cmmc_l2", "SC.L2-3.13.1")
+    assert payload is not None
+    assert payload["why"], "top-level why required"
+    assert payload["why_failing"] == payload["why"]
+    assert any("host_firewall" in w for w in payload["why"])
+    assert any("Firewall disabled" in w for w in payload["why"])
+    assert payload["deviations"]
+    assert any("firewall.enabled" in d for d in payload["deviations"])
+    live = payload["live_results"]
+    assert live and live[0]["status"] == "fail"
+    assert live[0]["why"]
+    assert live[0]["deviations"]
+
+
+def test_poam_opens_on_host_fail_and_closes_on_pass(tmp_path, monkeypatch):
+    """Sprint 4 — POA&M-like gap_remediation open on FAIL, done on PASS."""
+    from app.controls.poam import close_poam_for_host_pass, open_poam_for_host_fail, poam_marker
+    from app.enterprise import list_remediations
+
+    uid = _setup(monkeypatch, tmp_path, username="poam_stub_tester")
+    aid = "agent-poam-1"
+    rem = open_poam_for_host_fail(
+        uid,
+        agent_id=aid,
+        hostname="poam-host",
+        test_name="host_firewall",
+        result={"summary": "Firewall disabled", "status": "fail"},
+        control_id="CIS-12",
+    )
+    assert rem is not None
+    assert rem.get("id")
+    marker = poam_marker("host_firewall", aid)
+    open_rows = list_remediations(uid, status="open")
+    assert any(
+        marker in (r.get("notes") or "") or marker in (r.get("recommendation") or "")
+        for r in open_rows
+    )
+    # Idempotent — second open reuses
+    rem2 = open_poam_for_host_fail(
+        uid,
+        agent_id=aid,
+        hostname="poam-host",
+        test_name="host_firewall",
+        result={"summary": "Firewall disabled", "status": "fail"},
+    )
+    assert rem2 and rem2.get("id") == rem.get("id")
+
+    closed = close_poam_for_host_pass(uid, agent_id=aid, test_name="host_firewall")
+    assert closed >= 1
+    still_open = list_remediations(uid, status="open")
+    assert not any(
+        marker in (r.get("notes") or "") or marker in (r.get("recommendation") or "")
+        for r in still_open
+    )

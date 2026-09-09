@@ -7987,7 +7987,7 @@
     const fwId = "cmmc_l2";
     const tab = _controlCenterTab || "controls";
 
-    const [sumRes, driftRes, overviewRes, catalogRes] = await Promise.all([
+    const [sumRes, driftRes, overviewRes, catalogRes, gapLiveRes] = await Promise.all([
       fetch(`/api/controls/summary?framework_id=${encodeURIComponent(fwId)}`, {
         headers: authHeaders(),
       }),
@@ -7996,12 +7996,26 @@
       fetch(`/api/controls/catalog/${encodeURIComponent(fwId)}`, {
         headers: authHeaders(),
       }).catch(() => null),
+      fetch(`/api/gap/live-tests/${encodeURIComponent(fwId)}`, {
+        headers: authHeaders(),
+      }).catch(() => null),
     ]);
 
-    const summary = await sumRes.json().catch(() => ({}));
+    let summary = await sumRes.json().catch(() => ({}));
     if (!sumRes.ok) {
-      body.innerHTML = `<p class="hint">Could not load control summary (${sumRes.status})</p>`;
-      return;
+      summary = {
+        controls_total: 0,
+        passing: 0,
+        failing: 0,
+        unknown: 0,
+        na: 0,
+        framework_id: fwId,
+        framework_name: "CMMC Level 2",
+        evidence_coverage: null,
+        open_gaps: null,
+        last_test: null,
+        disclaimer: "Summary unavailable — showing gap live failures when present.",
+      };
     }
     const driftData = driftRes.ok ? await driftRes.json().catch(() => ({})) : {};
     const driftRows = driftData.drift || [];
@@ -8011,9 +8025,38 @@
     if (overviewRes && overviewRes.ok) {
       overview = await overviewRes.json().catch(() => ({}));
     }
-    const liveFails = ((overview.continuous || {}).live_failures || []).filter(
+    let liveFails = ((overview.continuous || {}).live_failures || []).filter(
       (f) => String(f.framework_id || "").toLowerCase() === fwId
     );
+    if (!liveFails.length && gapLiveRes && gapLiveRes.ok) {
+      const gapLive = await gapLiveRes.json().catch(() => ({}));
+      // /api/gap/live-tests returns results: { control_id: [testResult, ...] }
+      const resultsMap = gapLive.results;
+      if (resultsMap && typeof resultsMap === "object" && !Array.isArray(resultsMap)) {
+        liveFails = [];
+        Object.entries(resultsMap).forEach(([cid, tests]) => {
+          (Array.isArray(tests) ? tests : []).forEach((t) => {
+            const st = String(t.status || "").toLowerCase();
+            if (st === "fail" || st === "partial") {
+              liveFails.push({
+                control_id: cid,
+                framework_id: fwId,
+                title: t.title || cid,
+                test: t.test || "",
+                status: st,
+                summary: t.summary || "",
+              });
+            }
+          });
+        });
+      } else {
+        const failures = gapLive.failures || gapLive.results || gapLive.controls || [];
+        liveFails = (Array.isArray(failures) ? failures : []).filter((f) => {
+          const st = String(f.status || "").toLowerCase();
+          return st === "fail" || st === "partial";
+        });
+      }
+    }
 
     let catalogControls = [];
     if (catalogRes && catalogRes.ok) {

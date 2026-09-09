@@ -1,4 +1,4 @@
-"""Thin live-test wrapper around ``app.services.control_testing``.
+﻿"""Thin live-test wrapper around ``app.services.control_testing``.
 
 Runs only explicitly mapped tests, records last results, and publishes
 realtime events (dotted control.* + flat ``type=compliance`` for UI).
@@ -9,19 +9,63 @@ from __future__ import annotations
 from typing import Any
 
 
+_DETAIL_WHY_KEYS = (
+    "failing_agents",
+    "sla_breaches",
+    "observed",
+    "expected",
+    "actual",
+    "deviations",
+    "hostname",
+    "agent_id",
+    "backend",
+    "enabled",
+    "permit_root_login",
+)
+
+
+def _deviations_from_detail(detail: dict[str, Any]) -> list[str]:
+    """Extract human-readable deviation lines from a result detail dict."""
+    out: list[str] = []
+    raw = detail.get("deviations")
+    if isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, dict):
+                setting = item.get("setting") or item.get("key") or ""
+                exp = item.get("expected")
+                act = item.get("actual") or item.get("observed")
+                if setting:
+                    out.append(f"{setting}: expected={exp!r} actual={act!r}")
+                else:
+                    out.append(str(item))
+            elif item not in (None, ""):
+                out.append(str(item))
+    elif isinstance(raw, dict) and raw:
+        out.append(f"deviations={raw!r}")
+    if "expected" in detail and "actual" in detail:
+        out.append(f"expected={detail.get('expected')!r} actual={detail.get('actual')!r}")
+    elif "expected" in detail and "observed" in detail:
+        out.append(f"expected={detail.get('expected')!r} observed={detail.get('observed')!r}")
+    return out
+
+
 def _why_failing(result: dict[str, Any]) -> list[str]:
     status = (result.get("status") or "").lower()
     if status not in ("fail", "partial"):
         return []
+    test_key = result.get("test") or result.get("test_name") or ""
     why = [
-        f"Live test `{result.get('test')}` status={status}",
+        f"Live test `{test_key}` status={status}",
         str(result.get("summary") or "").strip(),
     ]
     detail = result.get("detail") or {}
     if isinstance(detail, dict):
-        for key in ("failing_agents", "sla_breaches", "observed"):
+        for key in _DETAIL_WHY_KEYS:
+            if key == "deviations":
+                continue
             if key in detail and detail[key] not in (None, "", [], {}):
                 why.append(f"{key}={detail[key]!r}")
+        why.extend(_deviations_from_detail(detail))
     return [w for w in why if w]
 
 
@@ -69,6 +113,19 @@ def _publish_results(
             publish(event_type=status_event, type=status_event, **base)
         except Exception:
             pass
+
+        if status == "fail":
+            try:
+                from app.controls.poam import open_poam_from_control_fail_result
+
+                open_poam_from_control_fail_result(
+                    user_id,
+                    framework_id=framework_id,
+                    control_id=control_id,
+                    result=r,
+                )
+            except Exception:
+                pass
 
         # Dual-write flat compliance for existing UI / SSE filters
         try:
@@ -121,6 +178,10 @@ def run_control_tests(
         item["framework_id"] = fid
         item["control_id"] = cid
         item["why_failing"] = _why_failing(item)
+        item["why"] = item["why_failing"]
+        item["deviations"] = _deviations_from_detail(
+            item.get("detail") if isinstance(item.get("detail"), dict) else {}
+        ) if (item.get("status") or "").lower() in ("fail", "partial") else []
         enriched.append(item)
         if persist:
             try:
@@ -157,7 +218,7 @@ def run_control_tests(
 def get_control_with_live_results(
     user_id: str, framework_id: str, control_id: str
 ) -> dict[str, Any] | None:
-    """Catalog control + last stored results + why-failing detail."""
+    """Catalog control + last stored results + why / deviations when failing."""
     from app.controls.catalog import get_control
     from app.controls.results import get_results_for_control
 
@@ -167,31 +228,43 @@ def get_control_with_live_results(
 
     stored = get_results_for_control(user_id, ctrl.framework_id, ctrl.id)
     live_results = []
+    aggregate_why: list[str] = []
+    aggregate_deviations: list[str] = []
     for row in stored:
         st = (row.get("status") or "").lower()
-        why: list[str] = []
-        if st in ("fail", "partial"):
-            why = [
-                f"Live test `{row.get('test_name')}` status={st}",
-                str(row.get("summary") or "").strip(),
-            ]
-            detail = row.get("detail") or {}
-            if isinstance(detail, dict) and detail.get("failing_agents"):
-                why.append(f"failing_agents={detail.get('failing_agents')!r}")
+        detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
+        shaped = {
+            "test": row.get("test_name"),
+            "test_name": row.get("test_name"),
+            "status": st,
+            "summary": row.get("summary") or "",
+            "detail": detail or {},
+        }
+        why = _why_failing(shaped)
+        deviations = _deviations_from_detail(detail or {}) if st in ("fail", "partial") else []
+        if why:
+            aggregate_why.extend(why)
+        if deviations:
+            aggregate_deviations.extend(deviations)
         live_results.append(
             {
                 "test": row.get("test_name"),
                 "status": st,
                 "summary": row.get("summary") or "",
-                "detail": row.get("detail") or {},
+                "detail": detail or {},
                 "tested_at": row.get("tested_at"),
-                "why_failing": [w for w in why if w],
+                "why": why,
+                "why_failing": why,
+                "deviations": deviations,
             }
         )
 
     return {
         **ctrl.to_dict(),
         "live_results": live_results,
+        "why": aggregate_why,
+        "why_failing": aggregate_why,
+        "deviations": aggregate_deviations,
         "has_live_tests": bool(ctrl.tests),
         "disclaimer": (
             "Results reflect last stored live-test outcomes when present — "

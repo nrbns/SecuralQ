@@ -74,9 +74,9 @@ Summary counts use stored results when present; otherwise **honest zeros** (neve
 |--------|--------|--------|
 | **1** | Foundation: `app/controls/`, catalog, results, `/api/controls`, CMMC/800-171 host maps, events | **Done** (foundations) |
 | **2** | Configuration observe/drift (`app/configuration/`), Control Center UI, check-in hook | **Done** (foundations) |
-| **3** | CMMC/800-171 deeper test coverage + why-failing UX | Planned |
-| **4** | Realtime score + POA&M auto-open from FAIL | Planned |
-| **5** | Remediate → Approve → Agent → Verify → PASS (extend RT-11; no default auto-fix) | Planned |
+| **3** | CMMC/800-171 deeper test coverage + why-failing UX | **Partial foundations** (why/deviations on GET catalog control; host maps from Sprint 1) |
+| **4** | Realtime score + POA&M auto-open from FAIL | **Partial foundations** (`app/controls/poam.py` opens/closes `gap_remediations` on host FAIL/PASS; not a formal POA&M package) |
+| **5** | Remediate → Approve → Agent → Verify → PASS (extend RT-11; no default auto-fix) | **Partial foundations** (recommend-only via RT-11 + `remediation.recommended`; verify on check-in PASS; no auto-execute) |
 | **6** | Live SSP / exceptions / audit packages | Planned |
 | **7** | CUI enclave / boundary / SPA classification | Planned |
 
@@ -93,6 +93,14 @@ Added to `_CONTROL_TEST_MAP` (exact catalog IDs):
 | `host_firewall` | `3.13.1`, `3.4.7` | `SC.L2-3.13.1`, `CM.L2-3.4.2` |
 | `host_defender` | `3.14.2` | `SI.L2-3.14.2` |
 | `host_ssh_root` | `3.1.5` | `AC.L2-3.1.5` |
+
+Baseline setting → same control IDs (seeded `CMMC Windows Workstation`):
+
+| Setting | Expected | Controls |
+|---------|----------|----------|
+| `firewall.enabled` | `true` | `SC.L2-3.13.1` / `3.13.1` |
+| `defender.enabled` | `true` (windows) | `SI.L2-3.14.2` / `3.14.2` |
+| `ssh.permit_root_login` | `false` (linux) | `AC.L2-3.1.5` / `3.1.5` |
 
 Existing CIS / CSF / ISO / 800-53 host mappings unchanged.
 
@@ -125,3 +133,16 @@ Registered in `app/event_schema.py`:
 - `configuration` / `configuration.observed` / `configuration.changed` / `configuration.drift_detected`
 
 Control runs dual-write flat `type=compliance`; drift dual-writes `configuration` + `compliance` for SSE.
+
+---
+
+## Sprint 3–5 foundations (honest / partial)
+
+Not full CMMC assessment tooling. No certification claims. No default auto-fix of dangerous actions.
+
+| Area | What landed |
+|------|-------------|
+| **Why failing (Sprint 3)** | `GET /api/controls/catalog/{framework}/{control_id}` returns top-level `why` / `why_failing` / `deviations` plus per-result copies from last stored live tests |
+| **POA&M auto-open (Sprint 4)** | `app/controls/poam.py` inserts/updates open rows in `gap_remediations` on host FAIL; marks done on PASS. Wired from `evaluate_agent_host_controls` and `control.failed` publish path. Never breaks check-in |
+| **Remediate recommend (Sprint 5)** | Firewall (and other host) FAIL publishes `remediation.recommended` with `auto_execute=false`. Operator still approves and remediates manually; next check-in verifies PASS |
+

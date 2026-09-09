@@ -340,7 +340,6 @@ def record_checkin_observations(
         )
         recorded.append(row)
         if row.get("changed") and publish_drift:
-            # History drift (previous observation → current), plus baseline compare.
             baseline_drifts = drifts_vs_baseline(
                 {key: entry},
                 baseline_id=bid,
@@ -352,9 +351,6 @@ def record_checkin_observations(
                 d["history_changed"] = True
                 d["previous"] = row.get("previous_value")
                 d["current"] = entry.get("value")
-            # Always emit a history-change event even if baseline still matches
-            # (e.g. firewall off→on both may be "in" or "out" of baseline depending
-            # on expected — still useful as configuration.drift_detected).
             if not baseline_drifts:
                 drift_events.append(
                     {
@@ -363,6 +359,7 @@ def record_checkin_observations(
                         "current": entry.get("value"),
                         "previous": row.get("previous_value"),
                         "status": "changed",
+                        "severity": "medium",
                         "history_changed": True,
                         "agent_id": agent_id,
                         "asset_id": asset_id or "",

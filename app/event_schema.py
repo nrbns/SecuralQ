@@ -96,6 +96,7 @@ EVENT_TYPE_REGISTRY: frozenset[str] = frozenset(
         "remediation",
         "remediation.completed",
         "remediation.created",
+        "remediation.recommended",
         "risk",
         "risk.changed",
         "scan",

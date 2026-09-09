@@ -44,15 +44,19 @@ async def api_get_baseline(baseline_id: str, _user: Annotated[AuthUser, Depends(
 async def api_list_drift(
     user: Annotated[AuthUser, Depends(require_user)],
     baseline_id: str | None = Query(default=None),
+    org_id: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
 ):
     ensure_observations_schema()
-    items = list_drift_for_user(user.id, baseline_id=baseline_id, limit=limit)
+    items = list_drift_for_user(user.id, baseline_id=baseline_id, org_id=org_id, limit=limit)
     return {
         "baseline_id": (baseline_id or default_baseline_id()).strip(),
         "drift": items,
         "count": len(items),
-        "disclaimer": "Live drift vs seeded baseline — not an assessment finding.",
+        "disclaimer": (
+            "Operating-effectiveness signals from agent telemetry vs a seeded baseline — "
+            "not CMMC certification and not SPRS."
+        ),
     }
 
 
@@ -61,8 +65,9 @@ async def api_list_observations(
     user: Annotated[AuthUser, Depends(require_user)],
     key: str | None = Query(default=None),
     agent_id: str | None = Query(default=None),
+    org_id: str | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
 ):
     ensure_observations_schema()
-    rows = list_observations(user.id, key=key, agent_id=agent_id, limit=limit)
+    rows = list_observations(user.id, org_id=org_id, key=key, agent_id=agent_id, limit=limit)
     return {"observations": rows, "count": len(rows)}
