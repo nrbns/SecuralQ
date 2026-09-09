@@ -20,9 +20,43 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.cmmc_scoping import FULL_ASSESSMENT_CATEGORIES, cmmc_scope_label, normalize_cmmc_scope
 from app.db import get_conn, now
 from app.enterprise import list_assets, list_vulnerabilities
 from app.services.risk import compute_risk_score
+
+# CMMC "full assessment" assets (cui_asset / spa -- see app.cmmc_scoping) sit
+# inside the CUI boundary by the framework's own definition, so a finding on
+# one of them is a finding against a critical business function even when
+# nobody has separately tagged that asset's business_criticality field. This
+# is a *floor*, not an override: it only raises business_criticality up to
+# "high" when the user hasn't already recorded something at least that high,
+# and it never touches asset_criticality or invents a new score weight --
+# compute_risk_score's existing, documented business_criticality input
+# already means exactly this ("how critical is the business function/data it
+# serves"). cmmc_asset_category is always a user-entered, self-reported
+# classification (see app.cmmc_scoping module docstring) -- this floor is
+# honest about that: it never claims CUI presence was verified, only that
+# *if* the user classified this asset as in-scope, the score should reflect
+# it instead of silently defaulting to "medium".
+_CMMC_BUSINESS_CRITICALITY_FLOOR = "high"
+_CRITICALITY_RANK = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+
+
+def _cmmc_scope_for_asset(asset: dict[str, Any] | None) -> str:
+    return normalize_cmmc_scope((asset or {}).get("cmmc_asset_category"))
+
+
+def _floor_business_criticality(business_criticality: str, cmmc_scope: str) -> tuple[str, bool]:
+    """Returns (effective_business_criticality, floor_applied)."""
+    if cmmc_scope not in FULL_ASSESSMENT_CATEGORIES:
+        return business_criticality, False
+    current_rank = _CRITICALITY_RANK.get(business_criticality, 2)
+    floor_rank = _CRITICALITY_RANK[_CMMC_BUSINESS_CRITICALITY_FLOOR]
+    if current_rank >= floor_rank:
+        return business_criticality, False
+    return _CMMC_BUSINESS_CRITICALITY_FLOOR, True
+
 
 def _exposure_for_asset(asset: dict[str, Any] | None) -> float:
     from app.asset_categories import is_internet_exposed_category
@@ -117,6 +151,14 @@ def _scored_open_items(
         exposure = _exposure_for_asset(asset)
         asset_criticality = (asset or {}).get("criticality") or "medium"
         business_criticality = ((asset or {}).get("business_criticality") or "").strip().lower()
+        cmmc_scope = _cmmc_scope_for_asset(asset)
+        # Same effective label compute_risk_score would fall back to on its
+        # own (business_criticality if set, else asset_criticality) -- the
+        # floor only changes anything when that effective label is below
+        # "high" and the asset is CMMC in-scope.
+        effective_business_criticality, cmmc_floor_applied = _floor_business_criticality(
+            (business_criticality or str(asset_criticality).lower()), cmmc_scope
+        )
         threat_intel = 0.9 if is_kev else 0.3
         age_days = max(0.0, (now() - float(v.get("created_at") or now())) / 86400.0)
         # long-open findings nudge confidence up slightly — they've survived
@@ -137,7 +179,7 @@ def _scored_open_items(
             threat_intel=threat_intel,
             confidence=confidence,
             compensating_controls=compensating_controls,
-            business_criticality=business_criticality or None,
+            business_criticality=effective_business_criticality,
         )
         reasons: list[str] = []
         if is_kev:
@@ -148,6 +190,8 @@ def _scored_open_items(
             reasons.append(f"{asset_criticality.title()}-criticality asset")
         if business_criticality in ("critical", "high") and business_criticality != asset_criticality:
             reasons.append(f"{business_criticality.title()}-criticality business function")
+        if cmmc_floor_applied:
+            reasons.append(f"Asset self-classified as {cmmc_scope_label(cmmc_scope)} (CMMC scope)")
         if has_patch:
             reasons.append("Patch already available — quick win")
         if age_days > 30:
@@ -166,7 +210,10 @@ def _scored_open_items(
                 "asset_id": v.get("asset_id") or "",
                 "asset_name": v.get("asset_name") or (asset or {}).get("name") or "",
                 "asset_criticality": asset_criticality,
-                "business_criticality": business_criticality or asset_criticality,
+                "business_criticality": effective_business_criticality,
+                "cmmc_scope": cmmc_scope,
+                "cmmc_scope_label": cmmc_scope_label(cmmc_scope) if cmmc_scope else "",
+                "cmmc_floor_applied": cmmc_floor_applied,
                 "exposure": exposure,
                 "compensating_controls": compensating_controls,
                 "monitored": is_monitored,

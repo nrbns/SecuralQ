@@ -522,3 +522,91 @@ def test_priority_list_lowers_score_for_actively_monitored_asset(tmp_path, monke
     assert items[v_monitored["id"]]["factors"]["compensating_controls"] > 0
     assert items[v_unmonitored["id"]]["factors"]["compensating_controls"] == 0
     assert any("monitoring" in r.lower() for r in items[v_monitored["id"]]["reasons"])
+
+
+# ---------------------------------------------------------------------------
+# CMMC/CUI scope-aware business-criticality floor (Sprint 7-adjacent, per
+# app.cmmc_scoping). cmmc_asset_category is a self-reported classification —
+# these tests only check the honest, deterministic floor logic in
+# app.services.risk_priority, not that SecuraIQ verified CUI presence.
+# ---------------------------------------------------------------------------
+
+
+def test_priority_list_ranks_cui_scoped_low_infra_asset_higher(tmp_path, monkeypatch):
+    """A low-criticality box the user has self-classified as a CUI Asset (or
+    SPA) must outrank an identical low-criticality box with no CMMC scope —
+    the CUI boundary's own definition treats it as a critical business
+    function even though nobody separately set business_criticality."""
+    client, token, uid = _client_and_token(tmp_path, monkeypatch)
+    from app.enterprise import create_asset, create_vulnerability
+
+    plain_low = create_asset(uid, "unscoped-test-box", asset_type="server", criticality="low")
+    cui_low = create_asset(
+        uid, "cui-scoped-box", asset_type="server", criticality="low", cmmc_asset_category="cui_asset"
+    )
+
+    v_plain = create_vulnerability(
+        uid,
+        {"asset_id": plain_low["id"], "asset_name": "unscoped-test-box", "title": "Outdated OpenSSL", "severity": "high", "cvss": 7.5, "status": "open"},
+    )
+    v_cui = create_vulnerability(
+        uid,
+        {"asset_id": cui_low["id"], "asset_name": "cui-scoped-box", "title": "Outdated OpenSSL", "severity": "high", "cvss": 7.5, "status": "open"},
+    )
+
+    res = client.get("/api/risk/priority", headers=_auth(token))
+    items = {i["vuln_id"]: i for i in res.json()["items"]}
+    assert items[v_cui["id"]]["score"] > items[v_plain["id"]]["score"]
+    assert items[v_cui["id"]]["cmmc_scope"] == "cui_asset"
+    assert items[v_cui["id"]]["cmmc_floor_applied"] is True
+    assert "cmmc scope" in " ".join(items[v_cui["id"]]["reasons"]).lower()
+    assert items[v_plain["id"]]["cmmc_scope"] == ""
+    assert items[v_plain["id"]]["cmmc_floor_applied"] is False
+
+
+def test_priority_list_cui_floor_never_lowers_an_already_critical_asset(tmp_path, monkeypatch):
+    """The floor only raises a low business_criticality up to "high" for
+    CMMC-in-scope assets — it must never override an asset the user already
+    marked "critical"."""
+    client, token, uid = _client_and_token(tmp_path, monkeypatch)
+    from app.enterprise import create_asset, create_vulnerability
+
+    already_critical = create_asset(
+        uid,
+        "already-critical-cui-box",
+        asset_type="server",
+        criticality="low",
+        business_criticality="critical",
+        cmmc_asset_category="spa",
+    )
+    v = create_vulnerability(
+        uid,
+        {"asset_id": already_critical["id"], "asset_name": "already-critical-cui-box", "title": "Outdated OpenSSL", "severity": "high", "cvss": 7.5, "status": "open"},
+    )
+
+    res = client.get("/api/risk/priority", headers=_auth(token))
+    item = next(i for i in res.json()["items"] if i["vuln_id"] == v["id"])
+    assert item["business_criticality"] == "critical"
+    assert item["cmmc_floor_applied"] is False
+    assert item["cmmc_scope"] == "spa"
+
+
+def test_priority_list_out_of_scope_asset_gets_no_cui_floor(tmp_path, monkeypatch):
+    """out_of_scope is a real CMMC classification too (declared as NOT in
+    the CUI boundary) — it must not trigger the floor, unlike cui_asset/spa."""
+    client, token, uid = _client_and_token(tmp_path, monkeypatch)
+    from app.enterprise import create_asset, create_vulnerability
+
+    asset = create_asset(
+        uid, "out-of-scope-box", asset_type="server", criticality="low", cmmc_asset_category="out_of_scope"
+    )
+    v = create_vulnerability(
+        uid,
+        {"asset_id": asset["id"], "asset_name": "out-of-scope-box", "title": "Outdated OpenSSL", "severity": "high", "cvss": 7.5, "status": "open"},
+    )
+
+    res = client.get("/api/risk/priority", headers=_auth(token))
+    item = next(i for i in res.json()["items"] if i["vuln_id"] == v["id"])
+    assert item["cmmc_scope"] == "out_of_scope"
+    assert item["cmmc_floor_applied"] is False
+    assert item["business_criticality"] == "low"
