@@ -22,6 +22,7 @@ def c(
     description: str | None = None,
     sprs_weight: int | None = None,
     cmmc_level1: bool | None = None,
+    poam_eligible: bool | None = None,
 ) -> dict:
     row: dict = {"id": cid, "title": title, "domain": domain, "keywords": keywords}
     if description:
@@ -31,6 +32,8 @@ def c(
         row["sprs_weight"] = sprs_weight
     if cmmc_level1 is not None:
         row["cmmc_level1"] = cmmc_level1
+    if poam_eligible is not None:
+        row["poam_eligible"] = poam_eligible
     return row
 
 
@@ -855,7 +858,20 @@ def cmmc_l2() -> dict:
             },
         ],
         "controls": [
-            c(cid, title, domain, kws, sprs_weight=weight, cmmc_level1=l1)
+            c(
+                cid,
+                title,
+                domain,
+                kws,
+                sprs_weight=weight,
+                cmmc_level1=l1,
+                # POA&M (Plan of Action & Milestones) deferral eligibility per
+                # the published DoD CMMC rule: 5-point controls can never be
+                # deferred to a POA&M, and CA.L2-3.12.4 (the System Security
+                # Plan control) is barred from deferral regardless of its own
+                # point weight -- see app.services.cmmc_documents.
+                poam_eligible=(False if cid == "CA.L2-3.12.4" else weight != 5),
+            )
             for cid, title, domain, kws, weight, l1 in rows
         ],
     }
