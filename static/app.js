@@ -3168,6 +3168,11 @@ const REALTIME_LIVE_TYPES = new Set([
   // Task F aliases / domain coverage (backend may emit related type strings)
   "evidence",
   "compliance",
+  "configuration",
+  "configuration.drift_detected",
+  "control.failed",
+  "control.passed",
+  "control.test.completed",
   "threat",
   "verification",
 ]);
@@ -7839,6 +7844,7 @@ function syncLiveWorkspace(opts) {
     if (isLivePush || view === "campaigns") rt(window.renderCampaignsPage);
     if (isLivePush || view === "evidence") rt(window.renderEvidencePage);
     if (isLivePush || view === "compliance_center") rt(window.renderComplianceCenterPage);
+    if (isLivePush || view === "control_center") rt(window.renderControlCenterPage);
     if (isLivePush || view === "graph") rt(window.renderGraphPage);
     if (isLivePush || view === "integrations") rt(window.renderIntegrationsPage);
     if (isLivePush || view === "automation") rt(window.refreshAutomationPage);

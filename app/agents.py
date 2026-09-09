@@ -638,21 +638,34 @@ def checkin(agent_id: str, payload: dict[str, Any]) -> dict[str, Any]:
             )
         except Exception:
             pass
-    # RT-10/11 — host control tests from firewall/defender/ssh telemetry.
-    # Must never break check-in; errors are swallowed inside the evaluator.
+    # RT-10/11 + Sprint 2 — config observe/drift then host control tests.
+    # Must never break check-in; errors are swallowed.
     # Prefer effective (live + newest ACKed buffer) so offline catch-up re-applies.
     _host_present = any(
         isinstance(effective_payload.get(k), dict)
         for k in ("firewall_status", "defender_status", "ssh_config")
     )
-    if not effective_payload.get("truncated") or _host_present:
+    _eff = effective_payload if isinstance(effective_payload, dict) else payload
+    if not (_eff or {}).get("truncated") or _host_present:
+        try:
+            from app.configuration.observe import record_checkin_observations
+
+            record_checkin_observations(
+                agent.get("user_id") or "local",
+                agent_id,
+                _eff if isinstance(_eff, dict) else {},
+                asset_id=asset_id or "",
+                org_id=agent.get("org_id") or None,
+            )
+        except Exception:
+            pass
         try:
             from app.services.control_testing import evaluate_agent_host_controls
 
             evaluate_agent_host_controls(
                 agent.get("user_id") or "local",
                 agent_id,
-                effective_payload if isinstance(effective_payload, dict) else payload,
+                _eff if isinstance(_eff, dict) else payload,
                 asset_id=asset_id,
             )
         except Exception:

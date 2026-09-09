@@ -5,7 +5,8 @@
 
 Related: [production-readiness.md](./production-readiness.md) ·
 [realtime-v1.md](./realtime-v1.md) ·
-[control-plane-roadmap.md](./control-plane-roadmap.md)
+[control-plane-roadmap.md](./control-plane-roadmap.md) ·
+[control-config-engine.md](./control-config-engine.md)
 
 ---
 
@@ -176,7 +177,7 @@ Legend by track: **🔴** foundation / production · **🟠** domain expansion �
 
 - Control metadata + test definition + data sources + pass/fail + evidence rules + frequency
 
-**Status: Partial** — live host control tests (firewall / Defender / SSH) from agent telemetry; curated map only.
+**Status: Partial** — live host control tests (firewall / Defender / SSH) from agent telemetry; curated map only. Sprint 1 package: [control-config-engine.md](./control-config-engine.md) (`app/controls/`, `/api/controls`). Task #144 Live Test UI remains frozen.
 
 ---
 

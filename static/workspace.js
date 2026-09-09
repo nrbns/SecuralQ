@@ -348,6 +348,7 @@
       orgs: "viewOrgs",
       frameworks: "viewFrameworks",
       compliance_center: "viewComplianceCenter",
+      control_center: "viewControlCenter",
       impact: "viewImpact",
       exceptions: "viewExceptions",
       audit_center: "viewAuditCenter",
@@ -393,6 +394,7 @@
         orgs: "Organizations",
         frameworks: "Frameworks",
         compliance_center: "Compliance Center",
+        control_center: "Control Center",
         impact: "Cross-Framework Impact",
         exceptions: "Exceptions",
         audit_center: "Audit Center",
@@ -427,6 +429,7 @@
       renderFrameworksPage();
     }
     if (view === "compliance_center") renderComplianceCenterPage();
+    if (view === "control_center") renderControlCenterPage();
     if (view === "impact") renderImpactPage();
     if (view === "exceptions") renderExceptionsPage();
     if (view === "audit_center") renderAuditCenterPage();
@@ -657,7 +660,9 @@
                   a.name || ""
                 )}" data-owner="${escapeHtml(a.owner || "")}" data-crit="${escapeHtml(
                   a.criticality || "medium"
-                )}" data-type="${escapeHtml(assetCategoryId(a))}">Edit</button>
+                )}" data-type="${escapeHtml(assetCategoryId(a))}" data-cmmc-scope="${escapeHtml(
+                  a.cmmc_asset_category || ""
+                )}">Edit</button>
           <button type="button" class="btn-secondary ws-del-asset" data-id="${a.id}">Delete</button>`
               : ""
           }
@@ -817,13 +822,15 @@
     let st = {};
     let jobsData = { jobs: [] };
     let swPosture = {};
+    let cmmcScope = null;
     try {
-      const [res, invRes, stRes, jobsRes, swRes] = await Promise.all([
+      const [res, invRes, stRes, jobsRes, swRes, cmmcRes] = await Promise.all([
         fetch("/api/assets", { headers: authHeaders() }),
         fetch("/api/openaudit/devices?limit=500", { headers: authHeaders() }).catch(() => null),
         fetch("/api/openaudit/status", { headers: authHeaders() }).catch(() => null),
         fetch("/api/jobs?limit=20", { headers: authHeaders() }).catch(() => null),
         fetch("/api/software/posture", { headers: authHeaders() }).catch(() => null),
+        fetch("/api/assets/cmmc-scope-summary", { headers: authHeaders() }).catch(() => null),
       ]);
       data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.detail || `Assets failed (${res.status})`);
@@ -831,6 +838,7 @@
       st = stRes ? await stRes.json().catch(() => ({})) : {};
       jobsData = jobsRes ? await jobsRes.json().catch(() => ({ jobs: [] })) : { jobs: [] };
       swPosture = swRes && swRes.ok ? await swRes.json().catch(() => ({})) : {};
+      cmmcScope = cmmcRes && cmmcRes.ok ? await cmmcRes.json().catch(() => null) : null;
     } catch (err) {
       el.innerHTML = `<p class="hint">Could not load assets: ${escapeHtml(err.message || String(err))}</p>`;
       return;
@@ -944,8 +952,23 @@
         <div class="inventory-category-bar">${typeBits || `<span class="hint">No categories yet</span>`}${clearFilterBtn}</div>
         <div class="vuln-summary-actions">${liveChip}${oaChip}</div>
       </div>`;
+    const cmmcScopeHtml = (() => {
+      if (!cmmcScope || !cmmcScope.total_assets) return "";
+      const byCat = cmmcScope.by_category || [];
+      const chips = byCat.length
+        ? byCat.map((b) => `<span class="wq-badge pri-low">${escapeHtml(b.label)}: ${b.count}</span>`).join(" ")
+        : "";
+      return `<div class="cc-panel" style="margin-top:1rem" id="cmmcScopePanel">
+        <header><h3 style="margin:0">CMMC asset scope</h3></header>
+        <p class="hint">${cmmcScope.unclassified_count} of ${cmmcScope.total_assets} asset(s) not yet classified for a CMMC boundary
+          · ${cmmcScope.full_assessment_count} classified as CUI Asset / Security Protection Asset (full 110-control burden).
+          Self-reported — SecuraIQ can't independently verify what touches CUI. Use "Edit" on an asset below to set its category.</p>
+        ${chips ? `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px">${chips}</div>` : ""}
+      </div>`;
+    })();
     el.innerHTML = `
       ${summary}
+      ${cmmcScopeHtml}
       ${inventoryBlockHtml("Open Scan", openScan, filterCat ? "No hosts in this category — clear filter or Refresh LAN." : "Refresh LAN or Queue engine scan on a host you own.")}
       ${inventoryBlockHtml("Open Audit", openAudit, filterCat ? "No audit hosts in this category." : "Refresh LAN or Sync inventory — hosts stream here as they are audited.")}`;
     el.querySelectorAll(".category-chip-btn").forEach((btn) => {
@@ -992,10 +1015,16 @@
           "Category (server/computer/endpoint/mobile/network/printer/iot/database/web/cloud/container/code/other):",
           btn.getAttribute("data-type") || "server"
         ) ?? (btn.getAttribute("data-type") || "server");
+        const cmmcScopeIn = prompt(
+          "CMMC scope (blank=not classified, cui_asset, spa, crma, specialized, out_of_scope):",
+          btn.getAttribute("data-cmmc-scope") || ""
+        );
+        const body = { name: name.trim(), owner, criticality, asset_type: assetType.trim() };
+        if (cmmcScopeIn !== null) body.cmmc_asset_category = cmmcScopeIn.trim();
         await fetch(`/api/assets/${btn.getAttribute("data-id")}`, {
           method: "PATCH",
           headers: authHeaders({ "Content-Type": "application/json" }),
-          body: JSON.stringify({ name: name.trim(), owner, criticality, asset_type: assetType.trim() }),
+          body: JSON.stringify(body),
         });
         renderAssetsPage({ quiet: true });
       });
@@ -7261,17 +7290,40 @@
         /* optional */
       }
       let sprsLabel = "";
+      let sprsPreview = null;
       if (frameworkId === "cmmc_l2") {
         try {
           const sprsRes = await fetch(`/api/gap/assessments/${aid}/sprs-preview`, { headers: authHeaders() });
           const sprsData = sprsRes.ok ? await sprsRes.json().catch(() => ({})) : {};
           if (sprsData.preview) {
+            sprsPreview = sprsData.preview;
             sprsLabel = ` · SPRS preview ${sprsData.preview.score}/${sprsData.preview.max_score}`;
           }
         } catch {
           /* optional */
         }
       }
+      const renderConditionalCertPanel = () => {
+        const cc = sprsPreview && sprsPreview.conditional_certification;
+        if (!cc) return "";
+        return `<div class="cc-panel" style="margin-top:1rem" id="cmmcConditionalCertPanel">
+          <header><h3 style="margin:0">Conditional Level 2 certification</h3>
+            <span class="wq-badge pri-${cc.eligible ? "low" : "high"}">${cc.eligible ? "Eligible" : "Not eligible"}</span>
+          </header>
+          <p class="hint">Needs score &ge; ${cc.threshold} (currently ${cc.meets_score_threshold ? "met" : "not met"}) and
+            no open control that's barred from a POA&M. ${escapeHtml(cc.disclaimer)}</p>
+          ${
+            cc.blocking_failures.length
+              ? `<div class="data-table-wrap"><table class="data-table"><thead><tr><th>Control</th><th>Weight</th><th>Status</th><th>Why it blocks eligibility</th></tr></thead><tbody>${cc.blocking_failures
+                  .map(
+                    (b) =>
+                      `<tr><td><strong>${escapeHtml(b.control_id)}</strong></td><td>${b.weight} pts</td><td>${escapeHtml(b.status)}</td><td>${escapeHtml(b.reason)}</td></tr>`
+                  )
+                  .join("")}</tbody></table></div>`
+              : `<p class="hint">No open controls are blocking POA&M eligibility right now.</p>`
+          }
+        </div>`;
+      };
       let docProfile = { report_kind: "System Security Plan (SSP)", plan_kind: "Plan of Action & Milestones (POA&M)" };
       try {
         const profRes = await fetch(`/api/gap/assessments/${aid}/document-profile`, { headers: authHeaders() });
@@ -7304,6 +7356,7 @@
         </header>
         ${renderResourcesPanel()}
         ${renderAffirmationPanel()}
+        ${renderConditionalCertPanel()}
         <div class="data-table-wrap">
           <table class="data-table">
             <thead>
@@ -7924,6 +7977,300 @@
     });
   }
   window.renderComplianceCenterPage = renderComplianceCenterPage;
+
+  let _controlCenterTab = "controls";
+
+  async function renderControlCenterPage(opts) {
+    opts = opts || {};
+    const body = qs("controlCenterPageBody");
+    if (!body) return;
+    const fwId = "cmmc_l2";
+    const tab = _controlCenterTab || "controls";
+
+    const [sumRes, driftRes, overviewRes, catalogRes] = await Promise.all([
+      fetch(`/api/controls/summary?framework_id=${encodeURIComponent(fwId)}`, {
+        headers: authHeaders(),
+      }),
+      fetch("/api/configuration/drift?limit=50", { headers: authHeaders() }),
+      fetch("/api/compliance/overview", { headers: authHeaders() }).catch(() => null),
+      fetch(`/api/controls/catalog/${encodeURIComponent(fwId)}`, {
+        headers: authHeaders(),
+      }).catch(() => null),
+    ]);
+
+    const summary = await sumRes.json().catch(() => ({}));
+    if (!sumRes.ok) {
+      body.innerHTML = `<p class="hint">Could not load control summary (${sumRes.status})</p>`;
+      return;
+    }
+    const driftData = driftRes.ok ? await driftRes.json().catch(() => ({})) : {};
+    const driftRows = driftData.drift || [];
+    const driftCount = driftData.count != null ? driftData.count : driftRows.length;
+
+    let overview = {};
+    if (overviewRes && overviewRes.ok) {
+      overview = await overviewRes.json().catch(() => ({}));
+    }
+    const liveFails = ((overview.continuous || {}).live_failures || []).filter(
+      (f) => String(f.framework_id || "").toLowerCase() === fwId
+    );
+
+    let catalogControls = [];
+    if (catalogRes && catalogRes.ok) {
+      const cat = await catalogRes.json().catch(() => ({}));
+      catalogControls = cat.controls || [];
+    }
+    const machineControls = catalogControls
+      .filter((c) => (c.verifiability === "machine" || c.verifiability === "partial") && (c.tests || []).length)
+      .slice(0, 12);
+
+    const fmtLastTest = (ts) => {
+      if (ts == null || ts === "") return "—";
+      const n = Number(ts);
+      if (!Number.isFinite(n)) return "—";
+      const ms = n < 1e12 ? n * 1000 : n;
+      try {
+        return new Date(ms).toLocaleString();
+      } catch {
+        return "—";
+      }
+    };
+
+    const cov =
+      summary.evidence_coverage != null && summary.evidence_coverage !== ""
+        ? `${summary.evidence_coverage}%`
+        : "—";
+
+    const tabs = [
+      ["controls", "Controls"],
+      ["configuration", "Configuration"],
+      ["evidence", "Evidence"],
+      ["gaps", "Gaps"],
+      ["poam", "POA&M"],
+      ["ssp", "SSP"],
+    ];
+
+    const tabBar = `<div class="sw-view-tabs" role="tablist" aria-label="Control Center sections">
+      ${tabs
+        .map(
+          ([id, label]) =>
+            `<button type="button" class="sw-view-tab${tab === id ? " is-active" : ""}" data-cc-tab="${id}" role="tab" aria-selected="${
+              tab === id ? "true" : "false"
+            }">${escapeHtml(label)}</button>`
+        )
+        .join("")}
+    </div>`;
+
+    let panelHtml = "";
+    if (tab === "controls") {
+      const failRows =
+        liveFails.length > 0
+          ? `<div class="data-table-wrap"><table class="data-table"><thead><tr>
+              <th>Control</th><th>Live test</th><th>Why</th><th></th>
+            </tr></thead><tbody>${liveFails
+              .slice(0, 20)
+              .map((f) => {
+                return `<tr>
+                  <td><strong>${escapeHtml(f.control_id || "")}</strong>
+                    <div class="hint">${escapeHtml(f.title || "")}</div></td>
+                  <td><span class="wq-badge pri-${f.status === "fail" ? "high" : "medium"}">${escapeHtml(
+                    f.status || "fail"
+                  )}</span>
+                    <div class="hint">${escapeHtml(f.test || "")}</div></td>
+                  <td class="hint">${escapeHtml((f.summary || "").slice(0, 140))}</td>
+                  <td class="ws-actions">
+                    <button type="button" class="btn-secondary cc-ctrl-test"
+                      data-cid="${escapeHtml(f.control_id || "")}">Retest</button>
+                  </td>
+                </tr>`;
+              })
+              .join("")}</tbody></table></div>`
+          : summary.failing > 0
+            ? `<p class="hint">${summary.failing} control(s) failing in stored results — run live tests to refresh detail.</p>`
+            : `<p class="hint">No live failures recorded for CMMC L2 yet. Run curated tests after inventory / host telemetry is available.</p>`;
+
+      const catalogHint =
+        machineControls.length && !liveFails.length
+          ? `<div class="cc-panel" style="margin-top:0.75rem">
+              <header><h2>Curated live-testable controls</h2></header>
+              <p class="hint">Explicit map only — not every catalog control has a machine test.</p>
+              <div class="data-table-wrap"><table class="data-table"><thead><tr>
+                <th>Control</th><th>Verifiability</th><th>Tests</th><th></th>
+              </tr></thead><tbody>${machineControls
+                .map((c) => {
+                  const tests = (c.tests || []).map((t) => t.name || t).filter(Boolean);
+                  return `<tr>
+                    <td><strong>${escapeHtml(c.id || "")}</strong>
+                      <div class="hint">${escapeHtml((c.title || "").slice(0, 90))}</div></td>
+                    <td><span class="hint">${escapeHtml(c.verifiability || "")}</span></td>
+                    <td class="hint">${escapeHtml(tests.join(", "))}</td>
+                    <td class="ws-actions">
+                      <button type="button" class="btn-secondary cc-ctrl-test"
+                        data-cid="${escapeHtml(c.id || "")}">Test now</button>
+                    </td>
+                  </tr>`;
+                })
+                .join("")}</tbody></table></div>
+            </div>`
+          : "";
+
+      panelHtml = `
+        <div class="cc-panel">
+          <header style="display:flex;flex-wrap:wrap;gap:0.5rem;align-items:center;justify-content:space-between">
+            <h2>Failing / live signals</h2>
+            <button type="button" class="btn-primary-cc" id="ccCtrlRunAll">Run all control tests</button>
+          </header>
+          ${failRows}
+          ${catalogHint}
+        </div>`;
+    } else if (tab === "configuration") {
+      panelHtml = `
+        <div class="cc-panel">
+          <header><h2>Configuration drift</h2></header>
+          <p class="hint">${escapeHtml(
+            driftData.disclaimer ||
+              "Live drift vs seeded baseline — operating-effectiveness only, not an assessment finding."
+          )}</p>
+          ${
+            driftRows.length
+              ? `<div class="data-table-wrap"><table class="data-table"><thead><tr>
+                  <th>Setting</th><th>Expected</th><th>Observed</th><th>Agent</th><th>Controls</th><th>Severity</th>
+                </tr></thead><tbody>${driftRows
+                  .map((d) => {
+                    const sev = d.severity === "high" ? "high" : "medium";
+                    const cids = (d.control_ids || []).join(", ");
+                    return `<tr>
+                      <td><strong>${escapeHtml(d.key || "")}</strong>
+                        <div class="hint">${escapeHtml((d.summary || "").slice(0, 120))}</div></td>
+                      <td><code>${escapeHtml(String(d.expected ?? ""))}</code></td>
+                      <td><code>${escapeHtml(String(d.current ?? ""))}</code></td>
+                      <td class="hint">${escapeHtml(d.agent_id || d.asset_id || "—")}</td>
+                      <td class="hint">${escapeHtml(cids || "—")}</td>
+                      <td><span class="wq-badge pri-${sev}">${escapeHtml(d.severity || "medium")}</span></td>
+                    </tr>`;
+                  })
+                  .join("")}</tbody></table></div>`
+              : `<p class="hint">No drift against the active baseline right now.</p>`
+          }
+        </div>`;
+    } else if (tab === "evidence" || tab === "gaps") {
+      panelHtml = `
+        <div class="cc-panel">
+          <header><h2>${tab === "evidence" ? "Evidence" : "Gaps"}</h2></header>
+          <p class="hint">${
+            tab === "evidence"
+              ? "Attach and review locker artifacts that support assessed controls."
+              : "Open gap assessments and the Compliance Center for missing / partial controls."
+          }</p>
+          <div class="cc-action-row" style="margin:0.75rem 0;flex-wrap:wrap;gap:0.5rem">
+            <button type="button" class="btn-secondary" data-workspace="evidence">Evidence locker</button>
+            <button type="button" class="btn-secondary" data-workspace="frameworks">Frameworks</button>
+            <button type="button" class="btn-secondary" data-workspace="compliance_center">Compliance Center</button>
+          </div>
+        </div>`;
+    } else {
+      // poam / ssp
+      panelHtml = `
+        <div class="cc-panel">
+          <header><h2>${tab === "poam" ? "POA&amp;M" : "System Security Plan (SSP)"}</h2></header>
+          <p class="hint">Export packs and CMMC L2 workflow live under Frameworks — SecuraIQ does not submit SPRS or issue certifications.</p>
+          <div class="cc-action-row" style="margin:0.75rem 0;flex-wrap:wrap;gap:0.5rem">
+            <button type="button" class="btn-primary-cc" id="ccExportFrameworks">Export via Frameworks → CMMC L2</button>
+          </div>
+        </div>`;
+    }
+
+    body.innerHTML = `
+      <p class="hint" style="margin:0 0 0.75rem">Operating-effectiveness signals from agent telemetry — not CMMC certification or SPRS submission.</p>
+      <div class="cc-kpi-grid" style="margin:0 0 0.85rem">
+        <article class="cc-kpi"><span>Controls</span><strong>${summary.controls_total ?? 0}</strong>
+          <em class="hint">${escapeHtml(summary.framework_name || fwId)}</em></article>
+        <article class="cc-kpi cc-kpi-ok"><span>Passing</span><strong>${summary.passing ?? 0}</strong></article>
+        <article class="cc-kpi${summary.failing ? " cc-kpi-warn" : ""}"><span>Failing</span><strong>${
+          summary.failing ?? 0
+        }</strong></article>
+        <article class="cc-kpi"><span>Unknown</span><strong>${summary.unknown ?? 0}</strong></article>
+        <article class="cc-kpi"><span>Evidence coverage</span><strong>${escapeHtml(String(cov))}</strong></article>
+        <article class="cc-kpi${summary.open_gaps ? " cc-kpi-warn" : ""}"><span>Open gaps</span><strong>${
+          summary.open_gaps ?? 0
+        }</strong></article>
+        <article class="cc-kpi"><span>Last test</span><strong style="font-size:0.85rem">${escapeHtml(
+          fmtLastTest(summary.last_test)
+        )}</strong></article>
+        <article class="cc-kpi${driftCount ? " cc-kpi-warn" : ""}"><span>Config drift</span><strong>${driftCount}</strong></article>
+      </div>
+      ${tabBar}
+      ${panelHtml}
+      <p class="hint" style="margin:0.85rem 0 0">${escapeHtml(
+        summary.disclaimer ||
+          "Live control tests are operating-effectiveness signals — not a CMMC certification or SPRS submission."
+      )}</p>`;
+
+    body.querySelectorAll("[data-cc-tab]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        _controlCenterTab = btn.getAttribute("data-cc-tab") || "controls";
+        renderControlCenterPage();
+      });
+    });
+    body.querySelectorAll("[data-workspace]").forEach((el) => {
+      el.addEventListener("click", (e) => {
+        e.preventDefault();
+        showWorkspace(el.getAttribute("data-workspace"));
+      });
+    });
+    qs("ccExportFrameworks")?.addEventListener("click", () => showWorkspace("frameworks"));
+    qs("ccCtrlRunAll")?.addEventListener("click", async () => {
+      const btn = qs("ccCtrlRunAll");
+      if (btn) btn.disabled = true;
+      try {
+        const r = await fetch("/api/compliance/run-live-tests", {
+          method: "POST",
+          headers: { ...authHeaders(), "Content-Type": "application/json" },
+        });
+        const payload = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(payload.detail || `HTTP ${r.status}`);
+        if (typeof notifyUser === "function") {
+          notifyUser(
+            `**Live tests complete** — ${payload.failing || 0} failing, ${payload.partial || 0} partial, ${payload.passing || 0} passing (telemetry signal, not certification).`
+          );
+        }
+        renderControlCenterPage();
+      } catch (err) {
+        if (typeof notifyUser === "function") notifyUser(`Live tests failed: ${err.message || err}`);
+        if (btn) btn.disabled = false;
+      }
+    });
+    body.querySelectorAll(".cc-ctrl-test").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const cid = btn.getAttribute("data-cid") || "";
+        if (!cid) return;
+        btn.disabled = true;
+        try {
+          const r = await fetch(
+            `/api/controls/test/${encodeURIComponent(fwId)}/${encodeURIComponent(cid)}`,
+            {
+              method: "POST",
+              headers: { ...authHeaders(), "Content-Type": "application/json" },
+            }
+          );
+          const payload = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(payload.detail || `HTTP ${r.status}`);
+          const st =
+            payload.status ||
+            (payload.results || []).map((x) => x.status).filter(Boolean).join(", ") ||
+            "done";
+          if (typeof notifyUser === "function") {
+            notifyUser(`**${cid}** retested — ${st} (operating-effectiveness signal).`);
+          }
+          renderControlCenterPage();
+        } catch (err) {
+          if (typeof notifyUser === "function") notifyUser(`Control test failed: ${err.message || err}`);
+          btn.disabled = false;
+        }
+      });
+    });
+  }
+  window.renderControlCenterPage = renderControlCenterPage;
 
   async function renderAuditCenterPage() {
     const body = qs("auditCenterPageBody");
@@ -9751,6 +10098,8 @@
         evidence: () => typeof renderEvidencePage === "function" && renderEvidencePage(),
         compliance_center: () =>
           typeof renderComplianceCenterPage === "function" && renderComplianceCenterPage({ quiet: true }),
+        control_center: () =>
+          typeof renderControlCenterPage === "function" && renderControlCenterPage({ quiet: true }),
         frameworks: () => {
           if (typeof renderHardeningPanel === "function") renderHardeningPanel();
           if (typeof renderFrameworksPage === "function") renderFrameworksPage();
@@ -9970,6 +10319,21 @@
       clearTimeout(window.__securaiqCompRtTimer);
       window.__securaiqCompRtTimer = setTimeout(() => {
         if (typeof renderComplianceCenterPage === "function") renderComplianceCenterPage({ quiet: true });
+      }, 400);
+    }
+    if (
+      view === "control_center" &&
+      (t === "compliance" ||
+        t === "configuration" ||
+        t === "configuration.drift_detected" ||
+        t === "control.failed" ||
+        t === "control.passed" ||
+        t === "control.test.completed" ||
+        (typeof t === "string" && t.startsWith("control.")))
+    ) {
+      clearTimeout(window.__securaiqCtrlCenterRtTimer);
+      window.__securaiqCtrlCenterRtTimer = setTimeout(() => {
+        if (typeof renderControlCenterPage === "function") renderControlCenterPage({ quiet: true });
       }, 400);
     }
     if (view === "intel" && (t === "intel_watch" || t === "intel" || t === "job") && !window.__securaiqIntelLookupBusy) {
