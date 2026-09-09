@@ -4,7 +4,8 @@ Do **not** market this product as enterprise-ready or production SaaS until
 every item below is **done**. Partial work is tracked honestly. Scores and
 checkboxes here are based on the current codebase, not a wishlist.
 
-Related: [control-plane-roadmap.md](./control-plane-roadmap.md) ·
+Related: [master-build-plan.md](./master-build-plan.md) ·
+[control-plane-roadmap.md](./control-plane-roadmap.md) ·
 [priority-checklist.md](./priority-checklist.md) ·
 [launch-readiness.md](./launch-readiness.md) ·
 [security-baseline.md](./security-baseline.md) ·

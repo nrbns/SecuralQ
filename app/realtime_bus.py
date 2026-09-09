@@ -385,12 +385,16 @@ def replay_since(last_event_id: str | None, *, limit: int = 200) -> list[dict[st
 
 
 def stream_status() -> dict[str, Any]:
-    """Health snapshot for Streams + in-process replay buffer."""
+    """Health snapshot for Streams + in-process replay buffer.
+
+    Best-effort XLEN / DLQ / pending metrics when Redis is configured.
+    Never raises.
+    """
     url = _redis_url()
     fanout = _streams_fanout_enabled()
     with _lock:
         buf_len = len(_REPLAY_BUFFER)
-    return {
+    status: dict[str, Any] = {
         "stream_key": _stream_key() if url else None,
         "maxlen": _stream_maxlen() if url else None,
         "mode": "redis_streams" if url else "in_process",
@@ -401,7 +405,31 @@ def stream_status() -> dict[str, Any]:
         "replay_buffer_max": _replay_buffer_max(),
         "consumer_group": "securaiq-workers" if url else None,
         "realtime_fanout_group": (f"securaiq-realtime-{_PID}" if url and fanout else None),
+        "stream_length": None,
+        "dlq_length": None,
+        "pending_count": None,
+        "consumer_group_lag": None,
+        "dlq_key": None,
     }
+    if url:
+        try:
+            from app.event_processor import stream_monitor_snapshot
+
+            mon = stream_monitor_snapshot()
+            for key in (
+                "stream_length",
+                "dlq_length",
+                "pending_count",
+                "consumer_group_lag",
+                "dlq_key",
+                "max_deliveries",
+                "claim_idle_ms",
+            ):
+                if key in mon:
+                    status[key] = mon[key]
+        except Exception:
+            pass
+    return status
 
 
 async def _redis_listener() -> None:
@@ -605,12 +633,20 @@ def backend_status() -> dict[str, Any]:
             "Single-process only — in-memory replay buffer for Last-Event-ID. "
             "Set REDIS_URL for Streams durability + multi-worker pub/sub."
         )
+    processor: dict[str, Any] = {}
+    try:
+        from app.event_processor import processor_status
+
+        processor = processor_status()
+    except Exception:
+        processor = {"mode": "unknown"}
     return {
         "mode": mode,
         "redis_configured": bool(url),
         "channel": (_CHANNEL if url and not fanout else None),
         "streams_fanout": fanout,
         "stream": stream,
+        "processor": processor,
         "local_subscribers": subscriber_count(),
         "pid": _PID,
         "hint": hint,

@@ -51,9 +51,14 @@ SEVERITIES: frozenset[str] = frozenset(
 # Known domain event types used by publish sites + dashboard REALTIME_LIVE_TYPES.
 # Unknown types are allowed on the wire (advisory registry) so new producers
 # are not blocked; strict validation can still flag them.
+# Dotted aliases (e.g. ``threat.created``, ``scan.started``) map to existing
+# flat semantics for advisory typing; dual-write still uses flat ``type`` for UI.
 EVENT_TYPE_REGISTRY: frozenset[str] = frozenset(
     {
         "agent",
+        "agent.connected",
+        "agent.disconnected",
+        "agent.health_changed",
         "agent_command",
         "agent_threat",
         "archive",
@@ -63,10 +68,17 @@ EVENT_TYPE_REGISTRY: frozenset[str] = frozenset(
         "campaign",
         "cloud",
         "combo",
+        "compliance",
+        "compliance.control_failed",
+        "compliance.control_passed",
+        "evidence",
+        "evidence.created",
         "gap",
         "hardening",
         "hunt",
         "incident",
+        "incident.created",
+        "incident.updated",
         "intel",
         "intel_watch",
         "inventory",
@@ -74,9 +86,14 @@ EVENT_TYPE_REGISTRY: frozenset[str] = frozenset(
         "notification",
         "playbook",
         "remediation",
+        "remediation.completed",
+        "remediation.created",
         "risk",
         "risk.changed",
         "scan",
+        "scan.completed",
+        "scan.progress",
+        "scan.started",
         "scan_clear",
         "siem",
         "software_inventory",
@@ -84,15 +101,16 @@ EVENT_TYPE_REGISTRY: frozenset[str] = frozenset(
         "software.vulnerability.changed",
         "thehive",
         "threat",
+        "threat.created",
+        "threat.updated",
         "tool",
         "tool_progress",
         "verification",
+        "verification.completed",
         "vuln",
         "vuln_batch",
         "xdr",
         "xdr_batch",
-        "evidence",
-        "compliance",
     }
 )
 

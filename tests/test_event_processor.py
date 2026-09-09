@@ -67,6 +67,9 @@ def test_processor_status_shape():
     assert "agent_threat" in st["hook_types"]
     assert "incident" in st["hook_types"]
     assert "gap" in st["hook_types"]
+    assert "stream_length" in st
+    assert "dlq_length" in st
+    assert "pending_count" in st
 
 
 def test_from_processor_flag_skips_handler():

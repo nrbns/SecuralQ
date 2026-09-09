@@ -156,6 +156,10 @@ class Settings(BaseSettings):
     # REALTIME v1 Task B — Redis Streams durable log (when REDIS_URL is set)
     redis_stream_key: str = "securaiq:events"
     redis_stream_maxlen: int = 10000  # approximate trim on XADD
+    # Phase 1 durability — DLQ + pending reclaim (no-op when REDIS_URL empty)
+    redis_stream_dlq_key: str = "securaiq:events:dlq"
+    redis_stream_max_deliveries: int = 5  # then DLQ + XACK
+    redis_stream_claim_idle_ms: int = 60000  # XAUTOCLAIM idle threshold
     realtime_replay_buffer: int = 2000  # in-process ring buffer for Last-Event-ID (lab)
     # RT-02 opt-in: Streams as authoritative multi-worker SSE fan-out (skip pub/sub).
     # Default False — keep pub/sub until operators enable Streams fanout.

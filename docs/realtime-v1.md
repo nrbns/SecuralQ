@@ -73,7 +73,7 @@ Lab without Redis is unchanged. Do not enable Streams fan-out as default until o
 
 | Piece | Role |
 |-------|------|
-| `app/event_schema.py` | Field definitions, `EVENT_TYPE_REGISTRY`, `validate_event` |
+| `app/event_schema.py` | Field definitions, `EVENT_TYPE_REGISTRY` (incl. dotted advisory aliases), `validate_event` |
 | `app/realtime_events.py` | `normalize_event` / `build_event` + existing job→SSE mapping |
 | `app/realtime_bus.publish` | Normalizes every publish before local/Redis fan-out |
 
@@ -127,8 +127,21 @@ SSE consumers in `static/app.js` keep working; they are also copied into `data`.
 | `realtime_bus.publish` | `XADD` to Streams when `REDIS_URL` set; pub/sub unless `REALTIME_STREAMS_FANOUT` |
 | In-process ring buffer | Last N events by `event_id` for lab `replay_since` |
 | `replay_since(last_event_id, limit=200)` | Ring buffer + best-effort limited Stream scan when Redis available |
-| `stream_status()` / `backend_status()` | Modes: `in_process` \| `redis_streams+pubsub` \| `redis_streams_fanout` |
-| Config | `REDIS_STREAM_KEY`, `REDIS_STREAM_MAXLEN`, `REALTIME_REPLAY_BUFFER`, `REALTIME_STREAMS_FANOUT` (default **false**) |
+| `stream_status()` / `backend_status()` | Modes: `in_process` \| `redis_streams+pubsub` \| `redis_streams_fanout`; best-effort `stream_length` / `dlq_length` / `pending_count` / lag |
+| Config | `REDIS_STREAM_KEY`, `REDIS_STREAM_MAXLEN`, `REDIS_STREAM_DLQ_KEY`, `REDIS_STREAM_MAX_DELIVERIES`, `REDIS_STREAM_CLAIM_IDLE_MS`, `REALTIME_REPLAY_BUFFER`, `REALTIME_STREAMS_FANOUT` (default **false**) |
+
+### Phase 1 durability (DLQ + reclaim)
+
+When `REDIS_URL` is set, the `securaiq-workers` consumer:
+
+| Behavior | Detail |
+|----------|--------|
+| Retry | On handler failure, message is **not** ACKed until `REDIS_STREAM_MAX_DELIVERIES` (default **5**) |
+| DLQ | After max deliveries: `XADD` to `REDIS_STREAM_DLQ_KEY` (default `securaiq:events:dlq`) with original payload + error + `delivery_count` + `stream_id`, then `XACK` |
+| Reclaim | Periodic `XAUTOCLAIM` for idle pending older than `REDIS_STREAM_CLAIM_IDLE_MS` (default **60000**); claimed messages re-run `process_event` |
+| Lab | Without Redis, DLQ/reclaim are no-ops — `on_local_publish` path unchanged |
+
+Monitoring keys on `stream_status()` / `processor_status()` / health `realtime_bus` are best-effort and **never raise**.
 
 **Still partial for HA:** pub/sub remains default multi-worker notify; Streams fan-out is opt-in (per-process `securaiq-realtime-{pid}`). No Sentinel/Cluster. Full HA catch-up API not claimed.
 
@@ -140,6 +153,7 @@ SSE consumers in `static/app.js` keep working; they are also copied into `data`.
 |-------|------|
 | `app/event_processor.py` | Streams consumer + lab `on_local_publish` |
 | Consumer group | `securaiq-workers` (one of many uvicorn workers) for **side-effects** |
+| Phase 1 durability | DLQ (`REDIS_STREAM_DLQ_KEY`) after max deliveries; `XAUTOCLAIM` reclaim; status metrics |
 | RT-06 idempotency | `app/event_idempotency.py` — `securaiq_processed_events`; skip duplicate handler runs |
 | Handlers | Real side-effects when `user_id` is known (or recoverable from `agent_id`): notify + evidence + thin `evidence`/`risk` republish with `_from_processor=True` for `agent_threat`, `vuln`, `software.vulnerability.changed`, `remediation`, `agent_command`; inventory hooks (`inventory`, `software_inventory`, `software.inventory.updated`) recompute org risk; light evidence for `incident` / `gap`; RT-07 threat→incident on burst/keyword; RT-09 attack-path refresh on critical / incident |
 
@@ -286,13 +300,17 @@ Verification loop still publishes (`record_command_verification`).
 |--------|------|
 | `scripts/realtime_load_test.py` | Ladder 100→500→1k (`--ladder`); check-in p50/p95; optional `--sse-sample` |
 | `scripts/realtime_chaos_test.py` | Soft disconnect → buffer → flush/ACK; `--document-redis` for manual Redis kill |
+| `scripts/realtime_acceptance_demo.py` | RT-10/11 lab acceptance: mock firewall disabled→evidence→enabled PASS (`--local` or `--server`) |
 
 **Honest output on both:** `not production proof`. **Do not claim 5k support.**
+Acceptance demo prints: **lab acceptance harness — not a 5k/HA proof**.
 
 ```bash
 python scripts/realtime_load_test.py --server http://127.0.0.1:8080 --ladder --max-agents 500
 python scripts/realtime_chaos_test.py --local-only
 python scripts/realtime_chaos_test.py --document-redis
+python scripts/realtime_acceptance_demo.py --local
+python scripts/realtime_acceptance_demo.py --server http://127.0.0.1:8080 --token <admin_jwt>
 ```
 
 ---
@@ -363,7 +381,7 @@ Agent check-in payloads already include `firewall_status`, `defender_status`, an
 | Task | Scope | Status |
 |------|--------|--------|
 | **A** / **RT-01** | Unified versioned event contract + normalize on publish | **Done** |
-| **B** / **RT-02** | Durable queue via **Redis Streams** (XADD, trim; opt-in Streams fan-out) | **Partial** (needs `REDIS_URL`; fan-out opt-in, pub/sub still default) |
+| **B** / **RT-02** | Durable queue via **Redis Streams** (XADD, trim; opt-in Streams fan-out; Phase 1 DLQ + reclaim) | **Partial** (needs `REDIS_URL`; fan-out opt-in, pub/sub still default) |
 | **C** / **RT-03** | Event processor (consumer group + lab hooks; scoped notify/evidence/risk) | **Partial→improved** |
 | **D** / **RT-04** | Agent offline spool fully wired into packaged agents | **Partial→improved** (v1.1.1 wired; not HA durable) |
 | **RT-05** | Event ordering + gap recovery (contiguous ACK, re-apply host telemetry, `sequence_gap`) | **Partial→improved** (foundations) |
@@ -397,7 +415,7 @@ approved agent commands that enable firewall automatically.
 
 - Event IDs + schema: **improved** (contract + normalize), still not durable exactly-once across HA.
 - Event ordering: **partial→improved** — agent contiguous ACK + gap publish + host telemetry re-apply (RT-05); millis `sequence` still best-effort; no per-tenant log.
-- Persistent event queue: **partial** — Streams when `REDIS_URL` set; pub/sub still default for multi-worker SSE; Streams fan-out **opt-in**; lab remains in-process buffer only.
+- Persistent event queue: **partial** — Streams when `REDIS_URL` set; Phase 1 DLQ + pending reclaim; pub/sub still default for multi-worker SSE; Streams fan-out **opt-in**; lab remains in-process buffer only.
 - Event processor: **partial→improved** — consumer group + scoped hooks + RT-06 ledger + RT-07 threat→incident + RT-08 inventory/vuln→risk + RT-09 attack-path refresh; not full detection→risk / XDR correlation.
 - SSE tenancy: **improved** — push filtered when AUTH on; heartbeats unfiltered.
 - Offline agent buffer: **partial→improved** — packaged agent wired (v1.1.1); contiguous ACK + re-apply host keys from newest ACKed buffer; not HA durable.

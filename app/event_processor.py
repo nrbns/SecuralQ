@@ -2,7 +2,9 @@
 
 When ``REDIS_URL`` is set, a background consumer reads the durable Redis Stream
 (``REDIS_STREAM_KEY``) via consumer group ``securaiq-workers`` and runs sync
-handlers per message.
+handlers per message. Phase 1 durability: retry without ACK until
+``REDIS_STREAM_MAX_DELIVERIES``, then ``XADD`` to ``REDIS_STREAM_DLQ_KEY`` +
+``XACK``; periodic ``XAUTOCLAIM`` reclaim of idle pending.
 
 Without Redis (lab default), ``on_local_publish`` is invoked from
 ``realtime_bus.publish`` for the same handler set — no-op-safe.
@@ -22,12 +24,19 @@ import asyncio
 import json
 import logging
 import os
+import time
 from typing import Any, Callable
 
 _log = logging.getLogger("securaiq.event_processor")
 
 CONSUMER_GROUP = "securaiq-workers"
 CONSUMER_NAME = f"worker-{os.getpid()}"
+
+_DEFAULT_DLQ_KEY = "securaiq:events:dlq"
+_DEFAULT_MAX_DELIVERIES = 5
+_DEFAULT_CLAIM_IDLE_MS = 60000
+# How often the consumer attempts XAUTOCLAIM (wall clock).
+_RECLAIM_INTERVAL_SEC = 15.0
 
 # Dashboard-relevant types that get a processor hook.
 HOOK_EVENT_TYPES: frozenset[str] = frozenset(
@@ -110,6 +119,90 @@ def _stream_key() -> str:
         return bus_stream_key()
     except Exception:
         return "securaiq:events"
+
+
+def _dlq_key() -> str:
+    try:
+        from app.config import settings
+
+        return (
+            getattr(settings, "redis_stream_dlq_key", "") or _DEFAULT_DLQ_KEY
+        ).strip() or _DEFAULT_DLQ_KEY
+    except Exception:
+        return _DEFAULT_DLQ_KEY
+
+
+def _max_deliveries() -> int:
+    try:
+        from app.config import settings
+
+        n = int(
+            getattr(settings, "redis_stream_max_deliveries", _DEFAULT_MAX_DELIVERIES)
+            or _DEFAULT_MAX_DELIVERIES
+        )
+        return max(1, n)
+    except Exception:
+        return _DEFAULT_MAX_DELIVERIES
+
+
+def _claim_idle_ms() -> int:
+    try:
+        from app.config import settings
+
+        n = int(
+            getattr(settings, "redis_stream_claim_idle_ms", _DEFAULT_CLAIM_IDLE_MS)
+            or _DEFAULT_CLAIM_IDLE_MS
+        )
+        return max(1000, n)
+    except Exception:
+        return _DEFAULT_CLAIM_IDLE_MS
+
+
+def build_dlq_fields(
+    payload: dict[str, Any] | None,
+    *,
+    error: str,
+    delivery_count: int,
+    stream_id: str,
+    source_stream: str = "",
+) -> dict[str, str]:
+    """Build Redis Stream field map for a DLQ entry (unit-testable, no Redis I/O)."""
+    try:
+        body = json.dumps(payload if isinstance(payload, dict) else {}, default=str)
+    except Exception:
+        body = "{}"
+    return {
+        "payload": body,
+        "error": str(error or "")[:2000],
+        "delivery_count": str(max(0, int(delivery_count))),
+        "stream_id": str(stream_id or ""),
+        "source_stream": str(source_stream or _stream_key()),
+        "ts": str(time.time()),
+    }
+
+
+def should_dead_letter(*, delivery_count: int, max_deliveries: int | None = None) -> bool:
+    """True when delivery attempts have reached the configured max."""
+    limit = _max_deliveries() if max_deliveries is None else max(1, int(max_deliveries))
+    try:
+        count = int(delivery_count)
+    except (TypeError, ValueError):
+        count = 0
+    return count >= limit
+
+
+def _parse_stream_payload(fields: Any) -> dict[str, Any]:
+    if not isinstance(fields, dict):
+        return {}
+    raw = fields.get("payload")
+    if isinstance(raw, str):
+        try:
+            loaded = json.loads(raw)
+            if isinstance(loaded, dict):
+                return loaded
+        except Exception:
+            return {}
+    return {}
 
 
 def _resolve_user_id(event: dict[str, Any]) -> str:
@@ -697,23 +790,26 @@ def _handle_light_evidence(event: dict[str, Any], *, entity_type: str) -> None:
         )
 
 
-def process_event(event: dict[str, Any] | None) -> None:
+def process_event(event: dict[str, Any] | None) -> bool:
     """Run the registered handler for ``event`` (sync, never raises).
 
     RT-06: skips side-effects when ``event_id`` was already processed successfully;
     marks the ledger only after the handler returns without raising.
+
+    Returns ``True`` when the message may be ACKed (success or benign skip).
+    Returns ``False`` when a registered handler raised (caller may retry / DLQ).
     """
     global _in_handler
     if not event or not isinstance(event, dict):
-        return
+        return True
     if event.get("_from_processor"):
-        return
+        return True
     et = str(event.get("event_type") or event.get("type") or "").strip()
     if not et:
-        return
+        return True
     handler = HANDLERS.get(et)
     if handler is None:
-        return
+        return True
     eid = str(event.get("event_id") or "").strip()
     if eid:
         try:
@@ -721,11 +817,11 @@ def process_event(event: dict[str, Any] | None) -> None:
 
             if already_processed(eid):
                 _log.debug("process_event skip — already processed %s", eid)
-                return
+                return True
         except Exception:
             pass
     if _in_handler:
-        return
+        return True
     _in_handler = True
     try:
         handler(event)
@@ -736,8 +832,10 @@ def process_event(event: dict[str, Any] | None) -> None:
                 mark_processed(eid)
             except Exception:
                 pass
+        return True
     except Exception as exc:
         _log.debug("handler %s failed: %s", et, exc)
+        return False
     finally:
         _in_handler = False
 
@@ -780,6 +878,160 @@ async def _ensure_consumer_group(client: Any, stream: str) -> None:
             _log.debug("xgroup_create: %s", exc)
 
 
+async def _delivery_count(client: Any, stream: str, msg_id: str) -> int:
+    """Best-effort times_delivered from XPENDING; default 1 for a fresh read."""
+    try:
+        rows = await client.xpending_range(
+            name=stream,
+            groupname=CONSUMER_GROUP,
+            min=msg_id,
+            max=msg_id,
+            count=1,
+        )
+        if not rows:
+            return 1
+        row = rows[0]
+        if isinstance(row, dict):
+            for key in ("times_delivered", "delivery_count", "deliveries"):
+                if key in row and row[key] is not None:
+                    return max(1, int(row[key]))
+        elif isinstance(row, (list, tuple)) and len(row) >= 4:
+            return max(1, int(row[3]))
+    except Exception as exc:
+        _log.debug("xpending_range skipped: %s", exc)
+    return 1
+
+
+async def _xadd_dlq(
+    client: Any,
+    *,
+    payload: dict[str, Any],
+    error: str,
+    delivery_count: int,
+    stream_id: str,
+    source_stream: str,
+) -> bool:
+    """XADD failed message to the DLQ stream. Returns True on success."""
+    fields = build_dlq_fields(
+        payload,
+        error=error,
+        delivery_count=delivery_count,
+        stream_id=stream_id,
+        source_stream=source_stream,
+    )
+    try:
+        await client.xadd(_dlq_key(), fields)
+        return True
+    except Exception as exc:
+        _log.debug("DLQ XADD failed: %s", exc)
+        return False
+
+
+async def _ack(client: Any, stream: str, msg_id: str) -> None:
+    try:
+        await client.xack(stream, CONSUMER_GROUP, msg_id)
+    except Exception as exc:
+        _log.debug("XACK failed: %s", exc)
+
+
+async def _handle_stream_message(
+    client: Any,
+    stream: str,
+    msg_id: str,
+    fields: Any,
+) -> None:
+    """Process one Streams message with retry-until-max then DLQ + XACK.
+
+    Preferred durability path:
+    - success / benign skip → XACK
+    - handler failure and delivery_count < max → leave pending (no ACK)
+    - handler failure and delivery_count >= max → XADD DLQ + XACK
+    Never silently ACK forever without recording a failure.
+    """
+    payload = _parse_stream_payload(fields)
+    delivery_count = await _delivery_count(client, stream, str(msg_id))
+    max_d = _max_deliveries()
+    error = ""
+    ok = True
+    try:
+        ok = bool(process_event(payload))
+        if not ok:
+            error = "handler_failed"
+    except Exception as exc:
+        ok = False
+        error = str(exc)[:500]
+
+    if ok:
+        await _ack(client, stream, msg_id)
+        return
+
+    if should_dead_letter(delivery_count=delivery_count, max_deliveries=max_d):
+        await _xadd_dlq(
+            client,
+            payload=payload,
+            error=error or "max_deliveries_exceeded",
+            delivery_count=delivery_count,
+            stream_id=str(msg_id),
+            source_stream=stream,
+        )
+        await _ack(client, stream, msg_id)
+        _log.warning(
+            "event DLQ'd stream_id=%s deliveries=%s error=%s",
+            msg_id,
+            delivery_count,
+            error,
+        )
+        return
+
+    _log.debug(
+        "event handler failed — leaving pending stream_id=%s deliveries=%s/%s",
+        msg_id,
+        delivery_count,
+        max_d,
+    )
+
+
+async def _reclaim_pending(client: Any, stream: str) -> int:
+    """XAUTOCLAIM idle pending messages and reprocess through process_event.
+
+    Returns the number of messages claimed (best-effort).
+    """
+    claimed = 0
+    idle = _claim_idle_ms()
+    start_id = "0-0"
+    try:
+        result = await client.xautoclaim(
+            name=stream,
+            groupname=CONSUMER_GROUP,
+            consumername=CONSUMER_NAME,
+            min_idle_time=idle,
+            start_id=start_id,
+            count=20,
+        )
+    except Exception as exc:
+        _log.debug("xautoclaim skipped: %s", exc)
+        return 0
+
+    messages: list[Any] = []
+    if isinstance(result, (list, tuple)):
+        # redis-py: (next_id, [(id, fields), ...]) or + deleted ids on Redis 7+
+        if len(result) >= 2 and isinstance(result[1], (list, tuple)):
+            messages = list(result[1])
+        elif result and isinstance(result[0], (list, tuple)):
+            messages = list(result)
+    for item in messages:
+        try:
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                msg_id, fields = item[0], item[1]
+            else:
+                continue
+            claimed += 1
+            await _handle_stream_message(client, stream, str(msg_id), fields)
+        except Exception as exc:
+            _log.debug("reclaim message skipped: %s", exc)
+    return claimed
+
+
 async def _streams_consumer_loop() -> None:
     url = ""
     try:
@@ -804,7 +1056,15 @@ async def _streams_consumer_loop() -> None:
             client = aioredis.from_url(url, decode_responses=True)
             await _ensure_consumer_group(client, stream)
             backoff = 2.0
+            last_reclaim = 0.0
             while True:
+                now = time.monotonic()
+                if now - last_reclaim >= _RECLAIM_INTERVAL_SEC:
+                    try:
+                        await _reclaim_pending(client, stream)
+                    except Exception as exc:
+                        _log.debug("reclaim loop: %s", exc)
+                    last_reclaim = now
                 rows = await client.xreadgroup(
                     groupname=CONSUMER_GROUP,
                     consumername=CONSUMER_NAME,
@@ -816,23 +1076,12 @@ async def _streams_consumer_loop() -> None:
                     continue
                 for _stream_name, messages in rows:
                     for msg_id, fields in messages:
-                        payload: dict[str, Any] = {}
-                        raw = fields.get("payload") if isinstance(fields, dict) else None
-                        if isinstance(raw, str):
-                            try:
-                                loaded = json.loads(raw)
-                                if isinstance(loaded, dict):
-                                    payload = loaded
-                            except Exception:
-                                payload = {}
                         try:
-                            process_event(payload)
-                        except Exception:
-                            pass
-                        try:
-                            await client.xack(stream, CONSUMER_GROUP, msg_id)
-                        except Exception:
-                            pass
+                            await _handle_stream_message(
+                                client, stream, str(msg_id), fields
+                            )
+                        except Exception as exc:
+                            _log.debug("stream message handle failed: %s", exc)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -871,6 +1120,80 @@ def start_processor(loop: asyncio.AbstractEventLoop | None = None) -> None:
         _started = False
 
 
+def stream_monitor_snapshot() -> dict[str, Any]:
+    """Best-effort stream / DLQ / pending metrics. Never raises."""
+    out: dict[str, Any] = {
+        "stream_length": None,
+        "dlq_length": None,
+        "pending_count": None,
+        "consumer_group_lag": None,
+        "dlq_key": _dlq_key() if _redis_configured() else None,
+        "max_deliveries": _max_deliveries() if _redis_configured() else None,
+        "claim_idle_ms": _claim_idle_ms() if _redis_configured() else None,
+    }
+    if not _redis_configured():
+        return out
+    url = ""
+    try:
+        from app.config import settings
+
+        url = (getattr(settings, "redis_url", "") or "").strip()
+    except Exception:
+        return out
+    if not url:
+        return out
+    client = None
+    try:
+        import redis as redis_sync
+
+        client = redis_sync.from_url(
+            url,
+            decode_responses=True,
+            socket_connect_timeout=0.5,
+            socket_timeout=0.5,
+        )
+        stream = _stream_key()
+        dlq = _dlq_key()
+        try:
+            out["stream_length"] = int(client.xlen(stream))
+        except Exception:
+            pass
+        try:
+            out["dlq_length"] = int(client.xlen(dlq))
+        except Exception:
+            pass
+        try:
+            pending = client.xpending(stream, CONSUMER_GROUP)
+            if isinstance(pending, dict):
+                out["pending_count"] = int(pending.get("pending") or 0)
+            elif isinstance(pending, (list, tuple)) and pending:
+                out["pending_count"] = int(pending[0])
+        except Exception:
+            pass
+        try:
+            groups = client.xinfo_groups(stream)
+            for g in groups or []:
+                name = g.get("name") if isinstance(g, dict) else None
+                if name != CONSUMER_GROUP:
+                    continue
+                if "lag" in g and g["lag"] is not None:
+                    out["consumer_group_lag"] = int(g["lag"])
+                elif out["pending_count"] is None and "pending" in g:
+                    out["pending_count"] = int(g["pending"])
+                break
+        except Exception:
+            pass
+    except Exception:
+        pass
+    finally:
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass
+    return out
+
+
 def processor_status() -> dict[str, Any]:
     running = _processor_task is not None and not _processor_task.done()
     streams_fanout = False
@@ -882,7 +1205,7 @@ def processor_status() -> dict[str, Any]:
         )
     except Exception:
         streams_fanout = False
-    return {
+    status: dict[str, Any] = {
         "redis_configured": _redis_configured(),
         "consumer_group": CONSUMER_GROUP if _redis_configured() else None,
         "consumer_name": CONSUMER_NAME if _redis_configured() else None,
@@ -891,7 +1214,15 @@ def processor_status() -> dict[str, Any]:
         "mode": "redis_streams" if _redis_configured() else "local_publish_hooks",
         "idempotency": "securaiq_processed_events",
         "streams_fanout": streams_fanout,
+        "dlq_key": _dlq_key() if _redis_configured() else None,
+        "max_deliveries": _max_deliveries() if _redis_configured() else None,
+        "claim_idle_ms": _claim_idle_ms() if _redis_configured() else None,
     }
+    try:
+        status.update(stream_monitor_snapshot())
+    except Exception:
+        pass
+    return status
 
 
 def reset_processor_for_tests() -> None:
