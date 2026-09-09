@@ -79,3 +79,87 @@ def scope_breakdown(assets: list[dict[str, Any]]) -> dict[str, int]:
         cat = normalize_cmmc_scope(a.get("cmmc_asset_category"))
         counts[cat] = counts.get(cat, 0) + 1
     return {k: v for k, v in counts.items() if v > 0}
+
+
+# "Regular business" here means the CMMC scoping guidance's own out-of-scope
+# category, plus unclassified -- the network the Secure Enclave model is
+# built to keep separate from the CUI boundary. crma/specialized are
+# deliberately excluded: those categories are how CMMC scoping *allows*
+# limited, policy-managed contact with the boundary without full assessment,
+# so a connection touching one of those is not, by itself, a violation.
+_REGULAR_BUSINESS_CATEGORIES = frozenset({"", "out_of_scope"})
+
+
+def enclave_boundary_report(
+    assets: list[dict[str, Any]], dependencies: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Cross-references two pieces of data this product already collects --
+    cmmc_asset_category (self-reported CMMC scope) and asset_dependencies
+    (declared/inferred connects_to edges) -- to check whether the "Secure
+    Enclave" boundary the CMMC scoping guidance describes is actually
+    architecturally isolated, or whether a declared connection crosses it.
+
+    This is the honest version of a Secure Enclave diagram: rather than
+    drawing a static picture of "enclave" vs. "regular business network",
+    it recomputes the same boundary from real asset classifications and
+    flags any declared/inferred dependency that crosses it -- a real
+    finding, not decoration. Silence (no violations) means "no crossing
+    dependency is currently declared", never "the boundary is proven
+    clean" -- dependency declarations can be incomplete, so this can't
+    detect a crossing nobody told SecuraIQ about.
+    """
+    by_id = {a.get("id"): a for a in assets if a.get("id")}
+    enclave_ids: set[str] = set()
+    regular_ids: set[str] = set()
+    for a in assets:
+        aid = a.get("id")
+        if not aid:
+            continue
+        cat = normalize_cmmc_scope(a.get("cmmc_asset_category"))
+        if cat in FULL_ASSESSMENT_CATEGORIES:
+            enclave_ids.add(aid)
+        elif cat in _REGULAR_BUSINESS_CATEGORIES:
+            regular_ids.add(aid)
+
+    violations: list[dict[str, Any]] = []
+    for dep in dependencies:
+        src, tgt = dep.get("source_asset_id"), dep.get("target_asset_id")
+        if not src or not tgt:
+            continue
+        crosses = (src in enclave_ids and tgt in regular_ids) or (
+            tgt in enclave_ids and src in regular_ids
+        )
+        if not crosses:
+            continue
+        enclave_side, regular_side = (src, tgt) if src in enclave_ids else (tgt, src)
+        violations.append(
+            {
+                "dependency_id": dep.get("id"),
+                "enclave_asset_id": enclave_side,
+                "enclave_asset_name": (by_id.get(enclave_side) or {}).get("name") or "",
+                "regular_asset_id": regular_side,
+                "regular_asset_name": (by_id.get(regular_side) or {}).get("name") or "",
+                "relationship": dep.get("relationship") or "connects_to",
+                "source": dep.get("source") or "declared",
+                "reason": (
+                    "A CUI Asset / Security Protection Asset has a "
+                    f"{dep.get('source') or 'declared'} {dep.get('relationship') or 'connects_to'} "
+                    "connection to an out-of-scope/unclassified asset -- the Secure Enclave "
+                    "model requires the boundary to be free of unmediated connections like this. "
+                    "Either bring the other asset into scope or remove the connection."
+                ),
+            }
+        )
+
+    return {
+        "enclave_asset_count": len(enclave_ids),
+        "regular_business_asset_count": len(regular_ids),
+        "other_scoped_asset_count": len(by_id) - len(enclave_ids) - len(regular_ids),
+        "boundary_violations": violations,
+        "boundary_intact": not violations,
+        "disclaimer": (
+            "cmmc_asset_category and asset dependencies are self-reported/declared data. "
+            "No violations shown means none is currently declared, not that the boundary has "
+            "been independently verified."
+        ),
+    }

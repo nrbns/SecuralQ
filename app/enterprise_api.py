@@ -765,6 +765,26 @@ async def assets_cmmc_scope_summary(
     }
 
 
+@router.get("/assets/cmmc-enclave-boundary")
+async def assets_cmmc_enclave_boundary(
+    user: Annotated[AuthUser, Depends(require_user)],
+    engagement_id: str | None = None,
+    org_id: str | None = None,
+    x_securaiq_org: str | None = Header(default=None, alias="X-SecuraIQ-Org"),
+):
+    """Secure Enclave boundary check -- does any declared/inferred asset
+    dependency cross from a CUI Asset/SPA into the regular business network
+    (out-of-scope or unclassified)? Real cross-reference of cmmc_asset_category
+    and asset_dependencies, computed fresh every call; never a static diagram."""
+    oid = resolve_request_org(user, org_id=org_id, header_org=x_securaiq_org)
+    require_perm(user, "asset.read", org_id=oid)
+    from app.cmmc_scoping import enclave_boundary_report
+
+    assets = list_assets(user.id, engagement_id, org_id=oid)
+    dependencies = list_asset_dependencies(user.id, engagement_id=engagement_id, org_id=oid)
+    return enclave_boundary_report(assets, dependencies)
+
+
 @router.get("/assets")
 async def assets_list(
     user: Annotated[AuthUser, Depends(require_user)],
