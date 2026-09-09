@@ -823,14 +823,16 @@
     let jobsData = { jobs: [] };
     let swPosture = {};
     let cmmcScope = null;
+    let enclaveBoundary = null;
     try {
-      const [res, invRes, stRes, jobsRes, swRes, cmmcRes] = await Promise.all([
+      const [res, invRes, stRes, jobsRes, swRes, cmmcRes, enclaveRes] = await Promise.all([
         fetch("/api/assets", { headers: authHeaders() }),
         fetch("/api/openaudit/devices?limit=500", { headers: authHeaders() }).catch(() => null),
         fetch("/api/openaudit/status", { headers: authHeaders() }).catch(() => null),
         fetch("/api/jobs?limit=20", { headers: authHeaders() }).catch(() => null),
         fetch("/api/software/posture", { headers: authHeaders() }).catch(() => null),
         fetch("/api/assets/cmmc-scope-summary", { headers: authHeaders() }).catch(() => null),
+        fetch("/api/assets/cmmc-enclave-boundary", { headers: authHeaders() }).catch(() => null),
       ]);
       data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.detail || `Assets failed (${res.status})`);
@@ -839,6 +841,7 @@
       jobsData = jobsRes ? await jobsRes.json().catch(() => ({ jobs: [] })) : { jobs: [] };
       swPosture = swRes && swRes.ok ? await swRes.json().catch(() => ({})) : {};
       cmmcScope = cmmcRes && cmmcRes.ok ? await cmmcRes.json().catch(() => null) : null;
+      enclaveBoundary = enclaveRes && enclaveRes.ok ? await enclaveRes.json().catch(() => null) : null;
     } catch (err) {
       el.innerHTML = `<p class="hint">Could not load assets: ${escapeHtml(err.message || String(err))}</p>`;
       return;
@@ -966,9 +969,34 @@
         ${chips ? `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px">${chips}</div>` : ""}
       </div>`;
     })();
+    const enclaveBoundaryHtml = (() => {
+      if (!enclaveBoundary || !enclaveBoundary.enclave_asset_count) return "";
+      const violations = enclaveBoundary.boundary_violations || [];
+      const intact = enclaveBoundary.boundary_intact;
+      return `<div class="cc-panel" style="margin-top:1rem" id="enclaveBoundaryPanel">
+        <header><h3 style="margin:0">Secure Enclave boundary</h3>
+          <span class="wq-badge pri-${intact ? "low" : "high"}">${intact ? "No crossing declared" : `${violations.length} crossing declared`}</span>
+        </header>
+        <p class="hint">${enclaveBoundary.enclave_asset_count} CUI Asset/SPA (enclave) · ${enclaveBoundary.regular_business_asset_count} regular-business asset(s).
+          ${escapeHtml(enclaveBoundary.disclaimer || "")}</p>
+        ${
+          violations.length
+            ? `<div class="data-table-wrap"><table class="data-table"><thead><tr><th>Enclave asset</th><th>Regular-business asset</th><th>Relationship</th><th>Why it's flagged</th></tr></thead><tbody>${violations
+                .map(
+                  (v) =>
+                    `<tr><td><strong>${escapeHtml(v.enclave_asset_name || v.enclave_asset_id)}</strong></td><td>${escapeHtml(
+                      v.regular_asset_name || v.regular_asset_id
+                    )}</td><td>${escapeHtml(v.relationship)}</td><td>${escapeHtml(v.reason)}</td></tr>`
+                )
+                .join("")}</tbody></table></div>`
+            : `<p class="hint">No declared or inferred connection currently crosses the boundary.</p>`
+        }
+      </div>`;
+    })();
     el.innerHTML = `
       ${summary}
       ${cmmcScopeHtml}
+      ${enclaveBoundaryHtml}
       ${inventoryBlockHtml("Open Scan", openScan, filterCat ? "No hosts in this category — clear filter or Refresh LAN." : "Refresh LAN or Queue engine scan on a host you own.")}
       ${inventoryBlockHtml("Open Audit", openAudit, filterCat ? "No audit hosts in this category." : "Refresh LAN or Sync inventory — hosts stream here as they are audited.")}`;
     el.querySelectorAll(".category-chip-btn").forEach((btn) => {
@@ -7331,6 +7359,66 @@
       } catch {
         /* label fallback above covers cmmc_l2/nist_800_171/nist_800_53; harmless for others */
       }
+      // Live SSP: recomputed from real assets/evidence/live-tests/remediations
+      // on every load -- never a cached document. Best-effort, non-blocking:
+      // the pasted-evidence table below already renders with or without it.
+      let liveSsp = null;
+      try {
+        const liveSspRes = await fetch(`/api/compliance/ssp/${encodeURIComponent(frameworkId)}/live`, {
+          headers: authHeaders(),
+        });
+        if (liveSspRes.ok) liveSsp = await liveSspRes.json().catch(() => null);
+      } catch {
+        /* supplemental */
+      }
+      const renderLiveSspPanel = () => {
+        if (!liveSsp) return "";
+        const counts = liveSsp.counts || {};
+        const env = liveSsp.environment || {};
+        const scopeChips = (env.cmmc_scope || [])
+          .map((s) => `<span class="wq-badge pri-low">${escapeHtml(s.category || "unclassified")}: ${s.count}</span>`)
+          .join(" ");
+        // The one thing a static SSP export can't show: where the live
+        // control-test result and the pasted-evidence status disagree.
+        // live_status (pass/partial/fail/unknown) and evidence_status
+        // (implemented/partial/missing/not_assessed) are different
+        // vocabularies for the same idea -- map before comparing, or almost
+        // every tested control looks "divergent" by string mismatch alone.
+        const liveToEvidenceBucket = { pass: "implemented", partial: "partial", fail: "missing" };
+        const divergent = (liveSsp.controls || []).filter((c) => {
+          const mapped = liveToEvidenceBucket[c.live_status];
+          return mapped && mapped !== c.evidence_status;
+        });
+        return `<div class="cc-panel" style="margin-top:1rem" id="liveSspPanel">
+          <header><h3 style="margin:0">Live SSP snapshot</h3>
+            <span class="hint">synced ${fmtInventoryWhen(liveSsp.last_synchronized)}</span>
+          </header>
+          <p class="hint">${env.total_assets || 0} asset(s)${scopeChips ? " · " + scopeChips : ""}</p>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin:4px 0">
+            <span class="wq-badge pri-low">${counts.implemented || 0} implemented</span>
+            <span class="wq-badge pri-medium">${counts.partial || 0} partial</span>
+            <span class="wq-badge pri-high">${counts.missing || 0} missing</span>
+            <span class="wq-badge pri-medium">${counts.not_assessed || 0} not assessed</span>
+          </div>
+          ${
+            divergent.length
+              ? `<p class="hint"><strong>${divergent.length} control(s)</strong> where a live control test disagrees with the pasted-evidence status:</p>
+                 <div class="data-table-wrap"><table class="data-table"><thead><tr><th>Control</th><th>Evidence status</th><th>Live test</th></tr></thead><tbody>${divergent
+                   .slice(0, 25)
+                   .map(
+                     (c) =>
+                       `<tr><td><strong>${escapeHtml(c.control_id)}</strong></td><td>${escapeHtml(
+                         c.evidence_status
+                       )}</td><td><span class="wq-badge pri-${liveStatusRisk(c.live_status)}">${escapeHtml(
+                         c.live_status
+                       )}</span></td></tr>`
+                   )
+                   .join("")}</tbody></table></div>`
+              : `<p class="hint">No live test currently disagrees with the pasted-evidence status.</p>`
+          }
+          <p class="hint">${escapeHtml(liveSsp.disclaimer || "")}</p>
+        </div>`;
+      };
       const rows = data.results || data.top_gaps || [];
       const counts = data.counts || {};
       await ensureCanonicalRegistryCache().catch(() => {});
@@ -7357,6 +7445,7 @@
         ${renderResourcesPanel()}
         ${renderAffirmationPanel()}
         ${renderConditionalCertPanel()}
+        ${renderLiveSspPanel()}
         <div class="data-table-wrap">
           <table class="data-table">
             <thead>
