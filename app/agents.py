@@ -130,6 +130,10 @@ def ensure_schema() -> None:
             c.execute("ALTER TABLE securaiq_agents ADD COLUMN key_enc TEXT NOT NULL DEFAULT ''")
         if "ws_connected" not in cols:
             c.execute("ALTER TABLE securaiq_agents ADD COLUMN ws_connected INTEGER NOT NULL DEFAULT 0")
+        if "last_telemetry_seq" not in cols:
+            c.execute(
+                "ALTER TABLE securaiq_agents ADD COLUMN last_telemetry_seq INTEGER NOT NULL DEFAULT 0"
+            )
     except Exception:
         pass
     c.execute(
@@ -484,7 +488,20 @@ def checkin(agent_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     # instead: if it's oversized, fall back to a small, honestly-labeled
     # "truncated" payload rather than writing something that LOOKS like
     # real telemetry but silently isn't.
-    payload_json = json.dumps(payload)
+    # Sequence / offline-buffer recovery fields are stripped from the stored
+    # snapshot so last_payload_json stays host telemetry only.
+    store_payload = {
+        k: v
+        for k, v in payload.items()
+        if k
+        not in (
+            "sequence",
+            "buffered_events",
+            "request_missing_from",
+            "acked_sequences",
+        )
+    }
+    payload_json = json.dumps(store_payload)
     if len(payload_json) > 200_000:
         payload_json = json.dumps({
             "hostname": payload.get("hostname", ""),
@@ -495,12 +512,39 @@ def checkin(agent_id: str, payload: dict[str, Any]) -> dict[str, Any]:
             "reason": "Full telemetry payload exceeded the storage limit for this check-in and was dropped -- "
             "core fields only. Will be retried next check-in.",
         })
+    # REALTIME Task D — optional client sequence + buffered flush recovery.
+    seq_recovery: dict[str, Any] = {}
+    try:
+        from app.agent_offline_buffer import process_buffered_events_on_server
+
+        prev_seq = int(agent.get("last_telemetry_seq") or 0)
+        raw_seq = payload.get("sequence")
+        sequence = int(raw_seq) if raw_seq is not None and str(raw_seq).strip() != "" else None
+        buffered = payload.get("buffered_events")
+        if not isinstance(buffered, list):
+            buffered = None
+        req_missing = payload.get("request_missing_from")
+        req_missing_i = (
+            int(req_missing) if req_missing is not None and str(req_missing).strip() != "" else None
+        )
+        seq_recovery = process_buffered_events_on_server(
+            agent_id,
+            sequence=sequence,
+            buffered_events=buffered,
+            request_missing_from=req_missing_i,
+            last_acked_seq=prev_seq,
+        )
+    except Exception:
+        seq_recovery = {}
+    new_last_seq = int(seq_recovery.get("last_acked_seq") or agent.get("last_telemetry_seq") or 0)
+
     c = get_conn()
     c.execute(
         """
         UPDATE securaiq_agents
         SET hostname=?, ip=?, os=?, os_version=?, agent_version=?, asset_id=?,
-            last_checkin=?, checkin_count=checkin_count+1, last_payload_json=?
+            last_checkin=?, checkin_count=checkin_count+1, last_payload_json=?,
+            last_telemetry_seq=?
         WHERE id=?
         """,
         (
@@ -512,6 +556,7 @@ def checkin(agent_id: str, payload: dict[str, Any]) -> dict[str, Any]:
             asset_id,
             now(),
             payload_json,
+            new_last_seq,
             agent_id,
         ),
     )
@@ -519,7 +564,13 @@ def checkin(agent_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     try:
         from app.realtime_bus import publish
 
-        publish(type="agent", id=agent_id, status="online", asset_id=asset_id)
+        publish(
+            type="agent",
+            id=agent_id,
+            status="online",
+            asset_id=asset_id,
+            sequence=new_last_seq or None,
+        )
     except Exception:
         pass
     # Feed packages into software inventory so patch-verify can see installed versions.
@@ -543,7 +594,13 @@ def checkin(agent_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         except Exception:
             pass
     commands = _dispatch_queued_commands(agent_id)
-    return {"ok": True, "asset_id": asset_id, "commands": commands}
+    out: dict[str, Any] = {"ok": True, "asset_id": asset_id, "commands": commands}
+    if seq_recovery:
+        out["last_acked_seq"] = seq_recovery.get("last_acked_seq", new_last_seq)
+        out["acked_sequences"] = seq_recovery.get("acked_sequences") or []
+        if seq_recovery.get("missing_from") is not None:
+            out["missing_from"] = seq_recovery["missing_from"]
+    return out
 
 
 def _dispatch_queued_commands(agent_id: str, *, limit: int = 5) -> list[dict[str, Any]]:
@@ -574,6 +631,13 @@ def _dispatch_queued_commands(agent_id: str, *, limit: int = 5) -> list[dict[str
             c.execute(
                 "UPDATE securaiq_agent_commands SET status = 'timeout', error = ? WHERE id = ?",
                 ("Command expired before delivery", d["id"]),
+            )
+            _publish_agent_command(
+                agent_id=agent_id,
+                command_id=str(d["id"]),
+                status="timeout",
+                error="Command expired before delivery",
+                phase="EXPIRED",
             )
             continue
         cid = d.get("campaign_id") or ""
@@ -629,19 +693,24 @@ def _dispatch_queued_commands(agent_id: str, *, limit: int = 5) -> list[dict[str
         out.append(sealed)
     if out:
         c.commit()
-        try:
-            from app.realtime_bus import publish
-
-            for sealed in out:
-                publish(
-                    type="agent_command",
-                    agent_id=agent_id,
-                    id=sealed.get("id"),
-                    status="sent",
-                    event_id=sealed.get("event_id") or None,
-                )
-        except Exception:
-            pass
+        for sealed in out:
+            cid = str(sealed.get("id") or "")
+            eid = sealed.get("event_id") or None
+            # Transient DISPATCHED then durable DELIVERED (DB status stays `sent`).
+            _publish_agent_command(
+                agent_id=agent_id,
+                command_id=cid,
+                status="sent",
+                phase="DISPATCHED",
+                event_id=eid,
+            )
+            _publish_agent_command(
+                agent_id=agent_id,
+                command_id=cid,
+                status="sent",
+                phase="DELIVERED",
+                event_id=eid,
+            )
     else:
         try:
             c.commit()
@@ -925,13 +994,42 @@ def ack_command(agent_id: str, command_id: str) -> dict[str, Any]:
         (ts, command_id),
     )
     c.commit()
-    try:
-        from app.realtime_bus import publish
-
-        publish(type="agent_command", agent_id=agent_id, id=command_id, status="acked")
-    except Exception:
-        pass
+    _publish_agent_command(
+        agent_id=agent_id,
+        command_id=command_id,
+        status="acked",
+        phase="ACKNOWLEDGED",
+    )
+    # Agents typically begin work immediately after ACK — surface EXECUTING.
+    _publish_agent_command(
+        agent_id=agent_id,
+        command_id=command_id,
+        status="acked",
+        phase="EXECUTING",
+    )
     return {"ok": True, "status": "acked"}
+
+
+def mark_command_executing(agent_id: str, command_id: str) -> dict[str, Any]:
+    """Optional EXECUTING lifecycle publish (DB status stays acked/sent)."""
+    ensure_schema()
+    c = get_conn()
+    row = c.execute(
+        "SELECT * FROM securaiq_agent_commands WHERE id = ? AND agent_id = ?",
+        (command_id, agent_id),
+    ).fetchone()
+    if not row:
+        return {"ok": False, "error": "unknown command"}
+    st = str(row["status"] or "")
+    if st not in ("sent", "acked"):
+        return {"ok": True, "status": st, "lifecycle": command_lifecycle(st)}
+    _publish_agent_command(
+        agent_id=agent_id,
+        command_id=command_id,
+        status=st,
+        phase="EXECUTING",
+    )
+    return {"ok": True, "status": st, "lifecycle": "EXECUTING"}
 
 
 def expire_timed_out_commands() -> int:
@@ -939,7 +1037,14 @@ def expire_timed_out_commands() -> int:
     ts = now()
     c = get_conn()
     n = 0
+    timed_out_ids: list[tuple[str, str]] = []
     try:
+        rows = c.execute(
+            "SELECT id, agent_id FROM securaiq_agent_commands "
+            "WHERE status IN ('sent', 'acked') AND timeout_at > 0 AND timeout_at < ?",
+            (ts,),
+        ).fetchall()
+        timed_out_ids = [(str(r["id"]), str(r["agent_id"])) for r in rows]
         cur = c.execute(
             "UPDATE securaiq_agent_commands SET status = 'timeout', error = 'ack/result timeout' "
             "WHERE status IN ('sent', 'acked') AND timeout_at > 0 AND timeout_at < ?",
@@ -952,6 +1057,15 @@ def expire_timed_out_commands() -> int:
             c.rollback()
         except Exception:
             pass
+        return 0
+    for cid, aid in timed_out_ids:
+        _publish_agent_command(
+            agent_id=aid,
+            command_id=cid,
+            status="timeout",
+            error="ack/result timeout",
+            phase="TIMEOUT",
+        )
     return n
 
 
@@ -977,6 +1091,102 @@ def expire_timed_out_commands() -> int:
 
 SUPPORTED_COMMAND_KINDS = {"patch_package", "agent_upgrade"}
 COMMAND_STATUSES = {"pending_approval", "queued", "sent", "acked", "done", "error", "rejected", "timeout"}
+
+# Richer realtime lifecycle (dual-written as `lifecycle` on the bus). DB `status`
+# enum stays unchanged for compatibility.
+COMMAND_LIFECYCLE = {
+    "PENDING",
+    "APPROVED",
+    "DISPATCHED",
+    "DELIVERED",
+    "ACKNOWLEDGED",
+    "EXECUTING",
+    "COMPLETED",
+    "VERIFICATION",
+    "VERIFIED",
+    "FAILED",
+    "TIMEOUT",
+    "REJECTED",
+    "EXPIRED",
+}
+
+_STATUS_TO_LIFECYCLE = {
+    "pending_approval": "PENDING",
+    "queued": "APPROVED",
+    "sent": "DELIVERED",
+    "acked": "ACKNOWLEDGED",
+    "done": "COMPLETED",
+    "error": "FAILED",
+    "rejected": "REJECTED",
+    "timeout": "TIMEOUT",
+}
+
+
+def command_lifecycle(
+    status: str,
+    *,
+    verification_status: str = "",
+    error: str = "",
+    phase: str = "",
+) -> str:
+    """Map durable DB status (+ optional verification) to realtime lifecycle.
+
+    Prefer dual-writing ``lifecycle`` on publishes rather than changing DB enums.
+    ``phase`` overrides for transient moments (e.g. DISPATCHED just before sent,
+    EXECUTING after ack while work is in flight, VERIFICATION while pending).
+    """
+    phase_u = (phase or "").strip().upper()
+    if phase_u in COMMAND_LIFECYCLE:
+        return phase_u
+    st = (status or "").strip().lower()
+    v = (verification_status or "").strip().lower()
+    err = (error or "").lower()
+    if st == "timeout" and "expired before delivery" in err:
+        return "EXPIRED"
+    if st == "done":
+        if v in ("pending",):
+            return "VERIFICATION"
+        if v in ("verified",):
+            return "VERIFIED"
+        if v in ("verification_failed",):
+            return "FAILED"
+        return "COMPLETED"
+    return _STATUS_TO_LIFECYCLE.get(st, "PENDING")
+
+
+def _publish_agent_command(
+    *,
+    agent_id: str,
+    command_id: str,
+    status: str,
+    verification_status: str = "",
+    error: str = "",
+    phase: str = "",
+    **extra: Any,
+) -> None:
+    """Publish agent_command with dual-written status + lifecycle."""
+    try:
+        from app.realtime_bus import publish
+
+        lifecycle = command_lifecycle(
+            status,
+            verification_status=verification_status,
+            error=error,
+            phase=phase,
+        )
+        payload = {
+            "type": "agent_command",
+            "agent_id": agent_id,
+            "id": command_id,
+            "status": status,
+            "lifecycle": lifecycle,
+            **extra,
+        }
+        if verification_status:
+            payload["verification_status"] = verification_status
+        publish(**payload)
+    except Exception:
+        pass
 
 
 def request_command(
@@ -1024,12 +1234,12 @@ def request_command(
         ),
     )
     c.commit()
-    try:
-        from app.realtime_bus import publish
-
-        publish(type="agent_command", agent_id=agent_id, id=cid, status="pending_approval", kind=kind)
-    except Exception:
-        pass
+    _publish_agent_command(
+        agent_id=agent_id,
+        command_id=cid,
+        status="pending_approval",
+        kind=kind,
+    )
     return {"id": cid, "status": "pending_approval"}
 
 
@@ -1110,12 +1320,12 @@ def approve_command(user_id: str, agent_id: str, command_id: str, *, approver_id
     )
     c.commit()
     audit("agent_command_approve", user_id, {"agent_id": agent_id, "command_id": command_id, "approver_id": approver_id})
-    try:
-        from app.realtime_bus import publish
-
-        publish(type="agent_command", agent_id=agent_id, id=command_id, status="queued")
-    except Exception:
-        pass
+    _publish_agent_command(
+        agent_id=agent_id,
+        command_id=command_id,
+        status="queued",
+        phase="APPROVED",
+    )
     try:
         from app.agent_gateway import notify_agent
 
@@ -1142,12 +1352,13 @@ def reject_command(user_id: str, agent_id: str, command_id: str, *, approver_id:
     )
     c.commit()
     audit("agent_command_reject", user_id, {"agent_id": agent_id, "command_id": command_id, "approver_id": approver_id, "reason": reason})
-    try:
-        from app.realtime_bus import publish
-
-        publish(type="agent_command", agent_id=agent_id, id=command_id, status="rejected")
-    except Exception:
-        pass
+    _publish_agent_command(
+        agent_id=agent_id,
+        command_id=command_id,
+        status="rejected",
+        phase="REJECTED",
+        rejected_reason=str(reason or "")[:200],
+    )
     return {"id": command_id, "status": "rejected"}
 
 
@@ -1760,18 +1971,36 @@ def report_command_result(agent_id: str, command_id: str, *, status: str, result
                 ("Agent has no linked asset yet — cannot verify", command_id),
             )
         c.commit()
-    try:
-        from app.realtime_bus import publish
-
-        publish(
-            type="agent_command",
+    v_status = ""
+    if status == "done":
+        v_status = "pending" if asset_id else "unknown"
+        # Execution complete, then verification loop (kept as separate lifecycle publish).
+        _publish_agent_command(
             agent_id=agent_id,
-            id=command_id,
-            status=status,
+            command_id=command_id,
+            status="done",
+            verification_status="",
             asset_id=asset_id,
+            phase="COMPLETED",
         )
-    except Exception:
-        pass
+        if asset_id:
+            _publish_agent_command(
+                agent_id=agent_id,
+                command_id=command_id,
+                status="done",
+                verification_status="pending",
+                asset_id=asset_id,
+                phase="VERIFICATION",
+            )
+    else:
+        _publish_agent_command(
+            agent_id=agent_id,
+            command_id=command_id,
+            status="error",
+            asset_id=asset_id,
+            phase="FAILED",
+            error=str((result or {}).get("error") or "")[:200],
+        )
     if status == "done" and asset_id:
         # Stamp installed version from the agent result immediately so the
         # advisory-refresh verification job is not racing an empty inventory.
@@ -1937,12 +2166,13 @@ def record_command_verification(command_id: str, *, verified: bool | None, detai
         (v_status, detail_text[:500], now(), command_id),
     )
     c.commit()
-    try:
-        from app.realtime_bus import publish
-
-        publish(type="agent_command", agent_id=row["agent_id"], id=command_id, status=row["status"], verification_status=v_status)
-    except Exception:
-        pass
+    _publish_agent_command(
+        agent_id=str(row["agent_id"]),
+        command_id=command_id,
+        status=str(row["status"]),
+        verification_status=v_status,
+        phase="VERIFIED" if verified is True else ("FAILED" if verified is False else "VERIFICATION"),
+    )
     campaign_id = row.get("campaign_id") or ""
     if campaign_id:
         try:

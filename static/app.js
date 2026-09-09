@@ -2716,49 +2716,123 @@ function stripLiveMarkers(text) {
     });
 }
 
-function realtimeFeedUrl() {
+/**
+ * RealtimeManager — light connection-state + Last-Event-ID tracker.
+ * Native EventSource auto-reconnect to the same URL sends Last-Event-ID.
+ * Query ``last_event_id`` is only for manual reopen / future polyfills.
+ */
+window.RealtimeManager = window.RealtimeManager || {
+  state: "offline", // connected | reconnecting | reconnected | failed | offline
+  lastEventId: "",
+  _hadOpen: false,
+  _failCount: 0,
+  setConnState(state, phase, activity) {
+    this.state = state;
+    window.__securaiqRtConnState = state;
+    if (streaming || window.__securaiqStreaming) return;
+    if (state === "connected" || state === "reconnected") {
+      setLiveState("live-on", phase || "Live", activity || "");
+    } else if (state === "reconnecting") {
+      setLiveState("live-off", "Reconnecting…", activity || "");
+    } else if (state === "failed" || state === "offline") {
+      setLiveState("live-off", "Offline — last known state", activity || "");
+    }
+  },
+  noteEventId(id) {
+    const eid = String(id || "").trim();
+    if (eid) this.lastEventId = eid;
+  },
+  route(detail) {
+    // Hook for lightweight subscribers; primary path remains securaiq:realtime.
+    try {
+      window.dispatchEvent(new CustomEvent("securaiq:realtime:routed", { detail: detail || {} }));
+    } catch {
+      /* ignore */
+    }
+  },
+};
+
+function realtimeFeedUrl(opts) {
   // EventSource cannot send Authorization — cookie covers most logins; when
   // AUTH is on and we only have a Bearer token in memory, pass it as a query
-  // param so KPI scopes stay user-specific.
-  let url = "/api/realtime";
+  // param so KPI scopes stay user-specific. Keep the base URL stable so native
+  // EventSource reconnect preserves Last-Event-ID on the same connection URL.
+  opts = opts || {};
+  const params = new URLSearchParams();
   try {
     if (authToken && (typeof authEnabled !== "undefined" ? authEnabled : window.__securaiqAuthEnabled)) {
-      url += `?access_token=${encodeURIComponent(authToken)}`;
+      params.set("access_token", authToken);
     }
   } catch {
     /* ignore */
   }
-  return url;
+  // Polyfill / force-reopen only — prefer native Last-Event-ID on auto-reconnect.
+  if (opts.lastEventId) {
+    params.set("last_event_id", opts.lastEventId);
+  }
+  const q = params.toString();
+  return q ? `/api/realtime?${q}` : "/api/realtime";
 }
 
-function startRealtimeFeed() {
+function startRealtimeFeed(opts) {
+  opts = opts || {};
+  const rt = window.RealtimeManager;
   if (!window.EventSource) {
-    setLiveState("live-off", "SSE unsupported", "");
+    if (rt) rt.setConnState("failed", "SSE unsupported", "");
+    else setLiveState("live-off", "SSE unsupported", "");
     return;
   }
   try {
-    if (window.__securaiqRealtimeEs) {
+    const existing = window.__securaiqRealtimeEs;
+    // Let the browser auto-reconnect (keeps Last-Event-ID) unless forced.
+    if (
+      !opts.force &&
+      existing &&
+      (existing.readyState === EventSource.OPEN || existing.readyState === EventSource.CONNECTING)
+    ) {
+      return;
+    }
+    if (existing) {
       try {
-        window.__securaiqRealtimeEs.close();
+        existing.close();
       } catch {
         /* ignore */
       }
     }
-    const es = new EventSource(realtimeFeedUrl());
+    // Manual reopen after CLOSED: pass last_event_id (polyfill path). Autoreconnect
+    // to the same URL relies on the Last-Event-ID header instead.
+    const lastId = opts.lastEventId || (rt && rt.lastEventId) || "";
+    const es = new EventSource(realtimeFeedUrl(opts.force && lastId ? { lastEventId: lastId } : {}));
     window.__securaiqRealtimeEs = es;
+    if (rt) es.__securaiqWasOpen = !!rt._hadOpen;
     es.onopen = () => {
       window.__securaiqEsConnected = true;
-      if (!streaming) setLiveState("live-on", "Ready", "");
+      const wasOpen = !!(rt && rt._hadOpen);
+      if (rt) {
+        rt._hadOpen = true;
+        rt._failCount = 0;
+        if (wasOpen || es.__securaiqWasOpen) {
+          rt.setConnState("reconnected", "Live", "reconnected");
+        } else {
+          rt.setConnState("connected", "Live", "");
+        }
+      } else if (!streaming) {
+        setLiveState("live-on", "Live", "");
+      }
     };
     es.onmessage = (ev) => {
       try {
+        if (ev.lastEventId && rt) rt.noteEventId(ev.lastEventId);
         const data = JSON.parse(ev.data);
         if (data.error) {
-          if (!streaming && !window.__securaiqStreaming) {
+          if (rt) rt.setConnState("failed", "Feed error", data.error);
+          else if (!streaming && !window.__securaiqStreaming) {
             setLiveState("live-off", "Feed error", data.error);
           }
           return;
         }
+        const pushEid = data.push && data.push.event_id;
+        if (pushEid && rt) rt.noteEventId(pushEid);
         const prev = window.__securaiqRealtime || {};
         window.__securaiqRealtime = data;
         const push = data.push || null;
@@ -2783,6 +2857,9 @@ function startRealtimeFeed() {
         const liveState = jobsBusy > 0 ? "live-busy" : ready ? "live-on" : "live-off";
         // Keep badge/KPIs live even while chat streams; only soften the rail label.
         if (!streaming && !window.__securaiqStreaming) {
+          if (rt && (rt.state === "reconnected" || rt.state === "connected")) {
+            /* connection badge already set on open; refine with job/backend pulse */
+          }
           setLiveState(
             liveState,
             jobsBusy > 0
@@ -2793,6 +2870,9 @@ function startRealtimeFeed() {
             data.model || ""
           );
           paintLiveDeck(liveState, null, data.model || "", data);
+          if (rt && rt.state !== "connected" && rt.state !== "reconnected" && ready) {
+            rt.state = "connected";
+          }
         }
         const pulseEl = document.getElementById("topLastSync");
         if (pulseEl) pulseEl.textContent = `pulse ${new Date().toLocaleTimeString()}`;
@@ -2946,18 +3026,17 @@ function startRealtimeFeed() {
           JSON.stringify(prev.inventory || {}) !== JSON.stringify(data.inventory || {}) ||
           JSON.stringify(prev.hardeningkitty || {}) !== JSON.stringify(data.hardeningkitty || {});
         const pushRefresh = !!pushType || also.length > 0;
-        window.dispatchEvent(
-          new CustomEvent("securaiq:realtime", {
-            detail: {
-              ...data,
-              jobsChanged,
-              kpisChanged,
-              pushRefresh,
-              pushType,
-              heartbeat: !pushType,
-            },
-          })
-        );
+        const rtDetail = {
+          ...data,
+          jobsChanged,
+          kpisChanged,
+          pushRefresh,
+          pushType,
+          heartbeat: !pushType,
+          lastEventId: (rt && rt.lastEventId) || ev.lastEventId || "",
+        };
+        window.dispatchEvent(new CustomEvent("securaiq:realtime", { detail: rtDetail }));
+        if (rt && typeof rt.route === "function") rt.route(rtDetail);
         applyRealtimeWorkspaceRefresh(data, {
           jobsChanged,
           kpisChanged,
@@ -3023,16 +3102,31 @@ function startRealtimeFeed() {
     };
     es.onerror = () => {
       window.__securaiqEsConnected = false;
-      if (!streaming && !window.__securaiqStreaming) {
+      if (rt) {
+        rt._failCount = (rt._failCount || 0) + 1;
+        rt.setConnState("reconnecting", "Reconnecting…", "");
+      } else if (!streaming && !window.__securaiqStreaming) {
         setLiveState("live-off", "Reconnecting…", "");
       }
+      // CONNECTING: browser is auto-reconnecting with Last-Event-ID — do not reopen.
+      // CLOSED: permanent close → force reopen and pass last_event_id as polyfill.
       if (es.readyState === EventSource.CLOSED) {
         clearTimeout(window.__securaiqEsRetry);
-        window.__securaiqEsRetry = setTimeout(startRealtimeFeed, 2500);
+        const fails = (rt && rt._failCount) || 0;
+        if (fails >= 8 && rt) {
+          rt.setConnState("offline", "Offline — last known state", "");
+        }
+        window.__securaiqEsRetry = setTimeout(() => {
+          startRealtimeFeed({ force: true, lastEventId: (rt && rt.lastEventId) || "" });
+        }, fails >= 5 ? 5000 : 2500);
       }
     };
   } catch {
-    setLiveState("live-off", "Realtime offline", "");
+    if (window.RealtimeManager) {
+      window.RealtimeManager.setConnState("offline", "Offline — last known state", "");
+    } else {
+      setLiveState("live-off", "Offline — last known state", "");
+    }
   }
 }
 
@@ -3047,8 +3141,6 @@ const REALTIME_LIVE_TYPES = new Set([
   "inventory",
   "software_inventory",
   "software.inventory.updated",
-  "software.inventory.updated",
-  "software.vulnerability.changed",
   "software.vulnerability.changed",
   "scan_clear",
   "archive",
@@ -3073,6 +3165,11 @@ const REALTIME_LIVE_TYPES = new Set([
   "hardening",
   "notification",
   "hunt",
+  // Task F aliases / domain coverage (backend may emit related type strings)
+  "evidence",
+  "compliance",
+  "threat",
+  "verification",
 ]);
 window.REALTIME_LIVE_TYPES = REALTIME_LIVE_TYPES;
 
@@ -7741,6 +7838,7 @@ function syncLiveWorkspace(opts) {
     if (isLivePush || view === "playbooks") rt(window.renderPlaybooksPage);
     if (isLivePush || view === "campaigns") rt(window.renderCampaignsPage);
     if (isLivePush || view === "evidence") rt(window.renderEvidencePage);
+    if (isLivePush || view === "compliance_center") rt(window.renderComplianceCenterPage);
     if (isLivePush || view === "graph") rt(window.renderGraphPage);
     if (isLivePush || view === "integrations") rt(window.renderIntegrationsPage);
     if (isLivePush || view === "automation") rt(window.refreshAutomationPage);
@@ -9025,7 +9123,7 @@ on(authForm, "submit", async (e) => {
     localStorage.setItem(AUTH_TOKEN_KEY, authToken);
     if (mfaWrap) mfaWrap.classList.add("hidden");
     try {
-      if (typeof startRealtimeFeed === "function") startRealtimeFeed();
+      if (typeof startRealtimeFeed === "function") startRealtimeFeed({ force: true });
     } catch {
       /* ignore */
     }
@@ -9128,7 +9226,7 @@ on(document.getElementById("authRegisterBtn"), "click", async () => {
     await refreshAuthStatus();
     await loadEngagements();
     try {
-      if (typeof startRealtimeFeed === "function") startRealtimeFeed();
+      if (typeof startRealtimeFeed === "function") startRealtimeFeed({ force: true });
     } catch {
       /* ignore */
     }
@@ -9495,11 +9593,14 @@ checkHealth().then(() => {
 });
 wireCommandCenterUi();
 setInterval(checkHealth, 90000);
+// Command Center soft poll — skip when SSE is already driving refresh.
 setInterval(() => {
-  if (currentView === "command") loadCommandCenter();
+  if (currentView === "command" && !window.__securaiqEsConnected) loadCommandCenter();
 }, 60000);
-// Fallback live refresh if SSE stalls — keeps open workspace panels warm
+// Fallback live refresh if SSE stalls — keep open workspace panels warm.
+// When the feed is connected, heartbeats already call __securaiqRefreshActiveView.
 setInterval(() => {
+  if (window.__securaiqEsConnected) return;
   if (typeof window.__securaiqRefreshActiveView === "function") {
     window.__securaiqRefreshActiveView({}, { heartbeat: true });
   }
@@ -9508,12 +9609,22 @@ document.addEventListener("visibilitychange", () => {
   if (document.hidden) return;
   syncLiveWorkspace();
   const es = window.__securaiqRealtimeEs;
-  if (!es || es.readyState === EventSource.CLOSED) startRealtimeFeed();
+  if (!es || es.readyState === EventSource.CLOSED) {
+    startRealtimeFeed({ force: true, lastEventId: (window.RealtimeManager && window.RealtimeManager.lastEventId) || "" });
+  }
 });
 window.addEventListener("pageshow", () => syncLiveWorkspace());
 window.addEventListener("online", () => {
-  startRealtimeFeed();
+  startRealtimeFeed({ force: true, lastEventId: (window.RealtimeManager && window.RealtimeManager.lastEventId) || "" });
   syncLiveWorkspace();
+});
+window.addEventListener("offline", () => {
+  window.__securaiqEsConnected = false;
+  if (window.RealtimeManager) {
+    window.RealtimeManager.setConnState("offline", "Offline — last known state", "");
+  } else if (typeof setLiveState === "function") {
+    setLiveState("live-off", "Offline — last known state", "");
+  }
 });
 resizeInput();
 

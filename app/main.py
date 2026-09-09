@@ -1376,11 +1376,17 @@ async def realtime_feed(request: Request):
     """Server-Sent Events: live pulse for Mission Control + workspace panels.
 
     Wakes immediately on realtime_bus.publish(...) (notifications, jobs, XDR,
-    etc.) and still emits a heartbeat snapshot every 5s when idle.
+    etc.) and still emits a heartbeat snapshot every ~3s when idle.
 
     EventSource cannot set Authorization headers — prefer session cookie.
     When AUTH_ENABLED, also accept ``?access_token=`` (same JWT/session token
-    the UI already stores) so lab dashboards stay live after login.
+    the UI already stores) so lab dashboards stay live after login / reconnect.
+
+    Reconnect catch-up (REALTIME Task E): reads ``Last-Event-ID`` (native
+    EventSource) or ``?last_event_id=`` (polyfill / manual reconnect) and
+    replays buffered events via ``realtime_bus.replay_since`` before the live
+    loop. Frames that carry a push ``event_id`` include SSE ``id:`` so the
+    browser stores Last-Event-ID for the next reconnect.
     """
     from app.auth import resolve_user
 
@@ -1395,8 +1401,14 @@ async def realtime_feed(request: Request):
     else:
         sse_uid = sse_user.id if sse_user else "local"
 
+    # Prefer header (EventSource auto-reconnect); query is for polyfills / force reopen.
+    last_event_id = (
+        (request.headers.get("last-event-id") or "").strip()
+        or (request.query_params.get("last_event_id") or "").strip()
+    )
+
     async def event_gen():
-        from app.realtime_bus import bind_loop, subscribe, unsubscribe
+        from app.realtime_bus import bind_loop, replay_since, subscribe, unsubscribe
 
         tools_snap = {"available_count": 0, "count": 0}
         tools_ts = 0.0
@@ -1405,6 +1417,18 @@ async def realtime_feed(request: Request):
             bind_loop()
         except Exception:
             pass
+
+        def _sse_frame(payload: dict[str, Any], event_id: str | None = None) -> str:
+            """Emit one SSE message; include id when we have a push event_id."""
+            eid = str(event_id or "").strip()
+            prefix = f"id: {eid}\n" if eid else ""
+            return f"{prefix}data: {json.dumps(payload)}\n\n"
+
+        def _push_event_id(push: dict[str, Any] | None) -> str | None:
+            if not isinstance(push, dict):
+                return None
+            eid = str(push.get("event_id") or "").strip()
+            return eid or None
 
         async def build_payload(push: dict[str, Any] | None = None) -> dict[str, Any]:
             nonlocal tools_snap, tools_ts
@@ -1576,9 +1600,25 @@ async def realtime_feed(request: Request):
         try:
             # Immediate snapshot so clients paint without waiting for the first tick.
             try:
-                yield f"data: {json.dumps(await build_payload())}\n\n"
+                yield _sse_frame(await build_payload())
             except Exception as exc:
-                yield f"data: {json.dumps({'error': str(exc)})}\n\n"
+                yield _sse_frame({"error": str(exc)})
+
+            # Missed-event catch-up before live loop (Last-Event-ID / ?last_event_id=).
+            if last_event_id:
+                try:
+                    for missed in replay_since(last_event_id, limit=100):
+                        if not isinstance(missed, dict):
+                            continue
+                        # Drop internal transport fields from the push body.
+                        push_body = {k: v for k, v in missed.items() if k != "_pid"}
+                        try:
+                            frame = await build_payload(push_body)
+                            yield _sse_frame(frame, _push_event_id(push_body))
+                        except Exception as exc:
+                            yield _sse_frame({"error": str(exc)})
+                except Exception:
+                    pass
 
             while True:
                 push_evt: dict[str, Any] | None = None
@@ -1597,9 +1637,10 @@ async def realtime_feed(request: Request):
                 except asyncio.TimeoutError:
                     push_evt = None
                 try:
-                    yield f"data: {json.dumps(await build_payload(push_evt))}\n\n"
+                    frame = await build_payload(push_evt)
+                    yield _sse_frame(frame, _push_event_id(push_evt))
                 except Exception as exc:
-                    yield f"data: {json.dumps({'error': str(exc)})}\n\n"
+                    yield _sse_frame({"error": str(exc)})
         finally:
             unsubscribe(q)
 

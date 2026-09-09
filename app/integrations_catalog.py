@@ -180,7 +180,7 @@ CATALOG: list[dict[str, Any]] = [
     {"id": "azure_devops", "name": "Azure DevOps", "category": "scm", "status": "planned"},
     {"id": "bitbucket", "name": "Bitbucket", "category": "scm", "status": "planned"},
     {"id": "stix_taxii", "name": "STIX 2.1 / TAXII 2.1", "category": "intel", "status": "shipped", "hint": "POST /api/intel/stix/ingest · GET export · TAXII poll"},
-    {"id": "redis_realtime", "name": "Redis realtime bus", "category": "queue", "status": "partial", "hint": "Set REDIS_URL + pip install redis — multi-worker SSE fan-out"},
+    {"id": "redis_realtime", "name": "Redis realtime bus", "category": "queue", "status": "partial", "hint": "Set REDIS_URL + pip install redis — Streams XADD + pub/sub SSE fan-out"},
     {"id": "jira", "name": "Jira", "category": "pm", "status": "shipped"},
     {"id": "servicenow", "name": "ServiceNow", "category": "itsm", "status": "shipped", "hint": "Set SERVICENOW_INSTANCE_URL/USERNAME/PASSWORD — POST /api/integrations/servicenow/incident"},
     {"id": "linear", "name": "Linear", "category": "pm", "status": "planned"},

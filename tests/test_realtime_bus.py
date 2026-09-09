@@ -16,13 +16,15 @@ from app import realtime_bus
 
 @pytest.fixture(autouse=True)
 def _reset_bus():
-    """The module holds subscriber state in a global set — don't leak it
+    """The module holds subscriber + replay state in globals — don't leak it
     between tests."""
     for q in list(realtime_bus._subscribers):
         realtime_bus.unsubscribe(q)
+    realtime_bus.clear_replay_buffer_for_tests()
     yield
     for q in list(realtime_bus._subscribers):
         realtime_bus.unsubscribe(q)
+    realtime_bus.clear_replay_buffer_for_tests()
 
 
 @pytest.mark.asyncio
@@ -106,3 +108,52 @@ async def test_full_queue_drops_oldest_not_newest():
         seen.append((await q.get())["id"])
     assert "third" in seen  # newest must survive
     assert len(seen) <= 2
+
+
+@pytest.mark.asyncio
+async def test_publish_normalizes_and_dedupes_by_event_id():
+    realtime_bus.bind_loop()
+    q = realtime_bus.subscribe()
+    realtime_bus.publish(type="vuln", id="dup1", event_id="fixed-eid-aaa")
+    realtime_bus.publish(type="vuln", id="dup2", event_id="fixed-eid-aaa")  # duplicate
+
+    first = await asyncio.wait_for(q.get(), timeout=1.0)
+    assert first["event_id"] == "fixed-eid-aaa"
+    assert first["event_type"] == "vuln"
+    assert first["type"] == "vuln"
+    await asyncio.sleep(0)
+    assert q.empty()
+
+
+def test_replay_since_returns_events_after_id():
+    realtime_bus.publish(type="vuln", id="a", event_id="eid-a")
+    realtime_bus.publish(type="vuln", id="b", event_id="eid-b")
+    realtime_bus.publish(type="vuln", id="c", event_id="eid-c")
+
+    after = realtime_bus.replay_since("eid-a", limit=10)
+    assert [e["event_id"] for e in after] == ["eid-b", "eid-c"]
+    assert after[0]["id"] == "b"
+
+    empty = realtime_bus.replay_since("eid-c", limit=10)
+    assert empty == []
+
+
+def test_replay_since_none_returns_recent_window():
+    realtime_bus.publish(type="job", id="1", event_id="r1")
+    realtime_bus.publish(type="job", id="2", event_id="r2")
+    recent = realtime_bus.replay_since(None, limit=1)
+    assert len(recent) == 1
+    assert recent[0]["event_id"] == "r2"
+
+
+def test_stream_status_and_backend_status_in_process():
+    st = realtime_bus.stream_status()
+    assert st["mode"] == "in_process"
+    assert st["redis_configured"] is False
+    assert st["replay_buffer_max"] >= 16
+
+    bs = realtime_bus.backend_status()
+    assert bs["mode"] == "in_process"
+    assert bs["redis_configured"] is False
+    assert isinstance(bs["stream"], dict)
+    assert bs["stream"]["mode"] == "in_process"

@@ -152,6 +152,10 @@ class CheckinPayload(BaseModel):
     defender_status: dict[str, Any] = Field(default_factory=dict)
     startup_apps: dict[str, Any] = Field(default_factory=dict)
     ssh_config: dict[str, Any] = Field(default_factory=dict)
+    # REALTIME Task D — optional offline buffer / sequence recovery (ignored by older agents).
+    sequence: int | None = None
+    buffered_events: list[dict[str, Any]] = Field(default_factory=list)
+    request_missing_from: int | None = None
 
 
 def _parse_agent_bearer(value: str | None) -> tuple[str, str]:

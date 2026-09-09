@@ -1,13 +1,19 @@
 """Agent command signing, event IDs, and replay protection.
 
 Floor for Agent Platform v1 — not full mTLS/certificate lifecycle yet.
+
+HMAC seals remain the default command delivery path. Opt-in Ed25519 (or both)
+via ``AGENT_COMMAND_SIGNING_ALG`` / ``agent_command_signing_alg`` (REALTIME Task J).
+Production direction: Ed25519 + mTLS; HMAC keeps labs working without keys.
 """
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
+import logging
 import os
 import secrets
 import threading
@@ -15,6 +21,8 @@ import time
 from typing import Any
 
 from app.db import get_conn, new_id, now
+
+_log = logging.getLogger(__name__)
 
 _NONCE_LOCK = threading.Lock()
 _NONCE_TTL_SEC = 900
@@ -161,26 +169,307 @@ def remember_nonce(nonce: str, *, agent_id: str = "", ttl_sec: int = _NONCE_TTL_
 
 
 def seal_command_for_delivery(command_row: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
-    """Attach event_id, nonce, signature for gateway/check-in delivery."""
+    """Attach event_id, nonce, and signature(s) for gateway/check-in delivery.
+
+    Algorithm controlled by ``agent_command_signing_alg`` (hmac | ed25519 | both).
+    HMAC remains the default. When alg requests Ed25519 but no private key is
+    configured, falls back to HMAC and logs a warning.
+    """
     cid = str(command_row.get("id") or "")
     aid = str(command_row.get("agent_id") or "")
     kind = str(command_row.get("kind") or "")
     event_id = str(command_row.get("event_id") or "") or new_event_id()
     nonce = str(command_row.get("nonce") or "") or new_nonce()
-    sig = sign_command(
-        command_id=cid,
-        agent_id=aid,
+    body = payload or {}
+    out: dict[str, Any] = {
+        "id": cid,
+        "agent_id": aid,
+        "kind": kind,
+        "payload": body,
+        "event_id": event_id,
+        "nonce": nonce,
+        "seq": float(command_row.get("created_at") or 0),
+    }
+
+    alg = _command_signing_alg()
+    used_hmac = False
+    used_ed = False
+
+    if alg in ("hmac", "both"):
+        out["signature"] = sign_command(
+            command_id=cid,
+            agent_id=aid,
+            kind=kind,
+            payload=body,
+            nonce=nonce,
+            event_id=event_id,
+        )
+        used_hmac = True
+
+    if alg in ("ed25519", "both"):
+        try:
+            out["signature_ed25519"] = ed25519_sign_command(
+                command_id=cid,
+                agent_id=aid,
+                kind=kind,
+                payload=body,
+                nonce=nonce,
+                event_id=event_id,
+            )
+            pub = _ed25519_public_material()
+            if pub:
+                out["signing_public_key"] = pub
+            used_ed = True
+        except Exception as exc:
+            _log.warning(
+                "Ed25519 seal unavailable (%s); falling back to HMAC — "
+                "set SECURAIQ_AGENT_ED25519_PRIVATE_KEY or agent_ed25519_private_key "
+                "when AGENT_COMMAND_SIGNING_ALG=ed25519|both",
+                exc,
+            )
+            if not used_hmac:
+                out["signature"] = sign_command(
+                    command_id=cid,
+                    agent_id=aid,
+                    kind=kind,
+                    payload=body,
+                    nonce=nonce,
+                    event_id=event_id,
+                )
+                used_hmac = True
+
+    if used_hmac and used_ed:
+        out["signature_alg"] = "both"
+    elif used_ed:
+        out["signature_alg"] = "ed25519"
+    else:
+        out["signature_alg"] = "hmac"
+        if "signature" not in out:
+            out["signature"] = sign_command(
+                command_id=cid,
+                agent_id=aid,
+                kind=kind,
+                payload=body,
+                nonce=nonce,
+                event_id=event_id,
+            )
+
+    return out
+
+
+def verify_sealed_command(cmd: dict[str, Any]) -> bool:
+    """Verify a sealed command dict per its ``signature_alg`` (hmac | ed25519 | both)."""
+    if not isinstance(cmd, dict):
+        return False
+    cid = str(cmd.get("id") or "")
+    aid = str(cmd.get("agent_id") or "")
+    kind = str(cmd.get("kind") or "")
+    payload = cmd.get("payload") if isinstance(cmd.get("payload"), dict) else {}
+    nonce = str(cmd.get("nonce") or "")
+    event_id = str(cmd.get("event_id") or "")
+    if not (cid and nonce and event_id):
+        return False
+
+    alg = str(cmd.get("signature_alg") or "hmac").strip().lower()
+    if alg not in ("hmac", "ed25519", "both"):
+        alg = "hmac"
+
+    if alg in ("hmac", "both"):
+        sig = str(cmd.get("signature") or "")
+        if not verify_command_signature(
+            command_id=cid,
+            agent_id=aid,
+            kind=kind,
+            payload=payload,
+            nonce=nonce,
+            event_id=event_id,
+            signature=sig,
+        ):
+            return False
+
+    if alg in ("ed25519", "both"):
+        sig_ed = str(cmd.get("signature_ed25519") or "")
+        if not sig_ed:
+            return False
+        msg = canonical_command_payload(
+            command_id=cid,
+            agent_id=aid,
+            kind=kind,
+            payload=payload,
+            nonce=nonce,
+            event_id=event_id,
+        )
+        pub = str(cmd.get("signing_public_key") or "") or None
+        if not ed25519_verify(msg, sig_ed, public_key=pub):
+            return False
+
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Ed25519 foundations (optional) — production should move from HMAC to
+# Ed25519 + mTLS; HMAC remains the default seal until operators opt in.
+# ---------------------------------------------------------------------------
+
+
+def _command_signing_alg() -> str:
+    raw = ""
+    try:
+        from app.config import settings
+
+        raw = str(getattr(settings, "agent_command_signing_alg", "") or "").strip()
+    except Exception:
+        raw = ""
+    if not raw:
+        raw = (os.environ.get("AGENT_COMMAND_SIGNING_ALG") or "hmac").strip()
+    alg = raw.lower()
+    if alg not in ("hmac", "ed25519", "both"):
+        return "hmac"
+    return alg
+
+
+def _ed25519_public_material() -> str:
+    """Public key string for embedding in sealed commands (agent can verify without extra config)."""
+    raw = (os.environ.get("SECURAIQ_AGENT_ED25519_PUBLIC_KEY") or "").strip()
+    if not raw:
+        try:
+            from app.config import settings
+
+            raw = str(getattr(settings, "agent_ed25519_public_key", "") or "").strip()
+        except Exception:
+            raw = ""
+    return raw
+
+
+def _b64url_encode(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _b64url_decode(text: str) -> bytes:
+    t = (text or "").strip()
+    pad = "=" * (-len(t) % 4)
+    return base64.urlsafe_b64decode(t + pad)
+
+
+def generate_ed25519_keypair() -> dict[str, str]:
+    """Generate a new Ed25519 keypair. Returns PEM + raw base64url forms."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    private = Ed25519PrivateKey.generate()
+    public = private.public_key()
+    priv_pem = private.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode("ascii")
+    pub_pem = public.public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    ).decode("ascii")
+    priv_raw = private.private_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PrivateFormat.Raw,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    pub_raw = public.public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    return {
+        "private_pem": priv_pem,
+        "public_pem": pub_pem,
+        "private_b64": _b64url_encode(priv_raw),
+        "public_b64": _b64url_encode(pub_raw),
+    }
+
+
+def _load_ed25519_private(material: str | None = None):
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    raw = (material or "").strip()
+    if not raw:
+        raw = (os.environ.get("SECURAIQ_AGENT_ED25519_PRIVATE_KEY") or "").strip()
+    if not raw:
+        try:
+            from app.config import settings
+
+            raw = str(getattr(settings, "agent_ed25519_private_key", "") or "").strip()
+        except Exception:
+            raw = ""
+    if not raw:
+        raise ValueError("No Ed25519 private key configured")
+    if "BEGIN" in raw:
+        return serialization.load_pem_private_key(raw.encode("utf-8"), password=None)
+    return Ed25519PrivateKey.from_private_bytes(_b64url_decode(raw))
+
+
+def _load_ed25519_public(material: str | None = None):
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+    raw = (material or "").strip()
+    if not raw:
+        raw = (os.environ.get("SECURAIQ_AGENT_ED25519_PUBLIC_KEY") or "").strip()
+    if not raw:
+        try:
+            from app.config import settings
+
+            raw = str(getattr(settings, "agent_ed25519_public_key", "") or "").strip()
+        except Exception:
+            raw = ""
+    if not raw:
+        raise ValueError("No Ed25519 public key configured")
+    if "BEGIN" in raw:
+        return serialization.load_pem_public_key(raw.encode("utf-8"))
+    return Ed25519PublicKey.from_public_bytes(_b64url_decode(raw))
+
+
+def ed25519_sign(message: bytes | str, *, private_key: str | None = None) -> str:
+    """Sign message bytes; returns base64url signature. Uses configured key if unset."""
+    if isinstance(message, str):
+        message = message.encode("utf-8")
+    key = _load_ed25519_private(private_key)
+    return _b64url_encode(key.sign(message))
+
+
+def ed25519_verify(
+    message: bytes | str,
+    signature: str,
+    *,
+    public_key: str | None = None,
+) -> bool:
+    """Verify base64url Ed25519 signature. Returns False on any failure."""
+    from cryptography.exceptions import InvalidSignature
+
+    if isinstance(message, str):
+        message = message.encode("utf-8")
+    try:
+        key = _load_ed25519_public(public_key)
+        key.verify(_b64url_decode(signature), message)
+        return True
+    except (InvalidSignature, ValueError, TypeError, Exception):
+        return False
+
+
+def ed25519_sign_command(
+    *,
+    command_id: str,
+    agent_id: str,
+    kind: str,
+    payload: dict[str, Any],
+    nonce: str,
+    event_id: str,
+    private_key: str | None = None,
+) -> str:
+    """Ed25519 seal over the same canonical payload as HMAC."""
+    msg = canonical_command_payload(
+        command_id=command_id,
+        agent_id=agent_id,
         kind=kind,
-        payload=payload or {},
+        payload=payload,
         nonce=nonce,
         event_id=event_id,
     )
-    return {
-        "id": cid,
-        "kind": kind,
-        "payload": payload or {},
-        "event_id": event_id,
-        "nonce": nonce,
-        "signature": sig,
-        "seq": float(command_row.get("created_at") or 0),
-    }
+    return ed25519_sign(msg, private_key=private_key)

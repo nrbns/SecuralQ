@@ -9749,6 +9749,8 @@
         soc: () => typeof renderSocPage === "function" && renderSocPage(),
         agents: () => typeof renderAgentsPage === "function" && renderAgentsPage({ quiet: true }),
         evidence: () => typeof renderEvidencePage === "function" && renderEvidencePage(),
+        compliance_center: () =>
+          typeof renderComplianceCenterPage === "function" && renderComplianceCenterPage({ quiet: true }),
         frameworks: () => {
           if (typeof renderHardeningPanel === "function") renderHardeningPanel();
           if (typeof renderFrameworksPage === "function") renderFrameworksPage();
@@ -9945,13 +9947,38 @@
       clearTimeout(window.__securaiqCampRtTimer);
       window.__securaiqCampRtTimer = setTimeout(() => renderCampaignsPage(), 500);
     }
+    if (
+      view === "agents" &&
+      (t === "agent" || t === "agent_command" || t === "agent_threat" || t === "verification")
+    ) {
+      clearTimeout(window.__securaiqAgentsRtTimer);
+      window.__securaiqAgentsRtTimer = setTimeout(() => {
+        if (typeof renderAgentsPage === "function") renderAgentsPage({ quiet: true });
+        if (typeof renderAgentsPanel === "function") renderAgentsPanel();
+      }, 300);
+    }
+    if (view === "evidence" && (t === "evidence" || t === "gap" || t === "remediation" || t === "compliance")) {
+      clearTimeout(window.__securaiqEvRtTimer);
+      window.__securaiqEvRtTimer = setTimeout(() => {
+        if (typeof renderEvidencePage === "function") renderEvidencePage();
+      }, 400);
+    }
+    if (
+      view === "compliance_center" &&
+      (t === "gap" || t === "evidence" || t === "compliance" || t === "remediation" || t === "hardening")
+    ) {
+      clearTimeout(window.__securaiqCompRtTimer);
+      window.__securaiqCompRtTimer = setTimeout(() => {
+        if (typeof renderComplianceCenterPage === "function") renderComplianceCenterPage({ quiet: true });
+      }, 400);
+    }
     if (view === "intel" && (t === "intel_watch" || t === "intel" || t === "job") && !window.__securaiqIntelLookupBusy) {
       clearTimeout(window.__securaiqIntelRtTimer);
       window.__securaiqIntelRtTimer = setTimeout(() => {
         if (typeof renderIntelPage === "function") renderIntelPage();
       }, 500);
     }
-    if (view === "frameworks" && (t === "gap" || t === "remediation" || t === "evidence" || t === "hardening" || t === "tool")) {
+    if (view === "frameworks" && (t === "gap" || t === "remediation" || t === "evidence" || t === "hardening" || t === "tool" || t === "compliance")) {
       clearTimeout(window.__securaiqFwRtTimer);
       window.__securaiqFwRtTimer = setTimeout(() => {
         if (typeof renderFrameworksPage === "function") renderFrameworksPage();

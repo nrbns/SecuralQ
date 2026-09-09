@@ -8,7 +8,8 @@ Related: [control-plane-roadmap.md](./control-plane-roadmap.md) ·
 [priority-checklist.md](./priority-checklist.md) ·
 [launch-readiness.md](./launch-readiness.md) ·
 [security-baseline.md](./security-baseline.md) ·
-[backup-dr.md](./backup-dr.md)
+[backup-dr.md](./backup-dr.md) ·
+[realtime-v1.md](./realtime-v1.md)
 
 **Agent Platform v1 scope:** multi-tenant native agents + persistent Agent
 Gateway (WebSocket) + HTTP check-in fallback. Dashboard SSE stays. Do not
@@ -26,31 +27,31 @@ Status key: **done** · **partial** · **missing**
 | RBAC enforcement | **partial** | `require_perm` on enterprise/scans; **agent APIs** now use `agent.read` / `agent.write` / `agent.command` / `agent.approve`. Lab mode (`AUTH_ENABLED=false`) is still global admin. |
 | Agent authentication | **done** | Bearer `agent_id.agent_key`; only SHA-256 of the key is used for compare; optional encrypted key copy enables HMAC on new enrollments. Revoke invalidates immediately. |
 | Certificate rotation | **missing** | Next: per-agent mTLS or short-lived client certs. Token revoke + re-enroll is the current rotation path. |
-| Signed commands | **partial** | HMAC seal (`event_id` + `nonce` + `signature`) on delivery via `app/agent_security.py`. Not Ed25519 / agent-side mandatory verify yet. |
+| Signed commands | **partial** | HMAC seal (`event_id` + `nonce` + `signature`) on delivery via `app/agent_security.py`. Optional Ed25519 generate/sign/verify helpers exist (Task J); **not** wired as mandatory seal yet. Production should move to Ed25519 + mTLS. |
 | Replay protection | **partial** | Optional `X-SecuraIQ-Ts` + `X-SecuraIQ-Nonce` (+ HMAC when `key_enc` exists). Enforced when `AGENT_REQUIRE_REPLAY_PROTECTION=true`. Command `expires_at` rejects stale queued work. |
-| Event IDs + deduplication | **partial** | `realtime_bus.publish` stamps `event_id` and drops in-process duplicates (LRU). Not a durable exactly-once log. Agent threat fingerprints already dedupe detections. |
-| Event ordering | **partial** | Publish `seq` (millis) is best-effort. No per-tenant ordered log or vector clock. |
-| Persistent event queue | **missing** | Redis pub/sub (optional) is fan-out, not a durable queue. Jobs remain in-process SQLite. |
+| Event IDs + deduplication | **partial→improved** | REALTIME v1 contract (`app/event_schema.py`) + `normalize_event` on every `publish` stamps `event_id` / `event_type` / envelope; in-process ring buffer / LRU drops duplicates. Streams `XADD` when `REDIS_URL` set — still not durable exactly-once across HA. Agent threat fingerprints already dedupe detections. |
+| Event ordering | **partial** | Normalized `sequence`/`seq` (millis) is best-effort dual-write. Redis Streams exist for append order when `REDIS_URL` set; **still** no per-tenant sequence authority. |
+| Persistent event queue | **partial** | When `REDIS_URL` set: durable Streams (`REDIS_STREAM_KEY`) + pub/sub SSE fan-out + consumer group `securaiq-workers`. Lab without Redis: in-process ring buffer only (`replay_since`). Not HA / Sentinel. Jobs remain in-process SQLite. |
 | Agent reconnect | **done** | Gateway replaces an existing socket for the same agent id; agent client retries with backoff and falls back to HTTP check-in. |
-| Dashboard reconnect | **partial** | SSE `EventSource` reconnects in `static/app.js`. Not a WebSocket dashboard gateway. |
-| Offline agent buffering | **missing** | Queued commands wait on the server; the agent does not spool telemetry while disconnected. |
-| Command acknowledgement | **done** | HTTP `POST /api/agents/commands/{id}/ack` and WebSocket `{type: ack}`. Status `sent` → `acked`. |
-| Command timeout | **done** | `expires_at` on queue; un-acked `sent`/`acked` commands flip to `timeout` after `AGENT_COMMAND_ACK_TIMEOUT_SEC`. |
-| Patch verification | **done** | Execution `done` ≠ verified; `verification_status` + advisory refresh job. |
+| Dashboard reconnect | **partial** | SSE `EventSource` reconnects in `static/app.js` with Last-Event-ID catch-up. Not a WebSocket dashboard gateway. |
+| Offline agent buffering | **partial** | `app/agent_offline_buffer.py` + check-in `sequence` / `buffered_events` ACK (`last_telemetry_seq`). Packaged agent not fully auto-wired yet. |
+| Command acknowledgement | **done** | HTTP `POST /api/agents/commands/{id}/ack` and WebSocket `{type: ack}`. Status `sent` → `acked`; realtime also publishes `lifecycle` (`ACKNOWLEDGED` / `EXECUTING`). |
+| Command timeout | **done** | `expires_at` on queue; un-acked `sent`/`acked` commands flip to `timeout` after `AGENT_COMMAND_ACK_TIMEOUT_SEC` (`lifecycle=TIMEOUT` / `EXPIRED`). |
+| Patch verification | **done** | Execution `done` ≠ verified; `verification_status` + advisory refresh job; bus publishes `VERIFICATION` / `VERIFIED`. |
 | Evidence generation | **partial** | Evidence store stamps `org_id` and filters with `tenant_visibility_sql`; confirm/list/get fail closed. Not every product claim auto-records evidence yet. |
 | Immutable audit trail | **partial** | Append-only `audit_log` + SIEM forward option. SQLite rows are not WORM/object-lock immutable. |
 | PostgreSQL backup/restore | **partial** | SQLite scripts in `scripts/backup.*`. Postgres path documented (`pg_dump`) in `docs/backup-dr.md` — operator-owned, not a product HA test. |
-| Redis HA/recovery | **missing** | `REDIS_URL` is optional SSE fan-out. No Sentinel/Cluster runbook or failover test. |
+| Redis HA/recovery | **missing** | `REDIS_URL` enables Streams + pub/sub. Soft chaos docs in `scripts/realtime_chaos_test.py --document-redis`. No Sentinel/Cluster failover test. |
 | TLS | **partial** | Caddy/nginx scaffolding in `deploy/`; DNS and certs are operator steps. Agent `--insecure` is lab-only. |
 | Rate limiting | **done** | `RateLimitMiddleware` on the API (`RATE_LIMIT_*`). |
-| Secret management | **partial** | `.env` envelope encryption (`app/secrets_crypto.py`); agent raw key shown once. No KMS/HSM. |
+| Secret management | **partial** | `.env` envelope encryption (`app/secrets_crypto.py`); agent raw key shown once. Optional Ed25519 key env vars (unused for live seal). No KMS/HSM. |
 | Signed agent updates | **partial** | `agent_upgrade` carries `expected_sha256` of the server script. Not a code-signing cert / Authenticode / notarization. |
 | Windows installer | **partial** | Packaged `SecuraIQ-Agent-*-windows-x64.exe` + Scheduled Task installer. No signed MSI / Authenticode yet. |
 | Linux packages | **partial** | `*-linux-x64.tar.gz` (native binary on Linux/CI) + systemd `install.sh`. No `.deb` / `.rpm`. |
 | macOS package | **partial** | Portable `.tar.gz`; real `.dmg` via `scripts/packaging/build_macos_dmg.sh` on macOS/CI. Ad-hoc/unsigned Gatekeeper notes in QUICKSTART. |
-| Load test | **partial** | Synth harness: `scripts/agent_gateway_load.py` (default 100 HTTP check-ins). **Not** a 5k-agent proof. |
-| Failure/recovery test | **partial** | Harness `--kill-reconnect` exercises reconnect/fallback. No chaos suite for Redis/API kill. |
-| Security test | **partial** | Auth/tenancy/AI suites exist; new agent isolation + replay tests. No full pentest report. |
+| Load test | **partial** | `scripts/realtime_load_test.py` ladder ≤1k + `scripts/load_test_agents.py` / `agent_gateway_load.py`. **Not** production proof; **do not claim 5k**. |
+| Failure/recovery test | **partial** | Soft chaos: `scripts/realtime_chaos_test.py` (buffer replay). Redis kill is manual/documented only. |
+| Security test | **partial** | Auth/tenancy/AI suites exist; agent isolation + replay + Ed25519 roundtrip tests. No full pentest report. |
 
 ---
 
@@ -60,11 +61,11 @@ Status key: **done** · **partial** · **missing**
 |--------|-----------|-----|
 | Multi-tenant architecture | Org-isolated agents + APIs | **partial→near-done** — high-value tables scoped; notifications remain per-recipient; lab `local` bypass intentional |
 | Real Agent Gateway | Persistent WS + heartbeat + push commands | **done** (v1) — `WS /api/agents/ws`; HTTP check-in remains fallback |
-| Event pipeline | Agent → detection → risk → dashboard | **partial** — threat ingest + realtime bus + SSE; no durable queue |
+| Event pipeline | Agent → detection → risk → dashboard | **partial→improved** — threat ingest + realtime bus + SSE; Streams + scoped processor hooks (notify/evidence/risk when `user_id` known); rich detection→risk still incomplete |
 | Agent installers | MSI / deb / rpm / pkg | **partial** — scripts only |
-| Agent security | Device identity, certs, signed commands | **partial** — bearer + replay/HMAC; certs/signed commands next |
+| Agent security | Device identity, certs, signed commands | **partial** — bearer + replay/HMAC live; Ed25519 helpers optional (Task J); certs/mTLS next |
 | Real-time dashboard | No polling-dependent UX | **partial** — SSE on publish; some panels still poll |
-| Load testing | 100 → 1,000 → 5,000+ | **partial** — 100-agent synth only; **do not claim 5k** |
+| Load testing | 100 → 1,000 → 5,000+ | **partial** — ladder harness ≤1k (`realtime_load_test.py`); **do not claim 5k** |
 
 ## P1 (after Agent Gateway + tenancy are green)
 
@@ -89,8 +90,9 @@ Status key: **done** · **partial** · **missing**
                  │ Risk · Evidence      │
                  └──────────┬───────────┘
                             │
-                     realtime_bus
-                     (in-process; Redis optional fan-out)
+                     realtime_bus (+ v1 event contract)
+                     (in-process + ring buffer; Redis pub/sub fan-out +
+                      Streams XADD when REDIS_URL; event_processor scoped hooks)
                             │
              ┌──────────────┴──────────────┐
              │                             │

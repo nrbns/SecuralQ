@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import hmac
 import json
 import os
 import platform
@@ -37,8 +38,10 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
+from typing import Any
 
-AGENT_VERSION = "1.1.0"
+AGENT_VERSION = "1.1.1"
 DEFAULT_INTERVAL_SEC = 60
 SENTINEL_VERSION = "1.0.0"
 DEFAULT_SENTINEL_INTERVAL_SEC = 10
@@ -95,6 +98,291 @@ def _autoload_config() -> str | None:
             _load_env_file(ap)
             return ap
     return None
+
+
+# ---------------------------------------------------------------------------
+# Offline telemetry buffer (embedded copy of app/agent_offline_buffer.py).
+# Stdlib-only — packaged/frozen agents cannot import app.*.
+# Schema: next_seq, last_acked_seq, events[{sequence,event_type,payload,enqueued_at}]
+# ---------------------------------------------------------------------------
+
+_OFFLINE_MAX_EVENTS = 5000
+_OFFLINE_MAX_BYTES = 8 * 1024 * 1024
+_SNAPSHOT_BUFFER_SOFT_BYTES = 100_000
+
+
+def _default_offline_buffer_path(agent_id: str = "") -> Path:
+    base = os.environ.get("SECURAIQ_AGENT_DATA_DIR") or os.environ.get("SECURAIQ_DATA_DIR")
+    if base:
+        root = Path(base)
+    else:
+        root = Path.home() / ".securaiq" / "agent"
+    root.mkdir(parents=True, exist_ok=True)
+    suffix = f"_{agent_id[:12]}" if agent_id else ""
+    return root / f"offline_telemetry{suffix}.json"
+
+
+class OfflineTelemetryBuffer:
+    """Per-agent sequenced event queue with JSON persistence (agent-embedded)."""
+
+    def __init__(
+        self,
+        agent_id: str,
+        *,
+        path: Path | str | None = None,
+        max_events: int = _OFFLINE_MAX_EVENTS,
+        max_bytes: int = _OFFLINE_MAX_BYTES,
+    ) -> None:
+        self.agent_id = str(agent_id or "unknown")
+        self.path = Path(path) if path else _default_offline_buffer_path(self.agent_id)
+        self.max_events = max(1, int(max_events))
+        self.max_bytes = max(64 * 1024, int(max_bytes))
+        self._lock = threading.RLock()
+        self._next_seq = 1
+        self._last_acked = 0
+        self._events: list[dict[str, Any]] = []
+        self._load()
+
+    def _load(self) -> None:
+        if not self.path.is_file():
+            return
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        if not isinstance(raw, dict):
+            return
+        self._next_seq = max(1, int(raw.get("next_seq") or 1))
+        self._last_acked = max(0, int(raw.get("last_acked_seq") or 0))
+        events = raw.get("events") or []
+        if isinstance(events, list):
+            self._events = [e for e in events if isinstance(e, dict) and "sequence" in e]
+        self._trim_unlocked()
+
+    def _persist_unlocked(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "agent_id": self.agent_id,
+            "next_seq": self._next_seq,
+            "last_acked_seq": self._last_acked,
+            "events": self._events,
+            "updated_at": time.time(),
+        }
+        text = json.dumps(payload, separators=(",", ":"))
+        while len(text.encode("utf-8")) > self.max_bytes and len(self._events) > 1:
+            self._events.pop(0)
+            payload["events"] = self._events
+            text = json.dumps(payload, separators=(",", ":"))
+        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(self.path)
+
+    def _trim_unlocked(self) -> None:
+        if len(self._events) > self.max_events:
+            overflow = len(self._events) - self.max_events
+            del self._events[:overflow]
+
+    @property
+    def pending_count(self) -> int:
+        with self._lock:
+            return len(self._events)
+
+    def enqueue(self, event_type: str, payload: dict[str, Any] | None = None) -> int:
+        with self._lock:
+            seq = self._next_seq
+            self._next_seq += 1
+            self._events.append(
+                {
+                    "sequence": seq,
+                    "event_type": str(event_type or "telemetry"),
+                    "payload": payload or {},
+                    "enqueued_at": time.time(),
+                }
+            )
+            self._trim_unlocked()
+            self._persist_unlocked()
+            return seq
+
+    def ack(self, sequences: list[int] | int) -> int:
+        if isinstance(sequences, int):
+            seqs = {int(sequences)}
+        else:
+            seqs = {int(s) for s in sequences}
+        if not seqs:
+            return 0
+        with self._lock:
+            before = len(self._events)
+            self._events = [e for e in self._events if int(e.get("sequence") or 0) not in seqs]
+            removed = before - len(self._events)
+            high = max(seqs)
+            if high > self._last_acked:
+                self._last_acked = high
+            self._persist_unlocked()
+            return removed
+
+    def ack_through(self, sequence: int) -> int:
+        seq = int(sequence)
+        with self._lock:
+            before = len(self._events)
+            self._events = [e for e in self._events if int(e.get("sequence") or 0) > seq]
+            removed = before - len(self._events)
+            if seq > self._last_acked:
+                self._last_acked = seq
+            self._persist_unlocked()
+            return removed
+
+    def build_checkin_extension(
+        self,
+        *,
+        flush_limit: int = 100,
+        request_missing: bool = True,
+    ) -> dict[str, Any]:
+        with self._lock:
+            batch = [dict(e) for e in self._events[: max(1, flush_limit)]]
+            out: dict[str, Any] = {
+                "sequence": self._next_seq - 1 if self._next_seq > 1 else 0,
+                "buffered_events": batch,
+            }
+            if request_missing and self._last_acked >= 0:
+                out["request_missing_from"] = self._last_acked + 1
+            return out
+
+    def apply_server_ack(self, response: dict[str, Any] | None) -> int:
+        if not isinstance(response, dict):
+            return 0
+        removed = 0
+        acked = response.get("acked_sequences") or response.get("ack_sequences")
+        if isinstance(acked, list) and acked:
+            removed += self.ack(acked)
+        through = response.get("last_acked_seq")
+        if through is not None:
+            removed += self.ack_through(int(through))
+        return removed
+
+
+def _compact_snapshot_for_buffer(snapshot: dict) -> dict:
+    """Prefer full snapshot under ~100KB; otherwise a compact host stub."""
+    try:
+        raw = json.dumps(snapshot, separators=(",", ":")).encode("utf-8")
+        if len(raw) <= _SNAPSHOT_BUFFER_SOFT_BYTES:
+            return snapshot
+    except Exception:
+        pass
+    return {
+        "hostname": snapshot.get("hostname"),
+        "os": snapshot.get("os"),
+        "agent_version": snapshot.get("agent_version") or AGENT_VERSION,
+        "timestamp": time.time(),
+        "truncated": True,
+    }
+
+
+def _agent_id_from_token(token: str) -> str:
+    return (token or "").split(".", 1)[0]
+
+
+def _b64url_decode_agent(text: str) -> bytes:
+    t = (text or "").strip()
+    pad = "=" * (-len(t) % 4)
+    return base64.urlsafe_b64decode(t + pad)
+
+
+def _canonical_command_bytes(cmd: dict, *, agent_id: str) -> bytes:
+    body = {
+        "command_id": str(cmd.get("id") or ""),
+        "agent_id": agent_id,
+        "kind": str(cmd.get("kind") or ""),
+        "payload": cmd.get("payload") if isinstance(cmd.get("payload"), dict) else {},
+        "nonce": str(cmd.get("nonce") or ""),
+        "event_id": str(cmd.get("event_id") or ""),
+    }
+    return json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _verify_command_hmac(cmd: dict, *, agent_id: str, signing_key: str) -> bool:
+    key = hashlib.sha256(signing_key.encode("utf-8")).digest()
+    msg = _canonical_command_bytes(cmd, agent_id=agent_id)
+    expected = hmac.new(key, msg, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, str(cmd.get("signature") or "").strip())
+
+
+def _verify_command_ed25519(cmd: dict, *, agent_id: str, public_key: str) -> bool:
+    """Verify Ed25519 seal when ``cryptography`` is installed. Raises ImportError if absent."""
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+    raw = (public_key or "").strip()
+    if not raw:
+        return False
+    if "BEGIN" in raw:
+        key = serialization.load_pem_public_key(raw.encode("utf-8"))
+    else:
+        key = Ed25519PublicKey.from_public_bytes(_b64url_decode_agent(raw))
+    msg = _canonical_command_bytes(cmd, agent_id=agent_id)
+    try:
+        key.verify(_b64url_decode_agent(str(cmd.get("signature_ed25519") or "")), msg)
+        return True
+    except (InvalidSignature, ValueError, TypeError):
+        return False
+
+
+def _command_signatures_ok(cmd: dict, *, agent_id: str) -> bool:
+    """Pre-execute seal checks. Lab-friendly unless SECURAIQ_REQUIRE_COMMAND_VERIFY=1."""
+    require = os.environ.get("SECURAIQ_REQUIRE_COMMAND_VERIFY", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    sig_ed = str(cmd.get("signature_ed25519") or "").strip()
+    pub = str(
+        cmd.get("signing_public_key")
+        or os.environ.get("SECURAIQ_AGENT_ED25519_PUBLIC_KEY")
+        or ""
+    ).strip()
+    signing_key = (os.environ.get("SECURAIQ_AGENT_SIGNING_KEY") or "").strip()
+    hmac_sig = str(cmd.get("signature") or "").strip()
+
+    if sig_ed:
+        if not pub:
+            msg = "[securaiq-agent] command has signature_ed25519 but no signing_public_key / SECURAIQ_AGENT_ED25519_PUBLIC_KEY"
+            if require:
+                print(msg + " — refusing", file=sys.stderr)
+                return False
+            print(msg + " — skipping Ed25519 verify (lab)", file=sys.stderr)
+        else:
+            try:
+                if not _verify_command_ed25519(cmd, agent_id=agent_id, public_key=pub):
+                    print(
+                        f"[securaiq-agent] Ed25519 signature verify failed for command {cmd.get('id')}",
+                        file=sys.stderr,
+                    )
+                    return False
+            except ImportError:
+                msg = (
+                    "[securaiq-agent] signature_ed25519 present but cryptography not installed"
+                )
+                if require:
+                    print(msg + " — refusing to execute", file=sys.stderr)
+                    return False
+                print(msg + " — skipping verify (lab)", file=sys.stderr)
+
+    if signing_key and hmac_sig:
+        if not _verify_command_hmac(cmd, agent_id=agent_id, signing_key=signing_key):
+            print(
+                f"[securaiq-agent] HMAC signature verify failed for command {cmd.get('id')}",
+                file=sys.stderr,
+            )
+            return False
+    elif signing_key and not hmac_sig and not sig_ed and require:
+        print(
+            f"[securaiq-agent] SECURAIQ_AGENT_SIGNING_KEY set but command {cmd.get('id')} has no signature — refusing",
+            file=sys.stderr,
+        )
+        return False
+
+    return True
+
 
 # ---------------------------------------------------------------------------
 # SecuraIQ Sentinel — the agent's real-time threat/malware detection engine.
@@ -1374,10 +1662,23 @@ def send_command_result(server: str, token: str, command_id: str, status: str, r
 
 def run_commands(server: str, token: str, commands: list, *, insecure: bool = False) -> None:
     upgraded = False
+    agent_id = _agent_id_from_token(token)
     for cmd in commands or []:
         kind = cmd.get("kind")
         cid = cmd.get("id")
         if not cid:
+            continue
+        cmd_aid = str(cmd.get("agent_id") or "") or agent_id
+        if not _command_signatures_ok(cmd, agent_id=cmd_aid):
+            print(f"[securaiq-agent] refusing command {cid}: signature verification failed", file=sys.stderr)
+            try:
+                send_command_result(
+                    server, token, cid, "error",
+                    {"error": "signature verification failed", "ok": False},
+                    insecure=insecure,
+                )
+            except Exception:
+                pass
             continue
         try:
             send_command_ack(server, token, cid, insecure=insecure)
@@ -1609,7 +1910,14 @@ def _ws_recv_text(sock, leftover: bytearray, timeout: float) -> str | None:
             return data.decode("utf-8", errors="replace")
 
 
-def websocket_session(server: str, token: str, *, insecure: bool = False, stop_event: threading.Event | None = None) -> bool:
+def websocket_session(
+    server: str,
+    token: str,
+    *,
+    insecure: bool = False,
+    stop_event: threading.Event | None = None,
+    offline_buf: OfflineTelemetryBuffer | None = None,
+) -> bool:
     """Persistent gateway session. Returns False if connect failed (caller should fall back)."""
     try:
         conn = _ws_connect(server, token, insecure=insecure)
@@ -1634,7 +1942,10 @@ def websocket_session(server: str, token: str, *, insecure: bool = False, stop_e
         hb = int(welcome.get("heartbeat_sec") or 30)
         print("[securaiq-agent] websocket connected — commands will be pushed")
         snapshot = collect_snapshot()
-        _ws_send_text(sock, json.dumps({"type": "checkin", "payload": snapshot}))
+        checkin_payload = dict(snapshot)
+        if offline_buf is not None:
+            checkin_payload.update(offline_buf.build_checkin_extension())
+        _ws_send_text(sock, json.dumps({"type": "checkin", "payload": checkin_payload}))
         last_hb = time.time()
         while not (stop_event and stop_event.is_set()):
             wait = max(5.0, hb - (time.time() - last_hb))
@@ -1659,6 +1970,13 @@ def websocket_session(server: str, token: str, *, insecure: bool = False, stop_e
             elif kind == "pong":
                 last_hb = time.time()
             elif kind == "checkin_ok":
+                if offline_buf is not None:
+                    drained = offline_buf.apply_server_ack(msg)
+                    if drained:
+                        print(
+                            f"[securaiq-agent] offline buffer drained {drained} event(s); "
+                            f"pending={offline_buf.pending_count}"
+                        )
                 print(f"[securaiq-agent] ws check-in ok asset_id={msg.get('asset_id', '')}")
         return True
     except Exception as exc:
@@ -1724,6 +2042,11 @@ def main() -> int:
     )
     ap.add_argument("--watch-dir", action="append", default=[], help="Extra directory for Sentinel to watch (repeatable)")
     ap.add_argument("--hash-feed", default="", help="Optional file of extra known-bad 'sha256,label' lines for signature matching")
+    ap.add_argument(
+        "--no-offline-buffer",
+        action="store_true",
+        help="Disable local offline telemetry buffer (no enqueue/flush on check-in failure)",
+    )
     args = ap.parse_args()
 
     if args.token_file:
@@ -1757,16 +2080,33 @@ def main() -> int:
     if args.hash_feed:
         known_hashes.update(load_hash_feed(args.hash_feed))
 
+    agent_id = _agent_id_from_token(args.token)
+    offline_buf: OfflineTelemetryBuffer | None = None
+    if not args.no_offline_buffer:
+        offline_buf = OfflineTelemetryBuffer(agent_id)
+        if offline_buf.pending_count:
+            print(f"[securaiq-agent] offline buffer pending={offline_buf.pending_count} path={offline_buf.path}")
+
     def _tick() -> bool:
         snapshot = collect_snapshot()
+        payload = dict(snapshot)
+        if offline_buf is not None:
+            payload.update(offline_buf.build_checkin_extension())
         try:
-            result = send_checkin(args.server, args.token, snapshot, insecure=args.insecure)
+            result = send_checkin(args.server, args.token, payload, insecure=args.insecure)
             ok = bool(result.get("ok"))
             print(
                 f"[securaiq-agent] check-in {'ok' if ok else 'FAILED'} · "
                 f"host={snapshot['hostname']} ports={len(snapshot['listening_ports'])} "
                 f"packages={len(snapshot['packages'])} asset_id={result.get('asset_id', '')}"
             )
+            if offline_buf is not None and ok:
+                drained = offline_buf.apply_server_ack(result)
+                if drained:
+                    print(
+                        f"[securaiq-agent] offline buffer drained {drained} event(s); "
+                        f"pending={offline_buf.pending_count}"
+                    )
             commands = result.get("commands") or []
             if commands:
                 run_commands(args.server, args.token, commands, insecure=args.insecure)
@@ -1778,9 +2118,21 @@ def main() -> int:
             except Exception:
                 pass
             print(f"[securaiq-agent] check-in FAILED: HTTP {exc.code} {body}", file=sys.stderr)
+            if offline_buf is not None:
+                seq = offline_buf.enqueue("telemetry", _compact_snapshot_for_buffer(snapshot))
+                print(
+                    f"[securaiq-agent] buffered telemetry seq={seq} pending={offline_buf.pending_count}",
+                    file=sys.stderr,
+                )
             return False
         except Exception as exc:
             print(f"[securaiq-agent] check-in FAILED: {exc}", file=sys.stderr)
+            if offline_buf is not None:
+                seq = offline_buf.enqueue("telemetry", _compact_snapshot_for_buffer(snapshot))
+                print(
+                    f"[securaiq-agent] buffered telemetry seq={seq} pending={offline_buf.pending_count}",
+                    file=sys.stderr,
+                )
             return False
 
     if args.once:
@@ -1811,7 +2163,9 @@ def main() -> int:
     backoff = 2.0
     while True:
         if not args.no_websocket:
-            connected = websocket_session(args.server, args.token, insecure=args.insecure)
+            connected = websocket_session(
+                args.server, args.token, insecure=args.insecure, offline_buf=offline_buf
+            )
             if connected:
                 backoff = 2.0
                 time.sleep(min(5.0, backoff))
