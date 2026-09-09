@@ -168,12 +168,28 @@ def remember_nonce(nonce: str, *, agent_id: str = "", ttl_sec: int = _NONCE_TTL_
         return False
 
 
+def _require_command_signature() -> bool:
+    """RT-17: production opt-in; lab default is False."""
+    try:
+        from app.config import settings
+
+        if bool(getattr(settings, "agent_require_command_signature", False)):
+            return True
+    except Exception:
+        pass
+    raw = (os.environ.get("AGENT_REQUIRE_COMMAND_SIGNATURE") or "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
 def seal_command_for_delivery(command_row: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     """Attach event_id, nonce, and signature(s) for gateway/check-in delivery.
 
     Algorithm controlled by ``agent_command_signing_alg`` (hmac | ed25519 | both).
     HMAC remains the default. When alg requests Ed25519 but no private key is
-    configured, falls back to HMAC and logs a warning.
+    configured, falls back to HMAC and logs a warning — unless
+    ``agent_require_command_signature`` is True, in which case a valid seal for
+    the configured algorithm is mandatory (raises on failure) and the command
+    is stamped with ``require_verify: true``.
     """
     cid = str(command_row.get("id") or "")
     aid = str(command_row.get("agent_id") or "")
@@ -181,6 +197,7 @@ def seal_command_for_delivery(command_row: dict[str, Any], payload: dict[str, An
     event_id = str(command_row.get("event_id") or "") or new_event_id()
     nonce = str(command_row.get("nonce") or "") or new_nonce()
     body = payload or {}
+    require = _require_command_signature()
     out: dict[str, Any] = {
         "id": cid,
         "agent_id": aid,
@@ -221,6 +238,16 @@ def seal_command_for_delivery(command_row: dict[str, Any], payload: dict[str, An
                 out["signing_public_key"] = pub
             used_ed = True
         except Exception as exc:
+            if require and alg == "ed25519":
+                raise ValueError(
+                    "RT-17: Ed25519 seal required but unavailable — set "
+                    "SECURAIQ_AGENT_ED25519_PRIVATE_KEY / agent_ed25519_private_key"
+                ) from exc
+            if require and alg == "both":
+                raise ValueError(
+                    "RT-17: both HMAC+Ed25519 required but Ed25519 seal failed — "
+                    "configure Ed25519 keys or set AGENT_COMMAND_SIGNING_ALG=hmac"
+                ) from exc
             _log.warning(
                 "Ed25519 seal unavailable (%s); falling back to HMAC — "
                 "set SECURAIQ_AGENT_ED25519_PRIVATE_KEY or agent_ed25519_private_key "
@@ -253,6 +280,12 @@ def seal_command_for_delivery(command_row: dict[str, Any], payload: dict[str, An
                 nonce=nonce,
                 event_id=event_id,
             )
+
+    if require:
+        out["require_verify"] = True
+        # Self-check: never hand out a seal that fails verification.
+        if not verify_sealed_command(out):
+            raise ValueError("RT-17: seal_command_for_delivery produced an unverifiable seal")
 
     return out
 

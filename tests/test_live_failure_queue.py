@@ -25,7 +25,7 @@ def test_list_live_control_failures_ranks_and_reports(tmp_path, monkeypatch):
     assert live["tests_run"] >= 1
     assert "disclaimer" in live
     # Empty inventory → asset_inventory fails somewhere in mapped frameworks
-    assert live["failing"] + live["partial"] + live["passing"] == live["tests_run"]
+    assert live["failing"] + live["partial"] + live["passing"] + live.get("unknown", 0) == live["tests_run"]
     scores = [f["risk_score"] for f in live["failures"]]
     assert scores == sorted(scores, reverse=True) or len(scores) <= 1
 

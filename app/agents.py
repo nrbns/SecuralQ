@@ -22,11 +22,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import secrets
 from datetime import datetime, timezone
 from typing import Any
 
 from app.db import audit, get_conn, new_id, now
+
+_log = logging.getLogger(__name__)
 
 COMMAND_TTL_SEC = 86400
 COMMAND_ACK_TIMEOUT_SEC = 180
@@ -570,26 +573,87 @@ def checkin(agent_id: str, payload: dict[str, Any]) -> dict[str, Any]:
             status="online",
             asset_id=asset_id,
             sequence=new_last_seq or None,
+            user_id=agent.get("user_id"),
+            org_id=agent.get("org_id"),
         )
+        # RT-05 — dashboard-visible sequence gap (honest watermark; no ACK across holes).
+        if seq_recovery.get("missing_from") is not None or (
+            isinstance(seq_recovery.get("gap"), dict) and seq_recovery["gap"].get("detected")
+        ):
+            publish(
+                type="agent",
+                id=agent_id,
+                status="sequence_gap",
+                asset_id=asset_id,
+                user_id=agent.get("user_id"),
+                org_id=agent.get("org_id"),
+                missing_from=seq_recovery.get("missing_from"),
+                last_acked_seq=seq_recovery.get("last_acked_seq", new_last_seq),
+                gap=seq_recovery.get("gap"),
+                sequence=new_last_seq or None,
+            )
     except Exception:
         pass
+    # RT-05 — merge newest ACKed buffered host telemetry into effective payload
+    # (offline spool re-apply for inventory / host controls).
+    try:
+        from app.agent_offline_buffer import merge_host_telemetry
+
+        effective_payload = merge_host_telemetry(
+            store_payload if isinstance(store_payload, dict) else payload,
+            seq_recovery.get("newest_acked_host_payload"),
+        )
+    except Exception:
+        effective_payload = store_payload if isinstance(store_payload, dict) else payload
     # Feed packages into software inventory so patch-verify can see installed versions.
-    pkgs = payload.get("packages") if isinstance(payload.get("packages"), list) else []
-    if pkgs and not payload.get("truncated"):
+    pkgs = (
+        effective_payload.get("packages")
+        if isinstance(effective_payload.get("packages"), list)
+        else []
+    )
+    if not pkgs and isinstance(payload.get("packages"), list):
+        pkgs = payload.get("packages") or []
+    if pkgs and not effective_payload.get("truncated"):
         try:
             from app.software.sources.securaiq_agent import ingest_agent_packages
 
             refreshed = dict(agent)
             refreshed["asset_id"] = asset_id
-            refreshed["hostname"] = payload.get("hostname") or agent.get("hostname") or ""
-            refreshed["os"] = payload.get("os") or agent.get("os") or ""
-            refreshed["os_version"] = payload.get("os_version") or agent.get("os_version") or ""
+            refreshed["hostname"] = (
+                effective_payload.get("hostname") or payload.get("hostname") or agent.get("hostname") or ""
+            )
+            refreshed["os"] = effective_payload.get("os") or payload.get("os") or agent.get("os") or ""
+            refreshed["os_version"] = (
+                effective_payload.get("os_version")
+                or payload.get("os_version")
+                or agent.get("os_version")
+                or ""
+            )
             refreshed["last_checkin"] = now()
             ingest_agent_packages(
                 agent.get("user_id") or "local",
                 refreshed,
                 [p for p in pkgs if isinstance(p, dict)],
                 sync=True,
+            )
+        except Exception:
+            pass
+    # RT-10/11 — host control tests from firewall/defender/ssh telemetry.
+    # Must never break check-in; errors are swallowed inside the evaluator.
+    # Prefer effective (live + newest ACKed buffer) so offline catch-up re-applies.
+    _host_present = any(
+        isinstance(effective_payload.get(k), dict)
+        for k in ("firewall_status", "defender_status", "ssh_config")
+    )
+    if not effective_payload.get("truncated") or _host_present:
+        try:
+            from app.services.control_testing import evaluate_agent_host_controls
+
+            evaluate_agent_host_controls(
+                agent.get("user_id") or "local",
+                agent_id,
+                effective_payload if isinstance(effective_payload, dict) else payload,
+                asset_id=asset_id,
             )
         except Exception:
             pass
@@ -600,6 +664,8 @@ def checkin(agent_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         out["acked_sequences"] = seq_recovery.get("acked_sequences") or []
         if seq_recovery.get("missing_from") is not None:
             out["missing_from"] = seq_recovery["missing_from"]
+        if seq_recovery.get("gap"):
+            out["gap"] = seq_recovery["gap"]
     return out
 
 
@@ -653,16 +719,53 @@ def _dispatch_queued_commands(agent_id: str, *, limit: int = 5) -> list[dict[str
         except Exception:
             payload = {}
         try:
-            from app.agent_security import remember_nonce, seal_command_for_delivery
+            from app.agent_security import (
+                _require_command_signature,
+                remember_nonce,
+                seal_command_for_delivery,
+                verify_sealed_command,
+            )
 
+            require_sig = _require_command_signature()
             sealed = seal_command_for_delivery(d, payload)
+            has_sig = bool(
+                str(sealed.get("signature") or "").strip()
+                or str(sealed.get("signature_ed25519") or "").strip()
+            )
+            # Self-check before marking sent (RT-17); blocks delivery when required.
+            if has_sig and not verify_sealed_command(sealed):
+                if require_sig:
+                    _log.warning(
+                        "RT-17: refusing to deliver command %s — seal failed self-check",
+                        d.get("id"),
+                    )
+                    continue
+                _log.debug(
+                    "command %s seal self-check failed (lab path still delivering)",
+                    d.get("id"),
+                )
+            if require_sig and not has_sig:
+                _log.warning(
+                    "RT-17: refusing to deliver command %s — signature missing",
+                    d.get("id"),
+                )
+                continue
             eid = str(sealed.get("event_id") or "")
             if eid and eid in seen_event_ids:
                 continue
             if eid:
                 seen_event_ids.add(eid)
             remember_nonce(sealed["nonce"], agent_id=agent_id)
-        except Exception:
+        except Exception as exc:
+            from app.agent_security import _require_command_signature
+
+            if _require_command_signature():
+                _log.warning(
+                    "RT-17: seal failed for command %s — holding queued (%s)",
+                    d.get("id"),
+                    exc,
+                )
+                continue
             sealed = {
                 "id": d["id"],
                 "kind": d["kind"],

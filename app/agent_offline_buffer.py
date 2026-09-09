@@ -205,6 +205,47 @@ class OfflineTelemetryBuffer:
         return removed
 
 
+# Host / inventory keys worth re-applying from ACKed offline buffer payloads (RT-05).
+HOST_TELEMETRY_KEYS: frozenset[str] = frozenset(
+    {
+        "firewall_status",
+        "defender_status",
+        "ssh_config",
+        "packages",
+        "hostname",
+        "os",
+        "os_version",
+        "ip",
+        "agent_version",
+    }
+)
+
+
+def extract_host_telemetry(payload: dict[str, Any] | None) -> dict[str, Any]:
+    """Return only host-telemetry keys present in ``payload``."""
+    if not isinstance(payload, dict):
+        return {}
+    out: dict[str, Any] = {}
+    for key in HOST_TELEMETRY_KEYS:
+        if key in payload and payload[key] is not None:
+            out[key] = payload[key]
+    return out
+
+
+def merge_host_telemetry(
+    live: dict[str, Any] | None,
+    buffered: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Merge newest ACKed host telemetry into live check-in payload (fill gaps)."""
+    out = dict(live or {}) if isinstance(live, dict) else {}
+    host = extract_host_telemetry(buffered if isinstance(buffered, dict) else None)
+    for key, value in host.items():
+        cur = out.get(key)
+        if cur is None or cur == "" or cur == {} or cur == []:
+            out[key] = value
+    return out
+
+
 def process_buffered_events_on_server(
     agent_id: str,
     *,
@@ -215,20 +256,31 @@ def process_buffered_events_on_server(
 ) -> dict[str, Any]:
     """Server-side helper: ACK contiguous buffered sequences and report gaps.
 
-    Does not store the full telemetry payload again — check-in already recorded
-    the live snapshot. Returns fields for the check-in HTTP response.
+    Watermark advances only through contiguous sequences — never across holes.
+    Returns the newest ACKed host-telemetry payload (if any) so check-in can
+    re-apply offline snapshots to inventory / host control evaluation (RT-05).
     """
     last = max(0, int(last_acked_seq or 0))
     acked: list[int] = []
-    events = list(buffered_events or [])
+    events = [e for e in (buffered_events or []) if isinstance(e, dict)]
+    by_seq: dict[int, dict[str, Any]] = {}
+    for e in events:
+        if e.get("sequence") is None:
+            continue
+        try:
+            s = int(e["sequence"])
+        except (TypeError, ValueError):
+            continue
+        # Prefer later duplicate with richer payload if present.
+        prev = by_seq.get(s)
+        if prev is None or (
+            isinstance(e.get("payload"), dict)
+            and extract_host_telemetry(e.get("payload"))
+            and not extract_host_telemetry(prev.get("payload") if isinstance(prev, dict) else None)
+        ):
+            by_seq[s] = e
+    seqs = sorted(by_seq.keys())
     # Sort by sequence and ACK contiguous runs starting at last+1.
-    seqs = sorted(
-        {
-            int(e.get("sequence"))
-            for e in events
-            if isinstance(e, dict) and e.get("sequence") is not None
-        }
-    )
     expected = last + 1
     for s in seqs:
         if s < expected:
@@ -238,7 +290,7 @@ def process_buffered_events_on_server(
             expected = s + 1
             last = s
         else:
-            break  # gap — stop contiguous ACK
+            break  # gap — stop contiguous ACK (do not jump)
     if sequence is not None:
         seq_i = int(sequence)
         # Live check-in sequence (no buffer) advances watermark when contiguous.
@@ -253,19 +305,56 @@ def process_buffered_events_on_server(
                 last = max(last, seq_i)
 
     missing_from: int | None = None
+    gap_detected = False
+    # Hole inside the buffered batch (e.g. 1 then 3 while last=0) → stop at 1.
+    unacked_in_batch = [s for s in seqs if s > last]
+    if unacked_in_batch:
+        gap_detected = True
+        missing_from = last + 1
+    if sequence is not None and int(sequence) > last + 1 and missing_from is None:
+        # Live seq jumped ahead of watermark with no contiguous fill.
+        gap_detected = True
+        missing_from = last + 1
     if request_missing_from is not None:
         req = max(1, int(request_missing_from))
         if req <= last:
-            # Client thinks it needs recovery but server already has those.
-            missing_from = None
+            # Client recovery cursor already covered — clear unless batch still has a hole.
+            if not unacked_in_batch:
+                missing_from = None
+                gap_detected = False
         else:
             # Server is behind client claim — ask client to re-flush from last+1.
             missing_from = last + 1
+            gap_detected = True
+
+    newest_acked_host_payload: dict[str, Any] = {}
+    for s in sorted(acked, reverse=True):
+        ev = by_seq.get(s)
+        if not ev:
+            continue
+        pl = ev.get("payload")
+        host = extract_host_telemetry(pl if isinstance(pl, dict) else None)
+        if host:
+            newest_acked_host_payload = host
+            break
+
+    gap: dict[str, Any] | None = None
+    if gap_detected and missing_from is not None:
+        gap = {
+            "detected": True,
+            "missing_from": missing_from,
+            "expected_next": last + 1,
+            "last_acked_seq": last,
+            "first_unacked_in_batch": min(unacked_in_batch) if unacked_in_batch else None,
+            "acked_through": last,
+        }
 
     return {
         "agent_id": agent_id,
         "last_acked_seq": last,
         "acked_sequences": acked,
         "missing_from": missing_from,
+        "gap": gap,
+        "newest_acked_host_payload": newest_acked_host_payload or None,
         "note": "offline buffer recovery — lab scaffolding, not durable HA",
     }

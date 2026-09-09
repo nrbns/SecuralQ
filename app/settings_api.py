@@ -255,6 +255,8 @@ _WRITABLE: dict[str, tuple[str, type]] = {
     "redis_stream_key": ("REDIS_STREAM_KEY", str),
     "redis_stream_maxlen": ("REDIS_STREAM_MAXLEN", int),
     "realtime_replay_buffer": ("REALTIME_REPLAY_BUFFER", int),
+    "realtime_streams_fanout": ("REALTIME_STREAMS_FANOUT", bool),
+    "event_idempotency_prune_days": ("EVENT_IDEMPOTENCY_PRUNE_DAYS", int),
     "prefect_enabled": ("PREFECT_ENABLED", bool),
     "prefect_api_url": ("PREFECT_API_URL", str),
     "wazuh_base_url": ("WAZUH_BASE_URL", str),

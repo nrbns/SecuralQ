@@ -52,6 +52,78 @@ def test_server_sequence_recovery_contiguous():
     assert out["last_acked_seq"] == 3
     assert out["acked_sequences"] == [1, 2, 3]
     assert out.get("missing_from") is None
+    assert not (out.get("gap") or {}).get("detected")
+
+
+def test_server_sequence_gap_does_not_ack_across_hole():
+    """RT-05 — contiguous ACK only; hole at 2 must not ACK 3."""
+    from app.agent_offline_buffer import process_buffered_events_on_server
+
+    out = process_buffered_events_on_server(
+        "a-gap",
+        sequence=3,
+        buffered_events=[
+            {
+                "sequence": 1,
+                "event_type": "telemetry",
+                "payload": {
+                    "hostname": "lab-1",
+                    "firewall_status": {"enabled": False, "collected": True},
+                },
+            },
+            {
+                "sequence": 3,
+                "event_type": "telemetry",
+                "payload": {
+                    "hostname": "lab-1",
+                    "firewall_status": {"enabled": True, "collected": True},
+                    "defender_status": {"enabled": True},
+                },
+            },
+        ],
+        request_missing_from=1,
+        last_acked_seq=0,
+    )
+    assert out["acked_sequences"] == [1]
+    assert out["last_acked_seq"] == 1
+    assert out.get("missing_from") == 2
+    assert out.get("gap", {}).get("detected") is True
+    assert out.get("gap", {}).get("missing_from") == 2
+    # Newest *ACKed* host payload is seq 1 (seq 3 not ACKed across the hole).
+    host = out.get("newest_acked_host_payload") or {}
+    assert host.get("hostname") == "lab-1"
+    assert host.get("firewall_status", {}).get("enabled") is False
+    assert 3 not in (out.get("acked_sequences") or [])
+
+
+def test_server_sequence_acked_host_payload_newest():
+    from app.agent_offline_buffer import process_buffered_events_on_server
+
+    out = process_buffered_events_on_server(
+        "a2",
+        sequence=2,
+        buffered_events=[
+            {
+                "sequence": 1,
+                "payload": {"firewall_status": {"enabled": False}, "hostname": "old"},
+            },
+            {
+                "sequence": 2,
+                "payload": {
+                    "firewall_status": {"enabled": True},
+                    "ssh_config": {"PermitRootLogin": "no"},
+                    "hostname": "new",
+                },
+            },
+        ],
+        request_missing_from=None,
+        last_acked_seq=0,
+    )
+    assert out["last_acked_seq"] == 2
+    host = out.get("newest_acked_host_payload") or {}
+    assert host.get("hostname") == "new"
+    assert host.get("firewall_status", {}).get("enabled") is True
+    assert "ssh_config" in host
 
 
 def test_command_lifecycle_mapping():
@@ -175,6 +247,120 @@ def test_verify_sealed_command_hmac_default(monkeypatch):
     assert verify_sealed_command(sealed) is True
 
 
+def test_rt17_require_signature_stamps_and_verifies(monkeypatch):
+    """RT-17: require flag produces require_verify + valid seal that verifies."""
+    from app.agent_security import seal_command_for_delivery, verify_sealed_command
+
+    monkeypatch.setenv("AGENT_COMMAND_SIGNING_ALG", "hmac")
+    monkeypatch.setenv("SECURAIQ_AGENT_SIGNING_KEY", "rt17-lab-hmac-key")
+    monkeypatch.setenv("AGENT_REQUIRE_COMMAND_SIGNATURE", "true")
+    try:
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "agent_command_signing_alg", "hmac")
+        monkeypatch.setattr(settings, "agent_signing_key", "rt17-lab-hmac-key")
+        monkeypatch.setattr(settings, "agent_require_command_signature", True)
+    except Exception:
+        pass
+
+    sealed = seal_command_for_delivery(
+        {"id": "cmd-rt17", "agent_id": "a-rt17", "kind": "patch_package", "created_at": 3.0},
+        {"package": "openssl"},
+    )
+    assert sealed.get("require_verify") is True
+    assert sealed.get("signature")
+    assert sealed.get("event_id") and sealed.get("nonce")
+    assert verify_sealed_command(sealed) is True
+
+
+def test_rt17_require_flag_rejects_unsigned_dispatch(tmp_path, monkeypatch):
+    """RT-17: when require=True, unsigned/failed seals are not marked sent."""
+    from app.agent_security import seal_command_for_delivery, verify_sealed_command
+    from tests._http_test_utils import configure_isolated_settings
+
+    configure_isolated_settings(monkeypatch, tmp_path)
+    monkeypatch.setenv("AGENT_REQUIRE_COMMAND_SIGNATURE", "true")
+    monkeypatch.setenv("AGENT_COMMAND_SIGNING_ALG", "hmac")
+    monkeypatch.setenv("SECURAIQ_AGENT_SIGNING_KEY", "rt17-dispatch-key")
+
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "agent_require_command_signature", True)
+    monkeypatch.setattr(settings, "agent_command_signing_alg", "hmac")
+    monkeypatch.setattr(settings, "agent_signing_key", "rt17-dispatch-key")
+
+    from app.agents import (
+        _dispatch_queued_commands,
+        approve_command,
+        enroll_agent,
+        ensure_schema,
+        request_command,
+    )
+    from app.db import get_conn
+    import app.agent_security as sec
+
+    ensure_schema()
+    enrolled = enroll_agent("u-rt17", name="rt17-host", org_id=None)
+    aid = enrolled["agent_id"]
+    req = request_command(
+        "u-rt17",
+        aid,
+        kind="patch_package",
+        payload={"package": "curl"},
+    )
+    cid = req["id"]
+    approve_command("u-rt17", aid, cid, approver_id="u-rt17")
+
+    # Force seal to fail → dispatch must hold queued (not send unsigned).
+    real_seal = seal_command_for_delivery
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("forced seal failure")
+
+    monkeypatch.setattr(sec, "seal_command_for_delivery", _boom)
+    out = _dispatch_queued_commands(aid)
+    assert out == []
+    row = dict(
+        get_conn()
+        .execute("SELECT status FROM securaiq_agent_commands WHERE id = ?", (cid,))
+        .fetchone()
+    )
+    assert row["status"] == "queued"
+
+    # Restore real seal — valid signed delivery succeeds and stamps require_verify.
+    monkeypatch.setattr(sec, "seal_command_for_delivery", real_seal)
+    out2 = _dispatch_queued_commands(aid)
+    assert len(out2) == 1
+    assert out2[0].get("require_verify") is True
+    assert out2[0].get("signature")
+    assert verify_sealed_command(out2[0]) is True
+    row2 = dict(
+        get_conn()
+        .execute("SELECT status FROM securaiq_agent_commands WHERE id = ?", (cid,))
+        .fetchone()
+    )
+    assert row2["status"] == "sent"
+
+
+def test_rt17_agent_refuses_unsigned_when_require_verify(monkeypatch):
+    """Agent refuses when require_verify stamped or SECURAIQ_REQUIRE_COMMAND_VERIFY=1."""
+    import importlib.util
+    from pathlib import Path
+
+    agent_path = Path(__file__).resolve().parents[1] / "scripts" / "securaiq_agent.py"
+    spec = importlib.util.spec_from_file_location("securaiq_agent_rt17", agent_path)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mod)
+
+    unsigned = {"id": "c1", "kind": "patch_package", "payload": {}, "require_verify": True}
+    assert mod._command_signatures_ok(unsigned, agent_id="a1") is False
+
+    monkeypatch.setenv("SECURAIQ_REQUIRE_COMMAND_VERIFY", "1")
+    unsigned2 = {"id": "c2", "kind": "patch_package", "payload": {}}
+    assert mod._command_signatures_ok(unsigned2, agent_id="a1") is False
+
+
 def test_checkin_sequence_ack(tmp_path, monkeypatch):
     from tests._http_test_utils import configure_isolated_settings
 
@@ -202,3 +388,55 @@ def test_checkin_sequence_ack(tmp_path, monkeypatch):
     assert 1 in (result.get("acked_sequences") or [])
     agent = get_agent(aid)
     assert int(agent.get("last_telemetry_seq") or 0) == 2
+
+
+def test_checkin_sequence_gap_publishes_and_keeps_watermark(tmp_path, monkeypatch):
+    """RT-05 — gap in buffered_events → missing_from + sequence_gap publish; no ACK across hole."""
+    from tests._http_test_utils import configure_isolated_settings
+
+    configure_isolated_settings(monkeypatch, tmp_path)
+    from app.agents import checkin, enroll_agent, ensure_schema, get_agent
+
+    ensure_schema()
+    enrolled = enroll_agent("u1", name="gap-host", org_id=None)
+    aid = enrolled["agent_id"]
+    publishes: list[dict] = []
+    monkeypatch.setattr(
+        "app.realtime_bus.publish",
+        lambda **kw: publishes.append(kw),
+    )
+    result = checkin(
+        aid,
+        {
+            "hostname": "gap-host",
+            "os": "linux",
+            "sequence": 3,
+            "buffered_events": [
+                {
+                    "sequence": 1,
+                    "event_type": "telemetry",
+                    "payload": {
+                        "hostname": "gap-host",
+                        "firewall_status": {"enabled": False, "collected": True},
+                    },
+                },
+                {
+                    "sequence": 3,
+                    "event_type": "telemetry",
+                    "payload": {"firewall_status": {"enabled": True}},
+                },
+            ],
+            "request_missing_from": 1,
+        },
+    )
+    assert result.get("ok")
+    assert result.get("last_acked_seq") == 1
+    assert result.get("acked_sequences") == [1]
+    assert result.get("missing_from") == 2
+    assert (result.get("gap") or {}).get("detected") is True
+    agent = get_agent(aid)
+    assert int(agent.get("last_telemetry_seq") or 0) == 1
+    assert any(
+        p.get("type") == "agent" and p.get("status") == "sequence_gap" and p.get("id") == aid
+        for p in publishes
+    )

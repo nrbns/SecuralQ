@@ -157,6 +157,11 @@ class Settings(BaseSettings):
     redis_stream_key: str = "securaiq:events"
     redis_stream_maxlen: int = 10000  # approximate trim on XADD
     realtime_replay_buffer: int = 2000  # in-process ring buffer for Last-Event-ID (lab)
+    # RT-02 opt-in: Streams as authoritative multi-worker SSE fan-out (skip pub/sub).
+    # Default False — keep pub/sub until operators enable Streams fanout.
+    realtime_streams_fanout: bool = False
+    # RT-06: prune processed event_id rows older than N days (SQLite/Postgres table).
+    event_idempotency_prune_days: int = 7
     # Native agent gateway (WebSocket) + replay protection
     agent_gateway_enabled: bool = True
     agent_require_replay_protection: bool = False  # true in production: require ts+nonce
@@ -167,6 +172,9 @@ class Settings(BaseSettings):
     # Command seal algorithm: hmac (default) | ed25519 | both.
     # HMAC stays default so existing labs keep working. ed25519/both need keys.
     agent_command_signing_alg: str = "hmac"
+    # RT-17: when True, gateway refuses unsigned seals and stamps require_verify.
+    # Default False so labs keep working without production crypto ops.
+    agent_require_command_signature: bool = False
     # Optional Ed25519 (REALTIME Task J) — opt-in via agent_command_signing_alg.
     # PEM or raw base64url; empty = helpers generate ephemeral keys for tests only.
     agent_ed25519_private_key: str = ""

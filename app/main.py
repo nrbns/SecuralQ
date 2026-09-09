@@ -1407,8 +1407,24 @@ async def realtime_feed(request: Request):
         or (request.query_params.get("last_event_id") or "").strip()
     )
 
+    # Tenant filter context for push events (heartbeats without push are never filtered).
+    sse_org_ids: list[str] = []
+    if settings.auth_enabled and sse_uid:
+        try:
+            from app.tenancy import user_org_ids
+
+            sse_org_ids = user_org_ids(sse_uid)
+        except Exception:
+            sse_org_ids = []
+
     async def event_gen():
-        from app.realtime_bus import bind_loop, replay_since, subscribe, unsubscribe
+        from app.realtime_bus import (
+            bind_loop,
+            replay_since,
+            sse_push_allowed_for_client,
+            subscribe,
+            unsubscribe,
+        )
 
         tools_snap = {"available_count": 0, "count": 0}
         tools_ts = 0.0
@@ -1429,6 +1445,43 @@ async def realtime_feed(request: Request):
                 return None
             eid = str(push.get("event_id") or "").strip()
             return eid or None
+
+        def _filter_push(push: dict[str, Any] | None) -> dict[str, Any] | None:
+            """Drop cross-tenant push; keep coalesced ``also`` items that pass."""
+            if not isinstance(push, dict):
+                return None
+            also_raw = push.get("also")
+            also_filtered: list[dict[str, Any]] = []
+            if isinstance(also_raw, list):
+                for item in also_raw:
+                    if isinstance(item, dict) and sse_push_allowed_for_client(
+                        item,
+                        auth_enabled=settings.auth_enabled,
+                        client_user_id=sse_uid,
+                        client_org_ids=sse_org_ids,
+                    ):
+                        also_filtered.append(item)
+
+            primary_ok = sse_push_allowed_for_client(
+                push,
+                auth_enabled=settings.auth_enabled,
+                client_user_id=sse_uid,
+                client_org_ids=sse_org_ids,
+            )
+            if primary_ok:
+                out = dict(push)
+                if also_filtered:
+                    out["also"] = also_filtered
+                elif "also" in out:
+                    out.pop("also", None)
+                return out
+            if also_filtered:
+                # Promote first allowed coalesced event as primary.
+                out = dict(also_filtered[0])
+                if len(also_filtered) > 1:
+                    out["also"] = also_filtered[1:]
+                return out
+            return None
 
         async def build_payload(push: dict[str, Any] | None = None) -> dict[str, Any]:
             nonlocal tools_snap, tools_ts
@@ -1612,6 +1665,9 @@ async def realtime_feed(request: Request):
                             continue
                         # Drop internal transport fields from the push body.
                         push_body = {k: v for k, v in missed.items() if k != "_pid"}
+                        push_body = _filter_push(push_body)
+                        if push_body is None:
+                            continue
                         try:
                             frame = await build_payload(push_body)
                             yield _sse_frame(frame, _push_event_id(push_body))
@@ -1622,8 +1678,10 @@ async def realtime_feed(request: Request):
 
             while True:
                 push_evt: dict[str, Any] | None = None
+                got_push = False
                 try:
                     push_evt = await asyncio.wait_for(q.get(), timeout=3.0)
+                    got_push = True
                     # Drain a small burst so one write storm doesn't spam SSE frames.
                     for _ in range(7):
                         try:
@@ -1636,6 +1694,12 @@ async def realtime_feed(request: Request):
                             break
                 except asyncio.TimeoutError:
                     push_evt = None
+                if got_push:
+                    push_evt = _filter_push(push_evt)
+                    if push_evt is None:
+                        # Cross-tenant (or unscoped-with-auth) push dropped —
+                        # do not emit a fake heartbeat; wait for next event.
+                        continue
                 try:
                     frame = await build_payload(push_evt)
                     yield _sse_frame(frame, _push_event_id(push_evt))

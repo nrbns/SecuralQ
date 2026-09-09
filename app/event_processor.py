@@ -11,6 +11,9 @@ Handlers only act when scope is clear (``user_id`` on the event, or recoverable
 from ``agent_id`` via ``securaiq_agents``). They must not invent detections,
 must not raise out of handlers, and must tag follow-on publishes with
 ``_from_processor=True`` to avoid recursion.
+
+Also covers RT-07 (threat→incident), RT-08 (inventory/vuln→org risk), and
+RT-09 (critical/incident→attack-path refresh).
 """
 
 from __future__ import annotations
@@ -32,6 +35,9 @@ HOOK_EVENT_TYPES: frozenset[str] = frozenset(
         "agent_threat",
         "vuln",
         "software.vulnerability.changed",
+        "inventory",
+        "software_inventory",
+        "software.inventory.updated",
         "remediation",
         "agent_command",
         "incident",
@@ -40,6 +46,28 @@ HOOK_EVENT_TYPES: frozenset[str] = frozenset(
 )
 
 _HIGH_SEV = frozenset({"high", "critical"})
+
+# RT-08 — light in-process last org risk score (per user); omit previous if unknown.
+_last_org_risk_score: dict[str, float] = {}
+
+# RT-07 — burst / keyword escalation to incidents (no invented IOCs).
+_THREAT_INCIDENT_WINDOW_SEC = 300  # 5 minutes
+_THREAT_INCIDENT_MIN_COUNT = 2
+_CRITICAL_TITLE_KEYWORDS: frozenset[str] = frozenset(
+    {
+        "powershell",
+        "ransomware",
+        "mimikatz",
+        "cobalt",
+        "lateral movement",
+        "credential dump",
+        "wiper",
+        "encrypt",
+        "lockbit",
+        "emotet",
+        "beacon",
+    }
+)
 
 # Status / lifecycle tokens that mean verified / done / failed for remediation
 # and agent_command side-effects (notify only on verified / failed).
@@ -194,7 +222,7 @@ def _publish_evidence_hint(
 
 
 def _maybe_publish_org_risk(user_id: str, *, reason: str = "") -> None:
-    """Cheap org risk hint — only when compute_org_risk_score returns a score."""
+    """RT-08 — recompute org risk; publish type=risk / risk.changed with previous when known."""
     try:
         from app.services.risk_priority import compute_org_risk_score
 
@@ -204,15 +232,26 @@ def _maybe_publish_org_risk(user_id: str, *, reason: str = "") -> None:
         return
     if not isinstance(result, dict) or result.get("score") is None:
         return
-    _safe_publish(
-        type="risk",
-        user_id=user_id,
-        score=result.get("score"),
-        band=result.get("band"),
-        total_open=result.get("total_open"),
-        reason=reason or "event_processor",
-        _from_processor=True,
-    )
+    try:
+        new_score = float(result["score"])
+    except (TypeError, ValueError):
+        return
+    previous: float | None = _last_org_risk_score.get(user_id)
+    _last_org_risk_score[user_id] = new_score
+    payload: dict[str, Any] = {
+        "type": "risk",
+        "event_type": "risk.changed",
+        "user_id": user_id,
+        "score": new_score,
+        "band": result.get("band"),
+        "total_open": result.get("total_open"),
+        "reason": reason or "event_processor",
+        "_from_processor": True,
+    }
+    if previous is not None:
+        payload["previous_score"] = previous
+        payload["score_delta"] = round(new_score - previous, 4)
+    _safe_publish(**payload)
 
 
 def _terminal_kind(event: dict[str, Any]) -> str | None:
@@ -232,6 +271,203 @@ def _terminal_kind(event: dict[str, Any]) -> str | None:
     if tokens & _DONE_TOKENS:
         return "done"
     return None
+
+
+def _title_has_critical_keyword(title: str) -> bool:
+    t = (title or "").lower()
+    return any(kw in t for kw in _CRITICAL_TITLE_KEYWORDS)
+
+
+def _count_recent_high_threats(agent_id: str, *, window_sec: int = _THREAT_INCIDENT_WINDOW_SEC) -> int:
+    """Count recent high/critical rows for an agent (DB; 0 on failure)."""
+    aid = str(agent_id or "").strip()
+    if not aid:
+        return 0
+    try:
+        from app.db import get_conn, now as db_now
+
+        cutoff = float(db_now()) - max(1, int(window_sec))
+        row = get_conn().execute(
+            """
+            SELECT COUNT(*) AS n FROM securaiq_agent_threats
+            WHERE agent_id = ? AND lower(severity) IN ('high', 'critical')
+              AND COALESCE(last_seen, first_seen, 0) >= ?
+            """,
+            (aid, cutoff),
+        ).fetchone()
+        if not row:
+            return 0
+        return int(row["n"] if hasattr(row, "keys") else row[0] or 0)
+    except Exception as exc:
+        _log.debug("recent threat count skipped: %s", exc)
+        return 0
+
+
+def _should_escalate_threat_incident(
+    *,
+    severity: str,
+    title: str,
+    agent_id: str,
+) -> bool:
+    """True when burst (≥2 high/critical in window) or critical+keyword."""
+    sev = (severity or "").strip().lower()
+    if sev not in _HIGH_SEV:
+        return False
+    if sev == "critical" and _title_has_critical_keyword(title):
+        return True
+    if not agent_id:
+        return False
+    return _count_recent_high_threats(agent_id) >= _THREAT_INCIDENT_MIN_COUNT
+
+
+def _find_open_processor_threat_incident(
+    user_id: str,
+    agent_id: str,
+    *,
+    org_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Find an open incident previously opened by the processor for this agent."""
+    if not user_id or not agent_id:
+        return None
+    marker = f"agent_id={agent_id}"
+    try:
+        from app.ops import list_incidents
+
+        for inc in list_incidents(user_id, status="open", org_id=org_id) or []:
+            src = str(inc.get("source") or "")
+            if src not in ("event_processor:agent_threat", "agent:sentinel"):
+                continue
+            blob = f"{inc.get('summary') or ''} {inc.get('title') or ''}"
+            if marker in blob or agent_id in blob:
+                return inc
+    except Exception as exc:
+        _log.debug("list_incidents for escalate skipped: %s", exc)
+    return None
+
+
+def _maybe_escalate_threat_incident(
+    event: dict[str, Any],
+    *,
+    user_id: str,
+    agent_id: str,
+    title: str,
+    severity: str,
+) -> dict[str, Any] | None:
+    """RT-07 — create/update incident when threshold met; publish with _from_processor.
+
+    Returns the incident dict when one was created/updated, else None.
+    """
+    if not _should_escalate_threat_incident(
+        severity=severity, title=title, agent_id=agent_id
+    ):
+        return None
+
+    org_id = str(event.get("org_id") or event.get("organization_id") or "").strip() or None
+    hostname = str(event.get("hostname") or "").strip()
+    threat_id = _entity_id(event.get("id"), event.get("threat_id"))
+    existing_id = str(event.get("incident_id") or "").strip()
+    summary = (
+        f"agent_id={agent_id}"
+        + (f" · host={hostname}" if hostname else "")
+        + (f" · threat_id={threat_id}" if threat_id else "")
+        + f" · {title}"
+    )[:900]
+    inc_title = f"[Agent threat] {title}"[:200]
+    if hostname:
+        inc_title = f"[Agent threat] {title} — {hostname}"[:200]
+
+    incident: dict[str, Any] | None = None
+    try:
+        from app.ops import create_incident, get_incident, update_incident
+
+        if existing_id:
+            incident = get_incident(user_id, existing_id)
+            if incident:
+                update_incident(
+                    user_id,
+                    existing_id,
+                    {
+                        "summary": summary,
+                        "severity": severity
+                        if severity == "critical"
+                        else (incident.get("severity") or severity),
+                    },
+                )
+                incident = get_incident(user_id, existing_id) or incident
+        if incident is None:
+            open_inc = _find_open_processor_threat_incident(
+                user_id, agent_id, org_id=org_id
+            )
+            if open_inc and open_inc.get("id"):
+                oid = str(open_inc["id"])
+                prev = str(open_inc.get("summary") or "")
+                merged = (prev + " · " + title)[:900] if prev else summary
+                update_incident(
+                    user_id,
+                    oid,
+                    {
+                        "summary": merged,
+                        "severity": "critical"
+                        if severity == "critical"
+                        else (open_inc.get("severity") or severity),
+                    },
+                )
+                incident = get_incident(user_id, oid) or open_inc
+        if incident is None:
+            incident = create_incident(
+                user_id,
+                title=inc_title,
+                severity=severity,
+                status="open",
+                source="event_processor:agent_threat",
+                summary=summary,
+                org_id=org_id,
+            )
+    except Exception as exc:
+        _log.debug("threat incident escalate skipped: %s", exc)
+        return None
+
+    if not incident or not incident.get("id"):
+        return None
+    _safe_publish(
+        type="incident",
+        id=incident["id"],
+        severity=incident.get("severity") or severity,
+        user_id=user_id,
+        org_id=org_id or incident.get("org_id"),
+        agent_id=agent_id or None,
+        title=incident.get("title") or inc_title,
+        source="event_processor:agent_threat",
+        threat_id=threat_id or None,
+        _from_processor=True,
+    )
+    return incident
+
+
+def _maybe_refresh_attack_paths(
+    event: dict[str, Any],
+    *,
+    user_id: str,
+    agent_id: str,
+    reason: str,
+    incident_id: str = "",
+) -> None:
+    """RT-09 — best-effort attack-path recalculation (never invents graphs)."""
+    try:
+        from app.services.attack_path_realtime import refresh_attack_paths_for_threat
+
+        org_id = str(event.get("org_id") or event.get("organization_id") or "").strip() or None
+        asset_id = _entity_id(event.get("asset_id"))
+        refresh_attack_paths_for_threat(
+            user_id,
+            agent_id=agent_id,
+            asset_id=asset_id,
+            reason=reason,
+            org_id=org_id,
+            incident_id=incident_id,
+        )
+    except Exception as exc:
+        _log.debug("attack_path refresh skipped: %s", exc)
 
 
 def _handle_agent_threat(event: dict[str, Any]) -> None:
@@ -276,6 +512,7 @@ def _handle_agent_threat(event: dict[str, Any]) -> None:
         user_id, evidence=evidence, entity_type=entity_type, entity_id=entity_id, summary=title
     )
     # Thin risk dashboard hint (no inventing detections — severity from the event).
+    incident: dict[str, Any] | None = None
     if sev in _HIGH_SEV:
         hint: dict[str, Any] = {
             "type": "risk",
@@ -289,6 +526,24 @@ def _handle_agent_threat(event: dict[str, Any]) -> None:
         if evidence and evidence.get("id"):
             hint["evidence_id"] = evidence["id"]
         _safe_publish(**hint)
+        # RT-07 — Detection → Risk → Incident → Evidence → Dashboard
+        incident = _maybe_escalate_threat_incident(
+            event,
+            user_id=user_id,
+            agent_id=agent_id,
+            title=title,
+            severity=sev,
+        )
+
+    # RT-09 — Threat → Attack Path on critical OR when RT-07 opened/updated an incident
+    if sev == "critical" or incident:
+        _maybe_refresh_attack_paths(
+            event,
+            user_id=user_id,
+            agent_id=agent_id,
+            reason="agent_threat_critical" if sev == "critical" else "threat_incident",
+            incident_id=str((incident or {}).get("id") or ""),
+        )
 
 
 def _vuln_entity_id(event: dict[str, Any]) -> str:
@@ -302,22 +557,49 @@ def _vuln_entity_id(event: dict[str, Any]) -> str:
     return ""
 
 
+def _vuln_significant_severity(event: dict[str, Any]) -> bool:
+    """True only for critical/high — RT-08 avoids evidence spam on medium/low."""
+    sev = str(event.get("severity") or "").strip().lower()
+    if sev in _HIGH_SEV:
+        return True
+    try:
+        if int(event.get("critical_installations") or 0) > 0:
+            return True
+    except (TypeError, ValueError):
+        pass
+    changes = event.get("changes")
+    if isinstance(changes, list):
+        for item in changes:
+            if not isinstance(item, dict):
+                continue
+            s = str(item.get("severity") or "").strip().lower()
+            if s in _HIGH_SEV:
+                return True
+    return False
+
+
 def _handle_vuln(event: dict[str, Any]) -> None:
+    """RT-08 — vuln / software.vulnerability.changed → risk (+ evidence if high/critical)."""
     user_id = _resolve_user_id(event)
     if not user_id:
         return
 
+    et = str(event.get("event_type") or event.get("type") or "vuln").strip()
     entity_id = _vuln_entity_id(event)
     title = _event_title(event, default="Vulnerability update")
-    evidence = None
-    if entity_id:
+    # Derived evidence only for significant severity — never invent CVEs.
+    if entity_id and _vuln_significant_severity(event):
         evidence = _safe_record_evidence(
             user_id,
             entity_type="vulnerability",
             entity_id=entity_id,
             source="derived",
             summary=title,
-            detail={"event_id": event.get("event_id"), "severity": event.get("severity")},
+            detail={
+                "event_id": event.get("event_id"),
+                "severity": event.get("severity"),
+                "event_type": et,
+            },
             confidence=0.7,
         )
         _publish_evidence_hint(
@@ -328,7 +610,16 @@ def _handle_vuln(event: dict[str, Any]) -> None:
             summary=title,
         )
 
-    _maybe_publish_org_risk(user_id, reason="vuln")
+    _maybe_publish_org_risk(user_id, reason=et or "vuln")
+
+
+def _handle_inventory(event: dict[str, Any]) -> None:
+    """RT-08 — inventory / software inventory → recompute org risk (no invented CVEs)."""
+    user_id = _resolve_user_id(event)
+    if not user_id:
+        return
+    et = str(event.get("event_type") or event.get("type") or "inventory").strip()
+    _maybe_publish_org_risk(user_id, reason=et or "inventory")
 
 
 def _handle_remediation_or_command(event: dict[str, Any]) -> None:
@@ -407,7 +698,11 @@ def _handle_light_evidence(event: dict[str, Any], *, entity_type: str) -> None:
 
 
 def process_event(event: dict[str, Any] | None) -> None:
-    """Run the registered handler for ``event`` (sync, never raises)."""
+    """Run the registered handler for ``event`` (sync, never raises).
+
+    RT-06: skips side-effects when ``event_id`` was already processed successfully;
+    marks the ledger only after the handler returns without raising.
+    """
     global _in_handler
     if not event or not isinstance(event, dict):
         return
@@ -419,11 +714,28 @@ def process_event(event: dict[str, Any] | None) -> None:
     handler = HANDLERS.get(et)
     if handler is None:
         return
+    eid = str(event.get("event_id") or "").strip()
+    if eid:
+        try:
+            from app.event_idempotency import already_processed
+
+            if already_processed(eid):
+                _log.debug("process_event skip — already processed %s", eid)
+                return
+        except Exception:
+            pass
     if _in_handler:
         return
     _in_handler = True
     try:
         handler(event)
+        if eid:
+            try:
+                from app.event_idempotency import mark_processed
+
+                mark_processed(eid)
+            except Exception:
+                pass
     except Exception as exc:
         _log.debug("handler %s failed: %s", et, exc)
     finally:
@@ -448,6 +760,9 @@ HANDLERS: dict[str, Handler] = {
     "agent_threat": _handle_agent_threat,
     "vuln": _handle_vuln,
     "software.vulnerability.changed": _handle_vuln,
+    "inventory": _handle_inventory,
+    "software_inventory": _handle_inventory,
+    "software.inventory.updated": _handle_inventory,
     "remediation": _handle_remediation_or_command,
     "agent_command": _handle_remediation_or_command,
     "incident": lambda e: _handle_light_evidence(e, entity_type="incident"),
@@ -558,6 +873,15 @@ def start_processor(loop: asyncio.AbstractEventLoop | None = None) -> None:
 
 def processor_status() -> dict[str, Any]:
     running = _processor_task is not None and not _processor_task.done()
+    streams_fanout = False
+    try:
+        from app.config import settings
+
+        streams_fanout = bool(
+            _redis_configured() and getattr(settings, "realtime_streams_fanout", False)
+        )
+    except Exception:
+        streams_fanout = False
     return {
         "redis_configured": _redis_configured(),
         "consumer_group": CONSUMER_GROUP if _redis_configured() else None,
@@ -565,6 +889,8 @@ def processor_status() -> dict[str, Any]:
         "task_running": running,
         "hook_types": sorted(HOOK_EVENT_TYPES),
         "mode": "redis_streams" if _redis_configured() else "local_publish_hooks",
+        "idempotency": "securaiq_processed_events",
+        "streams_fanout": streams_fanout,
     }
 
 
@@ -574,3 +900,4 @@ def reset_processor_for_tests() -> None:
     _started = False
     _processor_task = None
     _in_handler = False
+    _last_org_risk_score.clear()

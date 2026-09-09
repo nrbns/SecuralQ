@@ -29,19 +29,19 @@ Status key: **done** · **partial** · **missing**
 | Certificate rotation | **missing** | Next: per-agent mTLS or short-lived client certs. Token revoke + re-enroll is the current rotation path. |
 | Signed commands | **partial** | HMAC seal (`event_id` + `nonce` + `signature`) on delivery via `app/agent_security.py`. Optional Ed25519 generate/sign/verify helpers exist (Task J); **not** wired as mandatory seal yet. Production should move to Ed25519 + mTLS. |
 | Replay protection | **partial** | Optional `X-SecuraIQ-Ts` + `X-SecuraIQ-Nonce` (+ HMAC when `key_enc` exists). Enforced when `AGENT_REQUIRE_REPLAY_PROTECTION=true`. Command `expires_at` rejects stale queued work. |
-| Event IDs + deduplication | **partial→improved** | REALTIME v1 contract (`app/event_schema.py`) + `normalize_event` on every `publish` stamps `event_id` / `event_type` / envelope; in-process ring buffer / LRU drops duplicates. Streams `XADD` when `REDIS_URL` set — still not durable exactly-once across HA. Agent threat fingerprints already dedupe detections. |
-| Event ordering | **partial** | Normalized `sequence`/`seq` (millis) is best-effort dual-write. Redis Streams exist for append order when `REDIS_URL` set; **still** no per-tenant sequence authority. |
-| Persistent event queue | **partial** | When `REDIS_URL` set: durable Streams (`REDIS_STREAM_KEY`) + pub/sub SSE fan-out + consumer group `securaiq-workers`. Lab without Redis: in-process ring buffer only (`replay_since`). Not HA / Sentinel. Jobs remain in-process SQLite. |
+| Event IDs + deduplication | **partial→improved** | REALTIME v1 contract (`app/event_schema.py`) + `normalize_event` on every `publish` stamps `event_id` / `event_type` / envelope; in-process ring buffer / LRU drops duplicates. RT-06 `securaiq_processed_events` skips processor side-effect retries. Streams `XADD` when `REDIS_URL` set — still not durable exactly-once across HA. Agent threat fingerprints already dedupe detections. |
+| Event ordering | **partial→improved** | Normalized `sequence`/`seq` (millis) best-effort dual-write. Agent check-in contiguous ACK + gap fields / `sequence_gap` publish (RT-05). Redis Streams append order when `REDIS_URL` set; **still** no per-tenant sequence authority. |
+| Persistent event queue | **partial** | When `REDIS_URL` set: durable Streams (`REDIS_STREAM_KEY`) + **transitional** pub/sub SSE fan-out (default). Opt-in `REALTIME_STREAMS_FANOUT` uses per-process `securaiq-realtime-*` consumers instead of pub/sub. Lab without Redis: in-process ring buffer only (`replay_since` + limited Stream scan when Redis). Not HA / Sentinel. Jobs remain in-process SQLite. |
 | Agent reconnect | **done** | Gateway replaces an existing socket for the same agent id; agent client retries with backoff and falls back to HTTP check-in. |
-| Dashboard reconnect | **partial** | SSE `EventSource` reconnects in `static/app.js` with Last-Event-ID catch-up. Not a WebSocket dashboard gateway. |
-| Offline agent buffering | **partial** | `app/agent_offline_buffer.py` + check-in `sequence` / `buffered_events` ACK (`last_telemetry_seq`). Packaged agent not fully auto-wired yet. |
+| Dashboard reconnect | **partial→improved** | SSE `EventSource` reconnects in `static/app.js` with Last-Event-ID catch-up. AUTH-on push events tenant-filtered (`sse_push_allowed_for_client`). Not a WebSocket dashboard gateway. |
+| Offline agent buffering | **partial→improved** | `app/agent_offline_buffer.py` + check-in `sequence` / `buffered_events` ACK (`last_telemetry_seq`). Packaged agent **wired** (v1.1.1+): enqueue on failure, flush on check-in, `apply_server_ack`. Remaining gaps: contiguous ACK only (no ACK across holes); host telemetry re-apply from newest ACKed buffer (RT-05) — not HA durable. |
 | Command acknowledgement | **done** | HTTP `POST /api/agents/commands/{id}/ack` and WebSocket `{type: ack}`. Status `sent` → `acked`; realtime also publishes `lifecycle` (`ACKNOWLEDGED` / `EXECUTING`). |
 | Command timeout | **done** | `expires_at` on queue; un-acked `sent`/`acked` commands flip to `timeout` after `AGENT_COMMAND_ACK_TIMEOUT_SEC` (`lifecycle=TIMEOUT` / `EXPIRED`). |
 | Patch verification | **done** | Execution `done` ≠ verified; `verification_status` + advisory refresh job; bus publishes `VERIFICATION` / `VERIFIED`. |
 | Evidence generation | **partial** | Evidence store stamps `org_id` and filters with `tenant_visibility_sql`; confirm/list/get fail closed. Not every product claim auto-records evidence yet. |
 | Immutable audit trail | **partial** | Append-only `audit_log` + SIEM forward option. SQLite rows are not WORM/object-lock immutable. |
 | PostgreSQL backup/restore | **partial** | SQLite scripts in `scripts/backup.*`. Postgres path documented (`pg_dump`) in `docs/backup-dr.md` — operator-owned, not a product HA test. |
-| Redis HA/recovery | **missing** | `REDIS_URL` enables Streams + pub/sub. Soft chaos docs in `scripts/realtime_chaos_test.py --document-redis`. No Sentinel/Cluster failover test. |
+| Redis HA/recovery | **missing** | `REDIS_URL` enables Streams + pub/sub (or opt-in Streams fan-out). Soft chaos docs in `scripts/realtime_chaos_test.py --document-redis`. No Sentinel/Cluster failover test. Streams still **partial** until fan-out is default + HA. |
 | TLS | **partial** | Caddy/nginx scaffolding in `deploy/`; DNS and certs are operator steps. Agent `--insecure` is lab-only. |
 | Rate limiting | **done** | `RateLimitMiddleware` on the API (`RATE_LIMIT_*`). |
 | Secret management | **partial** | `.env` envelope encryption (`app/secrets_crypto.py`); agent raw key shown once. Optional Ed25519 key env vars (unused for live seal). No KMS/HSM. |
@@ -61,9 +61,9 @@ Status key: **done** · **partial** · **missing**
 |--------|-----------|-----|
 | Multi-tenant architecture | Org-isolated agents + APIs | **partial→near-done** — high-value tables scoped; notifications remain per-recipient; lab `local` bypass intentional |
 | Real Agent Gateway | Persistent WS + heartbeat + push commands | **done** (v1) — `WS /api/agents/ws`; HTTP check-in remains fallback |
-| Event pipeline | Agent → detection → risk → dashboard | **partial→improved** — threat ingest + realtime bus + SSE; Streams + scoped processor hooks (notify/evidence/risk when `user_id` known); rich detection→risk still incomplete |
+| Event pipeline | Agent → detection → risk → dashboard | **partial→improved** — threat ingest + realtime bus + SSE; Streams + scoped processor hooks (notify/evidence/risk when `user_id` known) + RT-06 idempotency; RT-07 threat→incident when burst/keyword threshold met; RT-08 inventory/vuln→org risk (`risk.changed`) + high/crit derived evidence; RT-09 critical/incident → `compute_attack_paths` + `attack_path` summary; SSE tenant filter when AUTH on; Streams fan-out still opt-in; rich twin/XDR correlation still incomplete |
 | Agent installers | MSI / deb / rpm / pkg | **partial** — scripts only |
-| Agent security | Device identity, certs, signed commands | **partial** — bearer + replay/HMAC live; Ed25519 helpers optional (Task J); certs/mTLS next |
+| Agent security | Device identity, certs, signed commands | **partial→improved** — bearer + replay/HMAC live; Ed25519 helpers optional (Task J); RT-17 opt-in mandatory seals (`AGENT_REQUIRE_COMMAND_SIGNATURE`, lab default off); certs/mTLS (RT-16) still next |
 | Real-time dashboard | No polling-dependent UX | **partial** — SSE on publish; some panels still poll |
 | Load testing | 100 → 1,000 → 5,000+ | **partial** — ladder harness ≤1k (`realtime_load_test.py`); **do not claim 5k** |
 
@@ -72,7 +72,7 @@ Status key: **done** · **partial** · **missing**
 - Malware analysis (hash → static → behavioral → sandbox)
 - SIEM/XDR correlation into unified incidents (connectors exist, live-tenant proof does not)
 - AI orchestration that proposes **controlled** actions (approvals already exist)
-- Compliance evidence from agent telemetry
+- Compliance evidence from agent telemetry — **partial→improved** (RT-10/11): host firewall / Defender / SSH root live tests from agent `last_payload_json`, observed evidence + compliance SSE on check-in; firewall FAIL→remediation stub→re-check PASS. Not a compliance certification.
 - HA/DR (Postgres + Redis + workers)
 
 ## P2

@@ -261,20 +261,30 @@ class OfflineTelemetryBuffer:
 
 
 def _compact_snapshot_for_buffer(snapshot: dict) -> dict:
-    """Prefer full snapshot under ~100KB; otherwise a compact host stub."""
+    """Prefer full snapshot under ~100KB; otherwise a compact host stub.
+
+    Always keep firewall/defender/ssh (+ packages when present) so offline
+    catch-up can re-apply host control telemetry (RT-05).
+    """
     try:
         raw = json.dumps(snapshot, separators=(",", ":")).encode("utf-8")
         if len(raw) <= _SNAPSHOT_BUFFER_SOFT_BYTES:
             return snapshot
     except Exception:
         pass
-    return {
+    compact = {
         "hostname": snapshot.get("hostname"),
         "os": snapshot.get("os"),
+        "os_version": snapshot.get("os_version"),
+        "ip": snapshot.get("ip"),
         "agent_version": snapshot.get("agent_version") or AGENT_VERSION,
         "timestamp": time.time(),
         "truncated": True,
     }
+    for key in ("firewall_status", "defender_status", "ssh_config", "packages"):
+        if key in snapshot and snapshot.get(key) is not None:
+            compact[key] = snapshot[key]
+    return compact
 
 
 def _agent_id_from_token(token: str) -> str:
@@ -328,12 +338,20 @@ def _verify_command_ed25519(cmd: dict, *, agent_id: str, public_key: str) -> boo
 
 
 def _command_signatures_ok(cmd: dict, *, agent_id: str) -> bool:
-    """Pre-execute seal checks. Lab-friendly unless SECURAIQ_REQUIRE_COMMAND_VERIFY=1."""
-    require = os.environ.get("SECURAIQ_REQUIRE_COMMAND_VERIFY", "").strip().lower() in (
+    """Pre-execute seal checks.
+
+    Lab-friendly by default. Mandatory verify when:
+    - ``SECURAIQ_REQUIRE_COMMAND_VERIFY=1``, or
+    - the server stamped ``require_verify: true`` (RT-17 /
+      ``AGENT_REQUIRE_COMMAND_SIGNATURE`` on the control plane).
+    """
+    env_require = os.environ.get("SECURAIQ_REQUIRE_COMMAND_VERIFY", "").strip().lower() in (
         "1",
         "true",
         "yes",
     )
+    cmd_require = bool(cmd.get("require_verify"))
+    require = env_require or cmd_require
     sig_ed = str(cmd.get("signature_ed25519") or "").strip()
     pub = str(
         cmd.get("signing_public_key")
@@ -342,6 +360,14 @@ def _command_signatures_ok(cmd: dict, *, agent_id: str) -> bool:
     ).strip()
     signing_key = (os.environ.get("SECURAIQ_AGENT_SIGNING_KEY") or "").strip()
     hmac_sig = str(cmd.get("signature") or "").strip()
+
+    if require and not hmac_sig and not sig_ed:
+        print(
+            f"[securaiq-agent] command {cmd.get('id')} missing signature — refusing "
+            f"(require_verify={'cmd' if cmd_require else 'env'})",
+            file=sys.stderr,
+        )
+        return False
 
     if sig_ed:
         if not pub:
@@ -367,14 +393,23 @@ def _command_signatures_ok(cmd: dict, *, agent_id: str) -> bool:
                     return False
                 print(msg + " — skipping verify (lab)", file=sys.stderr)
 
-    if signing_key and hmac_sig:
-        if not _verify_command_hmac(cmd, agent_id=agent_id, signing_key=signing_key):
+    if hmac_sig:
+        if not signing_key:
+            msg = (
+                f"[securaiq-agent] command {cmd.get('id')} has HMAC signature but "
+                "SECURAIQ_AGENT_SIGNING_KEY is unset"
+            )
+            if require:
+                print(msg + " — refusing", file=sys.stderr)
+                return False
+            print(msg + " — skipping HMAC verify (lab)", file=sys.stderr)
+        elif not _verify_command_hmac(cmd, agent_id=agent_id, signing_key=signing_key):
             print(
                 f"[securaiq-agent] HMAC signature verify failed for command {cmd.get('id')}",
                 file=sys.stderr,
             )
             return False
-    elif signing_key and not hmac_sig and not sig_ed and require:
+    elif signing_key and not sig_ed and require:
         print(
             f"[securaiq-agent] SECURAIQ_AGENT_SIGNING_KEY set but command {cmd.get('id')} has no signature — refusing",
             file=sys.stderr,

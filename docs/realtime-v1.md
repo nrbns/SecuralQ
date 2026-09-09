@@ -20,29 +20,52 @@ Related: [production-readiness.md](./production-readiness.md) ·
      normalize_event()  ← Task A
      app/event_schema.py + app/realtime_events.py
               │
-       ┌──────┼──────────────┐
-       ▼      ▼              ▼
-  in-process  Redis pub/sub  Redis Streams XADD
-  SSE queues  (multi-worker  (durable log when
-  + ring      SSE fan-out)   REDIS_URL set)
-  buffer                     │
-       │                     ▼
-       │              event_processor
-       │              group securaiq-workers
+       ┌──────┼──────────────────────────┐
+       ▼      ▼                          ▼
+  in-process  Redis pub/sub              Redis Streams XADD
+  SSE queues  (transitional multi-       (durable SoT when
+  + ring      worker SSE notify;         REDIS_URL set)
+  buffer      default when Redis on)              │
+       │      Skip when REALTIME_                 │
+       │      STREAMS_FANOUT=true                 ▼
+       │                              event_processor
+       │                              group securaiq-workers
+       │                              (+ RT-06 idempotency ledger)
+       │                              │
+       │         ┌────────────────────┘
+       │         ▼  (opt-in fanout)
+       │   securaiq-realtime-{pid}
+       │   XREADGROUP → _fanout_local
        ▼
   GET /api/realtime  →  browser EventSource
+  (AUTH on: tenant-filter push by user_id / org membership)
 ```
+
+### Fan-out roles (RT-02)
+
+| Mechanism | Role |
+|-----------|------|
+| **In-process** `_fanout_local` | Always — same worker / lab (no Redis) |
+| **Pub/Sub** `securaiq:realtime` | **Transitional** multi-worker SSE notify when `REDIS_URL` set and `REALTIME_STREAMS_FANOUT=false` (default) |
+| **Streams** `XADD` | **Durable source of truth** when `REDIS_URL` set (always XADD; independent of fan-out mode) |
+| **Streams fan-out** | **Opt-in** (`REALTIME_STREAMS_FANOUT=true`): skip pub/sub; each process runs group `securaiq-realtime-{pid}` and fans to local SSE after `XREADGROUP` |
+
+Lab without Redis is unchanged. Do not enable Streams fan-out as default until operators accept the per-process consumer model (Streams still **partial** for HA until fan-out is default + Sentinel/Cluster).
 
 - **In-process bus** is the lab default and always works with `AUTH_ENABLED=false`.
   Ring buffer (`REALTIME_REPLAY_BUFFER`, default 2000) powers `replay_since` for
-  Last-Event-ID catch-up without Redis (SSE wiring = Task E).
-- **Redis pub/sub** (`REDIS_URL`) fans live events across uvicorn workers for SSE.
-- **Redis Streams** (`REDIS_STREAM_KEY`, default `securaiq:events`) durable `XADD`
-  with approximate `REDIS_STREAM_MAXLEN` trim — Task B.
+  Last-Event-ID catch-up without Redis. With Redis, `replay_since` also
+  best-effort scans a limited recent Stream window (merged + deduped).
+- **SSE tenant filter:** when `AUTH_ENABLED=true`, live + replay **push** events
+  must match the client's `user_id` or org membership (`org_id` /
+  `organization_id`). Unscoped pushes are delivered only when auth is off.
+  Heartbeat snapshots without `push` are never filtered.
 - **Event processor** (`app/event_processor.py`) — Task C: Streams consumer group
   `securaiq-workers` when Redis is set; lab path runs the same sync hooks from
   `publish` when Redis is absent. Handlers perform scoped notify / evidence / thin
   risk republish when `user_id` is known — no fake detections.
+- **RT-06 idempotency:** `app/event_idempotency.py` table `securaiq_processed_events`
+  skips processor side-effects for already-handled `event_id` (writers never gated).
 
 ---
 
@@ -97,17 +120,17 @@ SSE consumers in `static/app.js` keep working; they are also copied into `data`.
 
 ---
 
-## Task B — Durable Event Bus / Redis Streams (done)
+## Task B — Durable Event Bus / Redis Streams (done → RT-02 partial)
 
 | Piece | Role |
 |-------|------|
-| `realtime_bus.publish` | `XADD` to Streams when `REDIS_URL` set (+ keep pub/sub) |
+| `realtime_bus.publish` | `XADD` to Streams when `REDIS_URL` set; pub/sub unless `REALTIME_STREAMS_FANOUT` |
 | In-process ring buffer | Last N events by `event_id` for lab `replay_since` |
-| `replay_since(last_event_id, limit=200)` | Catch-up helper (buffer only) |
-| `stream_status()` / `backend_status()` | Honest mode: `in_process` vs `redis_streams+pubsub` |
-| Config | `REDIS_STREAM_KEY`, `REDIS_STREAM_MAXLEN`, `REALTIME_REPLAY_BUFFER` |
+| `replay_since(last_event_id, limit=200)` | Ring buffer + best-effort limited Stream scan when Redis available |
+| `stream_status()` / `backend_status()` | Modes: `in_process` \| `redis_streams+pubsub` \| `redis_streams_fanout` |
+| Config | `REDIS_STREAM_KEY`, `REDIS_STREAM_MAXLEN`, `REALTIME_REPLAY_BUFFER`, `REALTIME_STREAMS_FANOUT` (default **false**) |
 
-**Still partial for HA:** no Sentinel/Cluster, no cross-node replay API on SSE yet.
+**Still partial for HA:** pub/sub remains default multi-worker notify; Streams fan-out is opt-in (per-process `securaiq-realtime-{pid}`). No Sentinel/Cluster. Full HA catch-up API not claimed.
 
 ---
 
@@ -116,8 +139,9 @@ SSE consumers in `static/app.js` keep working; they are also copied into `data`.
 | Piece | Role |
 |-------|------|
 | `app/event_processor.py` | Streams consumer + lab `on_local_publish` |
-| Consumer group | `securaiq-workers` (one of many uvicorn workers) |
-| Handlers | Real side-effects when `user_id` is known (or recoverable from `agent_id`): notify + evidence + thin `evidence`/`risk` republish with `_from_processor=True` for `agent_threat`, `vuln`, `software.vulnerability.changed`, `remediation`, `agent_command`; light evidence for `incident` / `gap` |
+| Consumer group | `securaiq-workers` (one of many uvicorn workers) for **side-effects** |
+| RT-06 idempotency | `app/event_idempotency.py` — `securaiq_processed_events`; skip duplicate handler runs |
+| Handlers | Real side-effects when `user_id` is known (or recoverable from `agent_id`): notify + evidence + thin `evidence`/`risk` republish with `_from_processor=True` for `agent_threat`, `vuln`, `software.vulnerability.changed`, `remediation`, `agent_command`; inventory hooks (`inventory`, `software_inventory`, `software.inventory.updated`) recompute org risk; light evidence for `incident` / `gap`; RT-07 threat→incident on burst/keyword; RT-09 attack-path refresh on critical / incident |
 
 Scope-gated only — no invented detections. Writers never fail if Redis/processor
 errors. Per-tenant sequence authority and full detection→risk pipeline remain later.
@@ -129,6 +153,7 @@ errors. Per-tenant sequence authority and full detection→risk pipeline remain 
 | Piece | Role |
 |-------|------|
 | `GET /api/realtime` | Reads `Last-Event-ID` / `?last_event_id=`; replays via `replay_since`; SSE frames include `id:` when push has `event_id` |
+| Tenant filter | `sse_push_allowed_for_client` — AUTH on: require `user_id` or org match; unscoped only when AUTH off; heartbeats unfiltered |
 | `static/app.js` `RealtimeManager` | Connection states: connected / reconnecting / reconnected / failed / offline |
 | Live badge | "Live", "Reconnecting…", "Offline — last known state" via `setLiveState` |
 | Auth query token | Kept on reconnect URL; native EventSource Last-Event-ID preferred; query param for force-reopen / polyfill |
@@ -147,10 +172,10 @@ errors. Per-tenant sequence authority and full detection→risk pipeline remain 
 
 ---
 
-## Task D — Offline agent telemetry buffer (wired)
+## Task D — Offline agent telemetry buffer (wired → RT-04/05)
 
 Packaged agent embeds a stdlib copy of the buffer and wires it into the check-in
-loop (`scripts/securaiq_agent.py` ≥ 1.1.1). Server recovery path unchanged.
+loop (`scripts/securaiq_agent.py` ≥ 1.1.1). Server recovery path strengthened in RT-05.
 
 | Piece | Role |
 |-------|------|
@@ -158,8 +183,9 @@ loop (`scripts/securaiq_agent.py` ≥ 1.1.1). Server recovery path unchanged.
 | Agent embed | Same schema in `scripts/securaiq_agent.py` (no `app.*` import when frozen) |
 | Bounds | Default max **5000** events + soft **8 MiB** disk cap (oldest dropped) |
 | Check-in fields | Optional `sequence`, `buffered_events`, `request_missing_from` on `POST /api/agents/checkin` |
-| Response | `last_acked_seq`, `acked_sequences`, optional `missing_from` |
+| Response | `last_acked_seq`, `acked_sequences`, optional `missing_from` + `gap` |
 | Agent row | `last_telemetry_seq` watermark (DB); not a full durable telemetry log |
+| Compact buffer | Truncated snapshots still keep `firewall_status` / `defender_status` / `ssh_config` / `packages` when present |
 | Disable | Agent CLI `--no-offline-buffer` |
 
 **Agent wiring:**
@@ -168,9 +194,65 @@ loop (`scripts/securaiq_agent.py` ≥ 1.1.1). Server recovery path unchanged.
 - On check-in **attempt**: merge `build_checkin_extension()` into payload
 - On **success** (HTTP or WS `checkin_ok`): `apply_server_ack`; log if events drained
 
-**Honest status:** lab scaffolding — contiguous ACK only; not a durable HA log.
+**Honest status:** lab scaffolding — contiguous ACK only (never across holes); packaged agent wired; not a durable HA log.
 
 ---
+
+## RT-05 — Event ordering + gap recovery (partial → improved)
+
+| Piece | Role |
+|-------|------|
+| Contiguous ACK | `process_buffered_events_on_server` ACKs only `last+1, last+2, …`; stops at first hole |
+| Gap fields | Response `missing_from` + `gap.detected` / `expected_next` / `first_unacked_in_batch` |
+| Dashboard | Check-in publishes `type=agent` `status=sequence_gap` with `user_id` / `org_id` when gap set |
+| Re-apply | Newest ACKed buffered payload with host telemetry keys merged into effective check-in telemetry → `evaluate_agent_host_controls` (+ packages ingest) |
+| Watermark | `last_telemetry_seq` stays honest — never advances across missing sequences |
+
+**Still partial:** no per-tenant global sequence authority; not a durable HA telemetry log.
+
+---
+
+## RT-07 — Detection → Risk → Incident → Evidence → Dashboard (foundations)
+
+When `agent_threat` is processed and `user_id` is known:
+
+| Step | Behavior |
+|------|----------|
+| Notify + evidence | Unchanged for high/critical (inbox + observed evidence + thin `evidence` / `risk` republish) |
+| Incident threshold | ≥2 high/critical for same `agent_id` in ~5 min **or** single **critical** with title keywords (`powershell`, `ransomware`, …) |
+| Incident API | `app.ops.create_incident` / `update_incident` (source `event_processor:agent_threat`); no invented IOCs |
+| Bus | `type=incident` with `_from_processor=True` |
+| Idempotency | RT-06 `securaiq_processed_events` skips duplicate handler runs |
+
+**Honest status:** foundations only — not full XDR correlation (see RT-09 for attack-path stub) or full inventory→vuln correlation depth (see RT-08).
+
+---
+
+## RT-08 — Inventory → Vulnerability → Risk → Dashboard (foundations)
+
+When inventory / vuln events are processed and `user_id` is known:
+
+| Step | Behavior |
+|------|----------|
+| Hook types | `inventory`, `software_inventory`, `software.inventory.updated`, `vuln`, `software.vulnerability.changed` |
+| Org risk | Best-effort `compute_org_risk_score` → bus `type=risk` / `event_type=risk.changed` with `previous_score` when the in-process last score is known |
+| Evidence | Derived vulnerability evidence **only** for severity critical/high (or `critical_installations` / high-sev change rows) — avoids spam; **never invents CVEs** |
+| Inventory-only | Risk republish only — no fabricated findings |
+
+**Honest status:** foundations — risk hint + gated evidence; not a full CMDB→CVE→dashboard pipeline.
+
+---
+
+## RT-09 — Threat → Attack Path → Risk → Incident (foundations)
+
+| Step | Behavior |
+|------|----------|
+| Trigger | `agent_threat` **critical**, or RT-07 creates/updates an incident |
+| Refresh | `app/services/attack_path_realtime.py` → real `compute_attack_paths` for the user's graph (resolves `asset_id` from event or agent row when present) |
+| Bus | `type=attack_path` summarizing `path_count` / status (`recalculated` \| `compute_failed`) + thin `type=risk` hint; `_from_processor=True` |
+| Honesty | Recalculates from existing graph data only — does **not** invent path edges or CVEs |
+
+**Honest status:** foundations — best-effort refresh + summary event; not full twin/XDR path correlation.
 
 ## Task G — Command lifecycle (partial)
 
@@ -224,29 +306,88 @@ python scripts/realtime_chaos_test.py --document-redis
 | `seal_command_for_delivery` | Always event_id + nonce; HMAC and/or `signature_ed25519` + `signing_public_key` |
 | `verify_sealed_command` | Server helper verifies per `signature_alg` |
 | Agent | Verifies Ed25519 when present (`cryptography` if installed); HMAC when `SECURAIQ_AGENT_SIGNING_KEY` set |
-| Fallback | `alg=ed25519` without private key → HMAC + warning |
+| Fallback | `alg=ed25519` without private key → HMAC + warning (unless RT-17 require is on) |
 
 Production direction: **Ed25519 + mTLS**. Default remains **HMAC** so labs without keys keep working.
 
 ---
 
-## Task order (A → J)
+## RT-17 — Mandatory signed commands (opt-in)
+
+Lab-safe default: **`AGENT_REQUIRE_COMMAND_SIGNATURE=false`** /
+``agent_require_command_signature: bool = False``.
+
+| Piece | Role |
+|-------|------|
+| Config | `AGENT_REQUIRE_COMMAND_SIGNATURE` — production opt-in |
+| `seal_command_for_delivery` | When require=True: valid seal mandatory (no silent unsigned); stamps `require_verify: true`; self-checks via `verify_sealed_command` |
+| Gateway / check-in dispatch | Refuses to mark `sent` / deliver when require=True and seal missing/invalid; holds row `queued` |
+| Self-check | `verify_sealed_command` before `sent` (blocks when require; debug-log only in lab) |
+| Agent | Refuses execute if `SECURAIQ_REQUIRE_COMMAND_VERIFY=1` **or** command carries `require_verify: true` |
+
+**Not mTLS (RT-16).** HMAC/Ed25519 seals only.
+
+---
+
+## RT-10 — ControlTestEngine from agent host telemetry (foundations)
+
+Agent check-in payloads already include `firewall_status`, `defender_status`, and
+`ssh_config`. RT-10 turns those into live control tests (not certification).
+
+| Piece | Role |
+|-------|------|
+| `app/services/control_testing.py` | `host_firewall`, `host_defender`, `host_ssh_root` tests + `_CONTROL_TEST_MAP` bindings (CIS-12/10/4, NIST CSF PR.IR-01 / PR.PS-01, ISO A.8.20 / A.8.7 / A.8.9, 800-53 SC-7 / SI-3 / CM-6) |
+| Provenance | `test_id`, `source=securaiq_agent`, `agent_id` / `asset_id`, observed snippet, `collected_at`, `confidence` |
+| Evidence | `source=observed` on FAIL (idempotent fingerprint) and PASS transitions via `agent_host_control` entities |
+| Check-in hook | `evaluate_agent_host_controls` after successful store in `app/agents.py` `checkin` — publishes `type=compliance` (+ thin `type=risk` on FAIL); never breaks check-in |
+| Continuous Compliance | `list_live_control_failures` includes host fails when online agents report them |
+
+**Honest status:** foundations — operating-effectiveness signals from enrolled agents only.
+
+---
+
+## RT-11 — FAIL → remediate → verify (minimal)
+
+| Piece | Role |
+|-------|------|
+| Firewall FAIL | Ensures an open `gap_remediations` row (CIS-12) via `create_remediation`, notes `host_firewall:{agent_id}` — **manual** enable on host; optional approved agent command is TODO |
+| Re-check PASS | Next check-in with firewall enabled → PASS evidence + compliance pass + risk-reduction hint; matching rem marked `done` |
+| Approve path | Remediations workspace → assign owner → fix host → wait for agent check-in verify |
+
+**Honest status:** stub loop for host_firewall only; Defender/SSH publish compliance/risk only (no auto rem yet).
+
+---
+
+## Task order (A → J + RT-01…RT-20)
 
 | Task | Scope | Status |
 |------|--------|--------|
-| **A** | Unified versioned event contract + normalize on publish | **Done** |
-| **B** | Durable queue via **Redis Streams** (XADD, trim, in-process replay buffer) | **Done** (needs `REDIS_URL` for durability) |
-| **C** | Event processor (consumer group + lab hooks; scoped notify/evidence/risk) | **Partial→improved** |
-| **D** | Offline agent telemetry buffering | **Partial** (module + agent wired; not HA durable) |
-| **E** | Dashboard reconnect + missed-event catch-up (Last-Event-ID → `replay_since`) | **Done** |
-| **F** | Full dashboard realtime (LIVE_TYPES + soft-poll when SSE connected) | **Done** |
+| **A** / **RT-01** | Unified versioned event contract + normalize on publish | **Done** |
+| **B** / **RT-02** | Durable queue via **Redis Streams** (XADD, trim; opt-in Streams fan-out) | **Partial** (needs `REDIS_URL`; fan-out opt-in, pub/sub still default) |
+| **C** / **RT-03** | Event processor (consumer group + lab hooks; scoped notify/evidence/risk) | **Partial→improved** |
+| **D** / **RT-04** | Agent offline spool fully wired into packaged agents | **Partial→improved** (v1.1.1 wired; not HA durable) |
+| **RT-05** | Event ordering + gap recovery (contiguous ACK, re-apply host telemetry, `sequence_gap`) | **Partial→improved** (foundations) |
+| **RT-06** | Processor idempotency ledger (`securaiq_processed_events`) | **Partial→improved** (foundations) |
+| **RT-07** | Detection → Risk → Incident → Evidence → Dashboard | **Partial→improved** (threat burst/keyword → incident) |
+| **RT-08** | Inventory → Vulnerability → Risk → Dashboard | **Partial→improved** (inventory/vuln hooks → org risk + high/crit evidence) |
+| **RT-09** | Threat → Attack Path → Risk → Incident | **Partial→improved** (critical/incident → `compute_attack_paths` + `attack_path` event) |
+| **RT-10** | Agent telemetry → control test → compliance → evidence → risk → dashboard | **Partial→improved** (foundations) |
+| **RT-11** | Control FAIL → rem → approve → agent → verify → PASS → evidence | **Partial** (minimal firewall stub) |
+| **E** / **RT-12** | Central dashboard realtime (`RealtimeManager` + Last-Event-ID) | **Done→partial** (manager exists; not every panel) |
+| **F** / **RT-13** | Remove polling from major dashboards | **Partial** (soft-poll skip while SSE connected) |
+| **RT-14** | Connection state + stale-data indicators | **Partial→improved** (live badge states) |
+| **RT-15** | Realtime timeline for every incident/remediation/control | **Planned** |
 | **G** | Command lifecycle dual-write (`lifecycle` on bus) | **Partial** |
-| **H** | Load ladder scaffolding (≤1k measured; not 5k) | **Partial** (harness only) |
-| **I** | Soft chaos scaffolding (buffer replay; Redis kill manual) | **Partial** |
-| **J** | Ed25519 opt-in seal (HMAC default) | **Partial** |
+| **J** / **RT-16** | mTLS / certificate rotation | **Planned** (missing) |
+| **J** / **RT-17** | Mandatory signed commands | **Partial→improved** (opt-in `AGENT_REQUIRE_COMMAND_SIGNATURE`; still not mTLS) |
+| **RT-18** | Redis HA | **Planned** (missing) |
+| **I** / **RT-19** | Automated chaos testing | **Partial** (soft harness; Redis kill manual) |
+| **H** / **RT-20** | 5K measured load test | **Partial** (ladder ≤1k; **do not claim 5k**) |
 
 **Later / not this slice:** per-tenant sequence authority, Redis Sentinel/Cluster HA,
-exactly-once consumers beyond LRU, ops SLOs, forced Ed25519-only cutover.
+default Streams fan-out (still opt-in), exactly-once beyond SQLite ledger + LRU,
+ops SLOs, forced Ed25519-only cutover,
+approved agent commands that enable firewall automatically.
 
 **Out of scope for this track:** Task #144 Live Test UI (frozen).
 
@@ -254,11 +395,13 @@ exactly-once consumers beyond LRU, ops SLOs, forced Ed25519-only cutover.
 
 ## Honest production gate
 
-- Event IDs + schema: **improved** (contract + normalize), still not durable exactly-once.
-- Event ordering: **still partial** (millis `sequence`; Streams exist but no per-tenant log).
-- Persistent event queue: **partial** — Streams when `REDIS_URL` set; lab remains in-process buffer only.
-- Event processor: **partial→improved** — consumer group + scoped notify/evidence/risk hooks; not full detection→risk pipeline.
-- Offline agent buffer: **partial** — packaged agent wired; contiguous ACK only; not HA durable.
+- Event IDs + schema: **improved** (contract + normalize), still not durable exactly-once across HA.
+- Event ordering: **partial→improved** — agent contiguous ACK + gap publish + host telemetry re-apply (RT-05); millis `sequence` still best-effort; no per-tenant log.
+- Persistent event queue: **partial** — Streams when `REDIS_URL` set; pub/sub still default for multi-worker SSE; Streams fan-out **opt-in**; lab remains in-process buffer only.
+- Event processor: **partial→improved** — consumer group + scoped hooks + RT-06 ledger + RT-07 threat→incident + RT-08 inventory/vuln→risk + RT-09 attack-path refresh; not full detection→risk / XDR correlation.
+- SSE tenancy: **improved** — push filtered when AUTH on; heartbeats unfiltered.
+- Offline agent buffer: **partial→improved** — packaged agent wired (v1.1.1); contiguous ACK + re-apply host keys from newest ACKed buffer; not HA durable.
 - Command lifecycle: **partial** — bus dual-write; DB enums unchanged.
 - Scale / chaos: **partial** — lab harnesses only; **not production proof**.
-- Agent crypto: **partial** — HMAC default; Ed25519 opt-in via `AGENT_COMMAND_SIGNING_ALG`.
+- Agent crypto: **partial→improved** — HMAC default; Ed25519 opt-in; RT-17 mandatory seals via `AGENT_REQUIRE_COMMAND_SIGNATURE` (lab default off; not mTLS).
+- Compliance evidence from agent telemetry: **partial→improved** — RT-10/11 host firewall/defender/ssh live tests + observed evidence + SSE; **not a certification**.

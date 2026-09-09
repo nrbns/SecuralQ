@@ -184,3 +184,141 @@ def test_run_gap_analysis_attaches_live_tests_without_overriding_declared_status
 
     cis3 = next(r for r in result["results"] if r["control_id"] == "CIS-3")
     assert cis3["live_tests"] == []  # no live test mapped to this control
+
+
+def test_host_firewall_fail_when_disabled():
+    from app.services.control_testing import evaluate_host_firewall_payload
+
+    r = evaluate_host_firewall_payload(
+        {"firewall_status": {"collected": True, "enabled": False, "backend": "ufw"}},
+        agent_id="a1",
+        asset_id="as1",
+    )
+    assert r["status"] == "fail"
+    assert r["test"] == "host_firewall"
+    assert r["source"] == "securaiq_agent"
+    assert r["agent_id"] == "a1"
+
+
+def test_host_firewall_pass_when_enabled():
+    from app.services.control_testing import evaluate_host_firewall_payload
+
+    r = evaluate_host_firewall_payload(
+        {"firewall_status": {"collected": True, "enabled": True, "backend": "ufw"}},
+        agent_id="a1",
+    )
+    assert r["status"] == "pass"
+
+
+def test_host_firewall_unknown_when_not_collected():
+    from app.services.control_testing import evaluate_host_firewall_payload
+
+    r = evaluate_host_firewall_payload({"firewall_status": {"collected": False, "enabled": None}})
+    assert r["status"] == "unknown"
+
+
+def test_host_defender_fail_when_realtime_off():
+    from app.services.control_testing import evaluate_host_defender_payload
+
+    r = evaluate_host_defender_payload(
+        {
+            "os": "Windows",
+            "defender_status": {
+                "collected": True,
+                "antivirus_enabled": True,
+                "realtime_protection_enabled": False,
+            },
+        },
+        os_name="Windows",
+    )
+    assert r["status"] == "fail"
+
+
+def test_host_ssh_root_fail_on_permit_yes():
+    from app.services.control_testing import evaluate_host_ssh_root_payload
+
+    r = evaluate_host_ssh_root_payload(
+        {"ssh_config": {"collected": True, "settings": {"PermitRootLogin": "yes"}}}
+    )
+    assert r["status"] == "fail"
+
+
+def test_host_ssh_root_pass_on_permit_no():
+    from app.services.control_testing import evaluate_host_ssh_root_payload
+
+    r = evaluate_host_ssh_root_payload(
+        {"ssh_config": {"collected": True, "settings": {"PermitRootLogin": "no"}}}
+    )
+    assert r["status"] == "pass"
+
+
+def test_evaluate_agent_host_controls_firewall_loop_and_checkin_safe(tmp_path, monkeypatch):
+    """FAIL → remediation stub → re-check PASS; check-in must not raise."""
+    from app.agents import checkin, enroll_agent
+    from app.enterprise import list_remediations
+    from app.services.control_testing import evaluate_agent_host_controls
+    from app.services.evidence import get_evidence_for
+
+    uid = _setup(monkeypatch, tmp_path, username="host_ctrl_tester")
+    agent = enroll_agent(uid, name="fw-agent")
+    aid = agent["agent_id"]
+
+    disabled = {
+        "hostname": "fw-host",
+        "os": "linux",
+        "firewall_status": {"collected": True, "enabled": False, "backend": "ufw"},
+        "defender_status": {"collected": False, "reason": "Not applicable on linux"},
+        "ssh_config": {"collected": True, "settings": {"PermitRootLogin": "no"}},
+    }
+    out = evaluate_agent_host_controls(uid, aid, disabled, asset_id="")
+    assert out["ok"] is True
+    fw = next(r for r in out["results"] if r["test"] == "host_firewall")
+    assert fw["status"] == "fail"
+    assert out.get("remediation_id") or any(
+        "host_firewall" in (r.get("notes") or "") or "host_firewall" in (r.get("recommendation") or "")
+        for r in list_remediations(uid, status="open")
+    )
+    trail = get_evidence_for(uid, entity_type="agent_host_control", entity_id=f"{aid}:host_firewall")
+    assert trail
+    assert trail[0]["source"] == "observed"
+
+    enabled = {
+        **disabled,
+        "firewall_status": {"collected": True, "enabled": True, "backend": "ufw"},
+    }
+    out2 = evaluate_agent_host_controls(uid, aid, enabled, asset_id="")
+    fw2 = next(r for r in out2["results"] if r["test"] == "host_firewall")
+    assert fw2["status"] == "pass"
+
+    # Check-in hook must not raise even if evaluator misbehaves
+    def _boom(*_a, **_k):
+        raise RuntimeError("simulated evaluator failure")
+
+    monkeypatch.setattr(
+        "app.services.control_testing.evaluate_agent_host_controls", _boom
+    )
+    result = checkin(aid, enabled)
+    assert result["ok"] is True
+
+
+def test_list_live_failures_includes_host_firewall_when_agent_online(tmp_path, monkeypatch):
+    from app.agents import checkin, enroll_agent
+    from app.services.control_testing import list_live_control_failures
+
+    uid = _setup(monkeypatch, tmp_path, username="host_live_fail")
+    agent = enroll_agent(uid, name="live-fw")
+    checkin(
+        agent["agent_id"],
+        {
+            "hostname": "live-fw-host",
+            "os": "linux",
+            "firewall_status": {"collected": True, "enabled": False, "backend": "ufw"},
+            "defender_status": {"collected": False},
+            "ssh_config": {"collected": False},
+        },
+    )
+    live = list_live_control_failures(uid, record_evidence=False, framework_ids=["cis_controls"])
+    fw_fails = [f for f in live["failures"] if f.get("test") == "host_firewall"]
+    assert fw_fails
+    assert fw_fails[0]["status"] == "fail"
+    assert fw_fails[0]["control_id"] == "CIS-12"
