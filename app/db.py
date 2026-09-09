@@ -525,6 +525,26 @@ def _migrate_assets(c: Any) -> None:
     cols = table_columns(c, "assets")
     if "service_accounts" not in cols:
         c.execute("ALTER TABLE assets ADD COLUMN service_accounts TEXT NOT NULL DEFAULT ''")
+    cols = table_columns(c, "assets")
+    if "cmmc_asset_category" not in cols:
+        # CMMC/32 CFR Part 170 asset-scoping category -- a different axis from
+        # `asset_type` (server/endpoint/network/etc, what the thing IS) and
+        # from `criticality`/`business_criticality` (how much it matters).
+        # This says where the asset sits relative to a CMMC assessment
+        # boundary: '' (unclassified, default -- most orgs have no CMMC scope
+        # at all), 'cui_asset' (stores/processes/transmits CUI -- full 110
+        # controls), 'spa' (Security Protection Asset: provides a security
+        # function for the boundary, e.g. MFA gateway, firewall, EDR console
+        # -- also assessed against all 110 controls even though it never
+        # touches CUI), 'crma' (Contractor Risk Managed Asset: can access CUI
+        # but is risk-managed by policy -- lighter assessment), 'specialized'
+        # (IoT/OT/test equipment -- documented, not fully assessed), or
+        # 'out_of_scope' (no CUI or security-function contact at all).
+        # Purely a user-entered classification -- SecuraIQ has no way to
+        # independently verify an asset's real CUI/security-function
+        # relationship, so this is honest self-reported scoping, not a
+        # computed fact.
+        c.execute("ALTER TABLE assets ADD COLUMN cmmc_asset_category TEXT NOT NULL DEFAULT ''")
     c.commit()
     _migrate_asset_dependencies(c)
 

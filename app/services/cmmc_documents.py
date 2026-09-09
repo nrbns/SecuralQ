@@ -104,6 +104,15 @@ def compute_sprs_preview(user_id: str, assessment_id: str) -> dict[str, Any] | N
     preview is conservative (scores lower than a nuanced official assessment
     might) rather than guessing at partial credit. Not a substitute for the
     DoD NIST SP 800-171 Assessment Methodology worksheet.
+
+    Also reports whether the org would qualify for "Conditional" Level 2
+    status under the DoD's published rule: score >= 88 out of 110 AND no
+    open (unimplemented) control that is ineligible for a POA&M. Control
+    eligibility comes from the catalog's `poam_eligible` field (added per
+    control: false for every 5-point control, and for CA.L2-3.12.4 (the
+    System Security Plan control), which the rule explicitly bars from POA&M
+    deferral regardless of its own point weight). If the catalog doesn't
+    carry `poam_eligible` yet, this section is omitted rather than guessed.
     """
     data = get_assessment(user_id, assessment_id)
     if not data or data.get("framework_id") != "cmmc_l2":
@@ -111,10 +120,12 @@ def compute_sprs_preview(user_id: str, assessment_id: str) -> dict[str, Any] | N
     catalog = _control_catalog_by_id("cmmc_l2")
     if not any("sprs_weight" in c for c in catalog.values()):
         return None
+    has_poam_field = any("poam_eligible" in c for c in catalog.values())
 
     max_score = sum(c.get("sprs_weight", 0) for c in catalog.values())
     lost = 0
     unimplemented: list[dict[str, Any]] = []
+    blocking_failures: list[dict[str, Any]] = []
     for r in _controls_from_assessment(data):
         cid = str(r.get("control_id") or r.get("id") or "").strip().upper()
         ctrl = catalog.get(cid)
@@ -126,9 +137,23 @@ def compute_sprs_preview(user_id: str, assessment_id: str) -> dict[str, Any] | N
             lost += weight
             if weight:
                 unimplemented.append({"control_id": cid, "title": ctrl.get("title"), "weight": weight, "status": status})
+            if has_poam_field and not ctrl.get("poam_eligible", True):
+                blocking_failures.append({
+                    "control_id": cid,
+                    "title": ctrl.get("title"),
+                    "weight": weight,
+                    "status": status,
+                    "reason": (
+                        "System Security Plan (CA.L2-3.12.4) cannot be deferred to a POA&M"
+                        if cid == "CA.L2-3.12.4"
+                        else "5-point control cannot be deferred to a POA&M"
+                    ),
+                })
     score = max_score - lost
     unimplemented.sort(key=lambda x: -x["weight"])
-    return {
+    blocking_failures.sort(key=lambda x: (-x["weight"], x["control_id"]))
+
+    result: dict[str, Any] = {
         "score": score,
         "max_score": max_score,
         "points_lost": lost,
@@ -141,6 +166,21 @@ def compute_sprs_preview(user_id: str, assessment_id: str) -> dict[str, Any] | N
         ),
         "top_point_losses": unimplemented[:10],
     }
+    if has_poam_field:
+        meets_88 = score >= 88
+        result["conditional_certification"] = {
+            "threshold": 88,
+            "meets_score_threshold": meets_88,
+            "blocking_failures": blocking_failures,
+            "eligible": meets_88 and not blocking_failures,
+            "disclaimer": (
+                "Reflects the published DoD rule for Conditional Level 2 status (score >= 88/110 "
+                "AND no open control ineligible for a POA&M). This is SecuraIQ's own read of that "
+                "rule applied to your assessment data -- not an official eligibility determination "
+                "and not a substitute for your C3PAO or the DoD Assessment Methodology worksheet."
+            ),
+        }
+    return result
 
 
 def generate_ssp_markdown(user_id: str, assessment_id: str) -> str:

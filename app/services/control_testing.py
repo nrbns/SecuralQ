@@ -41,6 +41,9 @@ TEST_PATCH_MANAGEMENT = "patch_management"
 TEST_HOST_FIREWALL = "host_firewall"
 TEST_HOST_DEFENDER = "host_defender"
 TEST_HOST_SSH_ROOT = "host_ssh_root"
+# Known non-FIPS-validated remote-access/RMM tooling, detected by name in
+# the real software inventory. See app.services.fips_tooling.
+TEST_FIPS_REMOTE_ACCESS = "fips_remote_access_tooling"
 
 _HOST_TELEMETRY_TESTS = frozenset(
     {TEST_HOST_FIREWALL, TEST_HOST_DEFENDER, TEST_HOST_SSH_ROOT}
@@ -80,15 +83,31 @@ _CONTROL_TEST_MAP: dict[tuple[str, str], list[str]] = {
     ("nist_csf", "PR.IR-01"): [TEST_HOST_FIREWALL],
     ("iso27001", "A.8.20"): [TEST_HOST_FIREWALL],
     ("nist_800_53", "SC-7"): [TEST_HOST_FIREWALL],
+    # 800-171 / CMMC L2 — boundary protection + restrict nonessential ports (exact catalog ids)
+    ("nist_800_171", "3.13.1"): [TEST_HOST_FIREWALL],
+    ("nist_800_171", "3.4.7"): [TEST_HOST_FIREWALL],
+    ("cmmc_l2", "SC.L2-3.13.1"): [TEST_HOST_FIREWALL],
+    ("cmmc_l2", "CM.L2-3.4.2"): [TEST_HOST_FIREWALL],
     # Host Defender / malware protection (Windows agent telemetry)
     ("cis_controls", "CIS-10"): [TEST_HOST_DEFENDER],
     ("iso27001", "A.8.7"): [TEST_HOST_DEFENDER],
     ("nist_800_53", "SI-3"): [TEST_HOST_DEFENDER],
+    ("nist_800_171", "3.14.2"): [TEST_HOST_DEFENDER],
+    ("cmmc_l2", "SI.L2-3.14.2"): [TEST_HOST_DEFENDER],
     # SSH PermitRootLogin / secure configuration
     ("cis_controls", "CIS-4"): [TEST_HOST_SSH_ROOT],
     ("nist_csf", "PR.PS-01"): [TEST_HOST_SSH_ROOT],
     ("iso27001", "A.8.9"): [TEST_HOST_SSH_ROOT],
     ("nist_800_53", "CM-6"): [TEST_HOST_SSH_ROOT],
+    # 800-171 / CMMC — least privilege (non-root) / config enforcement
+    ("nist_800_171", "3.1.5"): [TEST_HOST_SSH_ROOT],
+    ("cmmc_l2", "AC.L2-3.1.5"): [TEST_HOST_SSH_ROOT],
+    # Known non-FIPS-validated remote-access/RMM tooling, detected by name
+    # in the real software inventory (see app.services.fips_tooling).
+    ("cmmc_l2", "AC.L2-3.1.13"): [TEST_FIPS_REMOTE_ACCESS],
+    ("cmmc_l2", "SC.L2-3.13.11"): [TEST_FIPS_REMOTE_ACCESS],
+    ("nist_800_171", "3.1.13"): [TEST_FIPS_REMOTE_ACCESS],
+    ("nist_800_171", "3.13.11"): [TEST_FIPS_REMOTE_ACCESS],
 }
 
 # SLA windows (days) a critical/high open vulnerability may age before the
@@ -209,6 +228,22 @@ def _test_patch_management(user_id: str) -> dict[str, Any]:
         status = "fail"
     summary = f"{patch.get('up_to_date', 0)} / {patch.get('total', 0)} tracked installations up to date ({pct}%)."
     return {"test": TEST_PATCH_MANAGEMENT, "status": status, "summary": summary, "detail": patch}
+
+
+def _test_fips_remote_access(user_id: str) -> dict[str, Any]:
+    from app.services.fips_tooling import scan_remote_access_tooling
+
+    result = scan_remote_access_tooling(user_id)
+    return {
+        "test": TEST_FIPS_REMOTE_ACCESS,
+        "status": result["status"],
+        "summary": result["summary"],
+        "detail": {
+            "risky_findings": result["risky_findings"],
+            "fips_friendly_findings": result["fips_friendly_findings"],
+            "checked_products": result["checked_products"],
+        },
+    }
 
 
 def _online_agent_rows(user_id: str) -> list[dict[str, Any]]:
@@ -559,6 +594,7 @@ _TEST_FUNCS = {
     TEST_ASSET_INVENTORY: _test_asset_inventory,
     TEST_VULNERABILITY_MANAGEMENT: _test_vulnerability_management,
     TEST_PATCH_MANAGEMENT: _test_patch_management,
+    TEST_FIPS_REMOTE_ACCESS: _test_fips_remote_access,
     TEST_HOST_FIREWALL: _test_host_firewall,
     TEST_HOST_DEFENDER: _test_host_defender,
     TEST_HOST_SSH_ROOT: _test_host_ssh_root,
@@ -651,6 +687,8 @@ def _failure_risk_score(test_result: dict[str, Any]) -> float:
         base += min(30.0, float(detail.get("failing_agents") or 1) * 10.0)
     elif test == TEST_HOST_SSH_ROOT:
         base += min(28.0, float(detail.get("failing_agents") or 1) * 9.0)
+    elif test == TEST_FIPS_REMOTE_ACCESS:
+        base += min(30.0, float(len(detail.get("risky_findings") or [])) * 10.0)
     return round(min(99.0, base), 1)
 
 

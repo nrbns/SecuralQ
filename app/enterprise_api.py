@@ -77,6 +77,10 @@ class AssetCreate(BaseModel):
     # exists in this product, so this is the only honest way to give the
     # attack graph an Identity node. Free text, e.g. "svc-web-prod, deploy-bot".
     service_accounts: str = ""
+    # CMMC/32 CFR Part 170 scoping category — a different axis from asset_type.
+    # Blank by default; only meaningful once a user opts into CMMC scoping.
+    # See app.cmmc_scoping for the category list.
+    cmmc_asset_category: str = ""
 
 
 class AssetUpdate(BaseModel):
@@ -88,6 +92,7 @@ class AssetUpdate(BaseModel):
     engagement_id: str | None = None
     business_criticality: str | None = None
     service_accounts: str | None = None
+    cmmc_asset_category: str | None = None
 
 
 class RiskCreate(BaseModel):
@@ -722,6 +727,44 @@ async def assets_categories(user: Annotated[AuthUser, Depends(require_user)]):
     return {"categories": list_categories()}
 
 
+@router.get("/assets/cmmc-scope-categories")
+async def assets_cmmc_scope_categories(user: Annotated[AuthUser, Depends(require_user)]):
+    """The 32 CFR Part 170 asset-scoping categories -- a separate axis from
+    asset_type. Static reference list, not derived from any assessment."""
+    require_perm(user, "asset.read")
+    from app.cmmc_scoping import list_cmmc_scope_categories
+
+    return {"categories": list_cmmc_scope_categories()}
+
+
+@router.get("/assets/cmmc-scope-summary")
+async def assets_cmmc_scope_summary(
+    user: Annotated[AuthUser, Depends(require_user)],
+    engagement_id: str | None = None,
+    org_id: str | None = None,
+    x_securaiq_org: str | None = Header(default=None, alias="X-SecuraIQ-Org"),
+):
+    """Real counts of this org's assets by CMMC scope category -- computed
+    directly from the assets table, never invented. Every asset defaults to
+    unclassified until a user actively sets cmmc_asset_category, so an org
+    that hasn't opted into CMMC scoping just sees everything unclassified."""
+    oid = resolve_request_org(user, org_id=org_id, header_org=x_securaiq_org)
+    require_perm(user, "asset.read", org_id=oid)
+    from app.cmmc_scoping import FULL_ASSESSMENT_CATEGORIES, cmmc_scope_label, scope_breakdown
+
+    assets = list_assets(user.id, engagement_id, org_id=oid)
+    breakdown = scope_breakdown(assets)
+    full_assessment_count = sum(n for cat, n in breakdown.items() if cat in FULL_ASSESSMENT_CATEGORIES)
+    return {
+        "total_assets": len(assets),
+        "by_category": [
+            {"id": cat, "label": cmmc_scope_label(cat), "count": n} for cat, n in breakdown.items()
+        ],
+        "full_assessment_count": full_assessment_count,
+        "unclassified_count": breakdown.get("", 0),
+    }
+
+
 @router.get("/assets")
 async def assets_list(
     user: Annotated[AuthUser, Depends(require_user)],
@@ -830,6 +873,7 @@ async def assets_create(
         org_id=oid,
         business_criticality=req.business_criticality,
         service_accounts=req.service_accounts,
+        cmmc_asset_category=req.cmmc_asset_category,
     )
 
 

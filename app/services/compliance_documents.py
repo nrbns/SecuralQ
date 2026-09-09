@@ -191,6 +191,21 @@ def generate_report_markdown(user_id: str, assessment_id: str) -> str:
                 for u in sprs["top_point_losses"]:
                     lines.append(f"- {u['control_id']} ({u['weight']} pts, {u['status']}): {u['title']}")
                 lines.append("")
+            cc = sprs.get("conditional_certification")
+            if cc:
+                lines += [
+                    f"**Conditional Level 2 certification:** {'ELIGIBLE' if cc['eligible'] else 'NOT ELIGIBLE'} "
+                    f"(needs score >= {cc['threshold']}, currently {'met' if cc['meets_score_threshold'] else 'not met'}; "
+                    f"{len(cc['blocking_failures'])} open control(s) that cannot be deferred to a POA&M).",
+                    "",
+                    f"> {cc['disclaimer']}",
+                    "",
+                ]
+                if cc["blocking_failures"]:
+                    lines += ["Controls that must be fully implemented (no POA&M allowed):", ""]
+                    for b in cc["blocking_failures"]:
+                        lines.append(f"- {b['control_id']} ({b['weight']} pts, {b['status']}): {b['title']} — {b['reason']}")
+                    lines.append("")
 
     lines += [f"## {section_num}. Control implementation status", ""]
 
@@ -310,6 +325,18 @@ def generate_action_plan_markdown(user_id: str, assessment_id: str) -> str:
                 f"Closing every item above would move the preview score from **{sprs['score']}** "
                 f"toward **{sprs['max_score']}** (subject to the scoring caveats above).",
             ]
+            cc = sprs.get("conditional_certification")
+            if cc and cc["blocking_failures"]:
+                lines += [
+                    "",
+                    "**Important — not eligible for this POA&M:** the DoD's published rule bars "
+                    "5-point controls and the System Security Plan control (CA.L2-3.12.4) from "
+                    "POA&M deferral. These open items below must be fully implemented directly, "
+                    "not tracked as milestones on this plan:",
+                    "",
+                ]
+                for b in cc["blocking_failures"]:
+                    lines.append(f"- {b['control_id']} ({b['weight']} pts, {b['status']}): {b['title']} — {b['reason']}")
 
     lines += [
         "",

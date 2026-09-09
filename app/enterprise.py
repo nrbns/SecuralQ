@@ -50,21 +50,24 @@ def create_asset(
     org_id: str | None = None,
     business_criticality: str = "",
     service_accounts: str = "",
+    cmmc_asset_category: str = "",
 ) -> dict[str, Any]:
+    from app.cmmc_scoping import normalize_cmmc_scope
     from app.tenancy import ensure_tenant_schema, primary_org_id
 
     ensure_tenant_schema()
     oid = org_id or primary_org_id(user_id)
     aid = new_id()
     ts = now()
+    scope = normalize_cmmc_scope(cmmc_asset_category)
     c = get_conn()
     c.execute(
         """
         INSERT INTO assets
-        (id, user_id, engagement_id, org_id, name, asset_type, criticality, owner, notes, business_criticality, service_accounts, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (id, user_id, engagement_id, org_id, name, asset_type, criticality, owner, notes, business_criticality, service_accounts, cmmc_asset_category, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (aid, user_id, engagement_id, oid, name.strip(), asset_type, criticality, owner, notes, business_criticality, service_accounts, ts, ts),
+        (aid, user_id, engagement_id, oid, name.strip(), asset_type, criticality, owner, notes, business_criticality, service_accounts, scope, ts, ts),
     )
     c.commit()
     audit("asset_create", user_id, {"id": aid, "name": name, "org_id": oid})
@@ -356,8 +359,12 @@ def update_asset(user_id: str, asset_id: str, patch: dict[str, Any]) -> dict[str
     row = get_asset(user_id, asset_id)
     if not row:
         return None
-    allowed = {"name", "asset_type", "criticality", "owner", "notes", "engagement_id", "business_criticality", "service_accounts"}
+    allowed = {"name", "asset_type", "criticality", "owner", "notes", "engagement_id", "business_criticality", "service_accounts", "cmmc_asset_category"}
     data = {k: v for k, v in patch.items() if k in allowed and v is not None}
+    if "cmmc_asset_category" in data:
+        from app.cmmc_scoping import normalize_cmmc_scope
+
+        data["cmmc_asset_category"] = normalize_cmmc_scope(data["cmmc_asset_category"])
     if not data:
         return row
     data["updated_at"] = now()
