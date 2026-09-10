@@ -691,6 +691,13 @@ def checkin(agent_id: str, payload: dict[str, Any]) -> dict[str, Any]:
             )
         except Exception:
             pass
+    # Detect (architecture Phase 6) — check-in FIM modify/delete → native threats.
+    # Same semantics as Python Sentinel FIM; never invent from added/truncated.
+    # Must never break check-in.
+    try:
+        _ingest_checkin_file_integrity(agent_id, _eff if isinstance(_eff, dict) else payload)
+    except Exception:
+        pass
     commands = _dispatch_queued_commands(agent_id)
     out: dict[str, Any] = {"ok": True, "asset_id": asset_id, "commands": commands}
     if seq_recovery:
@@ -867,6 +874,66 @@ THREAT_RE_ALERT_SEC = 1800
 def _threat_fingerprint(category: str, title: str, target: str) -> str:
     raw = f"{category}|{title}|{target}".strip().lower()
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+
+def detections_from_checkin_file_integrity(payload: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Map check-in ``file_integrity`` events to Sentinel-compatible detections.
+
+    Honesty rules (match Python ``_scan_file_integrity`` / Rust FIM):
+    - Only ``modified`` / ``deleted`` become detections (medium).
+    - ``added`` is visibility-only (baseline catch-up), not an alert.
+    - Truncated payloads without an intact list invent nothing.
+    - Titles/targets match the Python Sentinel FIM path so fingerprint
+      dedupe works when both check-in and ``/api/agents/threat`` fire.
+    """
+    if not isinstance(payload, dict):
+        return []
+    events = payload.get("file_integrity")
+    if not isinstance(events, list):
+        return []
+    # Truncated snapshot with empty/missing FIM must not invent alerts.
+    if payload.get("truncated") and not events:
+        return []
+    out: list[dict[str, Any]] = []
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        status = str(ev.get("status") or "").strip().lower()
+        if status not in ("modified", "deleted"):
+            continue
+        path = str(ev.get("path") or ev.get("target") or "").strip()
+        if not path:
+            continue
+        # Basename for title — same as scripts/securaiq_agent.py FIM detections.
+        base = path.replace("\\", "/").rstrip("/").split("/")[-1] or path
+        digest = str(ev.get("hash") or "")[:64]
+        if status == "modified":
+            title = f"Monitored file modified: {base}"
+        else:
+            title = f"Monitored file deleted: {base}"
+        det: dict[str, Any] = {
+            "severity": "medium",
+            "category": "file_integrity",
+            "title": title[:200],
+            "detail": f"Path: {path}"[:1000],
+            "target": path[:500],
+            "source": "checkin_fim",
+        }
+        if digest:
+            det["hash"] = digest
+        out.append(det)
+    return out[:50]
+
+
+def _ingest_checkin_file_integrity(agent_id: str, payload: dict[str, Any] | None) -> dict[str, Any]:
+    """Best-effort: turn check-in FIM diffs into ``securaiq_agent_threats``.
+
+    Never raises to callers. Empty / added-only / truncated → no-op.
+    """
+    detections = detections_from_checkin_file_integrity(payload)
+    if not detections:
+        return {"ok": True, "created": 0, "skipped": 0, "detections": []}
+    return record_threat_detections(agent_id, detections)
 
 
 def record_threat_detections(agent_id: str, detections: list[dict[str, Any]]) -> dict[str, Any]:

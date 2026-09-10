@@ -228,6 +228,10 @@ loop (`scripts/securaiq_agent.py` ≥ 1.1.1). Server recovery path strengthened 
 
 ## RT-07 — Detection → Risk → Incident → Evidence → Dashboard (foundations)
 
+**Ingest paths into `agent_threat`:**
+- `POST /api/agents/threat` (Python Sentinel watcher)
+- Check-in `file_integrity` modify/delete → `record_threat_detections` (Rust + any check-in-only agent; same titles/fingerprints as Sentinel FIM). `added` / truncated empty → no alert.
+
 When `agent_threat` is processed and `user_id` is known:
 
 | Step | Behavior |

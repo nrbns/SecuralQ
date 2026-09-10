@@ -127,7 +127,9 @@ See [securaiq-architecture.md](./securaiq-architecture.md) · [agent-platform.md
 - Normalize → detection rules → correlation → threat → risk → incident → evidence → dashboard
 - Severity, confidence, suppression, grouping, MITRE, IOC, tuning
 
-**Status: Partial** — foundations (threat ingest, processor hooks, RT-07 burst/keyword → incident); **not** full XDR correlation / rule engine depth.
+**Status: Partial** — foundations (threat ingest, processor hooks, RT-07 burst/keyword → incident);
+check-in FIM modify/delete now feeds native `securaiq_agent_threats` (parity with Python Sentinel FIM);
+knowledge graph hotspots include those detections. **Not** a full XDR / Sigma rule engine.
 
 ---
 

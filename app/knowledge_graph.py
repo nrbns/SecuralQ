@@ -102,6 +102,20 @@ def _list_xdr_events(limit: int = 200) -> list[dict[str, Any]]:
         return []
 
 
+def _list_agent_threats(user_id: str, limit: int = 200) -> list[dict[str, Any]]:
+    """Active native SecuraIQ agent threats (Sentinel + check-in FIM)."""
+    try:
+        from app.agents import list_threats
+
+        return [
+            t
+            for t in list_threats(user_id, limit=limit)
+            if str(t.get("status") or "active").lower() == "active"
+        ]
+    except Exception:
+        return []
+
+
 def _norm_host(value: str) -> str:
     return re.sub(r"\s+", " ", (value or "").strip().lower())
 
@@ -256,6 +270,33 @@ def build_knowledge_graph(user_id: str) -> dict[str, Any]:
         if vendor:
             edge(ek, node("vendor", vendor, vendor), "detected_by")
 
+    # Native agent threats (check-in FIM / Sentinel) — same "xdr" bucket for
+    # correlation_hotspots so Detect is visible without a parallel graph type.
+    for thr in _list_agent_threats(user_id):
+        tid = str(thr.get("id") or "")
+        if not tid:
+            continue
+        ek = node(
+            "xdr",
+            f"agent_threat:{tid}",
+            (thr.get("title") or "agent detection")[:80],
+            {
+                "vendor": "securaiq_agent",
+                "severity": thr.get("severity"),
+                "host": thr.get("asset_id") or "",
+                "kind": thr.get("category") or "agent_threat",
+                "source": "securaiq_agent_threats",
+            },
+        )
+        asset_id = str(thr.get("asset_id") or "").strip()
+        if asset_id and asset_id in asset_by_id:
+            edge(ek, node("asset", asset_id, asset_by_id[asset_id].get("name") or asset_id), "on_host")
+        if thr.get("incident_id"):
+            edge(ek, node("incident", thr["incident_id"], "incident"), "opened")
+        if thr.get("vuln_id"):
+            edge(ek, node("vuln", thr["vuln_id"], "vuln"), "maps_to")
+        edge(ek, node("vendor", "securaiq_agent", "securaiq_agent"), "detected_by")
+
     for link in list_entity_links(user_id):
         sk = node(link["src_type"], link["src_id"], f"{link['src_type']}:{link['src_id']}")
         dk = node(link["dst_type"], link["dst_id"], f"{link['dst_type']}:{link['dst_id']}")
@@ -344,7 +385,7 @@ def _hotspot_why(v: int, i: int, x: int, r: int, c: int) -> str:
     if v:
         parts.append(f"{v} vuln(s)")
     if x:
-        parts.append(f"{x} XDR event(s)")
+        parts.append(f"{x} detection(s)")
     if i:
         parts.append(f"{i} incident(s)")
     if r:
