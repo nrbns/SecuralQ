@@ -344,6 +344,7 @@
       webscan: "viewWebscan",
       soc: "viewSoc",
       agents: "viewAgents",
+      agent_detail: "viewAgentDetail",
       evidence: "viewEvidence",
       orgs: "viewOrgs",
       frameworks: "viewFrameworks",
@@ -371,7 +372,8 @@
     setPageComposerHint(view);
     document.querySelectorAll(".nav-item[data-view], .nav-link[data-workspace]").forEach((el) => {
       const v = el.getAttribute("data-view") || el.getAttribute("data-workspace");
-      el.classList.toggle("active", v === view);
+      const active = v === view || (view === "agent_detail" && v === "agents");
+      el.classList.toggle("active", active);
     });
     const title = qs("topbarChatTitle");
     if (title) {
@@ -390,6 +392,7 @@
         webscan: "Web URL Scan",
         soc: "SOC",
         agents: "Agents & packages",
+        agent_detail: "Agent detail",
         evidence: "Evidence Locker",
         orgs: "Organizations",
         frameworks: "Frameworks",
@@ -422,6 +425,7 @@
     if (view === "webscan") renderWebScanPage();
     if (view === "soc") renderSocPage();
     if (view === "agents") renderAgentsPage();
+    if (view === "agent_detail") renderAgentDetailPage(window.__securaiqSelectedAgentId);
     if (view === "evidence") renderEvidencePage();
     if (view === "orgs") renderOrgsPage();
     if (view === "frameworks") {
@@ -5023,6 +5027,612 @@
   }
   window.renderAgentPackagesHub = renderAgentPackagesHub;
 
+  function _agentFmtWhen(ts) {
+    if (!ts) return "never";
+    const d = new Date(Number(ts) * 1000);
+    return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString();
+  }
+
+  function _agentStatusChip(st) {
+    const cls =
+      st === "online"
+        ? "status-done"
+        : st === "pending" || st === "upgrading"
+        ? "status-planned"
+        : st === "offline" || st === "stale"
+        ? "status-planned"
+        : "status-error";
+    return `<span class="auto-job-status ${cls}">${escapeHtml(st || "—")}</span>`;
+  }
+
+  function _agentCommandKindLabel(cmd) {
+    const kind = (cmd && cmd.kind) || "";
+    const p = (cmd && cmd.payload) || {};
+    if (kind === "enable_firewall") {
+      return `<code>enable firewall</code> <span class="hint">host firewall on (pending until approved)</span>`;
+    }
+    if (kind === "enable_defender") {
+      return `<code>enable defender</code> <span class="hint">Windows Defender realtime (pending until approved)</span>`;
+    }
+    if (kind === "agent_upgrade") {
+      return `<code>agent upgrade</code> <span class="hint">self-upgrade · checksum-verified install script</span>`;
+    }
+    if (kind === "patch_package") {
+      const mgr = p.manager || "";
+      const pkg = p.package || "";
+      const ver = p.target_version ? ` → ${escapeHtml(p.target_version)}` : "";
+      return `<code>patch</code> <code>${escapeHtml(mgr)} upgrade ${escapeHtml(pkg)}</code>${ver}`;
+    }
+    return `<code>${escapeHtml(kind || "command")}</code>`;
+  }
+
+  function _agentCommandLifecycle(cmd) {
+    if (cmd && cmd.lifecycle) return String(cmd.lifecycle);
+    const st = (cmd && cmd.status) || "";
+    const v = (cmd && cmd.verification_status) || "";
+    if (st === "pending_approval") return "PENDING_APPROVAL";
+    if (st === "queued") return "QUEUED";
+    if (st === "sent") return "DISPATCHED";
+    if (st === "acked") return "EXECUTING";
+    if (st === "done") {
+      if (v === "pending") return "VERIFICATION";
+      if (v === "verified") return "VERIFIED";
+      if (v === "verification_failed") return "FAILED";
+      return "COMPLETED";
+    }
+    if (st === "error") return "FAILED";
+    if (st === "rejected") return "REJECTED";
+    if (st === "timeout") return "TIMEOUT";
+    return (st || "—").toUpperCase();
+  }
+
+  function openAgentDetail(agentId) {
+    if (!agentId) return;
+    window.__securaiqSelectedAgentId = agentId;
+    if (!window.__securaiqAgentDetailTab) window.__securaiqAgentDetailTab = "overview";
+    window.showWorkspace?.("agent_detail");
+  }
+  window.openAgentDetail = openAgentDetail;
+
+  function _agentSecChip(label, ok, detail) {
+    const cls = ok === true ? "status-done" : ok === false ? "status-error" : "status-planned";
+    const state = ok === true ? "PASS" : ok === false ? "FAIL" : "n/a";
+    return `<span class="auto-job-status ${cls}" title="${escapeHtml(detail || "")}">${escapeHtml(label)} · ${state}</span>`;
+  }
+
+  function _agentFirewallOk(fw) {
+    if (!fw || typeof fw !== "object" || !fw.collected) return null;
+    if (fw.enabled == null) return null;
+    return !!fw.enabled;
+  }
+
+  function _agentDefenderOk(def) {
+    if (!def || typeof def !== "object" || !def.collected) return null;
+    if (def.realtime_protection_enabled == null) return null;
+    return !!def.realtime_protection_enabled;
+  }
+
+  function _agentDiskOk(disk) {
+    if (!disk || typeof disk !== "object" || !disk.collected) return null;
+    if (disk.encrypted == null) return null;
+    return !!disk.encrypted;
+  }
+
+  function _agentSshOk(ssh) {
+    if (!ssh || typeof ssh !== "object" || !ssh.collected) return null;
+    const settings = ssh.settings || {};
+    const pwd = String(settings.PasswordAuthentication || settings.passwordauthentication || "").toLowerCase();
+    if (pwd === "no" || pwd === "off") return true;
+    if (pwd === "yes" || pwd === "on") return false;
+    return null;
+  }
+
+  function _renderAgentDetailTab(tab, agent, commands) {
+    const payload = agent.last_payload || {};
+    const fw = payload.firewall_status || {};
+    const def = payload.defender_status || {};
+    const ssh = payload.ssh_config || {};
+    const disk = payload.disk_encryption_status || payload.disk_encryption || {};
+
+    if (tab === "overview") {
+      const chips = [
+        _agentSecChip("Firewall", _agentFirewallOk(fw), fw.backend || ""),
+        _agentSecChip("Defender", _agentDefenderOk(def), "realtime protection"),
+        _agentSecChip("SSH", _agentSshOk(ssh), "PasswordAuthentication"),
+        _agentSecChip("Disk encryption", _agentDiskOk(disk), disk.backend || ""),
+      ].join(" ");
+      return `
+        <div class="cc-kpi-grid" style="margin:0 0 0.75rem">
+          <article class="cc-kpi"><span>Hostname</span><strong>${escapeHtml(payload.hostname || agent.hostname || "—")}</strong></article>
+          <article class="cc-kpi"><span>IP</span><strong>${escapeHtml(payload.ip || agent.ip || "—")}</strong></article>
+          <article class="cc-kpi"><span>OS</span><strong>${escapeHtml((payload.os || agent.os || "—") + (agent.os_version ? ` ${agent.os_version}` : ""))}</strong></article>
+          <article class="cc-kpi"><span>Check-ins</span><strong>${escapeHtml(String(agent.checkin_count || 0))}</strong></article>
+        </div>
+        <p class="hint" style="margin:0 0 0.5rem">Security posture (from last check-in payload)</p>
+        <div class="agent-detail-chips" style="display:flex;flex-wrap:wrap;gap:0.4rem">${chips}</div>`;
+    }
+
+    if (tab === "inventory") {
+      const pkgs = payload.packages || [];
+      const ports = payload.listening_ports || [];
+      const procs = payload.processes || [];
+      const services = (payload.services && payload.services.items) || [];
+      const users = (payload.local_users && payload.local_users.items) || [];
+      const groups = (payload.local_groups && payload.local_groups.items) || [];
+      const startup = (payload.startup_apps && payload.startup_apps.items) || [];
+      const hw = payload.hardware || {};
+      const net = payload.network || {};
+      const ifaces = Array.isArray(net.interfaces) ? net.interfaces : [];
+      const topN = (arr, n) => (Array.isArray(arr) ? arr.slice(0, n) : []);
+      const collectedHint = (block, label) => {
+        if (!block || typeof block !== "object" || !Object.keys(block).length) {
+          return `<p class="hint" style="margin:0">${escapeHtml(label)}: not reported on last check-in (upgrade agent or wait for next check-in).</p>`;
+        }
+        if (block.collected === false) {
+          return `<p class="hint" style="margin:0">${escapeHtml(label)}: not collected — ${escapeHtml(
+            block.reason || "unknown reason"
+          )}</p>`;
+        }
+        return "";
+      };
+      const pkgRows = topN(pkgs, 40)
+        .map((p) => {
+          const name = typeof p === "string" ? p : p.name || p.package || "";
+          const ver = typeof p === "object" ? p.version || "" : "";
+          return `<tr><td>${escapeHtml(name)}</td><td class="hint">${escapeHtml(ver)}</td></tr>`;
+        })
+        .join("");
+      const portRows = topN(ports, 40)
+        .map((p) => {
+          if (typeof p === "number" || typeof p === "string") {
+            return `<tr><td>${escapeHtml(String(p))}</td><td class="hint">tcp</td></tr>`;
+          }
+          return `<tr><td>${escapeHtml(String(p.port || p.local_port || ""))}</td><td class="hint">${escapeHtml(p.proto || p.protocol || p.process || "")}</td></tr>`;
+        })
+        .join("");
+      const procRows = topN(procs, 25)
+        .map((p) => {
+          const name = typeof p === "string" ? p : p.name || p.cmd || p.command || "";
+          const pid = typeof p === "object" ? p.pid || "" : "";
+          const user = typeof p === "object" ? p.user || "" : "";
+          return `<tr><td>${escapeHtml(name)}</td><td class="hint">${escapeHtml(String(pid))}</td><td class="hint">${escapeHtml(String(user))}</td></tr>`;
+        })
+        .join("");
+      const hwBits = [];
+      if (hw.collected !== false && Object.keys(hw).length) {
+        if (hw.arch) hwBits.push(`arch ${hw.arch}`);
+        if (hw.cpu_count != null) hwBits.push(`${hw.cpu_count} CPU`);
+        if (hw.memory_mb != null) hwBits.push(`${hw.memory_mb} MB RAM`);
+        if (hw.disk_root_gb != null) hwBits.push(`${hw.disk_root_gb} GB disk`);
+        if (hw.manufacturer || hw.model) {
+          hwBits.push([hw.manufacturer, hw.model].filter(Boolean).join(" "));
+        }
+        if (hw.processor) hwBits.push(String(hw.processor).slice(0, 60));
+      }
+      const ifaceRows = topN(ifaces, 24)
+        .map((iface) => {
+          const name = iface.name || "";
+          const ips = Array.isArray(iface.ipv4) ? iface.ipv4.join(", ") : "";
+          return `<tr><td>${escapeHtml(name)}</td><td class="hint">${escapeHtml(ips || "—")}</td><td class="hint">${escapeHtml(iface.mac || "—")}</td></tr>`;
+        })
+        .join("");
+      const groupRows = topN(groups, 30)
+        .map((g) => {
+          const name = typeof g === "string" ? g : g.name || "";
+          const members = typeof g === "object" && Array.isArray(g.members) ? g.members.slice(0, 6).join(", ") : "";
+          return `<tr><td>${escapeHtml(name)}</td><td class="hint">${escapeHtml(members || "—")}</td></tr>`;
+        })
+        .join("");
+      const svcList = Array.isArray(services) ? services : [];
+      const userList = Array.isArray(users) ? users : [];
+      const startList = Array.isArray(startup) ? startup : [];
+      return `
+        <div class="agent-detail-inv-grid" style="display:grid;gap:1rem;grid-template-columns:repeat(auto-fit,minmax(240px,1fr))">
+          <section class="cc-panel" style="margin:0">
+            <header><h2>Hardware</h2></header>
+            ${collectedHint(hw, "Hardware") || `<p class="hint" style="margin:0">${escapeHtml(hwBits.join(" · ") || "Collected (no detail fields)")}</p>`}
+          </section>
+          <section class="cc-panel" style="margin:0">
+            <header><h2>Network <span class="hint">(${ifaces.length})</span></h2></header>
+            ${
+              collectedHint(net, "Network") ||
+              `<p class="hint" style="margin:0 0 0.35rem">Primary IP: ${escapeHtml(net.primary_ip || payload.ip || agent.ip || "—")}</p>
+               <div class="data-table-wrap"><table class="data-table"><thead><tr><th>Interface</th><th>IPv4</th><th>MAC</th></tr></thead>
+               <tbody>${ifaceRows || `<tr><td colspan="3" class="hint">None reported</td></tr>`}</tbody></table></div>`
+            }
+          </section>
+          <section class="cc-panel" style="margin:0">
+            <header><h2>Packages <span class="hint">(${pkgs.length})</span></h2></header>
+            <div class="data-table-wrap"><table class="data-table"><thead><tr><th>Name</th><th>Version</th></tr></thead>
+            <tbody>${pkgRows || `<tr><td colspan="2" class="hint">None reported</td></tr>`}</tbody></table></div>
+          </section>
+          <section class="cc-panel" style="margin:0">
+            <header><h2>Listening ports <span class="hint">(${ports.length})</span></h2></header>
+            <div class="data-table-wrap"><table class="data-table"><thead><tr><th>Port</th><th>Detail</th></tr></thead>
+            <tbody>${portRows || `<tr><td colspan="2" class="hint">None reported</td></tr>`}</tbody></table></div>
+          </section>
+          <section class="cc-panel" style="margin:0">
+            <header><h2>Processes <span class="hint">(top ${Math.min(25, procs.length)})</span></h2></header>
+            <div class="data-table-wrap"><table class="data-table"><thead><tr><th>Name</th><th>PID</th><th>User</th></tr></thead>
+            <tbody>${procRows || `<tr><td colspan="3" class="hint">None reported</td></tr>`}</tbody></table></div>
+          </section>
+          <section class="cc-panel" style="margin:0">
+            <header><h2>Groups <span class="hint">(${groups.length})</span></h2></header>
+            ${
+              collectedHint(payload.local_groups, "Groups") ||
+              `<div class="data-table-wrap"><table class="data-table"><thead><tr><th>Group</th><th>Members</th></tr></thead>
+               <tbody>${groupRows || `<tr><td colspan="2" class="hint">None reported</td></tr>`}</tbody></table></div>`
+            }
+          </section>
+          <section class="cc-panel" style="margin:0">
+            <header><h2>Services / users / startup</h2></header>
+            <p class="hint" style="margin:0 0 0.35rem">Services (${svcList.length}): ${escapeHtml(
+              topN(svcList, 8)
+                .map((s) => (typeof s === "string" ? s : s.name || ""))
+                .filter(Boolean)
+                .join(", ")
+            )}${svcList.length > 8 ? "…" : ""}${!svcList.length ? "—" : ""}</p>
+            <p class="hint" style="margin:0 0 0.35rem">Users (${userList.length}): ${escapeHtml(
+              topN(userList, 8)
+                .map((u) => (typeof u === "string" ? u : u.name || ""))
+                .filter(Boolean)
+                .join(", ")
+            )}${userList.length > 8 ? "…" : ""}${!userList.length ? "—" : ""}</p>
+            <p class="hint" style="margin:0">Startup (${startList.length}): ${escapeHtml(
+              topN(startList, 8)
+                .map((s) => (typeof s === "string" ? s : s.name || ""))
+                .filter(Boolean)
+                .join(", ")
+            )}${startList.length > 8 ? "…" : ""}${!startList.length ? "—" : ""}</p>
+            ${collectedHint(payload.services, "Services")}
+            ${collectedHint(payload.local_users, "Users")}
+            ${collectedHint(payload.startup_apps, "Startup apps")}
+          </section>
+        </div>`;
+    }
+
+    if (tab === "configuration") {
+      const row = (label, ok, value, expected) => {
+        const chip =
+          ok === true
+            ? `<span class="auto-job-status status-done">PASS</span>`
+            : ok === false
+            ? `<span class="auto-job-status status-error">FAIL</span>`
+            : `<span class="auto-job-status status-planned">n/a</span>`;
+        return `<tr><td>${escapeHtml(label)}</td><td>${chip}</td><td class="hint">${escapeHtml(value || "not collected")}</td><td class="hint">${escapeHtml(expected)}</td></tr>`;
+      };
+      const fwOk = _agentFirewallOk(fw);
+      const defOk = _agentDefenderOk(def);
+      const sshOk = _agentSshOk(ssh);
+      const diskOk = _agentDiskOk(disk);
+      const fwVal =
+        !fw.collected
+          ? fw.reason || "not collected"
+          : fw.enabled == null
+          ? "unknown"
+          : `${fw.enabled ? "enabled" : "disabled"}${fw.backend ? ` (${fw.backend})` : ""}`;
+      const defVal =
+        !def.collected
+          ? def.reason || "not collected"
+          : `realtime ${def.realtime_protection_enabled ? "on" : "off"}`;
+      const sshVal =
+        !ssh.collected
+          ? ssh.reason || "not collected"
+          : Object.entries(ssh.settings || {})
+              .map(([k, v]) => `${k}=${v}`)
+              .join(", ") || "no directives";
+      const diskVal =
+        !disk.collected
+          ? disk.reason || "not collected"
+          : disk.encrypted == null
+          ? "unknown"
+          : `${disk.encrypted ? "encrypted" : "not encrypted"}${disk.backend ? ` (${disk.backend})` : ""}`;
+      return `
+        <p class="hint" style="margin:0 0 0.5rem">Expected hardening hints vs last check-in (lab/owned hosts).</p>
+        <div class="data-table-wrap"><table class="data-table">
+          <thead><tr><th>Control</th><th>Result</th><th>Observed</th><th>Expected</th></tr></thead>
+          <tbody>
+            ${row("firewall_status", fwOk, fwVal, "enabled")}
+            ${row("defender_status", defOk, defVal, "realtime protection on")}
+            ${row("ssh_config", sshOk, sshVal, "PasswordAuthentication=no")}
+            ${row("disk_encryption", diskOk, diskVal, "encrypted")}
+          </tbody>
+        </table></div>`;
+    }
+
+    if (tab === "commands") {
+      const rows = (commands || [])
+        .map((cmd) => {
+          const pending = cmd.status === "pending_approval";
+          return `<tr>
+            <td>${_agentCommandKindLabel(cmd)}</td>
+            <td>${_agentStatusChip(cmd.status)}</td>
+            <td class="hint"><code>${escapeHtml(_agentCommandLifecycle(cmd))}</code></td>
+            <td class="hint">${escapeHtml(_agentFmtWhen(cmd.created_at))}</td>
+            <td class="reports-dl-cell">
+              ${
+                pending
+                  ? `<button type="button" class="btn-primary-cc agent-detail-approve" data-cmd-id="${escapeHtml(cmd.id)}">Approve</button>
+                     <button type="button" class="btn-secondary agent-detail-reject" data-cmd-id="${escapeHtml(cmd.id)}">Reject</button>`
+                  : ""
+              }
+            </td>
+          </tr>`;
+        })
+        .join("");
+      return `
+        <div class="data-table-wrap"><table class="data-table">
+          <thead><tr><th>Command</th><th>Status</th><th>Lifecycle</th><th>Created</th><th></th></tr></thead>
+          <tbody>${rows || `<tr><td colspan="5" class="hint">No commands yet for this agent.</td></tr>`}</tbody>
+        </table></div>
+        <p class="hint" style="margin:0.65rem 0 0">Approve/reject only applies to pending items. Firewall/Defender enable and upgrades stay pending until approved.</p>`;
+    }
+
+    const events = (commands || [])
+      .slice(0, 30)
+      .map(
+        (cmd) => `<li>
+          <span class="hint">${escapeHtml(_agentFmtWhen(cmd.created_at))}</span>
+          · ${_agentCommandKindLabel(cmd)}
+          · ${_agentStatusChip(cmd.status)}
+          <code class="hint">${escapeHtml(_agentCommandLifecycle(cmd))}</code>
+        </li>`
+      )
+      .join("");
+    return `
+      <p class="hint" style="margin:0 0 0.5rem">Recent commands for this agent. Live updates arrive via Mission Control SSE (<code>agent</code> / <code>agent_command</code>).</p>
+      <ul class="cc-list" style="margin:0">${events || `<li class="hint">No timeline events yet.</li>`}</ul>`;
+  }
+
+  async function renderAgentDetailPage(agentId, opts) {
+    opts = opts || {};
+    const id = agentId || window.__securaiqSelectedAgentId;
+    const body = qs("agentDetailBody");
+    const titleEl = qs("agentDetailTitle");
+    const subEl = qs("agentDetailSub");
+    const headActions = qs("agentDetailHeadActions");
+    if (!body) return;
+    if (!id) {
+      body.innerHTML = `<p class="hint">No agent selected — <button type="button" class="btn-secondary" id="agentDetailBackInline">Back to fleet</button></p>`;
+      qs("agentDetailBackInline")?.addEventListener("click", () => window.showWorkspace?.("agents"));
+      return;
+    }
+    window.__securaiqSelectedAgentId = id;
+    const tab = window.__securaiqAgentDetailTab || "overview";
+    if (!opts.quiet) body.innerHTML = `<p class="hint">Loading agent…</p>`;
+    try {
+      const [agentRes, cmdRes] = await Promise.all([
+        fetch(`/api/agents/${encodeURIComponent(id)}`, { headers: authHeaders() }),
+        fetch(`/api/agents/${encodeURIComponent(id)}/commands?limit=30`, { headers: authHeaders() }),
+      ]);
+      const agent = await agentRes.json().catch(() => ({}));
+      if (!agentRes.ok) throw new Error(agent.detail || `HTTP ${agentRes.status}`);
+      const cmdData = cmdRes.ok ? await cmdRes.json().catch(() => ({})) : {};
+      const commands = cmdData.commands || [];
+      const host = agent.hostname || agent.name || id.slice(0, 8);
+      if (titleEl) titleEl.textContent = host;
+      if (subEl) {
+        subEl.innerHTML = `${_agentStatusChip(agent.status)}
+          · ${escapeHtml(agent.os || "—")}${agent.os_version ? ` ${escapeHtml(agent.os_version)}` : ""}
+          · last check-in ${escapeHtml(_agentFmtWhen(agent.last_checkin))}
+          · agent ${escapeHtml(agent.agent_version || "—")}
+          · asset <code>${escapeHtml(agent.asset_id || "—")}</code>`;
+      }
+
+      const payload = agent.last_payload || {};
+      const fwOk = _agentFirewallOk(payload.firewall_status);
+      const defOk = _agentDefenderOk(payload.defender_status);
+      const risk =
+        agent.risk_score != null
+          ? agent.risk_score
+          : agent.risk != null
+          ? agent.risk
+          : payload.risk_score != null
+          ? payload.risk_score
+          : null;
+      const vulnCount =
+        agent.vuln_count != null
+          ? agent.vuln_count
+          : Array.isArray(payload.vulnerabilities)
+          ? payload.vulnerabilities.length
+          : null;
+
+      const actionBtns = [];
+      if (fwOk === false && agent.status !== "revoked") {
+        actionBtns.push(
+          `<button type="button" class="btn-secondary" id="agentDetailEnableFw">Request enable firewall</button>`
+        );
+      }
+      if (defOk === false && agent.status !== "revoked") {
+        actionBtns.push(
+          `<button type="button" class="btn-secondary" id="agentDetailEnableDef">Request enable Defender</button>`
+        );
+      }
+      if (agent.status !== "revoked" && agent.status !== "upgrading") {
+        actionBtns.push(
+          `<button type="button" class="btn-secondary" id="agentDetailUpgrade">Request upgrade</button>`
+        );
+      }
+      if (headActions) headActions.innerHTML = actionBtns.join("");
+
+      const tabs = [
+        ["overview", "Overview"],
+        ["inventory", "Inventory"],
+        ["configuration", "Configuration"],
+        ["commands", "Commands"],
+        ["timeline", "Timeline"],
+      ];
+      const tabBar = tabs
+        .map(
+          ([k, label]) =>
+            `<button type="button" class="wz-dash-tab agent-detail-tab${k === tab ? " is-active" : ""}" data-tab="${k}" role="tab" aria-selected="${k === tab}">${label}</button>`
+        )
+        .join("");
+
+      const kpiBits = [];
+      if (risk != null) {
+        kpiBits.push(`<article class="cc-kpi"><span>Risk</span><strong>${escapeHtml(String(risk))}</strong></article>`);
+      }
+      if (vulnCount != null) {
+        kpiBits.push(`<article class="cc-kpi"><span>Vulns</span><strong>${escapeHtml(String(vulnCount))}</strong></article>`);
+      }
+      kpiBits.push(
+        `<article class="cc-kpi"><span>Packages</span><strong>${escapeHtml(String((payload.packages || []).length))}</strong></article>`
+      );
+      kpiBits.push(
+        `<article class="cc-kpi"><span>Ports</span><strong>${escapeHtml(String((payload.listening_ports || []).length))}</strong></article>`
+      );
+      kpiBits.push(
+        `<article class="cc-kpi"><span>Pending cmds</span><strong>${escapeHtml(
+          String(commands.filter((c) => c.status === "pending_approval").length)
+        )}</strong></article>`
+      );
+
+      body.innerHTML = `
+        <div class="cc-kpi-grid" style="margin:0 0 1rem">${kpiBits.join("")}</div>
+        <div class="wz-dash-tabs agent-detail-tabs" role="tablist" style="margin-bottom:0.75rem">${tabBar}</div>
+        <div id="agentDetailTabBody">${_renderAgentDetailTab(tab, agent, commands)}</div>`;
+
+      body.querySelectorAll(".agent-detail-tab").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          window.__securaiqAgentDetailTab = btn.getAttribute("data-tab") || "overview";
+          renderAgentDetailPage(id, { quiet: true });
+        });
+      });
+
+      qs("agentDetailEnableFw")?.addEventListener("click", async (ev) => {
+        const btn = ev.currentTarget;
+        if (!confirm("Request enable_firewall for this agent? It stays pending until approved — nothing runs until then.")) return;
+        btn.disabled = true;
+        try {
+          const r = await fetch(`/api/agents/${encodeURIComponent(id)}/commands/enable-firewall`, {
+            method: "POST",
+            headers: authHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify({}),
+          });
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+          if (typeof notifyUser === "function") {
+            notifyUser("**Enable firewall requested** — approve it on the Commands tab before the agent runs it.");
+          }
+          window.__securaiqAgentDetailTab = "commands";
+          renderAgentDetailPage(id);
+        } catch (err) {
+          alert(err.message || "Request failed");
+          btn.disabled = false;
+        }
+      });
+
+      qs("agentDetailEnableDef")?.addEventListener("click", async (ev) => {
+        const btn = ev.currentTarget;
+        if (
+          !confirm(
+            "Request enable_defender for this agent? It stays pending until approved — nothing runs until then."
+          )
+        )
+          return;
+        btn.disabled = true;
+        try {
+          const r = await fetch(`/api/agents/${encodeURIComponent(id)}/commands/enable-defender`, {
+            method: "POST",
+            headers: authHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify({}),
+          });
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+          if (typeof notifyUser === "function") {
+            notifyUser(
+              "**Enable Defender requested** — approve it on the Commands tab before the agent runs it."
+            );
+          }
+          window.__securaiqAgentDetailTab = "commands";
+          renderAgentDetailPage(id);
+        } catch (err) {
+          alert(err.message || "Request failed");
+          btn.disabled = false;
+        }
+      });
+
+      qs("agentDetailUpgrade")?.addEventListener("click", async (ev) => {
+        const btn = ev.currentTarget;
+        if (!confirm("Request a self-upgrade for this agent? It stays pending until you approve it.")) return;
+        btn.disabled = true;
+        try {
+          const r = await fetch(`/api/agents/${encodeURIComponent(id)}/commands/upgrade`, {
+            method: "POST",
+            headers: authHeaders(),
+          });
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+          if (typeof notifyUser === "function") {
+            notifyUser("**Upgrade requested** — approve it on the Commands tab before delivery.");
+          }
+          window.__securaiqAgentDetailTab = "commands";
+          renderAgentDetailPage(id);
+        } catch (err) {
+          alert(err.message || "Upgrade request failed");
+          btn.disabled = false;
+        }
+      });
+
+      body.querySelectorAll(".agent-detail-approve").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const cmdId = btn.getAttribute("data-cmd-id");
+          if (!confirm("Approve this command? It will run on the agent's next check-in.")) return;
+          btn.disabled = true;
+          try {
+            const r = await fetch(
+              `/api/agents/${encodeURIComponent(id)}/commands/${encodeURIComponent(cmdId)}/approve`,
+              { method: "POST", headers: authHeaders() }
+            );
+            const d = await r.json().catch(() => ({}));
+            if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+            if (typeof notifyUser === "function") notifyUser("Command approved — queued for delivery.");
+            renderAgentDetailPage(id, { quiet: true });
+          } catch (err) {
+            alert(err.message || "Approve failed");
+            btn.disabled = false;
+          }
+        });
+      });
+
+      body.querySelectorAll(".agent-detail-reject").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const cmdId = btn.getAttribute("data-cmd-id");
+          const reason = prompt("Reason for rejecting (optional):") || "";
+          btn.disabled = true;
+          try {
+            const r = await fetch(
+              `/api/agents/${encodeURIComponent(id)}/commands/${encodeURIComponent(cmdId)}/reject`,
+              {
+                method: "POST",
+                headers: authHeaders({ "Content-Type": "application/json" }),
+                body: JSON.stringify({ reason }),
+              }
+            );
+            const d = await r.json().catch(() => ({}));
+            if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+            if (typeof notifyUser === "function") notifyUser("Command rejected.");
+            renderAgentDetailPage(id, { quiet: true });
+          } catch (err) {
+            alert(err.message || "Reject failed");
+            btn.disabled = false;
+          }
+        });
+      });
+    } catch (err) {
+      body.innerHTML = `<p class="hint">Couldn't load agent detail. <span class="hint-sub">(${escapeHtml(
+        err.message || String(err)
+      )})</span></p>`;
+    }
+  }
+  window.renderAgentDetailPage = renderAgentDetailPage;
+
+  qs("agentDetailBackBtn")?.addEventListener("click", () => {
+    window.__securaiqSelectedAgentId = null;
+    window.showWorkspace?.("agents");
+  });
+
   function wireAgentsControls(cfg) {
     cfg = cfg || {};
     const enrollBtn = typeof cfg.enrollBtn === "string" ? qs(cfg.enrollBtn) : cfg.enrollBtn;
@@ -5301,8 +5911,9 @@
           .map((a) => {
             const payload = a.last_payload || {};
             const canUpgrade = a.status !== "revoked" && a.status !== "upgrading";
-            return `<tr>
-              <td><strong>${escapeHtml(a.hostname || a.name || a.id.slice(0, 8))}</strong>${a.ip ? `<div class="hint">${escapeHtml(a.ip)}</div>` : ""}</td>
+            const hostLabel = a.hostname || a.name || a.id.slice(0, 8);
+            return `<tr class="agents-fleet-row" data-agent-id="${escapeHtml(a.id)}" style="cursor:pointer">
+              <td><button type="button" class="btn-ghost agents-open-detail" data-id="${escapeHtml(a.id)}" style="padding:0;font-weight:600;text-align:left">${escapeHtml(hostLabel)}</button>${a.ip ? `<div class="hint">${escapeHtml(a.ip)}</div>` : ""}</td>
               <td>${statusChip(a.status)}</td>
               <td class="hint">${escapeHtml(a.os || "—")} ${escapeHtml(a.os_version || "")}</td>
               <td>${(payload.listening_ports || []).length}</td>
@@ -5340,17 +5951,13 @@
           pendingCommands.length
             ? `<div class="agents-pending-approvals" style="margin-top:12px">
                 <h4 style="margin:0 0 6px">Pending approvals</h4>
-                <p class="hint" style="margin:0 0 6px">Patch and self-upgrade commands wait here until approved — nothing runs on a host until you approve it.</p>
+                <p class="hint" style="margin:0 0 6px">Patch, upgrade, enable_firewall, and enable_defender commands wait here until approved — nothing runs on a host until you approve it.</p>
                 <div class="data-table-wrap"><table class="data-table">
                   <thead><tr><th>Host</th><th>Command</th><th>Requested</th><th></th></tr></thead>
                   <tbody>${pendingCommands
                     .map((cmd) => {
                       const agent = agents.find((a) => a.id === cmd.agent_id);
-                      const p = cmd.payload || {};
-                      const cmdLabel =
-                        cmd.kind === "agent_upgrade"
-                          ? `<code>agent self-upgrade</code> <span class="hint">checksum-verified against the current install script</span>`
-                          : `<code>${escapeHtml(p.manager || "")} upgrade ${escapeHtml(p.package || "")}</code>`;
+                      const cmdLabel = _agentCommandKindLabel(cmd);
                       return `<tr>
                         <td>${escapeHtml((agent && (agent.hostname || agent.name)) || cmd.agent_id.slice(0, 8))}</td>
                         <td>${cmdLabel}</td>
@@ -5498,6 +6105,19 @@
       el.querySelectorAll(".agents-view-asset").forEach((btn) => {
         btn.addEventListener("click", () => {
           window.showWorkspace?.("assets");
+        });
+      });
+      el.querySelectorAll(".agents-open-detail").forEach((btn) => {
+        btn.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          openAgentDetail(btn.getAttribute("data-id"));
+        });
+      });
+      el.querySelectorAll("tr.agents-fleet-row").forEach((row) => {
+        row.addEventListener("click", (ev) => {
+          const t = ev.target;
+          if (t && t.closest && t.closest("button, a, input, label")) return;
+          openAgentDetail(row.getAttribute("data-agent-id"));
         });
       });
       el.querySelectorAll(".agents-toggle-telemetry").forEach((btn) => {
@@ -8202,6 +8822,35 @@
             </tr></thead><tbody>${liveFails
               .slice(0, 20)
               .map((f) => {
+                const testName = String(f.test || "");
+                const detail = f.detail || {};
+                const agents = Array.isArray(detail.agents) ? detail.agents : [];
+                const failingAgent =
+                  agents.find((a) => String(a.status || "").toLowerCase() === "fail") ||
+                  agents[0] ||
+                  null;
+                const failAgentId = failingAgent && failingAgent.agent_id ? failingAgent.agent_id : "";
+                const hostLabel =
+                  (failingAgent && (failingAgent.hostname || failAgentId.slice(0, 8))) || "";
+                const remediations = [];
+                if (testName === "host_firewall" && failAgentId) {
+                  remediations.push(
+                    `<button type="button" class="btn-secondary cc-enable-fw"
+                      data-agent-id="${escapeHtml(failAgentId)}"
+                      title="Request enable_firewall (pending until approved)">Enable firewall${
+                        hostLabel ? ` · ${escapeHtml(String(hostLabel).slice(0, 24))}` : ""
+                      }</button>`
+                  );
+                }
+                if (testName === "host_defender" && failAgentId) {
+                  remediations.push(
+                    `<button type="button" class="btn-secondary cc-enable-def"
+                      data-agent-id="${escapeHtml(failAgentId)}"
+                      title="Request enable_defender (pending until approved)">Enable Defender${
+                        hostLabel ? ` · ${escapeHtml(String(hostLabel).slice(0, 24))}` : ""
+                      }</button>`
+                  );
+                }
                 return `<tr>
                   <td><strong>${escapeHtml(f.control_id || "")}</strong>
                     <div class="hint">${escapeHtml(f.title || "")}</div></td>
@@ -8213,6 +8862,7 @@
                   <td class="ws-actions">
                     <button type="button" class="btn-secondary cc-ctrl-test"
                       data-cid="${escapeHtml(f.control_id || "")}">Retest</button>
+                    ${remediations.join("")}
                   </td>
                 </tr>`;
               })
@@ -8397,6 +9047,80 @@
           renderControlCenterPage();
         } catch (err) {
           if (typeof notifyUser === "function") notifyUser(`Control test failed: ${err.message || err}`);
+          btn.disabled = false;
+        }
+      });
+    });
+    body.querySelectorAll(".cc-enable-fw").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const agentId = btn.getAttribute("data-agent-id") || "";
+        if (!agentId) return;
+        if (
+          !confirm(
+            "Request enable_firewall for this agent? It stays pending until approved — nothing runs until then."
+          )
+        )
+          return;
+        btn.disabled = true;
+        try {
+          const r = await fetch(`/api/agents/${encodeURIComponent(agentId)}/commands/enable-firewall`, {
+            method: "POST",
+            headers: authHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify({}),
+          });
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+          if (typeof notifyUser === "function") {
+            notifyUser(
+              "**Enable firewall requested** — open Agents → Commands (or agent detail) to approve before the host runs it."
+            );
+          }
+          window.__securaiqSelectedAgentId = agentId;
+          window.__securaiqAgentDetailTab = "commands";
+          showWorkspace("agent_detail");
+        } catch (err) {
+          if (typeof notifyUser === "function") {
+            notifyUser(`Enable firewall request failed: ${err.message || err}`);
+          } else {
+            alert(err.message || "Request failed");
+          }
+          btn.disabled = false;
+        }
+      });
+    });
+    body.querySelectorAll(".cc-enable-def").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const agentId = btn.getAttribute("data-agent-id") || "";
+        if (!agentId) return;
+        if (
+          !confirm(
+            "Request enable_defender for this agent? It stays pending until approved — nothing runs until then."
+          )
+        )
+          return;
+        btn.disabled = true;
+        try {
+          const r = await fetch(`/api/agents/${encodeURIComponent(agentId)}/commands/enable-defender`, {
+            method: "POST",
+            headers: authHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify({}),
+          });
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+          if (typeof notifyUser === "function") {
+            notifyUser(
+              "**Enable Defender requested** — open Agents → Commands (or agent detail) to approve before the host runs it."
+            );
+          }
+          window.__securaiqSelectedAgentId = agentId;
+          window.__securaiqAgentDetailTab = "commands";
+          showWorkspace("agent_detail");
+        } catch (err) {
+          if (typeof notifyUser === "function") {
+            notifyUser(`Enable Defender request failed: ${err.message || err}`);
+          } else {
+            alert(err.message || "Request failed");
+          }
           btn.disabled = false;
         }
       });
@@ -10227,6 +10951,10 @@
         reports: () => typeof renderReportsPage === "function" && renderReportsPage(),
         soc: () => typeof renderSocPage === "function" && renderSocPage(),
         agents: () => typeof renderAgentsPage === "function" && renderAgentsPage({ quiet: true }),
+        agent_detail: () =>
+          typeof window.renderAgentDetailPage === "function" &&
+          window.__securaiqSelectedAgentId &&
+          window.renderAgentDetailPage(window.__securaiqSelectedAgentId, { quiet: true }),
         evidence: () => typeof renderEvidencePage === "function" && renderEvidencePage(),
         compliance_center: () =>
           typeof renderComplianceCenterPage === "function" && renderComplianceCenterPage({ quiet: true }),

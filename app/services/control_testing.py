@@ -14,12 +14,13 @@ This is deliberately additive and separate, not a replacement:
     healthy, is the host firewall enabled on enrolled agents.
 
 A control is only ever mapped to a live test here via an EXPLICIT
-(framework_id, control_id) -> test-name table (_CONTROL_TEST_MAP below),
-never fuzzy keyword matching -- a live test result is a specific factual
-claim about a specific control, so the mapping itself must be as precise
-as everything else in this product's evidence model. Adding a wrong
-mapping would be exactly the kind of "AI invents a relationship" mistake
-this product's whole evidence philosophy exists to prevent.
+(framework_id, control_id) -> test-name table derived from
+``app.controls.test_registry`` (single source of truth), never fuzzy
+keyword matching -- a live test result is a specific factual claim about
+a specific control, so the mapping itself must be as precise as everything
+else in this product's evidence model. Adding a wrong mapping would be
+exactly the kind of "AI invents a relationship" mistake this product's
+whole evidence philosophy exists to prevent.
 
 Inventory/vuln/patch results record to the Evidence Store with
 source="derived". Host-telemetry tests (RT-10) record source="observed"
@@ -31,84 +32,22 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.controls.test_registry import (
+    TEST_ASSET_INVENTORY,
+    TEST_FIPS_REMOTE_ACCESS,
+    TEST_HOST_DEFENDER,
+    TEST_HOST_FIREWALL,
+    TEST_HOST_SSH_ROOT,
+    TEST_PATCH_MANAGEMENT,
+    TEST_VULNERABILITY_MANAGEMENT,
+    _HOST_TELEMETRY_TESTS,
+    _HOST_TEST_PRIMARY_CONTROLS,
+    build_control_test_map,
+)
 from app.db import now
 
-# Real product-capability tests this module can run today.
-TEST_ASSET_INVENTORY = "asset_inventory"
-TEST_VULNERABILITY_MANAGEMENT = "vulnerability_management"
-TEST_PATCH_MANAGEMENT = "patch_management"
-# RT-10 — host controls from SecuraIQ agent last_payload_json telemetry.
-TEST_HOST_FIREWALL = "host_firewall"
-TEST_HOST_DEFENDER = "host_defender"
-TEST_HOST_SSH_ROOT = "host_ssh_root"
-# Known non-FIPS-validated remote-access/RMM tooling, detected by name in
-# the real software inventory. See app.services.fips_tooling.
-TEST_FIPS_REMOTE_ACCESS = "fips_remote_access_tooling"
-
-_HOST_TELEMETRY_TESTS = frozenset(
-    {TEST_HOST_FIREWALL, TEST_HOST_DEFENDER, TEST_HOST_SSH_ROOT}
-)
-
-# Primary framework control ids used when publishing compliance events /
-# remediation stubs from a single agent check-in (one canonical id per test).
-_HOST_TEST_PRIMARY_CONTROLS: dict[str, tuple[str, str]] = {
-    TEST_HOST_FIREWALL: ("cis_controls", "CIS-12"),
-    TEST_HOST_DEFENDER: ("cis_controls", "CIS-10"),
-    TEST_HOST_SSH_ROOT: ("cis_controls", "CIS-4"),
-}
-
-# Explicit (framework_id, control_id) -> [test names]. Curated by hand from
-# each framework's own control title/keywords (see data/frameworks/*.json)
-# -- never derived by fuzzy string matching. A control absent from this map
-# simply has no live test yet; its status still comes from pasted evidence
-# only, exactly as before this module existed.
-_CONTROL_TEST_MAP: dict[tuple[str, str], list[str]] = {
-    ("cis_controls", "CIS-1"): [TEST_ASSET_INVENTORY],
-    ("iso27001", "A.5.9"): [TEST_ASSET_INVENTORY],
-    ("nist_csf", "ID.AM-01"): [TEST_ASSET_INVENTORY],
-    ("cis_controls", "CIS-7"): [TEST_VULNERABILITY_MANAGEMENT, TEST_PATCH_MANAGEMENT],
-    ("iso27001", "A.8.8"): [TEST_VULNERABILITY_MANAGEMENT, TEST_PATCH_MANAGEMENT],
-    ("nist_csf", "ID.RA-01"): [TEST_VULNERABILITY_MANAGEMENT],
-    ("nist_csf", "PR.PS-02"): [TEST_PATCH_MANAGEMENT],
-    ("nist_800_53", "RA-5"): [TEST_VULNERABILITY_MANAGEMENT],
-    ("nist_800_53", "SI-2"): [TEST_PATCH_MANAGEMENT],
-    ("nist_800_171", "3.11.2"): [TEST_VULNERABILITY_MANAGEMENT],
-    ("nist_800_171", "3.14.1"): [TEST_PATCH_MANAGEMENT],
-    ("cmmc_l2", "RA.L2-3.11.2"): [TEST_VULNERABILITY_MANAGEMENT],
-    ("cmmc_l2", "SI.L2-3.14.1"): [TEST_PATCH_MANAGEMENT],
-    ("pci_dss", "6.3"): [TEST_VULNERABILITY_MANAGEMENT],
-    ("pci_dss", "11.3"): [TEST_VULNERABILITY_MANAGEMENT],
-    # Host firewall (agent telemetry)
-    ("cis_controls", "CIS-12"): [TEST_HOST_FIREWALL],
-    ("nist_csf", "PR.IR-01"): [TEST_HOST_FIREWALL],
-    ("iso27001", "A.8.20"): [TEST_HOST_FIREWALL],
-    ("nist_800_53", "SC-7"): [TEST_HOST_FIREWALL],
-    # 800-171 / CMMC L2 — boundary protection + restrict nonessential ports (exact catalog ids)
-    ("nist_800_171", "3.13.1"): [TEST_HOST_FIREWALL],
-    ("nist_800_171", "3.4.7"): [TEST_HOST_FIREWALL],
-    ("cmmc_l2", "SC.L2-3.13.1"): [TEST_HOST_FIREWALL],
-    ("cmmc_l2", "CM.L2-3.4.2"): [TEST_HOST_FIREWALL],
-    # Host Defender / malware protection (Windows agent telemetry)
-    ("cis_controls", "CIS-10"): [TEST_HOST_DEFENDER],
-    ("iso27001", "A.8.7"): [TEST_HOST_DEFENDER],
-    ("nist_800_53", "SI-3"): [TEST_HOST_DEFENDER],
-    ("nist_800_171", "3.14.2"): [TEST_HOST_DEFENDER],
-    ("cmmc_l2", "SI.L2-3.14.2"): [TEST_HOST_DEFENDER],
-    # SSH PermitRootLogin / secure configuration
-    ("cis_controls", "CIS-4"): [TEST_HOST_SSH_ROOT],
-    ("nist_csf", "PR.PS-01"): [TEST_HOST_SSH_ROOT],
-    ("iso27001", "A.8.9"): [TEST_HOST_SSH_ROOT],
-    ("nist_800_53", "CM-6"): [TEST_HOST_SSH_ROOT],
-    # 800-171 / CMMC — least privilege (non-root) / config enforcement
-    ("nist_800_171", "3.1.5"): [TEST_HOST_SSH_ROOT],
-    ("cmmc_l2", "AC.L2-3.1.5"): [TEST_HOST_SSH_ROOT],
-    # Known non-FIPS-validated remote-access/RMM tooling, detected by name
-    # in the real software inventory (see app.services.fips_tooling).
-    ("cmmc_l2", "AC.L2-3.1.13"): [TEST_FIPS_REMOTE_ACCESS],
-    ("cmmc_l2", "SC.L2-3.13.11"): [TEST_FIPS_REMOTE_ACCESS],
-    ("nist_800_171", "3.1.13"): [TEST_FIPS_REMOTE_ACCESS],
-    ("nist_800_171", "3.13.11"): [TEST_FIPS_REMOTE_ACCESS],
-}
+# Derived from app.controls.test_registry — keep import name for callers/tests.
+_CONTROL_TEST_MAP: dict[tuple[str, str], list[str]] = build_control_test_map()
 
 # SLA windows (days) a critical/high open vulnerability may age before the
 # vulnerability-management test considers it a real breach, not just "still
@@ -754,10 +693,16 @@ def list_live_control_failures(
                     fix_hint = "Enroll agents or refresh asset inventory"
                     ws = "assets"
                 elif t.get("test") == TEST_HOST_FIREWALL:
-                    fix_hint = "Enable host firewall on the failing agent host, then wait for next check-in"
+                    fix_hint = (
+                        "Request approved enable_firewall on the failing agent "
+                        "(Agents detail or Control Center), then verify on next check-in"
+                    )
                     ws = "agents"
                 elif t.get("test") == TEST_HOST_DEFENDER:
-                    fix_hint = "Enable Windows Defender realtime protection on the failing host"
+                    fix_hint = (
+                        "Request approved enable_defender on the failing Windows host, "
+                        "then verify on next check-in"
+                    )
                     ws = "agents"
                 elif t.get("test") == TEST_HOST_SSH_ROOT:
                     fix_hint = "Set PermitRootLogin no (or prohibit-password) in sshd_config"
@@ -934,7 +879,9 @@ def _ensure_host_firewall_remediation(
         f"{result.get('summary') or 'Host firewall disabled.'} "
         f"[{marker}] Enable the host firewall (ufw/firewalld/Windows Firewall), "
         f"then wait for the next SecuraIQ agent check-in to verify PASS. "
-        f"TODO(RT-11): optional approved agent command to enable firewall — not auto-executed."
+        f"Operator may request approved agent command kind=enable_firewall "
+        f"(POST /api/agents/{{id}}/commands/enable-firewall) then approve "
+        f"(pending_approval → queued) — never auto-executed."
     )
     try:
         rem = create_remediation(
@@ -980,7 +927,6 @@ def _ensure_host_firewall_remediation(
                 status="needed",
                 title=title,
                 test=TEST_HOST_FIREWALL,
-                _from_processor=True,
             )
         except Exception:
             pass
@@ -1055,6 +1001,31 @@ def evaluate_agent_host_controls(
 
                 primary = _HOST_TEST_PRIMARY_CONTROLS.get(test_name)
                 control_ids = _mapped_control_ids_for_test(test_name)
+                # Persist for Control Center summary KPIs (cmmc_l2 + all bindings).
+                try:
+                    from app.controls.results import record_test_result
+
+                    for binding in control_ids:
+                        fid = str(binding.get("framework_id") or "").strip()
+                        cid = str(binding.get("control_id") or "").strip()
+                        if not fid or not cid:
+                            continue
+                        record_test_result(
+                            user_id,
+                            fid,
+                            cid,
+                            test_name=test_name,
+                            status=status,
+                            summary=str(result.get("summary") or "")[:500],
+                            detail={
+                                "agent_id": agent_id,
+                                "asset_id": asset,
+                                **(result.get("detail") or {}),
+                            },
+                            tested_at=collected_at,
+                        )
+                except Exception:
+                    pass
                 try:
                     from app.realtime_bus import publish
 
@@ -1071,11 +1042,36 @@ def evaluate_agent_host_controls(
                         user_id=user_id,
                         summary=result.get("summary") or "",
                         source="securaiq_agent",
-                        _from_processor=True,
                     )
                     out["events"].append({"type": "compliance", "status": status, "test": test_name})
                 except Exception:
                     pass
+
+                # Dual-write dotted control.* for Control Center / event_processor
+                if status in ("fail", "pass"):
+                    status_event = "control.failed" if status == "fail" else "control.passed"
+                    try:
+                        from app.realtime_bus import publish
+
+                        publish(
+                            event_type=status_event,
+                            type=status_event,
+                            status=status,
+                            test=test_name,
+                            control_ids=control_ids,
+                            control_id=primary[1] if primary else None,
+                            framework_id=primary[0] if primary else None,
+                            evidence_ids=evidence_ids,
+                            agent_id=agent_id,
+                            asset_id=asset,
+                            user_id=user_id,
+                            summary=result.get("summary") or "",
+                            detail=result.get("detail") or {},
+                            source="securaiq_agent",
+                        )
+                        out["events"].append({"type": status_event, "status": status, "test": test_name})
+                    except Exception:
+                        pass
 
                 if status == "fail":
                     try:
@@ -1092,11 +1088,37 @@ def evaluate_agent_host_controls(
                             test=test_name,
                             reason="host_control_fail",
                             evidence_ids=evidence_ids,
-                            _from_processor=True,
                         )
                         out["events"].append({"type": "risk", "test": test_name})
                     except Exception:
                         pass
+
+                    # Org risk delta (previous_score / score_delta when known)
+                    try:
+                        from app.event_processor import _maybe_publish_org_risk
+
+                        _maybe_publish_org_risk(
+                            user_id, reason=f"host_control_fail:{test_name}"
+                        )
+                        out["events"].append({"type": "risk.changed", "test": test_name})
+                    except Exception:
+                        pass
+
+                    # Firewall FAIL → best-effort attack-path refresh when asset known
+                    if test_name == TEST_HOST_FIREWALL and asset:
+                        try:
+                            from app.services.attack_path_realtime import (
+                                refresh_attack_paths_for_threat,
+                            )
+
+                            refresh_attack_paths_for_threat(
+                                user_id,
+                                agent_id=agent_id,
+                                asset_id=asset,
+                                reason="host_firewall_fail",
+                            )
+                        except Exception:
+                            pass
 
                     # Sprint 4/5: POA&M-like open for any host FAIL (incl. firewall RT-11)
                     try:
@@ -1114,6 +1136,27 @@ def evaluate_agent_host_controls(
                         if rem and rem.get("id"):
                             out["remediation_id"] = rem.get("id")
                             out.setdefault("remediation_ids", []).append(rem.get("id"))
+                            try:
+                                from app.realtime_bus import publish
+
+                                publish(
+                                    type="remediation.recommended",
+                                    event_type="remediation.recommended",
+                                    remediation_id=rem.get("id"),
+                                    test=test_name,
+                                    agent_id=agent_id,
+                                    asset_id=asset,
+                                    user_id=user_id,
+                                    control_id=primary[1] if primary else None,
+                                    framework_id=primary[0] if primary else None,
+                                    summary=result.get("summary") or "",
+                                    auto_execute=False,
+                                )
+                                out["events"].append(
+                                    {"type": "remediation.recommended", "test": test_name}
+                                )
+                            except Exception:
+                                pass
                     except Exception:
                         # Legacy RT-11 firewall-only fallback
                         if test_name == TEST_HOST_FIREWALL:
@@ -1142,9 +1185,17 @@ def evaluate_agent_host_controls(
                             reason="host_control_pass_after_fail",
                             evidence_ids=evidence_ids,
                             risk_hint="reduction",
-                            _from_processor=True,
                         )
                         out["events"].append({"type": "risk", "hint": "reduction", "test": test_name})
+                    except Exception:
+                        pass
+                    try:
+                        from app.event_processor import _maybe_publish_org_risk
+
+                        _maybe_publish_org_risk(
+                            user_id, reason=f"host_control_pass:{test_name}"
+                        )
+                        out["events"].append({"type": "risk.changed", "test": test_name})
                     except Exception:
                         pass
                     try:

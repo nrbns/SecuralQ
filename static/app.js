@@ -3015,6 +3015,15 @@ function startRealtimeFeed(opts) {
               }
             }
             if (typeof renderAgentsPanel === "function") renderAgentsPanel();
+            const sel = window.__securaiqSelectedAgentId;
+            if (
+              sel &&
+              (!sibling.agent_id || sibling.agent_id === sel) &&
+              typeof window.renderAgentDetailPage === "function" &&
+              window.__securaiqWorkspaceView === "agent_detail"
+            ) {
+              window.renderAgentDetailPage(sel, { quiet: true });
+            }
           }
         });
         // Detect job completions → notify workspace to refresh
@@ -3173,6 +3182,8 @@ const REALTIME_LIVE_TYPES = new Set([
   "control.failed",
   "control.passed",
   "control.test.completed",
+  "remediation.recommended",
+  "risk.changed",
   "threat",
   "verification",
 ]);
@@ -3238,6 +3249,27 @@ function applyRealtimeWorkspaceRefresh(data, flags) {
     // (same null-guard pattern as every other panel renderer), so it's safe
     // to call unconditionally rather than tracking panel visibility.
     if (typeof renderAgentsPanel === "function") renderAgentsPanel();
+    const selected = window.__securaiqSelectedAgentId;
+    if (
+      selected &&
+      (!p.agent_id || p.agent_id === selected) &&
+      typeof window.renderAgentDetailPage === "function" &&
+      (view === "agent_detail" || window.__securaiqWorkspaceView === "agent_detail")
+    ) {
+      window.renderAgentDetailPage(selected, { quiet: true });
+    }
+  } else if (pt === "agent") {
+    const p = data.push || {};
+    const selected = window.__securaiqSelectedAgentId;
+    const pushAgent = p.agent_id || p.id;
+    if (
+      selected &&
+      (!pushAgent || pushAgent === selected) &&
+      typeof window.renderAgentDetailPage === "function" &&
+      (view === "agent_detail" || window.__securaiqWorkspaceView === "agent_detail")
+    ) {
+      window.renderAgentDetailPage(selected, { quiet: true });
+    }
   }
   const incremental = isSoftwarePushType(pt) || isToolPushType(pt);
   if (flags.pushRefresh && !incremental && typeof loadCommandCenter === "function") {
@@ -7837,6 +7869,19 @@ function syncLiveWorkspace(opts) {
     if (isLivePush || view === "vulns") rt(window.renderVulnsPage);
     if (isLivePush || view === "soc") rt(window.renderSocPage);
     if (isLivePush || view === "agents") rt(window.renderAgentsPage);
+    if (view === "agent_detail" || pushType === "agent" || pushType === "agent_command") {
+      const push = opts.push || {};
+      const selected = window.__securaiqSelectedAgentId;
+      const pushAgent = push.agent_id || push.id;
+      if (
+        selected &&
+        view === "agent_detail" &&
+        typeof window.renderAgentDetailPage === "function" &&
+        (!pushAgent || pushAgent === selected || (pushType !== "agent" && pushType !== "agent_command"))
+      ) {
+        rt(() => window.renderAgentDetailPage(selected, { quiet: true, pushType }));
+      }
+    }
     if (isLivePush || view === "intel") rt(window.renderIntelPage);
     if (isLivePush || view === "risks") rt(window.renderRisksPage);
     if (isLivePush || view === "remediations") rt(window.renderRemsPage);

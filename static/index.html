@@ -33,7 +33,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/style.css?v=160" />
+  <link rel="stylesheet" href="/style.css?v=161" />
   <script src="/vendor/marked.min.js"></script>
 </head>
 <body>
@@ -803,6 +803,17 @@
             </div>
           </div>
           <div id="agentsPageBody"></div>
+        </section>
+        <section id="viewAgentDetail" class="workspace-view hidden" data-module-page data-view-panel="agent_detail" data-workspace="agent_detail">
+          <div class="page-head">
+            <div>
+              <button type="button" class="btn-secondary" id="agentDetailBackBtn">← Back to fleet</button>
+              <h1 id="agentDetailTitle" style="margin-top:0.65rem">Agent</h1>
+              <p class="page-intro hint" id="agentDetailSub" style="margin:0.35rem 0 0">Host detail · inventory · commands</p>
+            </div>
+            <div class="page-head-actions" id="agentDetailHeadActions" style="display:flex;gap:0.5rem;flex-wrap:wrap"></div>
+          </div>
+          <div id="agentDetailBody"><p class="hint">Select an agent from the fleet list.</p></div>
         </section>
         <section id="viewExecutive" class="workspace-view hidden" data-module-page data-view-panel="executive">
           <div class="page-head">
@@ -2214,7 +2225,7 @@
     </div>
   </div>
 
-  <script src="/app.js?v=207"></script>
-  <script src="/workspace.js?v=198"></script>
+  <script src="/app.js?v=209"></script>
+  <script src="/workspace.js?v=202"></script>
 </body>
 </html>

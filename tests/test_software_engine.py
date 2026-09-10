@@ -59,8 +59,21 @@ def test_sync_inventory_empty_user():
     assert isinstance(totals["sources"], dict)
 
 
-def test_sync_inventory_from_legacy_rows():
+def test_sync_inventory_from_legacy_rows(monkeypatch, tmp_path):
+    """Legacy asset_software → engine sync without live version-network refresh."""
+    from tests._http_test_utils import configure_isolated_settings
+
+    configure_isolated_settings(monkeypatch, tmp_path)
     ensure_schema()
+    # Keep this unit hermetic: sync_inventory may call GitHub / reuse cached latest.
+    monkeypatch.setattr(
+        "app.software.versions.refresh_versions_for_user",
+        lambda *_a, **_k: {"checked": 0, "resolved": 0, "skipped": 0, "errors": 0},
+    )
+    monkeypatch.setattr(
+        "app.software.versions.get_cached_latest",
+        lambda *_a, **_k: None,
+    )
     uid = "test-engine-sync"
     upsert_software_row(
         uid,

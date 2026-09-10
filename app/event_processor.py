@@ -51,6 +51,8 @@ HOOK_EVENT_TYPES: frozenset[str] = frozenset(
         "agent_command",
         "incident",
         "gap",
+        "configuration.drift_detected",
+        "control.failed",
     }
 )
 
@@ -588,19 +590,31 @@ def _handle_agent_threat(event: dict[str, Any]) -> None:
     if sev in _HIGH_SEV:
         _safe_notify(user_id, "agent_threat", title, body, link="/#agents")
 
-    evidence = _safe_record_evidence(
-        user_id,
-        entity_type=entity_type,
-        entity_id=entity_id,
-        source="observed",
-        summary=title,
-        detail={
-            "event_id": event.get("event_id"),
-            "severity": sev,
-            "agent_id": agent_id or None,
-        },
-        confidence=0.7,
-    )
+    evidence = None
+    try:
+        from app.services.evidence import get_evidence_for
+
+        prior = get_evidence_for(user_id, entity_type=entity_type, entity_id=entity_id, limit=10)
+        if any((e.get("source") or "") == "observed" for e in prior):
+            # Agent ingest already wrote observed evidence for this threat —
+            # do not create a second row with a different summary fingerprint.
+            evidence = prior[0]
+    except Exception:
+        prior = []
+    if evidence is None:
+        evidence = _safe_record_evidence(
+            user_id,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            source="observed",
+            summary=title,
+            detail={
+                "event_id": event.get("event_id"),
+                "severity": sev,
+                "agent_id": agent_id or None,
+            },
+            confidence=0.7,
+        )
     _publish_evidence_hint(
         user_id, evidence=evidence, entity_type=entity_type, entity_id=entity_id, summary=title
     )
@@ -790,6 +804,138 @@ def _handle_light_evidence(event: dict[str, Any], *, entity_type: str) -> None:
         )
 
 
+def _handle_configuration_drift(event: dict[str, Any]) -> None:
+    """configuration.drift_detected → derived evidence + thin org risk (idempotent)."""
+    user_id = _resolve_user_id(event)
+    if not user_id:
+        return
+    et = str(event.get("event_type") or event.get("type") or "configuration.drift_detected").strip()
+    key = str(event.get("key") or "").strip()
+    agent_id = str(event.get("agent_id") or "").strip()
+    asset_id = str(event.get("asset_id") or "").strip()
+    entity_id = _entity_id(
+        event.get("id"),
+        f"{agent_id}:{key}" if agent_id and key else "",
+        key,
+        asset_id,
+    )
+    title = _event_title(event, default=f"Config drift: {key or 'setting'}")
+    if entity_id:
+        evidence = _safe_record_evidence(
+            user_id,
+            entity_type="configuration_drift",
+            entity_id=entity_id[:120],
+            source="derived",
+            summary=title[:500],
+            detail={
+                "event_id": event.get("event_id"),
+                "key": key,
+                "expected": event.get("expected"),
+                "current": event.get("current"),
+                "previous": event.get("previous"),
+                "agent_id": agent_id or None,
+                "asset_id": asset_id or None,
+                "event_type": et,
+            },
+            confidence=0.75,
+        )
+        _publish_evidence_hint(
+            user_id,
+            evidence=evidence,
+            entity_type="configuration_drift",
+            entity_id=entity_id[:120],
+            summary=title,
+        )
+    # Thin risk hint (not a full finding invention)
+    try:
+        from app.realtime_bus import publish
+
+        publish(
+            type="risk",
+            event_type="risk",
+            user_id=user_id,
+            severity=str(event.get("severity") or "medium"),
+            title=title[:200],
+            summary=str(event.get("summary") or title)[:400],
+            reason="configuration_drift",
+            key=key or None,
+            agent_id=agent_id or None,
+            asset_id=asset_id or None,
+            _from_processor=True,
+        )
+    except Exception:
+        pass
+    _maybe_publish_org_risk(user_id, reason=et or "configuration.drift_detected")
+
+
+def _handle_control_failed(event: dict[str, Any]) -> None:
+    """control.failed → evidence + thin risk + org risk delta (idempotent)."""
+    user_id = _resolve_user_id(event)
+    if not user_id:
+        return
+    et = str(event.get("event_type") or event.get("type") or "control.failed").strip()
+    test_name = str(event.get("test") or event.get("test_name") or "").strip()
+    control_id = str(event.get("control_id") or "").strip()
+    framework_id = str(event.get("framework_id") or "").strip()
+    agent_id = str(event.get("agent_id") or "").strip()
+    asset_id = str(event.get("asset_id") or "").strip()
+    entity_id = _entity_id(
+        event.get("id"),
+        f"{agent_id}:{test_name}" if agent_id and test_name else "",
+        f"{framework_id}:{control_id}" if framework_id and control_id else "",
+        test_name,
+        control_id,
+    )
+    title = _event_title(event, default=f"Control failed: {test_name or control_id or 'live test'}")
+    if entity_id:
+        evidence = _safe_record_evidence(
+            user_id,
+            entity_type="control_test",
+            entity_id=entity_id[:120],
+            source="observed" if test_name.startswith("host_") else "derived",
+            summary=title[:500],
+            detail={
+                "event_id": event.get("event_id"),
+                "test": test_name,
+                "control_id": control_id or None,
+                "framework_id": framework_id or None,
+                "status": "fail",
+                "agent_id": agent_id or None,
+                "asset_id": asset_id or None,
+                "event_type": et,
+            },
+            confidence=0.8,
+        )
+        _publish_evidence_hint(
+            user_id,
+            evidence=evidence,
+            entity_type="control_test",
+            entity_id=entity_id[:120],
+            summary=title,
+        )
+    try:
+        from app.realtime_bus import publish
+
+        publish(
+            type="risk",
+            event_type="risk",
+            user_id=user_id,
+            severity=str(event.get("severity") or "medium"),
+            title=title[:200],
+            summary=str(event.get("summary") or title)[:400],
+            reason="control_failed",
+            test=test_name or None,
+            control_id=control_id or None,
+            framework_id=framework_id or None,
+            agent_id=agent_id or None,
+            asset_id=asset_id or None,
+            _from_processor=True,
+        )
+    except Exception:
+        pass
+    _maybe_publish_org_risk(user_id, reason=et or "control.failed")
+
+
 def process_event(event: dict[str, Any] | None) -> bool:
     """Run the registered handler for ``event`` (sync, never raises).
 
@@ -865,6 +1011,8 @@ HANDLERS: dict[str, Handler] = {
     "agent_command": _handle_remediation_or_command,
     "incident": lambda e: _handle_light_evidence(e, entity_type="incident"),
     "gap": lambda e: _handle_light_evidence(e, entity_type="gap"),
+    "configuration.drift_detected": _handle_configuration_drift,
+    "control.failed": _handle_control_failed,
 }
 
 

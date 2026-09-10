@@ -170,9 +170,10 @@ def publish_drift_events(
         try:
             publish(
                 event_type="configuration.drift_detected",
+                type="configuration.drift_detected",
                 severity=ev.get("severity") or "medium",
                 title=f"Config drift: {key}",
-                **base_kwargs,
+                **{k: v for k, v in base_kwargs.items() if k != "_from_processor"},
             )
             published.append({"type": "configuration.drift_detected", "key": key})
         except Exception:

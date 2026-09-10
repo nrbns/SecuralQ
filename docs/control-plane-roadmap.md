@@ -6,7 +6,8 @@
 Do **not** treat this as a feature dump. Close platform gaps that turn what already exists (scans, agents, compliance, evidence, risk, remediation) into an operating system for security → risk → compliance.
 
 **Gate:** [production-readiness.md](./production-readiness.md) — not “framework names in a dropdown.”  
-**Master plan (46 phases):** [master-build-plan.md](./master-build-plan.md)
+**Master plan (46 phases):** [master-build-plan.md](./master-build-plan.md)  
+**Agent platform (not EDR):** [agent-platform.md](./agent-platform.md)
 
 ---
 

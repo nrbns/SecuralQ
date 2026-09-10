@@ -1192,9 +1192,9 @@ def expire_timed_out_commands() -> int:
 # (/api/agents/gateway/wait), or the next HTTP check-in (fallback). The
 # agent reports the outcome via report_command_result() (HTTP or WS).
 #
-# `kind` is deliberately an allowlist, not free-form shell: the only command
-# an agent will currently execute is "patch_package" (an OS package-manager
-# upgrade of one named package), never an arbitrary command string.
+# `kind` is deliberately an allowlist, not free-form shell: supported kinds are
+# patch_package, agent_upgrade, enable_firewall, and enable_defender (fixed argv
+# only — never an arbitrary command string from the server).
 #
 # Requesting a command never queues it for delivery directly. It lands in
 # 'pending_approval'; a second, distinct actor (an admin, when auth/RBAC is
@@ -1205,7 +1205,12 @@ def expire_timed_out_commands() -> int:
 # machine is real and is what a patch campaign's per-item commands ride on.
 # ---------------------------------------------------------------------------
 
-SUPPORTED_COMMAND_KINDS = {"patch_package", "agent_upgrade"}
+SUPPORTED_COMMAND_KINDS = {
+    "patch_package",
+    "agent_upgrade",
+    "enable_firewall",
+    "enable_defender",
+}
 COMMAND_STATUSES = {"pending_approval", "queued", "sent", "acked", "done", "error", "rejected", "timeout"}
 
 # Richer realtime lifecycle (dual-written as `lifecycle` on the bus). DB `status`
@@ -1363,6 +1368,56 @@ def request_command(
 # meaning "request one". It no longer queues for delivery directly — approval
 # is required first.
 queue_command = request_command
+
+
+def request_enable_firewall_command(
+    user_id: str,
+    agent_id: str,
+    *,
+    remediation_id: str = "",
+    requested_by: str = "",
+) -> dict[str, Any]:
+    """Create enable_firewall in pending_approval (never auto-executed).
+
+    Operator helper after host_firewall FAIL / remediation.recommended —
+    still requires approve_command() before the agent receives it.
+    """
+    payload: dict[str, Any] = {"action": "enable_firewall"}
+    rid = (remediation_id or "").strip()
+    if rid:
+        payload["remediation_id"] = rid[:80]
+    return request_command(
+        user_id,
+        agent_id,
+        kind="enable_firewall",
+        payload=payload,
+        requested_by=requested_by or user_id,
+    )
+
+
+def request_enable_defender_command(
+    user_id: str,
+    agent_id: str,
+    *,
+    remediation_id: str = "",
+    requested_by: str = "",
+) -> dict[str, Any]:
+    """Create enable_defender in pending_approval (never auto-executed).
+
+    Operator helper after host_defender FAIL / remediation.recommended —
+    still requires approve_command() before the agent receives it.
+    """
+    payload: dict[str, Any] = {"action": "enable_defender"}
+    rid = (remediation_id or "").strip()
+    if rid:
+        payload["remediation_id"] = rid[:80]
+    return request_command(
+        user_id,
+        agent_id,
+        kind="enable_defender",
+        payload=payload,
+        requested_by=requested_by or user_id,
+    )
 
 
 def request_agent_upgrade(user_id: str, agent_id: str, *, requested_by: str = "") -> dict[str, Any]:

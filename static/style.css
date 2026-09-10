@@ -8483,8 +8483,28 @@ a.agents-pkg-dl {
 }
 .agents-rt-strip .cc-kpi-grid {
   width: 100%;
-  margin: 0;
+  margin: 0.35rem 0 0;
   padding: 0;
+}
+
+.agent-detail-tabs {
+  margin-top: 0.25rem;
+}
+
+.agents-fleet-row:hover td {
+  background: var(--hover-fill, rgba(0, 169, 206, 0.04));
+}
+
+.btn-ghost.agents-open-detail {
+  color: inherit;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.btn-ghost.agents-open-detail:hover {
+  color: var(--wz-teal, #00a9ce);
+  text-decoration: underline;
 }
 
 /* ============================================================

@@ -1,8 +1,10 @@
 """Seeded configuration baselines (code/JSON) for observe/drift.
 
-Control IDs are explicit and must match entries in
-``app.services.control_testing._CONTROL_TEST_MAP`` (CMMC L2 / NIST 800-171
-host mappings). This is not a certification checklist.
+Control IDs for live-tested settings must match entries in
+``app.controls.test_registry`` / derived ``_CONTROL_TEST_MAP``
+(CMMC L2 / NIST 800-171 host mappings). Disk encryption is observed from
+agent ``disk_encryption_status`` when collected — UNKNOWN / absent when not;
+never invent BitLocker PASS. This is not a certification checklist.
 """
 
 from __future__ import annotations
@@ -22,6 +24,11 @@ _CTRL_DEFENDER = [
 _CTRL_SSH_ROOT = [
     {"framework_id": "cmmc_l2", "control_id": "AC.L2-3.1.5"},
     {"framework_id": "nist_800_171", "control_id": "3.1.5"},
+]
+# Baseline-only refs (no live test yet) — catalog crypto-at-rest practices.
+_CTRL_DISK_ENCRYPTION = [
+    {"framework_id": "cmmc_l2", "control_id": "SC.L2-3.13.16"},
+    {"framework_id": "nist_800_171", "control_id": "3.13.16"},
 ]
 
 BASELINE_CMMC_WINDOWS_WORKSTATION: dict[str, Any] = {
@@ -47,6 +54,17 @@ BASELINE_CMMC_WINDOWS_WORKSTATION: dict[str, Any] = {
             "source_keys": ["defender_status"],
             "control_ids": list(_CTRL_DEFENDER),
             "summary": "Windows Defender / antivirus protection must be enabled",
+        },
+        "disk_encryption.enabled": {
+            "expected": True,
+            "os_scope": "any",
+            "source_keys": ["disk_encryption_status"],
+            "control_ids": list(_CTRL_DISK_ENCRYPTION),
+            "summary": (
+                "Full-disk encryption (BitLocker/LUKS/FileVault) when collected; "
+                "UNKNOWN when agent could not collect — never assume PASS"
+            ),
+            "allow_unknown": True,
         },
         "ssh.permit_root_login": {
             "expected": False,

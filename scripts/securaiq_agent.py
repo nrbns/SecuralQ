@@ -41,7 +41,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-AGENT_VERSION = "1.1.1"
+AGENT_VERSION = "1.1.4"
 DEFAULT_INTERVAL_SEC = 60
 SENTINEL_VERSION = "1.0.0"
 DEFAULT_SENTINEL_INTERVAL_SEC = 10
@@ -306,6 +306,16 @@ def _canonical_command_bytes(cmd: dict, *, agent_id: str) -> bytes:
         "nonce": str(cmd.get("nonce") or ""),
         "event_id": str(cmd.get("event_id") or ""),
     }
+    if cmd.get("issued_at") is not None:
+        try:
+            body["issued_at"] = float(cmd.get("issued_at"))
+        except (TypeError, ValueError):
+            pass
+    if cmd.get("expires_at") is not None:
+        try:
+            body["expires_at"] = float(cmd.get("expires_at"))
+        except (TypeError, ValueError):
+            pass
     return json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
@@ -352,10 +362,29 @@ def _command_signatures_ok(cmd: dict, *, agent_id: str) -> bool:
     )
     cmd_require = bool(cmd.get("require_verify"))
     require = env_require or cmd_require
+
+    # Seal expiry is inside the signature when issued_at/expires_at are present.
+    raw_exp = cmd.get("expires_at")
+    if raw_exp is not None:
+        try:
+            if time.time() > float(raw_exp) + 30.0:
+                print(
+                    f"[securaiq-agent] command {cmd.get('id')} seal expired — refusing",
+                    file=sys.stderr,
+                )
+                return False
+        except (TypeError, ValueError):
+            print(
+                f"[securaiq-agent] command {cmd.get('id')} has invalid expires_at — refusing",
+                file=sys.stderr,
+            )
+            return False
+
     sig_ed = str(cmd.get("signature_ed25519") or "").strip()
+    # Prefer install-time pinned public key over TOFU embed when set.
     pub = str(
-        cmd.get("signing_public_key")
-        or os.environ.get("SECURAIQ_AGENT_ED25519_PUBLIC_KEY")
+        os.environ.get("SECURAIQ_AGENT_ED25519_PUBLIC_KEY")
+        or cmd.get("signing_public_key")
         or ""
     ).strip()
     signing_key = (os.environ.get("SECURAIQ_AGENT_SIGNING_KEY") or "").strip()
@@ -930,6 +959,374 @@ def _startup_apps() -> dict:
     return {"collected": False, "reason": f"Unsupported OS '{system}'", "items": []}
 
 
+def _hardware() -> dict:
+    """Coarse host hardware inventory — stdlib first; never invent specs.
+
+    Fields are best-effort and capped. Missing elevation / modules yield
+    collected=False with a real reason rather than zeros that look like data.
+    """
+    system = platform.system().lower()
+    out: dict = {
+        "collected": True,
+        "reason": "",
+        "arch": (platform.machine() or "")[:64],
+        "processor": (platform.processor() or "")[:120],
+        "cpu_count": os.cpu_count(),
+        "memory_mb": None,
+        "disk_root_gb": None,
+        "manufacturer": "",
+        "model": "",
+    }
+    try:
+        import shutil
+
+        usage = shutil.disk_usage(os.path.abspath(os.sep))
+        out["disk_root_gb"] = round(usage.total / (1024**3), 1)
+    except Exception:
+        pass
+
+    if system == "linux":
+        try:
+            with open("/proc/meminfo", "r", encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    if line.startswith("MemTotal:"):
+                        kb = int(line.split()[1])
+                        out["memory_mb"] = kb // 1024
+                        break
+        except Exception as exc:
+            if out["disk_root_gb"] is None and not out["arch"]:
+                return {
+                    "collected": False,
+                    "reason": f"Could not read hardware signals: {exc}",
+                    "arch": "",
+                    "processor": "",
+                    "cpu_count": None,
+                    "memory_mb": None,
+                    "disk_root_gb": None,
+                }
+        # Optional DMI product strings (may be empty in VMs / containers).
+        for key, path in (
+            ("manufacturer", "/sys/class/dmi/id/sys_vendor"),
+            ("model", "/sys/class/dmi/id/product_name"),
+        ):
+            try:
+                if os.path.isfile(path):
+                    out[key] = open(path, "r", encoding="utf-8", errors="replace").read().strip()[:80]
+            except Exception:
+                pass
+        return out
+
+    if system == "windows":
+        ok, raw = _run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                (
+                    "Get-CimInstance Win32_ComputerSystem | "
+                    "Select-Object Manufacturer,Model,TotalPhysicalMemory,NumberOfLogicalProcessors | "
+                    "ConvertTo-Json -Compress"
+                ),
+            ],
+            timeout=15,
+        )
+        if ok and raw.strip():
+            try:
+                data = json.loads(raw)
+                out["manufacturer"] = str(data.get("Manufacturer") or "")[:80]
+                out["model"] = str(data.get("Model") or "")[:80]
+                mem = data.get("TotalPhysicalMemory")
+                if mem is not None:
+                    out["memory_mb"] = int(int(mem) // (1024 * 1024))
+                cpus = data.get("NumberOfLogicalProcessors")
+                if cpus is not None:
+                    out["cpu_count"] = int(cpus)
+            except Exception:
+                out["reason"] = "Parsed partial hardware; CIM JSON incomplete"
+        else:
+            # Stdlib fields alone still count as collected when arch/cpu known.
+            if not out["arch"] and not out["cpu_count"]:
+                return {
+                    "collected": False,
+                    "reason": "Win32_ComputerSystem unavailable and no stdlib arch/cpu",
+                    "arch": "",
+                    "processor": "",
+                    "cpu_count": None,
+                    "memory_mb": None,
+                    "disk_root_gb": out.get("disk_root_gb"),
+                }
+        return out
+
+    if system == "darwin":
+        # Honest minimal: stdlib + disk; no sysctl dependency required.
+        return out
+
+    return {
+        "collected": False,
+        "reason": f"Unsupported OS '{system}'",
+        "arch": out["arch"],
+        "processor": out["processor"],
+        "cpu_count": out["cpu_count"],
+        "memory_mb": None,
+        "disk_root_gb": out.get("disk_root_gb"),
+    }
+
+
+def _local_groups() -> dict:
+    """Local groups + member names (no password material). Caps list size."""
+    system = platform.system().lower()
+    if system in ("linux", "darwin"):
+        try:
+            with open("/etc/group", "r", encoding="utf-8", errors="replace") as fh:
+                lines = fh.readlines()
+        except Exception as exc:
+            return {"collected": False, "reason": f"Could not read /etc/group: {exc}", "items": []}
+        items = []
+        for line in lines:
+            bits = line.strip().split(":")
+            if len(bits) < 4:
+                continue
+            name, _pw, gid_s, members_s = bits[0], bits[1], bits[2], bits[3]
+            try:
+                gid = int(gid_s)
+            except ValueError:
+                continue
+            members = [m for m in members_s.split(",") if m][:20]
+            items.append({"name": name, "gid": gid, "members": members})
+            if len(items) >= 80:
+                break
+        return {"collected": True, "reason": "", "items": items}
+
+    if system == "windows":
+        ok, out = _run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                (
+                    "Get-LocalGroup | Select-Object -First 40 Name,SID | "
+                    "ForEach-Object { "
+                    "$m = @(); try { $m = @(Get-LocalGroupMember -Group $_.Name -ErrorAction SilentlyContinue | "
+                    "Select-Object -First 15 -ExpandProperty Name) } catch {}; "
+                    "[pscustomobject]@{ name = $_.Name; members = $m } "
+                    "} | ConvertTo-Json -Compress"
+                ),
+            ],
+            timeout=25,
+        )
+        if not ok or not out.strip():
+            return {
+                "collected": False,
+                "reason": "Get-LocalGroup unavailable or failed (needs LocalAccounts module / elevation)",
+                "items": [],
+            }
+        try:
+            data = json.loads(out)
+            rows = data if isinstance(data, list) else [data]
+            items = []
+            for r in rows:
+                name = r.get("name") or r.get("Name")
+                if not name:
+                    continue
+                members = r.get("members") or r.get("Members") or []
+                if not isinstance(members, list):
+                    members = [members] if members else []
+                items.append(
+                    {
+                        "name": str(name)[:80],
+                        "members": [str(m)[:80] for m in members if m][:15],
+                    }
+                )
+            return {"collected": True, "reason": "", "items": items}
+        except Exception:
+            return {"collected": False, "reason": "Could not parse Get-LocalGroup output", "items": []}
+
+    return {"collected": False, "reason": f"Unsupported OS '{system}'", "items": []}
+
+
+def _network() -> dict:
+    """Network interfaces — name, IPv4 addresses, MAC when available."""
+    system = platform.system().lower()
+    if system == "linux":
+        base = "/sys/class/net"
+        if not os.path.isdir(base):
+            return {"collected": False, "reason": "/sys/class/net not available", "interfaces": []}
+        # Prefer `ip -j` when present (one call); else walk sysfs + `ip -4 -o addr`.
+        ok, raw = _run(["ip", "-j", "addr"], timeout=8)
+        interfaces: list[dict] = []
+        if ok and raw.strip():
+            try:
+                data = json.loads(raw)
+                for row in data if isinstance(data, list) else []:
+                    name = str(row.get("ifname") or "")[:40]
+                    if not name:
+                        continue
+                    mac = str(row.get("address") or "")[:32]
+                    ipv4 = []
+                    for addr in row.get("addr_info") or []:
+                        if addr.get("family") == "inet" and addr.get("local"):
+                            ipv4.append(str(addr["local"])[:45])
+                    interfaces.append(
+                        {
+                            "name": name,
+                            "mac": mac if mac and mac != "00:00:00:00:00:00" else "",
+                            "ipv4": ipv4[:8],
+                        }
+                    )
+                    if len(interfaces) >= 32:
+                        break
+                return {
+                    "collected": True,
+                    "reason": "",
+                    "interfaces": interfaces,
+                    "primary_ip": _primary_ip(),
+                }
+            except Exception:
+                pass
+        try:
+            names = sorted(os.listdir(base))[:32]
+        except Exception as exc:
+            return {"collected": False, "reason": f"Could not list interfaces: {exc}", "interfaces": []}
+        for name in names:
+            iface = {"name": name, "mac": "", "ipv4": []}
+            try:
+                mac_path = os.path.join(base, name, "address")
+                if os.path.isfile(mac_path):
+                    mac = open(mac_path, "r", encoding="utf-8", errors="replace").read().strip()
+                    if mac and mac != "00:00:00:00:00:00":
+                        iface["mac"] = mac[:32]
+            except Exception:
+                pass
+            ok2, out2 = _run(["ip", "-4", "-o", "addr", "show", "dev", name], timeout=5)
+            if ok2 and out2.strip():
+                for line in out2.splitlines():
+                    bits = line.split()
+                    # format: idx name family addr/mask ...
+                    if len(bits) >= 4 and bits[2] == "inet":
+                        iface["ipv4"].append(bits[3].split("/")[0][:45])
+            interfaces.append(iface)
+        return {
+            "collected": True,
+            "reason": "",
+            "interfaces": interfaces,
+            "primary_ip": _primary_ip(),
+        }
+
+    if system == "windows":
+        ok, raw = _run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                (
+                    "Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | "
+                    "Where-Object { $_.IPAddress -and $_.InterfaceAlias } | "
+                    "Select-Object -First 40 InterfaceAlias,IPAddress | ConvertTo-Json -Compress"
+                ),
+            ],
+            timeout=20,
+        )
+        if not ok or not raw.strip():
+            return {
+                "collected": False,
+                "reason": "Get-NetIPAddress unavailable or failed",
+                "interfaces": [],
+                "primary_ip": _primary_ip(),
+            }
+        try:
+            data = json.loads(raw)
+            rows = data if isinstance(data, list) else [data]
+            by_name: dict[str, dict] = {}
+            for r in rows:
+                name = str(r.get("InterfaceAlias") or "")[:40]
+                ip = str(r.get("IPAddress") or "")[:45]
+                if not name or not ip:
+                    continue
+                slot = by_name.setdefault(name, {"name": name, "mac": "", "ipv4": []})
+                if ip not in slot["ipv4"] and len(slot["ipv4"]) < 8:
+                    slot["ipv4"].append(ip)
+            # Best-effort MACs
+            ok_m, raw_m = _run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    (
+                        "Get-NetAdapter -ErrorAction SilentlyContinue | "
+                        "Select-Object -First 40 Name,MacAddress | ConvertTo-Json -Compress"
+                    ),
+                ],
+                timeout=15,
+            )
+            if ok_m and raw_m.strip():
+                try:
+                    macs = json.loads(raw_m)
+                    mac_rows = macs if isinstance(macs, list) else [macs]
+                    for mr in mac_rows:
+                        n = str(mr.get("Name") or "")[:40]
+                        mac = str(mr.get("MacAddress") or "").replace("-", ":")[:32]
+                        if n in by_name and mac:
+                            by_name[n]["mac"] = mac
+                except Exception:
+                    pass
+            return {
+                "collected": True,
+                "reason": "",
+                "interfaces": list(by_name.values())[:32],
+                "primary_ip": _primary_ip(),
+            }
+        except Exception:
+            return {
+                "collected": False,
+                "reason": "Could not parse Get-NetIPAddress output",
+                "interfaces": [],
+                "primary_ip": _primary_ip(),
+            }
+
+    if system == "darwin":
+        ok, raw = _run(["ifconfig", "-a"], timeout=10)
+        if not ok or not raw.strip():
+            return {
+                "collected": False,
+                "reason": "ifconfig unavailable or failed",
+                "interfaces": [],
+                "primary_ip": _primary_ip(),
+            }
+        interfaces = []
+        current: dict | None = None
+        for line in raw.splitlines():
+            if line and not line.startswith("\t") and not line.startswith(" "):
+                name = line.split(":", 1)[0].strip()[:40]
+                if current:
+                    interfaces.append(current)
+                current = {"name": name, "mac": "", "ipv4": []}
+                if len(interfaces) >= 32:
+                    break
+            elif current is not None:
+                s = line.strip()
+                if s.startswith("ether "):
+                    current["mac"] = s.split()[1][:32]
+                elif s.startswith("inet "):
+                    parts = s.split()
+                    if len(parts) >= 2 and len(current["ipv4"]) < 8:
+                        current["ipv4"].append(parts[1][:45])
+        if current and len(interfaces) < 32:
+            interfaces.append(current)
+        return {
+            "collected": True,
+            "reason": "",
+            "interfaces": interfaces,
+            "primary_ip": _primary_ip(),
+        }
+
+    return {
+        "collected": False,
+        "reason": f"Unsupported OS '{system}'",
+        "interfaces": [],
+        "primary_ip": _primary_ip(),
+    }
+
+
 def _ssh_config() -> dict:
     """Real sshd_config hardening signals -- PermitRootLogin,
     PasswordAuthentication, PubkeyAuthentication, Port. Reads the config
@@ -1479,6 +1876,9 @@ def collect_snapshot() -> dict:
         # fabricated "clean" result. See collector docstrings above.
         "services": _collect_safe(_services, {"collected": False, "items": []}),
         "local_users": _collect_safe(_local_users, {"collected": False, "items": []}),
+        "local_groups": _collect_safe(_local_groups, {"collected": False, "items": []}),
+        "hardware": _collect_safe(_hardware, {"collected": False}),
+        "network": _collect_safe(_network, {"collected": False, "interfaces": []}),
         "firewall_status": _collect_safe(_firewall_status, {"collected": False, "enabled": None}),
         "disk_encryption_status": _collect_safe(_disk_encryption_status, {"collected": False, "encrypted": None}),
         "defender_status": _collect_safe(_defender_status, {"collected": False, "enabled": None}),
@@ -1491,9 +1891,9 @@ def collect_snapshot() -> dict:
 # Patch command execution — the agent side of the patch + verify loop.
 #
 # The server never sends an arbitrary shell string: a command is always one
-# of two known kinds -- {"kind": "patch_package", "payload": {"manager":
-# ..., "package": ...}} or {"kind": "agent_upgrade", "payload":
-# {"expected_sha256": ...}} (see execute_agent_upgrade below) -- and only
+# of known kinds -- {"kind": "patch_package", ...}, {"kind": "agent_upgrade",
+# ...}, {"kind": "enable_firewall", "payload": {}}, or
+# {"kind": "enable_defender", "payload": {}} -- and only
 # the four package managers below are ever invoked for patch_package, each
 # with the package name passed as a single subprocess argument (never
 # interpolated into a shell string), so a compromised/malicious server
@@ -1675,16 +2075,136 @@ def execute_agent_upgrade(payload: dict, *, server: str, insecure: bool = False)
     }
 
 
+def execute_enable_firewall(payload: dict | None = None) -> dict:
+    """Enable host firewall on lab/owned systems via fixed argv only.
+
+    Never interpolates untrusted strings into a shell. Windows: Set-NetFirewallProfile
+    with a fixed PowerShell -Command string. Linux: ufw enable, else report
+    firewall-cmd state honestly if enable is unavailable.
+    """
+    _ = payload  # reserved for future safe flags; ignore untrusted content
+    system = platform.system().lower()
+    if system == "windows":
+        # Fixed argv — no payload interpolation into the PowerShell string.
+        ps = (
+            "Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled True; "
+            "Get-NetFirewallProfile | Select-Object Name,Enabled | ConvertTo-Json -Compress"
+        )
+        ok, out = _run(
+            ["powershell", "-NoProfile", "-Command", ps],
+            timeout=30,
+        )
+        if not ok:
+            return {
+                "ok": False,
+                "error": "Set-NetFirewallProfile failed or unavailable (elevation may be required)",
+                "backend": "Windows Firewall",
+                "output": (out or "")[-2000:],
+            }
+        return {
+            "ok": True,
+            "backend": "Windows Firewall",
+            "note": "Enabled Domain,Public,Private profiles",
+            "output": (out or "")[-2000:],
+        }
+    if system == "linux":
+        ok, out = _run(["ufw", "--force", "enable"], timeout=30)
+        if ok:
+            return {
+                "ok": True,
+                "backend": "ufw",
+                "note": "ufw --force enable succeeded",
+                "output": (out or "")[-2000:],
+            }
+        # Honest fallback: report firewalld state; do not invent enable success.
+        state_ok, state_out = _run(["firewall-cmd", "--state"], timeout=8)
+        if state_ok:
+            return {
+                "ok": False,
+                "error": (
+                    "ufw enable failed; firewalld is present "
+                    f"(state={state_out.strip()!r}) but auto-enable via firewall-cmd "
+                    "is not performed by this agent — enable manually or install ufw"
+                ),
+                "backend": "firewalld",
+                "firewall_state": state_out.strip(),
+            }
+        return {
+            "ok": False,
+            "error": (
+                "Could not enable firewall: ufw enable failed and firewall-cmd "
+                "unavailable — enable manually on this host"
+            ),
+            "backend": None,
+            "output": (out or "")[-1000:],
+        }
+    if system == "darwin":
+        return {
+            "ok": False,
+            "error": "enable_firewall is not automated on macOS — enable Application Firewall manually",
+            "backend": "pf/ALF",
+        }
+    return {"ok": False, "error": f"Unsupported OS '{system}' for enable_firewall"}
+
+
+def execute_enable_defender(payload: dict | None = None) -> dict:
+    """Enable Windows Defender realtime protection via fixed argv only.
+
+    Never interpolates untrusted strings into a shell. Windows: Set-MpPreference
+    -DisableRealtimeMonitoring $false. Non-Windows: honest not supported.
+    """
+    _ = payload  # reserved for future safe flags; ignore untrusted content
+    system = platform.system().lower()
+    if system != "windows":
+        return {
+            "ok": False,
+            "error": (
+                f"enable_defender is not supported on {system} — "
+                "Microsoft Defender realtime preference is Windows-only"
+            ),
+            "backend": None,
+        }
+    # Fixed argv — no payload interpolation into the PowerShell string.
+    ps = (
+        "Set-MpPreference -DisableRealtimeMonitoring $false; "
+        "Get-MpComputerStatus | Select-Object AntivirusEnabled,"
+        "RealTimeProtectionEnabled,AntivirusSignatureAge | ConvertTo-Json -Compress"
+    )
+    ok, out = _run(
+        ["powershell", "-NoProfile", "-Command", ps],
+        timeout=30,
+    )
+    if not ok:
+        return {
+            "ok": False,
+            "error": (
+                "Set-MpPreference failed or unavailable "
+                "(elevation may be required, Defender module missing, "
+                "or a third-party AV has taken over)"
+            ),
+            "backend": "Microsoft Defender",
+            "output": (out or "")[-2000:],
+        }
+    return {
+        "ok": True,
+        "backend": "Microsoft Defender",
+        "note": "Set-MpPreference -DisableRealtimeMonitoring $false applied",
+        "output": (out or "")[-2000:],
+    }
+
+
 def send_command_result(server: str, token: str, command_id: str, status: str, result: dict, *, insecure: bool = False, timeout: float = 15.0) -> dict:
     url = server.rstrip("/") + f"/api/agents/commands/{command_id}/result"
     data = json.dumps({"status": status, "result": result}).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}",
+        "User-Agent": f"SecuraIQ-Agent/{AGENT_VERSION}",
+    }
+    headers.update(_replay_headers(token, data))
     req = urllib.request.Request(
         url, data=data, method="POST",
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {token}",
-            "User-Agent": f"SecuraIQ-Agent/{AGENT_VERSION}",
-        },
+        headers=headers,
     )
     ctx = None
     if url.startswith("https://") and insecure:
@@ -1728,6 +2248,14 @@ def run_commands(server: str, token: str, commands: list, *, insecure: bool = Fa
             result = execute_agent_upgrade(cmd.get("payload") or {}, server=server, insecure=insecure)
             upgraded = upgraded or bool(result.get("ok"))
             summary = result.get("note") or result.get("error") or "?"
+        elif kind == "enable_firewall":
+            print(f"[securaiq-agent] running command {cid}: enable_firewall")
+            result = execute_enable_firewall(cmd.get("payload") or {})
+            summary = result.get("note") or result.get("error") or "?"
+        elif kind == "enable_defender":
+            print(f"[securaiq-agent] running command {cid}: enable_defender")
+            result = execute_enable_defender(cmd.get("payload") or {})
+            summary = result.get("note") or result.get("error") or "?"
         else:
             send_command_result(server, token, cid, "error", {"error": f"Unknown command kind '{kind}'"}, insecure=insecure)
             continue
@@ -1743,12 +2271,26 @@ def run_commands(server: str, token: str, commands: list, *, insecure: bool = Fa
 
 
 def _replay_headers(token: str, body: bytes) -> dict:
-    """Timestamp + nonce so the server can reject replayed check-ins."""
-    _ = token, body
-    return {
-        "X-SecuraIQ-Ts": str(int(time.time())),
-        "X-SecuraIQ-Nonce": secrets.token_hex(16),
+    """Timestamp + nonce + request HMAC so the server can reject replayed check-ins.
+
+    ``X-SecuraIQ-Sig`` = HMAC-SHA256(agent_key, ``ts.nonce.sha256(body)``) —
+    matches ``app.agent_auth.sign_payload``.
+    """
+    ts = str(int(time.time()))
+    nonce = secrets.token_hex(16)
+    headers = {
+        "X-SecuraIQ-Ts": ts,
+        "X-SecuraIQ-Nonce": nonce,
     }
+    parts = (token or "").split(".", 1)
+    agent_key = parts[1] if len(parts) == 2 else ""
+    if agent_key:
+        digest = hashlib.sha256(body or b"").hexdigest()
+        msg = f"{ts}.{nonce}.{digest}".encode("utf-8")
+        headers["X-SecuraIQ-Sig"] = hmac.new(
+            agent_key.encode("utf-8"), msg, hashlib.sha256
+        ).hexdigest()
+    return headers
 
 
 def send_checkin(server: str, token: str, payload: dict, *, insecure: bool = False, timeout: float = 15.0) -> dict:
@@ -1785,15 +2327,17 @@ def gateway_wait(
     """Long-poll the Agent Gateway for near-instant command delivery."""
     url = server.rstrip("/") + "/api/agents/gateway/wait"
     data = json.dumps({"timeout_sec": timeout_sec, "limit": 5}).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}",
+        "User-Agent": f"SecuraIQ-Agent/{AGENT_VERSION}",
+    }
+    headers.update(_replay_headers(token, data))
     req = urllib.request.Request(
         url,
         data=data,
         method="POST",
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {token}",
-            "User-Agent": f"SecuraIQ-Agent/{AGENT_VERSION}",
-        },
+        headers=headers,
     )
     ctx = None
     if url.startswith("https://") and insecure:
@@ -1807,13 +2351,16 @@ def gateway_wait(
 
 def send_command_ack(server: str, token: str, command_id: str, *, insecure: bool = False) -> dict:
     url = server.rstrip("/") + f"/api/agents/commands/{command_id}/ack"
+    data = b"{}"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}",
+        "User-Agent": f"SecuraIQ-Agent/{AGENT_VERSION}",
+    }
+    headers.update(_replay_headers(token, data))
     req = urllib.request.Request(
-        url, data=b"{}", method="POST",
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {token}",
-            "User-Agent": f"SecuraIQ-Agent/{AGENT_VERSION}",
-        },
+        url, data=data, method="POST",
+        headers=headers,
     )
     ctx = None
     if url.startswith("https://") and insecure:

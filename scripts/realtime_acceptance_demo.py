@@ -1,7 +1,20 @@
 """REALTIME v1 RT-10/11 acceptance harness — lab only.
 
-Simulates the master-plan firewall fail → evidence → pass chain **without**
-changing a real Windows firewall.
+Simulates the master-plan firewall fail → evidence → risk → POA&M →
+approved enable_firewall → pass chain **without** changing a real Windows firewall.
+
+Local mode asserts the full in-process closed loop:
+
+  1. Firewall OFF → host control FAIL
+  2. Evidence created (observed)
+  3. Compliance / control.failed event published (capture bus)
+  4. POA&M / gap_remediation OPEN (or rem exists)
+  5. risk event published (and risk.changed if available)
+  6. enable_firewall pending → approve → lab-simulated agent result
+  7. Firewall ON → PASS (synthetic payload)
+  8. Evidence PASS
+  9. POA&M CLOSED / rem done
+ 10. risk reduction hint / risk.changed
 
 Modes:
   --local (default)  In-process via evaluate_agent_host_controls + temp DB
@@ -27,15 +40,31 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 DISCLAIMER = "lab acceptance harness — not a 5k/HA proof"
+
+LOCAL_STEP_NAMES = [
+    "1_firewall_off_host_control_fail",
+    "2_evidence_created_observed",
+    "3_compliance_or_control_failed_event",
+    "4_poam_gap_remediation_open",
+    "5_risk_event_published",
+    "6_enable_firewall_command",
+    "7_firewall_on_pass",
+    "8_evidence_pass",
+    "9_poam_closed_rem_done",
+    "10_risk_reduction_hint",
+]
+# Backward-compatible alias (older tests / docs may still import this name).
+OPTIONAL_ENABLE_FW_STEP = "6_enable_firewall_command"
 
 
 @dataclass
@@ -94,11 +123,221 @@ def _fw_result(out: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
+def _event_type(evt: dict[str, Any]) -> str:
+    return str(evt.get("event_type") or evt.get("type") or "").strip().lower()
+
+
+def _event_status(evt: dict[str, Any]) -> str:
+    return str(evt.get("status") or "").strip().lower()
+
+
+def _event_test(evt: dict[str, Any]) -> str:
+    return str(evt.get("test") or "").strip()
+
+
+@contextmanager
+def _capture_bus() -> Iterator[list[dict[str, Any]]]:
+    """Record realtime_bus.publish kwargs while still invoking the real publish."""
+    import app.realtime_bus as bus
+
+    captured: list[dict[str, Any]] = []
+    orig = bus.publish
+
+    def _wrapped(event: dict[str, Any] | None = None, **kwargs: Any) -> None:
+        payload = dict(event or {})
+        payload.update(kwargs)
+        captured.append(dict(payload))
+        if event is not None:
+            return orig(event, **kwargs)
+        return orig(**kwargs)
+
+    bus.publish = _wrapped  # type: ignore[assignment]
+    try:
+        yield captured
+    finally:
+        bus.publish = orig  # type: ignore[assignment]
+
+
+def _fw_markers(agent_id: str) -> tuple[str, str]:
+    from app.controls.poam import poam_marker
+
+    return poam_marker("host_firewall", agent_id), f"host_firewall:{agent_id}"
+
+
+def _rem_matches_fw(rem: dict[str, Any], agent_id: str) -> bool:
+    marker, legacy = _fw_markers(agent_id)
+    notes = rem.get("notes") or ""
+    rec = rem.get("recommendation") or ""
+    return marker in notes or marker in rec or legacy in notes or legacy in rec
+
+
+def _list_fw_rems(user_id: str, agent_id: str, *, status: str | None = None) -> list[dict[str, Any]]:
+    from app.enterprise import list_remediations
+
+    rows = list_remediations(user_id, status=status) if status else list_remediations(user_id)
+    return [r for r in rows if _rem_matches_fw(r, agent_id)]
+
+
+def _evidence_has_status(rows: list[dict[str, Any]], *, want: str) -> bool:
+    want = want.lower()
+    for row in rows:
+        detail = row.get("detail") or {}
+        if isinstance(detail, dict) and (detail.get("status") or "").lower() == want:
+            return True
+        summary = (row.get("summary") or "").lower()
+        if f"host_firewall:{want}" in summary:
+            return True
+        if (row.get("source") or "").lower() == "observed" and want in summary:
+            return True
+    return False
+
+
+def _compliance_fail_on_bus(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for e in events:
+        et = _event_type(e)
+        test = _event_test(e)
+        if test and test != "host_firewall":
+            continue
+        if et == "control.failed":
+            out.append(e)
+            continue
+        if et in ("compliance", "control.test.completed") and _event_status(e) == "fail":
+            if not test or test == "host_firewall":
+                out.append(e)
+    return out
+
+
+def _risk_events(events: list[dict[str, Any]], *, reduction: bool = False) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for e in events:
+        et = _event_type(e)
+        if et not in ("risk", "risk.changed") and not et.startswith("risk"):
+            continue
+        test = _event_test(e)
+        if test and test != "host_firewall":
+            continue
+        if reduction:
+            hint = str(e.get("risk_hint") or e.get("hint") or "").lower()
+            reason = str(e.get("reason") or "").lower()
+            if hint == "reduction" or "pass_after_fail" in reason or et == "risk.changed":
+                out.append(e)
+        else:
+            out.append(e)
+    return out
+
+
+def _risk_changed_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [e for e in events if _event_type(e) == "risk.changed"]
+
+
+def _enable_firewall_supported() -> bool:
+    """Resolve enable_firewall after app.agents is fully initialized (avoid import-timing miss)."""
+    try:
+        import app.agents as agents_mod
+
+        kinds = getattr(agents_mod, "SUPPORTED_COMMAND_KINDS", None)
+        if kinds is None:
+            # Module still initializing — re-import attribute once package load finishes.
+            from importlib import reload
+
+            agents_mod = reload(agents_mod)
+            kinds = getattr(agents_mod, "SUPPORTED_COMMAND_KINDS", set())
+        return "enable_firewall" in kinds
+    except Exception:
+        return False
+
+
+def _run_enable_firewall_command(
+    report: AcceptanceReport,
+    *,
+    user_id: str,
+    agent_id: str,
+) -> None:
+    """Step 6 — request → approve → lab-simulated agent result for enable_firewall.
+
+    Local mode does not mutate a real host firewall; the next step still
+    evaluates a synthetic ON payload (honest lab verify).
+    """
+    step_name = LOCAL_STEP_NAMES[5]  # 6_enable_firewall_command
+    if not _enable_firewall_supported():
+        report.steps.append(
+            StepResult(
+                name=step_name,
+                ok=False,
+                detail="FAIL: enable_firewall missing from SUPPORTED_COMMAND_KINDS",
+                data={"skipped": False, "supported": False},
+            )
+        )
+        return
+
+    from app.agents import approve_command, report_command_result, request_enable_firewall_command
+    from app.db import get_conn
+
+    try:
+        cmd = request_enable_firewall_command(
+            user_id,
+            agent_id,
+            requested_by=user_id,
+        )
+        cid = str(cmd.get("id") or "")
+        pending_ok = bool(cid) and (cmd.get("status") or "") == "pending_approval"
+        approved = approve_command(user_id, agent_id, cid, approver_id=user_id)
+        approve_ok = (approved.get("status") or "") == "queued"
+        # Simulate dispatch so agent result can be recorded (queued → sent).
+        get_conn().execute(
+            "UPDATE securaiq_agent_commands SET status = 'sent' WHERE id = ?",
+            (cid,),
+        )
+        get_conn().commit()
+        result = report_command_result(
+            agent_id,
+            cid,
+            status="done",
+            result={"ok": True, "summary": "lab simulated enable_firewall", "lab": True},
+        )
+        result_ok = bool(result.get("ok"))
+        row = get_conn().execute(
+            "SELECT status FROM securaiq_agent_commands WHERE id = ?",
+            (cid,),
+        ).fetchone()
+        final_status = (dict(row).get("status") if row else "") or ""
+        done_ok = final_status == "done"
+        step_ok = pending_ok and approve_ok and result_ok and done_ok
+        report.steps.append(
+            StepResult(
+                name=step_name,
+                ok=step_ok,
+                detail=(
+                    f"pending={pending_ok} approved={approve_ok} "
+                    f"result_ok={result_ok} status={final_status!r}"
+                ),
+                data={
+                    "command_id": cid,
+                    "pending_ok": pending_ok,
+                    "approve_ok": approve_ok,
+                    "result_ok": result_ok,
+                    "final_status": final_status,
+                    "lab_simulated_agent_result": True,
+                },
+            )
+        )
+    except Exception as exc:
+        report.steps.append(
+            StepResult(
+                name=step_name,
+                ok=False,
+                detail=f"enable_firewall loop error: {exc}"[:240],
+            )
+        )
+
+
 def run_local_chain(user_id: str, agent_id: str) -> AcceptanceReport:
-    """Core FAIL → evidence → PASS path using evaluate_agent_host_controls.
+    """Full FAIL → evidence → bus → POA&M → risk → approve enable_firewall → PASS.
 
     Caller must have already pointed the app at an isolated DB (test fixture
-    or CLI temp dir). No network.
+    or CLI temp dir). No network. Local PASS uses a synthetic ON payload
+    (does not mutate a real Windows/Linux firewall).
     """
     from app.services.control_testing import evaluate_agent_host_controls
     from app.services.evidence import get_evidence_for
@@ -106,17 +345,17 @@ def run_local_chain(user_id: str, agent_id: str) -> AcceptanceReport:
     report = AcceptanceReport(mode="local")
     disabled = firewall_disabled_payload()
     enabled = firewall_enabled_payload()
+    entity_id = f"{agent_id}:host_firewall"
 
-    # Step 1 — firewall disabled → compliance FAIL
-    out_fail = evaluate_agent_host_controls(user_id, agent_id, disabled, asset_id="")
+    with _capture_bus() as bus_fail:
+        out_fail = evaluate_agent_host_controls(user_id, agent_id, disabled, asset_id="")
     fw_fail = _fw_result(out_fail) or {}
-    fail_ok = (
-        bool(out_fail.get("ok"))
-        and (fw_fail.get("status") or "").lower() == "fail"
-    )
+
+    # 1 — Firewall OFF → host control FAIL
+    fail_ok = bool(out_fail.get("ok")) and (fw_fail.get("status") or "").lower() == "fail"
     report.steps.append(
         StepResult(
-            name="firewall_disabled_compliance_fail",
+            name=LOCAL_STEP_NAMES[0],
             ok=fail_ok,
             detail=f"status={fw_fail.get('status')!r} summary={fw_fail.get('summary') or ''}"[:240],
             data={
@@ -124,53 +363,116 @@ def run_local_chain(user_id: str, agent_id: str) -> AcceptanceReport:
                 "firewall_status": fw_fail.get("status"),
                 "events": out_fail.get("events") or [],
                 "evidence_ids": out_fail.get("evidence_ids") or [],
+                "remediation_id": out_fail.get("remediation_id"),
             },
         )
     )
 
-    # Step 2 — evidence recorded / compliance event published
-    trail = get_evidence_for(
-        user_id,
-        entity_type="agent_host_control",
-        entity_id=f"{agent_id}:host_firewall",
-        limit=10,
+    # 2 — Evidence created (observed)
+    trail_fail = get_evidence_for(
+        user_id, entity_type="agent_host_control", entity_id=entity_id, limit=20
     )
-    compliance_events = [
-        e
-        for e in (out_fail.get("events") or [])
-        if e.get("type") == "compliance" and e.get("test") == "host_firewall"
-    ]
-    evidence_ok = bool(trail) and (
-        bool(out_fail.get("evidence_ids")) or (trail[0].get("source") == "observed")
+    observed = any((r.get("source") or "").lower() == "observed" for r in trail_fail)
+    evidence_fail_ok = bool(trail_fail) and (
+        observed or bool(out_fail.get("evidence_ids")) or _evidence_has_status(trail_fail, want="fail")
     )
-    events_ok = any((e.get("status") or "").lower() == "fail" for e in compliance_events)
-    step2_ok = evidence_ok and events_ok
     report.steps.append(
         StepResult(
-            name="evidence_and_compliance_event",
-            ok=step2_ok,
+            name=LOCAL_STEP_NAMES[1],
+            ok=evidence_fail_ok,
             detail=(
-                f"evidence_rows={len(trail)} evidence_ids={len(out_fail.get('evidence_ids') or [])} "
-                f"compliance_fail_events={sum(1 for e in compliance_events if (e.get('status') or '').lower() == 'fail')}"
+                f"rows={len(trail_fail)} observed={observed} "
+                f"evidence_ids={len(out_fail.get('evidence_ids') or [])}"
             ),
             data={
-                "evidence_count": len(trail),
+                "evidence_count": len(trail_fail),
+                "observed": observed,
                 "evidence_ids": out_fail.get("evidence_ids") or [],
-                "compliance_events": compliance_events,
             },
         )
     )
 
-    # Step 3 — firewall enabled → PASS
-    out_pass = evaluate_agent_host_controls(user_id, agent_id, enabled, asset_id="")
-    fw_pass = _fw_result(out_pass) or {}
-    pass_ok = (
-        bool(out_pass.get("ok"))
-        and (fw_pass.get("status") or "").lower() == "pass"
-    )
+    # 3 — Compliance / control.failed on bus
+    bus_comp = _compliance_fail_on_bus(bus_fail)
+    out_comp = [
+        e
+        for e in (out_fail.get("events") or [])
+        if e.get("type") == "compliance"
+        and e.get("test") == "host_firewall"
+        and (e.get("status") or "").lower() == "fail"
+    ]
+    step3_ok = bool(bus_comp) or bool(out_comp)
     report.steps.append(
         StepResult(
-            name="firewall_enabled_compliance_pass",
+            name=LOCAL_STEP_NAMES[2],
+            ok=step3_ok,
+            detail=(
+                f"bus_compliance_or_control_failed={len(bus_comp)} "
+                f"evaluator_compliance_fail={len(out_comp)}"
+            ),
+            data={
+                "bus_events": [
+                    {"type": _event_type(e), "status": _event_status(e), "test": _event_test(e)}
+                    for e in bus_comp[:8]
+                ],
+                "evaluator_events": out_comp,
+            },
+        )
+    )
+
+    # 4 — POA&M / gap_remediation OPEN
+    open_rems = _list_fw_rems(user_id, agent_id, status="open")
+    rem_id = out_fail.get("remediation_id") or (
+        (out_fail.get("remediation_ids") or [None])[0]
+    )
+    poam_open_ok = bool(open_rems) or bool(rem_id)
+    report.steps.append(
+        StepResult(
+            name=LOCAL_STEP_NAMES[3],
+            ok=poam_open_ok,
+            detail=f"open_fw_rems={len(open_rems)} remediation_id={rem_id!r}",
+            data={
+                "open_count": len(open_rems),
+                "remediation_id": rem_id,
+                "open_ids": [r.get("id") for r in open_rems],
+            },
+        )
+    )
+
+    # 5 — risk event (risk.changed if available)
+    bus_risk = _risk_events(bus_fail, reduction=False)
+    out_risk = [e for e in (out_fail.get("events") or []) if e.get("type") == "risk"]
+    risk_changed = _risk_changed_events(bus_fail)
+    risk_ok = bool(bus_risk) or bool(out_risk)
+    report.steps.append(
+        StepResult(
+            name=LOCAL_STEP_NAMES[4],
+            ok=risk_ok,
+            detail=(
+                f"bus_risk={len(bus_risk)} evaluator_risk={len(out_risk)} "
+                f"risk_changed={'yes' if risk_changed else 'n/a'}"
+            ),
+            data={
+                "bus_risk_count": len(bus_risk),
+                "evaluator_risk": out_risk,
+                "risk_changed_available": bool(risk_changed),
+                "risk_changed_count": len(risk_changed),
+            },
+        )
+    )
+
+    # 6 — enable_firewall request → approve → lab-simulated agent result
+    # (causal remediation before verify PASS; does not mutate a real host firewall)
+    _run_enable_firewall_command(report, user_id=user_id, agent_id=agent_id)
+
+    # 7 — Firewall ON → PASS (synthetic payload = lab verify after remediation)
+    with _capture_bus() as bus_pass:
+        out_pass = evaluate_agent_host_controls(user_id, agent_id, enabled, asset_id="")
+    fw_pass = _fw_result(out_pass) or {}
+    pass_ok = bool(out_pass.get("ok")) and (fw_pass.get("status") or "").lower() == "pass"
+    report.steps.append(
+        StepResult(
+            name=LOCAL_STEP_NAMES[6],
             ok=pass_ok,
             detail=f"status={fw_pass.get('status')!r} summary={fw_pass.get('summary') or ''}"[:240],
             data={
@@ -178,6 +480,63 @@ def run_local_chain(user_id: str, agent_id: str) -> AcceptanceReport:
                 "firewall_status": fw_pass.get("status"),
                 "events": out_pass.get("events") or [],
                 "evidence_ids": out_pass.get("evidence_ids") or [],
+            },
+        )
+    )
+
+    # 8 — Evidence PASS
+    trail_pass = get_evidence_for(
+        user_id, entity_type="agent_host_control", entity_id=entity_id, limit=20
+    )
+    evidence_pass_ok = _evidence_has_status(trail_pass, want="pass")
+    report.steps.append(
+        StepResult(
+            name=LOCAL_STEP_NAMES[7],
+            ok=evidence_pass_ok,
+            detail=f"rows={len(trail_pass)} has_pass={evidence_pass_ok}",
+            data={"evidence_count": len(trail_pass), "has_pass": evidence_pass_ok},
+        )
+    )
+
+    # 9 — POA&M CLOSED / rem done
+    still_open = _list_fw_rems(user_id, agent_id, status="open")
+    done_rems = _list_fw_rems(user_id, agent_id, status="done")
+    had_open = bool(open_rems) or bool(rem_id)
+    poam_closed_ok = had_open and not still_open
+    report.steps.append(
+        StepResult(
+            name=LOCAL_STEP_NAMES[8],
+            ok=poam_closed_ok,
+            detail=f"still_open={len(still_open)} done={len(done_rems)} had_open={had_open}",
+            data={
+                "still_open": len(still_open),
+                "done_count": len(done_rems),
+                "done_ids": [r.get("id") for r in done_rems],
+            },
+        )
+    )
+
+    # 10 — risk reduction hint / risk.changed
+    bus_reduce = _risk_events(bus_pass, reduction=True)
+    out_reduce = [
+        e
+        for e in (out_pass.get("events") or [])
+        if e.get("type") == "risk" and (e.get("hint") or "").lower() == "reduction"
+    ]
+    risk_changed_pass = _risk_changed_events(bus_pass)
+    reduce_ok = bool(bus_reduce) or bool(out_reduce) or bool(risk_changed_pass)
+    report.steps.append(
+        StepResult(
+            name=LOCAL_STEP_NAMES[9],
+            ok=reduce_ok,
+            detail=(
+                f"bus_reduction={len(bus_reduce)} evaluator_reduction={len(out_reduce)} "
+                f"risk_changed={'yes' if risk_changed_pass else 'n/a'}"
+            ),
+            data={
+                "bus_reduction": len(bus_reduce),
+                "evaluator_events": out_reduce,
+                "risk_changed_available": bool(risk_changed_pass),
             },
         )
     )

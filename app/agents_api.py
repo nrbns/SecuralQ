@@ -8,9 +8,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import FileResponse, PlainTextResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from app.agent_auth import parse_agent_bearer, verify_replay_and_signature
 from app.agents import (
@@ -36,6 +36,8 @@ from app.agents import (
     report_command_result,
     request_agent_upgrade,
     request_command,
+    request_enable_defender_command,
+    request_enable_firewall_command,
     revoke_agent,
 )
 from app.auth import AuthUser
@@ -147,6 +149,9 @@ class CheckinPayload(BaseModel):
     # the UI treats "no such key" the same as "collected: false".
     services: dict[str, Any] = Field(default_factory=dict)
     local_users: dict[str, Any] = Field(default_factory=dict)
+    local_groups: dict[str, Any] = Field(default_factory=dict)
+    hardware: dict[str, Any] = Field(default_factory=dict)
+    network: dict[str, Any] = Field(default_factory=dict)
     firewall_status: dict[str, Any] = Field(default_factory=dict)
     disk_encryption_status: dict[str, Any] = Field(default_factory=dict)
     defender_status: dict[str, Any] = Field(default_factory=dict)
@@ -614,15 +619,23 @@ async def api_delete_agent(agent_id: str, user: Annotated[AuthUser, Depends(requ
 
 @router.post("/checkin")
 async def api_agent_checkin(
-    payload: CheckinPayload,
+    request: Request,
     authorization: Annotated[str | None, Header(alias="Authorization")] = None,
     x_securaiq_ts: Annotated[str | None, Header(alias="X-SecuraIQ-Ts")] = None,
     x_securaiq_nonce: Annotated[str | None, Header(alias="X-SecuraIQ-Nonce")] = None,
     x_securaiq_sig: Annotated[str | None, Header(alias="X-SecuraIQ-Sig")] = None,
 ):
     """Real telemetry check-in from an installed agent. Agent-token auth only
-    (no user session) — this is what runs unattended on a monitored server."""
-    body = payload.model_dump_json().encode("utf-8")
+    (no user session) — this is what runs unattended on a monitored server.
+
+    Replay/HMAC verification uses the raw request body so agent-computed
+    ``X-SecuraIQ-Sig`` matches what the server checks.
+    """
+    body = await request.body()
+    try:
+        payload = CheckinPayload.model_validate_json(body or b"{}")
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
     agent = _authenticate_agent_request(
         authorization, body=body, ts=x_securaiq_ts, nonce=x_securaiq_nonce, sig=x_securaiq_sig
     )
@@ -693,6 +706,76 @@ async def api_request_agent_upgrade(agent_id: str, user: Annotated[AuthUser, Dep
     return result
 
 
+class EnableFirewallRequest(BaseModel):
+    remediation_id: str = ""
+
+
+@router.post("/{agent_id}/commands/enable-firewall")
+async def api_request_enable_firewall(
+    agent_id: str,
+    user: Annotated[AuthUser, Depends(require_user)],
+    req: EnableFirewallRequest | None = None,
+):
+    """Request enable_firewall for this agent (pending_approval only).
+
+    Lab/owned systems: operator still must approve before the agent runs
+    fixed argv firewall enable. Never auto-executed on host_firewall FAIL.
+    """
+    agent = get_agent(agent_id)
+    require_perm(user, "agent.command", org_id=agent.get("org_id") if agent else None)
+    body = req or EnableFirewallRequest()
+    try:
+        result = request_enable_firewall_command(
+            user.id,
+            agent_id,
+            remediation_id=body.remediation_id,
+            requested_by=user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    audit(
+        "agent_enable_firewall_request",
+        user.id,
+        {"agent_id": agent_id, "remediation_id": body.remediation_id or None},
+    )
+    return result
+
+
+class EnableDefenderRequest(BaseModel):
+    remediation_id: str = ""
+
+
+@router.post("/{agent_id}/commands/enable-defender")
+async def api_request_enable_defender(
+    agent_id: str,
+    user: Annotated[AuthUser, Depends(require_user)],
+    req: EnableDefenderRequest | None = None,
+):
+    """Request enable_defender for this agent (pending_approval only).
+
+    Lab/owned Windows systems: operator still must approve before the agent
+    runs fixed argv Set-MpPreference. Never auto-executed on host_defender FAIL.
+    """
+    agent = get_agent(agent_id)
+    require_perm(user, "agent.command", org_id=agent.get("org_id") if agent else None)
+    body = req or EnableDefenderRequest()
+    try:
+        result = request_enable_defender_command(
+            user.id,
+            agent_id,
+            remediation_id=body.remediation_id,
+            requested_by=user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    audit(
+        "agent_enable_defender_request",
+        user.id,
+        {"agent_id": agent_id, "remediation_id": body.remediation_id or None},
+    )
+    return result
+
+
 @router.get("/{agent_id}/commands")
 async def api_list_agent_commands(
     agent_id: str, user: Annotated[AuthUser, Depends(require_user)], limit: int = 100
@@ -748,14 +831,22 @@ async def api_reject_agent_command(
 @router.post("/commands/{command_id}/result")
 async def api_report_command_result(
     command_id: str,
-    req: CommandResultReport,
+    request: Request,
     authorization: Annotated[str | None, Header(alias="Authorization")] = None,
+    x_securaiq_ts: Annotated[str | None, Header(alias="X-SecuraIQ-Ts")] = None,
+    x_securaiq_nonce: Annotated[str | None, Header(alias="X-SecuraIQ-Nonce")] = None,
+    x_securaiq_sig: Annotated[str | None, Header(alias="X-SecuraIQ-Sig")] = None,
 ):
     """Agent reports the outcome of a command it executed — agent-token auth
     only, same as /checkin and /threat (this runs unattended, no user
     session)."""
+    body = await request.body()
+    try:
+        req = CommandResultReport.model_validate_json(body or b"{}")
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
     agent = _authenticate_agent_request(
-        authorization, body=req.model_dump_json().encode("utf-8")
+        authorization, body=body, ts=x_securaiq_ts, nonce=x_securaiq_nonce, sig=x_securaiq_sig
     )
     result = report_command_result(str(agent["id"]), command_id, status=req.status, result=req.result)
     if not result.get("ok"):
@@ -766,9 +857,16 @@ async def api_report_command_result(
 @router.post("/commands/{command_id}/ack")
 async def api_ack_command(
     command_id: str,
+    request: Request,
     authorization: Annotated[str | None, Header(alias="Authorization")] = None,
+    x_securaiq_ts: Annotated[str | None, Header(alias="X-SecuraIQ-Ts")] = None,
+    x_securaiq_nonce: Annotated[str | None, Header(alias="X-SecuraIQ-Nonce")] = None,
+    x_securaiq_sig: Annotated[str | None, Header(alias="X-SecuraIQ-Sig")] = None,
 ):
-    agent = _authenticate_agent_request(authorization, body=b"")
+    body = await request.body()
+    agent = _authenticate_agent_request(
+        authorization, body=body, ts=x_securaiq_ts, nonce=x_securaiq_nonce, sig=x_securaiq_sig
+    )
     result = ack_command(str(agent["id"]), command_id)
     if not result.get("ok"):
         raise HTTPException(status_code=404, detail=result.get("error") or "Unknown command")

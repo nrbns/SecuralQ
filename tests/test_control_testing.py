@@ -281,6 +281,11 @@ def test_evaluate_agent_host_controls_firewall_loop_and_checkin_safe(tmp_path, m
     trail = get_evidence_for(uid, entity_type="agent_host_control", entity_id=f"{aid}:host_firewall")
     assert trail
     assert trail[0]["source"] == "observed"
+    # Control Center KPIs read securaiq_control_test_results — must persist on check-in path.
+    from app.controls.results import get_results_for_control
+
+    cmmc_rows = get_results_for_control(uid, "cmmc_l2", "SC.L2-3.13.1")
+    assert any(r.get("test_name") == "host_firewall" and r.get("status") == "fail" for r in cmmc_rows)
 
     enabled = {
         **disabled,
@@ -360,4 +365,100 @@ def test_host_ssh_root_fail_opens_poam_and_pass_closes(tmp_path, monkeypatch):
     assert not any(
         marker in (r.get("notes") or "") or marker in (r.get("recommendation") or "")
         for r in list_remediations(uid, status="open")
+    )
+
+
+def test_control_test_registry_loads_firewall_bindings():
+    """Registry is the single source of truth for host_firewall control maps."""
+    from app.controls.test_registry import (
+        TEST_HOST_FIREWALL,
+        build_control_test_map,
+        get_test_entry,
+    )
+    from app.services.control_testing import _CONTROL_TEST_MAP
+
+    entry = get_test_entry(TEST_HOST_FIREWALL)
+    assert entry is not None
+    assert entry["frequency"] == "checkin"
+    assert entry["verifiability"] == "machine"
+    bindings = {(b[0], b[1]) for b in entry["control_bindings"]}
+    assert ("cis_controls", "CIS-12") in bindings
+    assert ("cmmc_l2", "SC.L2-3.13.1") in bindings
+    assert ("nist_800_171", "3.13.1") in bindings
+
+    derived = build_control_test_map()
+    assert derived[("cis_controls", "CIS-12")] == [TEST_HOST_FIREWALL]
+    assert _CONTROL_TEST_MAP[("cis_controls", "CIS-12")] == [TEST_HOST_FIREWALL]
+    assert _CONTROL_TEST_MAP[("cmmc_l2", "SC.L2-3.13.1")] == [TEST_HOST_FIREWALL]
+
+
+def test_enable_firewall_in_supported_command_kinds():
+    from app.agents import SUPPORTED_COMMAND_KINDS
+
+    assert "enable_firewall" in SUPPORTED_COMMAND_KINDS
+    assert "enable_defender" in SUPPORTED_COMMAND_KINDS
+    assert "patch_package" in SUPPORTED_COMMAND_KINDS
+    assert "agent_upgrade" in SUPPORTED_COMMAND_KINDS
+
+
+def test_enable_defender_in_supported_command_kinds():
+    from app.agents import SUPPORTED_COMMAND_KINDS, request_enable_defender_command
+
+    assert "enable_defender" in SUPPORTED_COMMAND_KINDS
+    assert callable(request_enable_defender_command)
+
+
+def test_evaluate_agent_host_controls_publishes_risk_changed_on_fail(
+    tmp_path, monkeypatch
+):
+    """Host FAIL → org risk.changed with previous_score/score_delta when known."""
+    from app.agents import enroll_agent
+    from app import event_processor
+    from app.services.control_testing import evaluate_agent_host_controls
+
+    uid = _setup(monkeypatch, tmp_path, username="host_risk_delta")
+    agent = enroll_agent(uid, name="risk-fw-agent")
+    aid = agent["agent_id"]
+
+    publishes: list[dict] = []
+    scores = iter(
+        [
+            {"score": 12.0, "band": "low", "total_open": 1},
+            {"score": 40.0, "band": "elevated", "total_open": 5},
+        ]
+    )
+    event_processor._last_org_risk_score.pop(uid, None)
+    monkeypatch.setattr(
+        "app.services.risk_priority.compute_org_risk_score",
+        lambda user_id, **kw: next(scores),
+    )
+    monkeypatch.setattr(
+        "app.realtime_bus.publish", lambda **kw: publishes.append(kw)
+    )
+
+    # Seed previous score so the FAIL publish includes score_delta
+    event_processor._maybe_publish_org_risk(uid, reason="seed")
+    publishes.clear()
+
+    disabled = {
+        "hostname": "risk-fw-host",
+        "os": "linux",
+        "firewall_status": {"collected": True, "enabled": False, "backend": "ufw"},
+        "defender_status": {"collected": False, "reason": "Not applicable on linux"},
+        "ssh_config": {"collected": True, "settings": {"PermitRootLogin": "no"}},
+    }
+    out = evaluate_agent_host_controls(uid, aid, disabled, asset_id="")
+    assert out["ok"] is True
+    changed = [
+        p
+        for p in publishes
+        if p.get("event_type") == "risk.changed" or (
+            p.get("type") == "risk" and "score" in p and "previous_score" in p
+        )
+    ]
+    assert changed, f"expected risk.changed; got {publishes!r}"
+    assert any(p.get("previous_score") == 12.0 for p in changed)
+    assert any(
+        p.get("event_type") == "control.failed" or p.get("type") == "control.failed"
+        for p in publishes
     )

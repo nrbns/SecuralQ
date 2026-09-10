@@ -238,3 +238,69 @@ def test_replay_nonce_rejected_when_enforced(tmp_path, monkeypatch):
     assert r1.status_code == 200, r1.text
     r2 = client.post("/api/agents/checkin", json={"hostname": "h"}, headers=headers)
     assert r2.status_code == 401
+
+
+def test_checkin_request_sig_accepted_and_rejects_bad_sig(tmp_path, monkeypatch):
+    """Valid X-SecuraIQ-Sig over raw body succeeds; wrong Sig → 401."""
+    configure_isolated_settings(monkeypatch, tmp_path)
+    import app.config as config_mod
+
+    monkeypatch.setattr(config_mod.settings, "agent_require_replay_protection", True, raising=False)
+    try:
+        import app.agent_auth as agent_auth_mod
+
+        monkeypatch.setattr(agent_auth_mod.settings, "agent_require_replay_protection", True, raising=False)
+    except Exception:
+        pass
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from app.agent_auth import sign_payload
+    from app.agents_api import router as agents_router
+    from app.auth import login, register_user
+    from app.tenancy import ensure_tenant_schema
+
+    ensure_tenant_schema()
+    app = FastAPI()
+    app.include_router(agents_router)
+    client = TestClient(app)
+
+    register_user("sig_admin", "password123", role="admin")
+    _, token = login("sig_admin", "password123")
+    enroll = client.post(
+        "/api/agents/enroll", json={"name": "sig-host"}, headers={"Authorization": f"Bearer {token}"}
+    )
+    assert enroll.status_code == 200, enroll.text
+    agent_token = enroll.json()["agent_token"]
+    _aid, agent_key = agent_token.split(".", 1)
+
+    import time
+
+    body = b'{"hostname":"sig-host"}'
+    ts = str(int(time.time()))
+    nonce = "sig-nonce-ok-1"
+    sig = sign_payload(agent_key, ts, nonce, body)
+    headers = {
+        "Authorization": f"Bearer {agent_token}",
+        "Content-Type": "application/json",
+        "X-SecuraIQ-Ts": ts,
+        "X-SecuraIQ-Nonce": nonce,
+        "X-SecuraIQ-Sig": sig,
+    }
+    ok = client.post("/api/agents/checkin", content=body, headers=headers)
+    assert ok.status_code == 200, ok.text
+
+    bad_body = b'{"hostname":"sig-host"}'
+    bad_ts = str(int(time.time()))
+    bad_nonce = "sig-nonce-bad-1"
+    bad_headers = {
+        "Authorization": f"Bearer {agent_token}",
+        "Content-Type": "application/json",
+        "X-SecuraIQ-Ts": bad_ts,
+        "X-SecuraIQ-Nonce": bad_nonce,
+        "X-SecuraIQ-Sig": "0" * 64,
+    }
+    bad = client.post("/api/agents/checkin", content=bad_body, headers=bad_headers)
+    assert bad.status_code == 401
+    assert "signature" in (bad.json().get("detail") or "").lower()

@@ -145,6 +145,25 @@ def extract_observed_config(payload: dict[str, Any] | None) -> dict[str, Any]:
                 },
             }
 
+    disk = (
+        payload.get("disk_encryption_status")
+        if isinstance(payload.get("disk_encryption_status"), dict)
+        else {}
+    )
+    if disk.get("collected"):
+        encrypted = _truthy_enabled(disk.get("encrypted"))
+        if encrypted is not None:
+            out["disk_encryption.enabled"] = {
+                "value": encrypted,
+                "raw": {
+                    "encrypted": disk.get("encrypted"),
+                    "backend": disk.get("backend"),
+                    "reason": (disk.get("reason") or "")[:200],
+                    "volumes": disk.get("volumes"),
+                },
+            }
+    # When not collected: omit key (honest UNKNOWN — never invent BitLocker PASS)
+
     return out
 
 

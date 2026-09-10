@@ -361,6 +361,120 @@ def test_rt17_agent_refuses_unsigned_when_require_verify(monkeypatch):
     assert mod._command_signatures_ok(unsigned2, agent_id="a1") is False
 
 
+def test_seal_includes_issued_at_expires_at(monkeypatch):
+    from app.agent_security import seal_command_for_delivery, verify_sealed_command
+
+    monkeypatch.setenv("AGENT_COMMAND_SIGNING_ALG", "hmac")
+    monkeypatch.setenv("SECURAIQ_AGENT_SIGNING_KEY", "seal-expiry-lab")
+    try:
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "agent_command_signing_alg", "hmac")
+        monkeypatch.setattr(settings, "agent_signing_key", "seal-expiry-lab")
+        monkeypatch.setattr(settings, "agent_command_ttl_sec", 120)
+    except Exception:
+        pass
+
+    sealed = seal_command_for_delivery(
+        {"id": "cmd-exp", "agent_id": "a3", "kind": "enable_firewall", "created_at": 3.0},
+        {"action": "enable_firewall"},
+    )
+    assert sealed.get("issued_at") is not None
+    assert sealed.get("expires_at") is not None
+    assert float(sealed["expires_at"]) > float(sealed["issued_at"])
+    assert verify_sealed_command(sealed) is True
+
+
+def test_verify_sealed_command_rejects_expired(monkeypatch):
+    from app.agent_security import seal_command_for_delivery, verify_sealed_command
+
+    monkeypatch.setenv("AGENT_COMMAND_SIGNING_ALG", "hmac")
+    monkeypatch.setenv("SECURAIQ_AGENT_SIGNING_KEY", "seal-expired-lab")
+    try:
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "agent_command_signing_alg", "hmac")
+        monkeypatch.setattr(settings, "agent_signing_key", "seal-expired-lab")
+    except Exception:
+        pass
+
+    sealed = seal_command_for_delivery(
+        {"id": "cmd-old", "agent_id": "a4", "kind": "patch_package", "created_at": 4.0},
+        {"package": "curl"},
+    )
+    # Tamper times without re-signing → signature must fail.
+    bad = dict(sealed)
+    bad["expires_at"] = float(sealed["issued_at"]) - 10
+    assert verify_sealed_command(bad) is False
+
+    # Re-sign with past expiry, then clock skew check must fail.
+    from app.agent_security import sign_command
+
+    past = dict(sealed)
+    past["issued_at"] = float(sealed["issued_at"]) - 10_000
+    past["expires_at"] = float(sealed["issued_at"]) - 9_000
+    past["signature"] = sign_command(
+        command_id=past["id"],
+        agent_id=past["agent_id"],
+        kind=past["kind"],
+        payload=past["payload"],
+        nonce=past["nonce"],
+        event_id=past["event_id"],
+        issued_at=past["issued_at"],
+        expires_at=past["expires_at"],
+    )
+    assert verify_sealed_command(past) is False
+
+
+def test_agent_refuses_expired_seal(monkeypatch):
+    import importlib.util
+    import time
+    from pathlib import Path
+
+    agent_path = Path(__file__).resolve().parents[1] / "scripts" / "securaiq_agent.py"
+    spec = importlib.util.spec_from_file_location("securaiq_agent_expiry", agent_path)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mod)
+
+    expired = {
+        "id": "c-exp",
+        "kind": "enable_firewall",
+        "payload": {},
+        "expires_at": time.time() - 120,
+        "require_verify": True,
+        "signature": "deadbeef",
+    }
+    assert mod._command_signatures_ok(expired, agent_id="a1") is False
+
+
+def test_agent_replay_headers_include_sig():
+    import hashlib
+    import hmac
+    import importlib.util
+    from pathlib import Path
+
+    from app.agent_auth import sign_payload
+
+    agent_path = Path(__file__).resolve().parents[1] / "scripts" / "securaiq_agent.py"
+    spec = importlib.util.spec_from_file_location("securaiq_agent_replay", agent_path)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mod)
+
+    token = "agentid123.agentkey456"
+    body = b'{"hostname":"lab"}'
+    headers = mod._replay_headers(token, body)
+    assert headers.get("X-SecuraIQ-Ts")
+    assert headers.get("X-SecuraIQ-Nonce")
+    assert headers.get("X-SecuraIQ-Sig")
+    expected = sign_payload("agentkey456", headers["X-SecuraIQ-Ts"], headers["X-SecuraIQ-Nonce"], body)
+    assert hmac.compare_digest(headers["X-SecuraIQ-Sig"], expected)
+    # Sanity: body digest is in the signed message
+    digest = hashlib.sha256(body).hexdigest()
+    assert digest in f"{headers['X-SecuraIQ-Ts']}.{headers['X-SecuraIQ-Nonce']}.{digest}"
+
+
 def test_checkin_sequence_ack(tmp_path, monkeypatch):
     from tests._http_test_utils import configure_isolated_settings
 

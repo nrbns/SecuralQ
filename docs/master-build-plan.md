@@ -6,7 +6,8 @@
 Related: [production-readiness.md](./production-readiness.md) ·
 [realtime-v1.md](./realtime-v1.md) ·
 [control-plane-roadmap.md](./control-plane-roadmap.md) ·
-[control-config-engine.md](./control-config-engine.md)
+[control-config-engine.md](./control-config-engine.md) ·
+[agent-platform.md](./agent-platform.md)
 
 ---
 
@@ -51,6 +52,8 @@ Modules reinforce this loop. AI may recommend; it must not claim success unless 
 
 ## Immediate build order
 
+**Priority: prove firewall closed loop (`realtime_acceptance_demo.py`) before Phase 22+ / full OS config trees.**
+
 **Next only: complete Phase 1** (Realtime Foundation durability):
 
 1. Dead-letter queue (`XADD` to DLQ after max deliveries)
@@ -78,7 +81,11 @@ Legend by track: **🔴** foundation / production · **🟠** domain expansion �
 - Deduplication (one security action per `event_id`)
 - Bounded offline agent queue → reconnect → ACK
 
-**Status: Partial** — event schema, Streams `XADD`, processor, offline buffer, ordering foundations exist; **missing** DLQ, `XAUTOCLAIM`, default Streams fan-out, HA / Sentinel.
+**Status: Near-done (lab)** — event schema, Streams `XADD`, processor, offline
+buffer, ordering, **DLQ + XAUTOCLAIM + stream metrics** (when `REDIS_URL` set),
+firewall FAIL→PASS acceptance harness green. Remaining for full Phase 1 claim:
+default Streams fan-out + Redis HA/Sentinel (multi-worker production).
+Lab without Redis: in-process SSE bus is the supported realtime path.
 
 ---
 
@@ -86,7 +93,8 @@ Legend by track: **🔴** foundation / production · **🟠** domain expansion �
 
 - Windows / Linux / macOS inventory + host telemetry depth (OS, software, services, processes, firewall, Defender/SSH, logs, network, …)
 
-**Status: Partial** — agent telemetry snapshot + packaging; **not** full Win/Lin/Mac EDR surface.
+**Status: Partial** — agent telemetry snapshot + packaging; **not** full Win/Lin/Mac EDR surface.  
+See [agent-platform.md](./agent-platform.md) (module map, NOT-now list, allowlisted commands).
 
 ---
 

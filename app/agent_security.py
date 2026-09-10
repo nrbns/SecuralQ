@@ -70,6 +70,17 @@ def new_nonce() -> str:
     return secrets.token_urlsafe(16)
 
 
+def _command_seal_ttl_sec() -> int:
+    """Seal expiry window — aligns with AGENT_COMMAND_TTL_SEC when configured."""
+    try:
+        from app.config import settings
+
+        ttl = int(getattr(settings, "agent_command_ttl_sec", None) or 86400)
+    except Exception:
+        ttl = int((os.environ.get("AGENT_COMMAND_TTL_SEC") or "86400").strip() or "86400")
+    return max(60, ttl)
+
+
 def canonical_command_payload(
     *,
     command_id: str,
@@ -78,8 +89,16 @@ def canonical_command_payload(
     payload: dict[str, Any],
     nonce: str,
     event_id: str,
+    issued_at: float | int | None = None,
+    expires_at: float | int | None = None,
 ) -> bytes:
-    body = {
+    """Canonical bytes for HMAC/Ed25519 seals.
+
+    ``issued_at`` / ``expires_at`` are included when provided so agents can
+    reject expired seals without trusting DB-side TTL alone. Legacy seals
+    omit these fields and remain verifiable.
+    """
+    body: dict[str, Any] = {
         "command_id": command_id,
         "agent_id": agent_id,
         "kind": kind,
@@ -87,6 +106,10 @@ def canonical_command_payload(
         "nonce": nonce,
         "event_id": event_id,
     }
+    if issued_at is not None:
+        body["issued_at"] = float(issued_at)
+    if expires_at is not None:
+        body["expires_at"] = float(expires_at)
     return json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
@@ -98,6 +121,8 @@ def sign_command(
     payload: dict[str, Any],
     nonce: str,
     event_id: str,
+    issued_at: float | int | None = None,
+    expires_at: float | int | None = None,
 ) -> str:
     msg = canonical_command_payload(
         command_id=command_id,
@@ -106,6 +131,8 @@ def sign_command(
         payload=payload,
         nonce=nonce,
         event_id=event_id,
+        issued_at=issued_at,
+        expires_at=expires_at,
     )
     return hmac.new(_signing_secret(), msg, hashlib.sha256).hexdigest()
 
@@ -119,6 +146,8 @@ def verify_command_signature(
     nonce: str,
     event_id: str,
     signature: str,
+    issued_at: float | int | None = None,
+    expires_at: float | int | None = None,
 ) -> bool:
     expected = sign_command(
         command_id=command_id,
@@ -127,6 +156,8 @@ def verify_command_signature(
         payload=payload,
         nonce=nonce,
         event_id=event_id,
+        issued_at=issued_at,
+        expires_at=expires_at,
     )
     return hmac.compare_digest(expected, (signature or "").strip())
 
@@ -198,6 +229,8 @@ def seal_command_for_delivery(command_row: dict[str, Any], payload: dict[str, An
     nonce = str(command_row.get("nonce") or "") or new_nonce()
     body = payload or {}
     require = _require_command_signature()
+    issued_at = float(now())
+    expires_at = issued_at + float(_command_seal_ttl_sec())
     out: dict[str, Any] = {
         "id": cid,
         "agent_id": aid,
@@ -205,34 +238,32 @@ def seal_command_for_delivery(command_row: dict[str, Any], payload: dict[str, An
         "payload": body,
         "event_id": event_id,
         "nonce": nonce,
+        "issued_at": issued_at,
+        "expires_at": expires_at,
         "seq": float(command_row.get("created_at") or 0),
     }
+    seal_kwargs = dict(
+        command_id=cid,
+        agent_id=aid,
+        kind=kind,
+        payload=body,
+        nonce=nonce,
+        event_id=event_id,
+        issued_at=issued_at,
+        expires_at=expires_at,
+    )
 
     alg = _command_signing_alg()
     used_hmac = False
     used_ed = False
 
     if alg in ("hmac", "both"):
-        out["signature"] = sign_command(
-            command_id=cid,
-            agent_id=aid,
-            kind=kind,
-            payload=body,
-            nonce=nonce,
-            event_id=event_id,
-        )
+        out["signature"] = sign_command(**seal_kwargs)
         used_hmac = True
 
     if alg in ("ed25519", "both"):
         try:
-            out["signature_ed25519"] = ed25519_sign_command(
-                command_id=cid,
-                agent_id=aid,
-                kind=kind,
-                payload=body,
-                nonce=nonce,
-                event_id=event_id,
-            )
+            out["signature_ed25519"] = ed25519_sign_command(**seal_kwargs)
             pub = _ed25519_public_material()
             if pub:
                 out["signing_public_key"] = pub
@@ -255,14 +286,7 @@ def seal_command_for_delivery(command_row: dict[str, Any], payload: dict[str, An
                 exc,
             )
             if not used_hmac:
-                out["signature"] = sign_command(
-                    command_id=cid,
-                    agent_id=aid,
-                    kind=kind,
-                    payload=body,
-                    nonce=nonce,
-                    event_id=event_id,
-                )
+                out["signature"] = sign_command(**seal_kwargs)
                 used_hmac = True
 
     if used_hmac and used_ed:
@@ -272,14 +296,7 @@ def seal_command_for_delivery(command_row: dict[str, Any], payload: dict[str, An
     else:
         out["signature_alg"] = "hmac"
         if "signature" not in out:
-            out["signature"] = sign_command(
-                command_id=cid,
-                agent_id=aid,
-                kind=kind,
-                payload=body,
-                nonce=nonce,
-                event_id=event_id,
-            )
+            out["signature"] = sign_command(**seal_kwargs)
 
     if require:
         out["require_verify"] = True
@@ -288,6 +305,21 @@ def seal_command_for_delivery(command_row: dict[str, Any], payload: dict[str, An
             raise ValueError("RT-17: seal_command_for_delivery produced an unverifiable seal")
 
     return out
+
+
+def _seal_time_ok(cmd: dict[str, Any], *, skew_sec: float = 30.0) -> bool:
+    """Reject expired seals (and seals issued too far in the future)."""
+    ts = float(now())
+    raw_exp = cmd.get("expires_at")
+    raw_iss = cmd.get("issued_at")
+    try:
+        if raw_exp is not None and ts > float(raw_exp) + skew_sec:
+            return False
+        if raw_iss is not None and float(raw_iss) > ts + max(30.0, skew_sec * 10):
+            return False
+    except (TypeError, ValueError):
+        return False
+    return True
 
 
 def verify_sealed_command(cmd: dict[str, Any]) -> bool:
@@ -301,6 +333,16 @@ def verify_sealed_command(cmd: dict[str, Any]) -> bool:
     nonce = str(cmd.get("nonce") or "")
     event_id = str(cmd.get("event_id") or "")
     if not (cid and nonce and event_id):
+        return False
+    if not _seal_time_ok(cmd):
+        return False
+
+    issued_at = cmd.get("issued_at")
+    expires_at = cmd.get("expires_at")
+    try:
+        issued_f = float(issued_at) if issued_at is not None else None
+        expires_f = float(expires_at) if expires_at is not None else None
+    except (TypeError, ValueError):
         return False
 
     alg = str(cmd.get("signature_alg") or "hmac").strip().lower()
@@ -317,6 +359,8 @@ def verify_sealed_command(cmd: dict[str, Any]) -> bool:
             nonce=nonce,
             event_id=event_id,
             signature=sig,
+            issued_at=issued_f,
+            expires_at=expires_f,
         ):
             return False
 
@@ -331,6 +375,8 @@ def verify_sealed_command(cmd: dict[str, Any]) -> bool:
             payload=payload,
             nonce=nonce,
             event_id=event_id,
+            issued_at=issued_f,
+            expires_at=expires_f,
         )
         pub = str(cmd.get("signing_public_key") or "") or None
         if not ed25519_verify(msg, sig_ed, public_key=pub):
@@ -494,6 +540,8 @@ def ed25519_sign_command(
     payload: dict[str, Any],
     nonce: str,
     event_id: str,
+    issued_at: float | int | None = None,
+    expires_at: float | int | None = None,
     private_key: str | None = None,
 ) -> str:
     """Ed25519 seal over the same canonical payload as HMAC."""
@@ -504,5 +552,7 @@ def ed25519_sign_command(
         payload=payload,
         nonce=nonce,
         event_id=event_id,
+        issued_at=issued_at,
+        expires_at=expires_at,
     )
     return ed25519_sign(msg, private_key=private_key)

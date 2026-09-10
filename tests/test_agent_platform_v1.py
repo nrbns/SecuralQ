@@ -38,7 +38,7 @@ def _auth(token: str) -> dict:
 
 def test_command_seal_has_signature(tmp_path, monkeypatch):
     _reload(monkeypatch, tmp_path)
-    from app.agent_security import verify_command_signature
+    from app.agent_security import verify_sealed_command
     from app.agents import (
         _dispatch_queued_commands,
         approve_command,
@@ -63,15 +63,9 @@ def test_command_seal_has_signature(tmp_path, monkeypatch):
     assert cmd.get("signature")
     assert cmd.get("nonce")
     assert cmd.get("event_id")
-    assert verify_command_signature(
-        command_id=cmd["id"],
-        agent_id=aid,
-        kind=cmd["kind"],
-        payload=cmd["payload"],
-        nonce=cmd["nonce"],
-        event_id=cmd["event_id"],
-        signature=cmd["signature"],
-    )
+    assert cmd.get("issued_at") is not None
+    assert cmd.get("expires_at") is not None
+    assert verify_sealed_command(cmd) is True
 
 
 def test_tenant_isolation_lists(tmp_path, monkeypatch):

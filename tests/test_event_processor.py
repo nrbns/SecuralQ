@@ -555,3 +555,70 @@ def test_attack_path_realtime_publishes_summary(monkeypatch):
         for p in publishes
     )
     assert any(p.get("type") == "risk" and p.get("reason") == "attack_path_refresh" for p in publishes)
+
+
+def test_control_failed_records_evidence_and_org_risk(monkeypatch):
+    evidence_calls: list[dict] = []
+    publishes: list[dict] = []
+
+    monkeypatch.setattr(
+        "app.services.evidence.record_evidence",
+        lambda uid, **kw: evidence_calls.append({"user_id": uid, **kw}) or {"id": "ev-cf"},
+    )
+    monkeypatch.setattr(
+        "app.services.risk_priority.compute_org_risk_score",
+        lambda uid, **kw: {"score": 55.0, "band": "elevated", "total_open": 2},
+    )
+    monkeypatch.setattr("app.realtime_bus.publish", lambda **kw: publishes.append(kw))
+    monkeypatch.setattr("app.notifications.notify", lambda *a, **k: {})
+    event_processor._last_org_risk_score.pop("u-cf", None)
+
+    event_processor.process_event(
+        {
+            "type": "control.failed",
+            "event_type": "control.failed",
+            "event_id": "e-cf-1",
+            "user_id": "u-cf",
+            "test": "host_firewall",
+            "control_id": "CIS-12",
+            "framework_id": "cis_controls",
+            "agent_id": "ag-cf",
+            "summary": "Firewall disabled",
+        }
+    )
+    assert evidence_calls
+    assert evidence_calls[0]["entity_type"] == "control_test"
+    assert any(p.get("type") == "risk" and p.get("score") == 55.0 for p in publishes)
+
+
+def test_configuration_drift_detected_records_evidence_and_org_risk(monkeypatch):
+    evidence_calls: list[dict] = []
+    publishes: list[dict] = []
+
+    monkeypatch.setattr(
+        "app.services.evidence.record_evidence",
+        lambda uid, **kw: evidence_calls.append({"user_id": uid, **kw}) or {"id": "ev-dr"},
+    )
+    monkeypatch.setattr(
+        "app.services.risk_priority.compute_org_risk_score",
+        lambda uid, **kw: {"score": 18.0, "band": "low", "total_open": 1},
+    )
+    monkeypatch.setattr("app.realtime_bus.publish", lambda **kw: publishes.append(kw))
+    event_processor._last_org_risk_score.pop("u-dr", None)
+
+    event_processor.process_event(
+        {
+            "type": "configuration.drift_detected",
+            "event_type": "configuration.drift_detected",
+            "event_id": "e-dr-1",
+            "user_id": "u-dr",
+            "key": "firewall.enabled",
+            "agent_id": "ag-dr",
+            "expected": True,
+            "current": False,
+            "summary": "firewall.enabled drift",
+        }
+    )
+    assert evidence_calls
+    assert evidence_calls[0]["entity_type"] == "configuration_drift"
+    assert any(p.get("type") == "risk" and p.get("score") == 18.0 for p in publishes)

@@ -17,11 +17,14 @@ _FIX_HINTS: dict[str, str] = {
     "host_firewall": (
         "Enable the host firewall (ufw/firewalld/Windows Firewall), then wait "
         "for the next SecuraIQ agent check-in to verify PASS. "
-        "Approved agent commands are optional and not auto-executed."
+        "Optional: POST /api/agents/{id}/commands/enable-firewall then approve "
+        "(pending_approval → queued) — never auto-executed."
     ),
     "host_defender": (
         "Enable Microsoft Defender (or equivalent AV) on the host, then wait "
-        "for the next agent check-in to verify PASS. No auto-remediation."
+        "for the next agent check-in to verify PASS. "
+        "Optional: POST /api/agents/{id}/commands/enable-defender then approve "
+        "(pending_approval → queued) — never auto-executed."
     ),
     "host_ssh_root": (
         "Set PermitRootLogin no (or prohibit-password) in sshd_config, then "

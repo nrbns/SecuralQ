@@ -96,7 +96,9 @@ def verify_replay_and_signature(
     if not aid:
         return "Unknown agent"
     mac_key = _agent_mac_key(agent)
-    if sig_s and mac_key:
+    if sig_s:
+        if not mac_key:
+            return "Agent missing HMAC material for request signature"
         expected = sign_payload(mac_key, ts_raw, nonce_s, body)
         if not secrets.compare_digest(expected, sig_s):
             return "Invalid request signature"

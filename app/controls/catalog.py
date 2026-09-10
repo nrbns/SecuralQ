@@ -96,7 +96,7 @@ def _control_from_row(framework_id: str, row: dict[str, Any]) -> Control:
         ControlTest(
             name=n,
             verifiability=ver,
-            description=f"Live test `{n}` (explicit map in control_testing)",
+            description=f"Live test `{n}` (explicit map in test_registry)",
         )
         for n in test_names
     ]

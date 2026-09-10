@@ -321,12 +321,26 @@ python scripts/realtime_acceptance_demo.py --server http://127.0.0.1:8080 --toke
 |-------|------|
 | `generate_ed25519_keypair` / `ed25519_sign` / `ed25519_verify` | Helpers in `app/agent_security.py` (`cryptography`) |
 | Config / `.env.example` | `AGENT_COMMAND_SIGNING_ALG` = `hmac` (default) \| `ed25519` \| `both`; Ed25519 key env vars |
-| `seal_command_for_delivery` | Always event_id + nonce; HMAC and/or `signature_ed25519` + `signing_public_key` |
-| `verify_sealed_command` | Server helper verifies per `signature_alg` |
-| Agent | Verifies Ed25519 when present (`cryptography` if installed); HMAC when `SECURAIQ_AGENT_SIGNING_KEY` set |
+| `seal_command_for_delivery` | Always event_id + nonce + **issued_at/expires_at** (TTL from `AGENT_COMMAND_TTL_SEC`); HMAC and/or `signature_ed25519` + `signing_public_key` |
+| `verify_sealed_command` | Server helper verifies per `signature_alg` **and rejects expired seals** |
+| Agent | Verifies Ed25519 when present (`cryptography` if installed); HMAC when `SECURAIQ_AGENT_SIGNING_KEY` set; prefers pinned `SECURAIQ_AGENT_ED25519_PUBLIC_KEY` over TOFU embed; refuses expired seals |
+| Request path | Agent sends `X-SecuraIQ-Ts` + `Nonce` + **`X-SecuraIQ-Sig`** (HMAC over `ts.nonce.sha256(body)`); check-in/ack/result verify against **raw** body |
 | Fallback | `alg=ed25519` without private key → HMAC + warning (unless RT-17 require is on) |
 
 Production direction: **Ed25519 + mTLS**. Default remains **HMAC** so labs without keys keep working.
+
+**Production flag combo (lab hosts you own):**
+```text
+AGENT_REQUIRE_REPLAY_PROTECTION=true
+AGENT_REQUIRE_COMMAND_SIGNATURE=true
+AGENT_COMMAND_SIGNING_ALG=hmac   # or both + Ed25519 keys
+SECURAIQ_AGENT_SIGNING_KEY=<long random>
+# agent.env:
+SECURAIQ_REQUIRE_COMMAND_VERIFY=1
+SECURAIQ_AGENT_SIGNING_KEY=<same>
+```
+
+Still **not** mTLS / device certs (Phase 3 remaining).
 
 ---
 

@@ -1163,12 +1163,41 @@ def test_verify_patch_command_flags_failure_when_still_outdated(tmp_path, monkey
 
 
 def test_verify_patch_command_unknown_when_package_not_in_inventory(tmp_path, monkeypatch):
+    """When the agent does not report a post-patch version and inventory has
+    no matching package, verification must stay unknown — not silently verified.
+    (Reporting new_version stamps inventory via apply_patch_version_to_inventory.)
+    """
     client, token = _client_and_token(tmp_path, monkeypatch)
-    command_id, asset_id, agent_id = _prepare_done_command_with_asset(client, token, "verify-unknown-1")
+    enroll = client.post("/api/agents/enroll", json={"name": "verify-unknown-1"}, headers=_auth(token))
+    agent_id, agent_token = enroll.json()["agent_id"], enroll.json()["agent_token"]
+    checkin = client.post(
+        "/api/agents/checkin",
+        json={"hostname": "verify-unknown-1", "os": "linux"},
+        headers={"Authorization": f"Bearer {agent_token}"},
+    )
+    assert checkin.status_code == 200, checkin.text
+    requested = client.post(
+        f"/api/agents/{agent_id}/commands",
+        json={"kind": "patch_package", "payload": {"manager": "apt", "package": "curl", "target_version": "8.5.0"}},
+        headers=_auth(token),
+    )
+    command_id = requested.json()["id"]
+    client.post(f"/api/agents/{agent_id}/commands/{command_id}/approve", headers=_auth(token))
+    client.post(
+        "/api/agents/checkin",
+        json={"hostname": "verify-unknown-1", "os": "linux"},
+        headers={"Authorization": f"Bearer {agent_token}"},
+    )
+    # Done without new_version → no inventory stamp → cannot verify either way.
+    client.post(
+        f"/api/agents/commands/{command_id}/result",
+        json={"status": "done", "result": {"ok": True, "summary": "lab patch without version stamp"}},
+        headers={"Authorization": f"Bearer {agent_token}"},
+    )
 
     from app.jobs import _verify_patch_command
 
-    _verify_patch_command(command_id)  # no software_installations row seeded at all
+    _verify_patch_command(command_id)
 
     cmds = client.get(f"/api/agents/{agent_id}/commands", headers=_auth(token)).json()["commands"]
     done_cmd = next(c for c in cmds if c["id"] == command_id)
@@ -1592,6 +1621,25 @@ def test_checkin_round_trips_deep_telemetry_fields(tmp_path, monkeypatch):
             "disk_encryption_status": {"collected": False, "reason": "lsblk unavailable or failed", "encrypted": None},
             "defender_status": {"collected": False, "reason": "Not applicable on linux", "enabled": None},
             "ssh_config": {"collected": True, "reason": "", "path": "/etc/ssh/sshd_config", "settings": {"PermitRootLogin": "no"}},
+            "hardware": {
+                "collected": True,
+                "reason": "",
+                "arch": "x86_64",
+                "cpu_count": 4,
+                "memory_mb": 8192,
+                "disk_root_gb": 100.0,
+            },
+            "local_groups": {
+                "collected": True,
+                "reason": "",
+                "items": [{"name": "sudo", "gid": 27, "members": ["alice"]}],
+            },
+            "network": {
+                "collected": True,
+                "reason": "",
+                "primary_ip": "10.0.0.5",
+                "interfaces": [{"name": "eth0", "ipv4": ["10.0.0.5"], "mac": "aa:bb:cc:dd:ee:ff"}],
+            },
         },
         headers={"Authorization": f"Bearer {agent_token}"},
     )
@@ -1606,6 +1654,11 @@ def test_checkin_round_trips_deep_telemetry_fields(tmp_path, monkeypatch):
     assert "lsblk" in payload["disk_encryption_status"]["reason"]
     assert payload["defender_status"]["collected"] is False
     assert payload["ssh_config"]["settings"]["PermitRootLogin"] == "no"
+    assert payload["hardware"]["arch"] == "x86_64"
+    assert payload["hardware"]["memory_mb"] == 8192
+    assert payload["local_groups"]["items"][0]["name"] == "sudo"
+    assert payload["network"]["interfaces"][0]["name"] == "eth0"
+    assert payload["network"]["primary_ip"] == "10.0.0.5"
 
 
 def test_checkin_without_deep_telemetry_defaults_to_empty_not_error(tmp_path, monkeypatch):

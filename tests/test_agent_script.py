@@ -35,6 +35,9 @@ def agent_mod():
 COLLECTOR_NAMES = [
     "_services",
     "_local_users",
+    "_local_groups",
+    "_hardware",
+    "_network",
     "_firewall_status",
     "_disk_encryption_status",
     "_defender_status",
@@ -58,9 +61,44 @@ def test_local_users_reads_real_etc_passwd_on_linux(agent_mod):
     """On this sandbox (Linux), local_users must actually read /etc/passwd,
     not silently degrade -- confirms the honest-degrade path isn't
     swallowing a real, available signal."""
+    import platform
+
+    if platform.system().lower() not in ("linux", "darwin"):
+        pytest.skip("Linux/macOS /etc/passwd path")
     result = agent_mod._local_users()
     assert result["collected"] is True
     assert isinstance(result["items"], list)
+
+
+def test_local_groups_reads_real_etc_group_on_linux(agent_mod):
+    import platform
+
+    if platform.system().lower() not in ("linux", "darwin"):
+        pytest.skip("Linux/macOS /etc/group path")
+    result = agent_mod._local_groups()
+    assert result["collected"] is True
+    assert isinstance(result["items"], list)
+    assert any(i.get("name") for i in result["items"])
+
+
+def test_hardware_collected_has_arch_or_cpu(agent_mod):
+    result = agent_mod._hardware()
+    assert isinstance(result, dict)
+    assert "collected" in result
+    if result["collected"]:
+        assert result.get("arch") or result.get("cpu_count") is not None
+    else:
+        assert result.get("reason")
+
+
+def test_network_returns_interfaces_shape(agent_mod):
+    result = agent_mod._network()
+    assert isinstance(result, dict)
+    assert "collected" in result
+    if result["collected"]:
+        assert isinstance(result.get("interfaces"), list)
+    else:
+        assert result.get("reason")
 
 
 def test_ssh_config_reports_not_applicable_when_no_sshd_config(agent_mod, tmp_path, monkeypatch):
@@ -94,7 +132,8 @@ def test_collect_safe_falls_back_honestly_on_collector_crash(agent_mod):
 def test_collect_snapshot_includes_all_deep_telemetry_keys(agent_mod):
     snapshot = agent_mod.collect_snapshot()
     for key in (
-        "services", "local_users", "firewall_status", "disk_encryption_status",
+        "services", "local_users", "local_groups", "hardware", "network",
+        "firewall_status", "disk_encryption_status",
         "defender_status", "startup_apps", "ssh_config",
     ):
         assert key in snapshot
