@@ -8,7 +8,7 @@ Authorized labs, owned systems, and enterprise blue-team / GRC workflows. Scans,
 
 **Public repo:** https://github.com/nrbns/SecuralQ  
 
-**Product gate:** [`docs/production-readiness.md`](docs/production-readiness.md) · **Roadmap:** [`docs/control-plane-roadmap.md`](docs/control-plane-roadmap.md)
+**Product gate:** [`docs/production-readiness.md`](docs/production-readiness.md) · **Architecture:** [`docs/securaiq-architecture.md`](docs/securaiq-architecture.md) · **Roadmap:** [`docs/control-plane-roadmap.md`](docs/control-plane-roadmap.md)
 
 ---
 
@@ -38,7 +38,7 @@ AI may recommend. It must not claim a fix succeeded unless the platform executed
 | **Operations** | Assets, vulnerabilities, incidents, remediations, playbooks |
 | **Compliance** | Frameworks, gap analysis, continuous control checks → remediations + evidence |
 | **Reports** | PDF / DOCX / Excel · archived scan Markdown + PDF |
-| **Agents** | Packaged `.exe` / `.zip` / `.tar.gz` (+ `.dmg` on Mac/CI) · enroll · realtime gateway |
+| **Agents** | Lab: `scripts/securaiq_agent.py` · Production direction: Rust core [`securaiq-agent/`](securaiq-agent/README.md) · enroll · realtime gateway |
 | **AI Analyst** | Optional chat (Ollama, LM Studio, or API keys) grounded on evidence |
 
 **Scans and reports work with no AI installed.** Chat needs a model backend.

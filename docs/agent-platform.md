@@ -3,7 +3,9 @@
 **Product stance:** SecuraIQ Agent is **not** an EDR product and **not** a Wazuh clone.  
 It extends the existing gateway + agent check-in path already in this repo: inventory and host-control telemetry → control/risk/evidence → optional **approved** remediation commands.
 
-Related: [agent-platform-v1.md](./agent-platform-v1.md) (lab slices) ·
+Related: [securaiq-architecture.md](./securaiq-architecture.md) (Phase 0 freeze) ·
+[agent-protocol-v1.md](./agent-protocol-v1.md) ·
+[agent-platform-v1.md](./agent-platform-v1.md) (lab slices) ·
 [master-build-plan.md](./master-build-plan.md) ·
 [control-plane-roadmap.md](./control-plane-roadmap.md) ·
 [control-config-engine.md](./control-config-engine.md) ·
@@ -45,16 +47,20 @@ Related: [agent-platform-v1.md](./agent-platform-v1.md) (lab slices) ·
 
 ## Module map
 
-Phase 1 keeps a **monolith entrypoint** for packaging. Future splits land under `scripts/agent_lib/` without changing the install/package story overnight.
+**Production direction:** one **Rust** core + OS adapters in [`securaiq-agent/`](../securaiq-agent/README.md)
+(see architecture freeze). **Lab bridge:** keep `scripts/securaiq_agent.py` until Rust v0.1
+protocol parity (enroll → heartbeat → inventory → allowlisted command → verify).
 
 | Module | Role today | Code |
 |--------|------------|------|
-| **core** | Version, config, check-in loop, gateway wait/WS, command ack/result | `scripts/securaiq_agent.py` (+ `scripts/agent_lib/` VERSION stub) |
-| **inventory** | Host/OS/software/services/processes + **hardware / local_groups / network** | collectors inside `scripts/securaiq_agent.py` |
+| **core** | Version, config, check-in loop, gateway wait/WS, command ack/result | `scripts/securaiq_agent.py` (+ `scripts/agent_lib/` VERSION stub); Rust scaffold `securaiq-agent/` |
+| **inventory** | Host/OS/software/services/processes + **hardware / local_groups / network** | Python collectors; Rust `inventory/` + `platform/{windows,linux,macos}` traits |
 | **security** | Firewall / Defender / SSH / BitLocker / sentinel heuristics | collectors + `execute_enable_*` in `scripts/securaiq_agent.py` |
 | **response** | Allowlisted commands: `patch_package`, `agent_upgrade`, `enable_firewall`, `enable_defender` | agent executors + `app/agents.py` / `app/agents_api.py` |
 
 Server-side control plane pieces that consume agent telemetry: `app/services/control_testing.py`, `app/controls/`, `app/configuration/`, event processor + realtime bus.
+
+**Do not start server-side AI missions** until inventory → control → evidence → approve loop is solid on the agent path.
 
 ---
 

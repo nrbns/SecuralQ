@@ -3,7 +3,9 @@
 **Canonical product strategy:** Continuous Security, Risk & Compliance Control Plane  
 **Status key:** **Done** · **Partial** · **Missing** — vs current `main` (honest; do not invent Done)
 
-Related: [production-readiness.md](./production-readiness.md) ·
+Related: [securaiq-architecture.md](./securaiq-architecture.md) (Phase 0 — Rust agent + control plane freeze) ·
+[agent-protocol-v1.md](./agent-protocol-v1.md) ·
+[production-readiness.md](./production-readiness.md) ·
 [realtime-v1.md](./realtime-v1.md) ·
 [control-plane-roadmap.md](./control-plane-roadmap.md) ·
 [control-config-engine.md](./control-config-engine.md) ·
@@ -92,9 +94,12 @@ Lab without Redis: in-process SSE bus is the supported realtime path.
 ### 🔴 Phase 2 — Real agent platform
 
 - Windows / Linux / macOS inventory + host telemetry depth (OS, software, services, processes, firewall, Defender/SSH, logs, network, …)
+- **One Rust core + OS adapters** (`securaiq-agent/`); Python lab agent until v0.1 parity
 
-**Status: Partial** — agent telemetry snapshot + packaging; **not** full Win/Lin/Mac EDR surface.  
-See [agent-platform.md](./agent-platform.md) (module map, NOT-now list, allowlisted commands).
+**Status: Partial** — Python bridge has inventory + allowlisted remediations; Rust agent
+**Phase 1 wired** (check-in + HMAC + offline queue + gateway WS/HTTP against existing APIs).
+Deep inventory / remediations still Python. **Not** full Win/Lin/Mac EDR.  
+See [securaiq-architecture.md](./securaiq-architecture.md) · [agent-platform.md](./agent-platform.md).
 
 ---
 
@@ -388,6 +393,9 @@ If that chain works reliably, SecuraIQ is a **control plane**, not a feature che
 | Doc | Role |
 |-----|------|
 | **This file** | Canonical 46-phase Master Build Plan + honest status |
+| [securaiq-architecture.md](./securaiq-architecture.md) | Phase 0 freeze: Rust agent + 3 layers + build order |
+| [agent-protocol-v1.md](./agent-protocol-v1.md) | Agent ↔ server wire contracts |
+| [agent-platform.md](./agent-platform.md) | Agent platform module map + allowlisted commands |
 | [realtime-v1.md](./realtime-v1.md) | Task-level realtime implementation (RT-01…RT-20) |
 | [production-readiness.md](./production-readiness.md) | Ship / enterprise marketing gate |
 | [control-plane-roadmap.md](./control-plane-roadmap.md) | Pillars + P0–P2 priority narrative |

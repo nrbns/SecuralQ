@@ -22,4 +22,5 @@ Thumbs.db
 .vscode/*.local.json
 dist/
 build/
+securaiq-agent/target/
 *.pyo
