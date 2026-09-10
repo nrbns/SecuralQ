@@ -96,9 +96,10 @@ Lab without Redis: in-process SSE bus is the supported realtime path.
 - Windows / Linux / macOS inventory + host telemetry depth (OS, software, services, processes, firewall, Defender/SSH, logs, network, …)
 - **One Rust core + OS adapters** (`securaiq-agent/`); Python lab agent until v0.1 parity
 
-**Status: Partial** — Python bridge has inventory + allowlisted remediations; Rust agent
-**v0.3** deep inventory, FIM, security log samples, and **`enable_firewall` / `enable_defender`**
-(fixed argv + seal verify). Patch/upgrade still Python. **Not** full EDR.  
+**Status: Partial** — Python bridge has inventory + remediations; Rust agent **v0.3**
+inventory/FIM/logs/`enable_*`. **Phase 4 (architecture):** agent packages → advisory CVE
+match on check-in (debounced) → enterprise vuln bridge with listening-port exposure hint.
+OS package→OSV accuracy still improving; full CPE/NVD mirror deferred.  
 See [securaiq-architecture.md](./securaiq-architecture.md) · [agent-platform.md](./agent-platform.md).
 
 ---
@@ -142,7 +143,9 @@ See [securaiq-architecture.md](./securaiq-architecture.md) · [agent-platform.md
 
 - CVE + CVSS/EPSS/KEV/CPE → assets → exposure → business criticality → attack path → fix → verify
 
-**Status: Partial** — vuln import/register, KEV/NVD hooks, inventory bridges exist; full path-aware prioritization incomplete.
+**Status: Partial** — agent check-in now triggers scoped advisory refresh + enterprise vuln bridge
+(`software:advisory`) with listening-port exposure hints; KEV/NVD/OSV hooks exist. Still missing:
+full CPE/NVD mirror, path-aware prioritization depth, OS-package match coverage.
 
 ---
 

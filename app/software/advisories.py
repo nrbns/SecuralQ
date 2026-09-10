@@ -137,7 +137,7 @@ def kev_matches_product(kev_item: dict[str, Any], product_name: str, vendor: str
     return False
 
 
-def osv_query_target(canonical_id: str, name: str) -> tuple[str, str]:
+def osv_query_target(canonical_id: str, name: str, *, os_hint: str = "") -> tuple[str, str]:
     """Return (ecosystem, package_name) when OSV lookup is meaningful."""
     up = upstream_for(canonical_id, name)
     src = (up.get("source") or "").lower()
@@ -151,8 +151,21 @@ def osv_query_target(canonical_id: str, name: str) -> tuple[str, str]:
         if pkg:
             return eco, pkg
     key = (name or "").strip().lower()
-    if key in {"openssl", "nginx", "httpd", "apache"}:
-        return "PyPI", key  # often wrong but OSV may still hit; skip if no version
+    # Known libraries: prefer GitHub-ecosystem products via OSV Maven/generic skips —
+    # use Debian/Ubuntu/Alpine/Red Hat ecosystems for OS package inventories.
+    os_l = (os_hint or "").lower()
+    if key and os_l:
+        if any(x in os_l for x in ("ubuntu", "debian")):
+            return "Debian", key
+        if "alpine" in os_l:
+            return "Alpine", key
+        if any(x in os_l for x in ("rhel", "centos", "rocky", "alma", "fedora", "red hat", "amazon linux")):
+            return "Red Hat", key
+    if key in {"openssl", "nginx", "httpd", "apache", "curl", "openssh"}:
+        # Fallback for Windows/macOS inventory names without OS packaging metadata.
+        if "windows" in os_l or not os_l:
+            return "", ""
+        return "Debian", key
     return "", ""
 
 
@@ -396,7 +409,7 @@ def _match_installation_advisories(
             detail=str(nvd.get("description") or "")[:500],
         )
 
-    eco, pkg = osv_query_target(canonical, product_name)
+    eco, pkg = osv_query_target(canonical, product_name, os_hint=str(inst.get("os_hint") or ""))
     if eco and pkg and version:
         vulns = query_package_vulns(name=pkg, ecosystem=eco, version=version, client=client)
         for v in vulns[:10]:
@@ -520,6 +533,171 @@ def _apply_patch_for_installation(
                 user_id,
             ),
         )
+
+
+def installations_for_asset(
+    user_id: str,
+    asset_id: str,
+    *,
+    limit: int = ADVISORY_BATCH_SIZE,
+) -> list[dict[str, Any]]:
+    """Installations for one asset (agent check-in scoped refresh)."""
+    ensure_schema()
+    aid = (asset_id or "").strip()
+    if not aid:
+        return []
+    c = get_conn()
+    rows = c.execute(
+        """
+        SELECT i.*, p.name AS product_name, p.vendor, p.publisher, p.canonical_id, p.id AS product_id
+        FROM software_installations i
+        JOIN software_products p ON p.id = i.software_product_id
+        WHERE i.user_id=? AND i.asset_id=?
+        ORDER BY i.updated_at DESC
+        LIMIT ?
+        """,
+        (user_id, aid, max(1, min(limit, 200))),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def refresh_advisories_for_asset(
+    user_id: str,
+    asset_id: str,
+    *,
+    limit: int = ADVISORY_BATCH_SIZE,
+    os_hint: str = "",
+    asset_name: str = "",
+    listening_ports: list[int] | None = None,
+    agent_ip: str = "",
+    bridge_vulns: bool = True,
+) -> dict[str, Any]:
+    """Match advisories for one asset's installations and optionally bridge to vulns."""
+    ensure_schema()
+    aid = (asset_id or "").strip()
+    if not aid:
+        return {
+            "checked": 0,
+            "advisories_matched": 0,
+            "kev_installations": 0,
+            "critical_installations": 0,
+            "errors": 0,
+            "bridged": {},
+            "skipped": "missing_asset_id",
+        }
+
+    kev_cves, kev_items = load_kev_catalog()
+    if not kev_cves:
+        try:
+            from app.intel_feeds import fetch_cisa_kev
+
+            feed = asyncio.run(fetch_cisa_kev(limit=500))
+            kev_cves = {(i.get("cve") or "").upper() for i in (feed.get("items") or []) if i.get("cve")}
+            kev_items = [i for i in (feed.get("items") or []) if isinstance(i, dict)]
+        except Exception:
+            kev_cves, kev_items = set(), []
+
+    inst_rows = installations_for_asset(user_id, aid, limit=limit)
+    matched_total = 0
+    kev_hits = 0
+    critical_hits = 0
+    errors = 0
+    all_matched: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
+
+    with httpx.Client(timeout=12.0) as client:
+        for inst in inst_rows:
+            if os_hint:
+                inst = {**inst, "os_hint": os_hint}
+            prod = {
+                "id": inst.get("product_id") or inst.get("software_product_id"),
+                "name": inst.get("product_name"),
+                "vendor": inst.get("vendor"),
+                "publisher": inst.get("publisher"),
+                "canonical_id": inst.get("canonical_id"),
+            }
+            try:
+                adv = _match_installation_advisories(
+                    user_id,
+                    inst,
+                    prod,
+                    kev_cves=kev_cves,
+                    kev_items=kev_items,
+                    client=client,
+                )
+                _apply_patch_for_installation(user_id, inst, adv)
+                matched_total += len(adv)
+                if any(a.get("kev") for a in adv):
+                    kev_hits += 1
+                if any((a.get("cvss") or 0) >= 9 for a in adv if a.get("cvss") is not None):
+                    critical_hits += 1
+                if adv:
+                    all_matched.append((inst, adv))
+            except Exception:
+                errors += 1
+
+    c = get_conn()
+    c.commit()
+
+    bridged: dict[str, Any] = {"created": 0, "updated": 0, "skipped": 0}
+    if bridge_vulns and all_matched:
+        try:
+            from app.software.vuln_bridge import bridge_advisories_to_vulnerabilities
+
+            host = asset_name or str(inst_rows[0].get("asset_name") or aid[:8]) if inst_rows else aid[:8]
+            for inst, adv in all_matched:
+                part = bridge_advisories_to_vulnerabilities(
+                    user_id,
+                    asset_id=aid,
+                    asset_name=host,
+                    advisories=adv,
+                    product_name=str(inst.get("product_name") or ""),
+                    version=str(inst.get("version") or ""),
+                    listening_ports=listening_ports,
+                    agent_ip=agent_ip,
+                    emit_realtime=False,
+                )
+                bridged["created"] = int(bridged["created"]) + int(part.get("created") or 0)
+                bridged["updated"] = int(bridged["updated"]) + int(part.get("updated") or 0)
+                bridged["skipped"] = int(bridged["skipped"]) + int(part.get("skipped") or 0)
+        except Exception as exc:
+            bridged["error"] = str(exc)[:200]
+
+    result = {
+        "checked": len(inst_rows),
+        "advisories_matched": matched_total,
+        "kev_installations": kev_hits,
+        "critical_installations": critical_hits,
+        "errors": errors,
+        "kev_catalog_size": len(kev_cves),
+        "asset_id": aid,
+        "bridged": bridged,
+    }
+    try:
+        publish_vulnerability_events(user_id, result)
+    except Exception:
+        pass
+    return result
+
+
+_ASSET_REFRESH_TS: dict[str, float] = {}
+_ASSET_REFRESH_DEBOUNCE_SEC = 900.0
+
+
+def should_refresh_asset(asset_id: str, *, force: bool = False) -> bool:
+    """Debounce per-asset advisory refresh so check-in stays cheap."""
+    aid = (asset_id or "").strip()
+    if not aid:
+        return False
+    if force:
+        return True
+    last = _ASSET_REFRESH_TS.get(aid) or 0.0
+    return (now() - last) >= _ASSET_REFRESH_DEBOUNCE_SEC
+
+
+def mark_asset_refreshed(asset_id: str) -> None:
+    aid = (asset_id or "").strip()
+    if aid:
+        _ASSET_REFRESH_TS[aid] = now()
 
 
 def installations_for_advisory_refresh(user_id: str, *, limit: int = ADVISORY_BATCH_SIZE) -> list[dict[str, Any]]:

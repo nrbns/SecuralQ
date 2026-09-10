@@ -46,9 +46,10 @@ Related: [agent-platform.md](./agent-platform.md) · [agent-protocol-v1.md](./ag
 | EDR / kernel | Later (after inventory → control → risk → approve loop) | Kernel driver / full EDR in v0.1 |
 | Dashboard rewrite | Evolve toward React+TS; keep shipping on current UI | Big-bang rewrite before agent v0.1 |
 
-**Phase 1–3 progress:** Rust agent speaks check-in + gateway + offline queue, deep inventory,
+**Phase 1–4 progress:** Rust agent speaks check-in + gateway + offline queue, deep inventory,
 FIM + security log samples, HMAC seal verify, and allowlisted `enable_firewall` /
-`enable_defender`. Patch/upgrade and Ed25519 seals still lean on the Python bridge / later work.
+`enable_defender`. Server: agent packages → debounced advisory CVE match → enterprise vuln
+bridge (`app/software/vuln_bridge.py`). Patch/upgrade and Ed25519 seals still lean on later work.
 
 ---
 

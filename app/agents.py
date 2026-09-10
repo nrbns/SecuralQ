@@ -630,6 +630,22 @@ def checkin(agent_id: str, payload: dict[str, Any]) -> dict[str, Any]:
                 or ""
             )
             refreshed["last_checkin"] = now()
+            refreshed["ip"] = (
+                effective_payload.get("ip") or payload.get("ip") or agent.get("ip") or ""
+            )
+            # Prefer live check-in ports/ip for exposure on advisory→vuln bridge.
+            try:
+                refreshed["last_payload_json"] = json.dumps(
+                    {
+                        "ip": refreshed["ip"],
+                        "listening_ports": effective_payload.get("listening_ports")
+                        or payload.get("listening_ports")
+                        or [],
+                        "packages": [p for p in pkgs if isinstance(p, dict)][:500],
+                    }
+                )
+            except Exception:
+                pass
             ingest_agent_packages(
                 agent.get("user_id") or "local",
                 refreshed,

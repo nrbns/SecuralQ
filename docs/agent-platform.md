@@ -56,9 +56,10 @@ protocol parity (enroll → heartbeat → inventory → allowlisted command → 
 | **core** | Version, config, check-in loop, gateway wait/WS, command ack/result | `scripts/securaiq_agent.py`; Rust `securaiq-agent/` v0.3 |
 | **inventory** | Host/OS/software/services/processes + **hardware / local_groups / network** | Python collectors; Rust `platform/deep/{windows,linux,macos}` |
 | **security** | Firewall / Defender / SSH / BitLocker / FIM / logs | Python + Rust host-status, FIM, `security_logs`; remediations: Rust `enable_firewall`/`enable_defender` |
-| **response** | Allowlisted commands: `patch_package`, `agent_upgrade`, `enable_firewall`, `enable_defender` | agent executors + `app/agents.py` / `app/agents_api.py` |
+| **response** | Allowlisted commands: `patch_package`, `agent_upgrade`, `enable_firewall`, `enable_defender` | Python + Rust `enable_firewall`/`enable_defender`; patch/upgrade still Python |
+| **vulnerability** | Package inventory → CVE/KEV/OSV → enterprise finding | Server: check-in → `refresh_advisories_for_asset` → `vuln_bridge` (Phase 4) |
 
-Server-side control plane pieces that consume agent telemetry: `app/services/control_testing.py`, `app/controls/`, `app/configuration/`, event processor + realtime bus.
+Server-side control plane pieces that consume agent telemetry: `app/services/control_testing.py`, `app/controls/`, `app/configuration/`, `app/software/`, event processor + realtime bus.
 
 **Do not start server-side AI missions** until inventory → control → evidence → approve loop is solid on the agent path.
 

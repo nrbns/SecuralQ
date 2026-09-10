@@ -157,6 +157,7 @@ def ingest_agent_packages(
         )
         n += 1
     engine: dict[str, Any] = {}
+    advisory: dict[str, Any] = {}
     if sync and (n or asset_id):
         try:
             from app.software.service import upsert_records
@@ -165,7 +166,47 @@ def ingest_agent_packages(
             engine = upsert_records(user_id, recs, publish=True)
         except Exception as exc:
             engine = {"error": str(exc)[:200]}
-    return {"ingested": n, "asset_id": asset_id, "engine": engine}
+        # Phase 4: package → CVE match → enterprise vuln (debounced per asset).
+        if asset_id:
+            try:
+                from app.software.advisories import (
+                    mark_asset_refreshed,
+                    refresh_advisories_for_asset,
+                    should_refresh_asset,
+                )
+
+                if should_refresh_asset(asset_id):
+                    payload = {}
+                    try:
+                        payload = json.loads(agent.get("last_payload_json") or "{}")
+                    except Exception:
+                        payload = {}
+                    if not isinstance(payload, dict):
+                        payload = {}
+                    ports_raw = payload.get("listening_ports") or []
+                    ports: list[int] = []
+                    for p in ports_raw:
+                        try:
+                            ports.append(int(p))
+                        except (TypeError, ValueError):
+                            continue
+                    os_hint = f"{agent.get('os') or ''} {agent.get('os_version') or ''}".strip()
+                    advisory = refresh_advisories_for_asset(
+                        user_id,
+                        asset_id,
+                        limit=min(40, max(n, 8)),
+                        os_hint=os_hint,
+                        asset_name=hostname,
+                        listening_ports=ports[:40],
+                        agent_ip=str(agent.get("ip") or payload.get("ip") or ""),
+                        bridge_vulns=True,
+                    )
+                    mark_asset_refreshed(asset_id)
+                else:
+                    advisory = {"skipped": "debounced"}
+            except Exception as exc:
+                advisory = {"error": str(exc)[:200]}
+    return {"ingested": n, "asset_id": asset_id, "engine": engine, "advisory": advisory}
 
 
 def apply_patch_version_to_inventory(
