@@ -76,6 +76,60 @@ def test_explain_includes_new_factors():
     assert "business_criticality" in explanation
 
 
+def test_compensating_from_host_controls_pass_above_monitoring_only():
+    from app.services.risk_priority import _compensating_from_host_controls
+
+    monitor_only, _, _, _ = _compensating_from_host_controls(is_monitored=True, host_statuses={})
+    with_pass, reasons, passes, fails = _compensating_from_host_controls(
+        is_monitored=True,
+        host_statuses={
+            "host_firewall": "pass",
+            "host_disk_encryption": "pass",
+            "host_defender": "pass",
+            "host_ssh_root": "pass",
+        },
+    )
+    assert with_pass > monitor_only
+    assert with_pass <= 0.85
+    assert set(passes) == {
+        "host_firewall",
+        "host_disk_encryption",
+        "host_defender",
+        "host_ssh_root",
+    }
+    assert fails == []
+    assert any("host_firewall PASS" in r for r in reasons)
+
+
+def test_compensating_from_host_controls_fail_below_monitoring_only():
+    from app.services.risk_priority import _compensating_from_host_controls
+
+    monitor_only, _, _, _ = _compensating_from_host_controls(is_monitored=True, host_statuses={})
+    with_fail, reasons, passes, fails = _compensating_from_host_controls(
+        is_monitored=True,
+        host_statuses={"host_firewall": "fail", "host_disk_encryption": "fail"},
+    )
+    assert with_fail < monitor_only
+    assert with_fail >= 0.0
+    assert passes == []
+    assert "host_firewall" in fails
+    assert any("host_firewall FAIL" in r for r in reasons)
+
+
+def test_compensating_from_host_controls_unknown_ignored():
+    """UNKNOWN / absent host results must not invent PASS compensation."""
+    from app.services.risk_priority import _compensating_from_host_controls
+
+    a, _, _, _ = _compensating_from_host_controls(is_monitored=True, host_statuses={})
+    b, reasons, passes, fails = _compensating_from_host_controls(
+        is_monitored=True,
+        host_statuses={},  # decisive map omits unknown
+    )
+    assert a == b == 0.5
+    assert passes == [] and fails == []
+    assert reasons == ["Partially offset by active agent monitoring"]
+
+
 def test_kev_style_high_threat_intel_still_dominant_with_full_mitigation():
     """Even with strong compensating controls, an actively-exploited
     critical CVE on a critical asset should not fall to a low/info band —

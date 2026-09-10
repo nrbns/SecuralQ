@@ -3,8 +3,10 @@
 A scoped-down security graph: rather than standing up a separate graph
 database, this ranks the user's existing open findings by joining data
 that's already there — asset criticality (`assets.criticality`), exposure
-inferred from asset type, exploitability boosted by CISA KEV membership,
-and whether a patch is already available in the software inventory — into
+inferred from asset type (plus a small bump when live `host_firewall` FAIL
+is observed), exploitability boosted by CISA KEV membership, whether a
+patch is already available in the software inventory, and live host-control
+PASS/FAIL from online agent telemetry (Phase 5 → Phase 6 Prioritize) — into
 the one deterministic scoring function the product already uses
 (`app.services.risk.compute_risk_score`). Nothing here invents a score;
 it reuses the same weighted formula the AI risk-score endpoint uses, so a
@@ -89,6 +91,128 @@ def _agent_monitored_asset_ids(user_id: str) -> set[str]:
         return set()
 
 
+# Live host control tests (Phase 5) feed Prioritize (Phase 6): PASS raises
+# compensating_controls; FAIL lowers it and may bump exposure. UNKNOWN /
+# not collected never invents PASS. Monitoring alone stays a partial offset.
+_MONITORING_COMPENSATION = 0.5
+_HOST_PASS_BONUS = 0.08
+_HOST_FAIL_PENALTY = {
+    "host_firewall": 0.2,
+    "host_defender": 0.15,
+    "host_ssh_root": 0.12,
+    "host_disk_encryption": 0.2,
+}
+_HOST_COMPENSATION_CAP = 0.85
+_FIREWALL_FAIL_EXPOSURE_BUMP = 0.15
+
+
+def _host_control_status_by_asset(user_id: str) -> dict[str, dict[str, str]]:
+    """asset_id → {test_name: pass|fail} for decisive live host tests only.
+
+    Evaluates the online agent's last check-in payload with the same
+    evaluators as Continuous Compliance. Multi-agent assets: any FAIL wins;
+    PASS only when no FAIL for that test. UNKNOWN omitted (no invent).
+    """
+    try:
+        from app.agents import list_agents
+        from app.controls.test_registry import (
+            TEST_HOST_DEFENDER,
+            TEST_HOST_DISK_ENCRYPTION,
+            TEST_HOST_FIREWALL,
+            TEST_HOST_SSH_ROOT,
+        )
+        from app.services.control_testing import (
+            evaluate_host_defender_payload,
+            evaluate_host_disk_encryption_payload,
+            evaluate_host_firewall_payload,
+            evaluate_host_ssh_root_payload,
+        )
+    except Exception:
+        return {}
+
+    # asset_id → test → set of statuses seen
+    buckets: dict[str, dict[str, set[str]]] = {}
+    try:
+        agents = list_agents(user_id)
+    except Exception:
+        return {}
+
+    for agent in agents:
+        if agent.get("status") != "online":
+            continue
+        asset_id = str(agent.get("asset_id") or "").strip()
+        if not asset_id:
+            continue
+        payload = agent.get("last_payload") if isinstance(agent.get("last_payload"), dict) else {}
+        agent_id = str(agent.get("id") or "")
+        os_name = str(payload.get("os") or agent.get("os") or "")
+        evaluators = (
+            (TEST_HOST_FIREWALL, lambda: evaluate_host_firewall_payload(
+                payload, agent_id=agent_id, asset_id=asset_id
+            )),
+            (TEST_HOST_DEFENDER, lambda: evaluate_host_defender_payload(
+                payload, agent_id=agent_id, asset_id=asset_id, os_name=os_name
+            )),
+            (TEST_HOST_SSH_ROOT, lambda: evaluate_host_ssh_root_payload(
+                payload, agent_id=agent_id, asset_id=asset_id
+            )),
+            (TEST_HOST_DISK_ENCRYPTION, lambda: evaluate_host_disk_encryption_payload(
+                payload, agent_id=agent_id, asset_id=asset_id
+            )),
+        )
+        per_asset = buckets.setdefault(asset_id, {})
+        for test_name, fn in evaluators:
+            try:
+                st = str((fn() or {}).get("status") or "unknown").lower()
+            except Exception:
+                continue
+            if st not in ("pass", "fail"):
+                continue
+            per_asset.setdefault(test_name, set()).add(st)
+
+    out: dict[str, dict[str, str]] = {}
+    for asset_id, tests in buckets.items():
+        rolled: dict[str, str] = {}
+        for test_name, statuses in tests.items():
+            if "fail" in statuses:
+                rolled[test_name] = "fail"
+            elif "pass" in statuses:
+                rolled[test_name] = "pass"
+        if rolled:
+            out[asset_id] = rolled
+    return out
+
+
+def _compensating_from_host_controls(
+    *,
+    is_monitored: bool,
+    host_statuses: dict[str, str] | None,
+) -> tuple[float, list[str], list[str], list[str]]:
+    """Return (compensating, reason_lines, passes, fails).
+
+    Monitoring alone → 0.5. Decisive host PASS adds; FAIL subtracts.
+    Cap below 1.0 — host controls are operating-effectiveness signals, not
+    full mitigation. UNKNOWN never contributes.
+    """
+    if not is_monitored:
+        return 0.0, [], [], []
+    value = float(_MONITORING_COMPENSATION)
+    reasons = ["Partially offset by active agent monitoring"]
+    passes: list[str] = []
+    fails: list[str] = []
+    for test_name, status in sorted((host_statuses or {}).items()):
+        if status == "pass":
+            value += _HOST_PASS_BONUS
+            passes.append(test_name)
+            reasons.append(f"Offset by {test_name} PASS")
+        elif status == "fail":
+            value -= float(_HOST_FAIL_PENALTY.get(test_name, 0.15))
+            fails.append(test_name)
+            reasons.append(f"Elevated: {test_name} FAIL")
+    value = max(0.0, min(_HOST_COMPENSATION_CAP, round(value, 3)))
+    return value, reasons, passes, fails
+
+
 def _patchable_cves(user_id: str) -> set[str]:
     """CVEs for which the software-inventory pipeline already has a target
     fix version recorded somewhere in this user's installations — a cheap,
@@ -139,6 +263,7 @@ def _scored_open_items(
     kev_cves = _kev_cves()
     patchable = _patchable_cves(user_id)
     monitored_asset_ids = _agent_monitored_asset_ids(user_id)
+    host_by_asset = _host_control_status_by_asset(user_id)
 
     scored: list[dict[str, Any]] = []
     for v in vulns:
@@ -164,12 +289,17 @@ def _scored_open_items(
         # long-open findings nudge confidence up slightly — they've survived
         # re-scans, so they're not a transient/false-positive blip.
         confidence = 0.85 if age_days > 14 else 0.7
-        # a currently-online SecuraIQ agent is a real, existing compensating
-        # control signal (continuous monitoring/telemetry) — see
-        # _agent_monitored_asset_ids(). 0.5, not 1.0: monitoring detects
-        # faster, it doesn't remediate, so it's a partial mitigation only.
-        is_monitored = bool(v.get("asset_id")) and v.get("asset_id") in monitored_asset_ids
-        compensating_controls = 0.5 if is_monitored else 0.0
+        asset_id = v.get("asset_id") or ""
+        is_monitored = bool(asset_id) and asset_id in monitored_asset_ids
+        host_statuses = host_by_asset.get(asset_id) or {}
+        compensating_controls, host_reasons, host_passes, host_fails = _compensating_from_host_controls(
+            is_monitored=is_monitored,
+            host_statuses=host_statuses,
+        )
+        # Observed host_firewall FAIL is a real exposure signal (not invented):
+        # bump category-derived exposure slightly when decisive FAIL is present.
+        if host_statuses.get("host_firewall") == "fail":
+            exposure = min(1.0, round(exposure + _FIREWALL_FAIL_EXPOSURE_BUMP, 3))
 
         result = compute_risk_score(
             cvss=v.get("cvss"),
@@ -186,6 +316,8 @@ def _scored_open_items(
             reasons.append("Actively exploited (CISA KEV)")
         if exposure >= 0.8:
             reasons.append("Internet-facing asset")
+        elif host_statuses.get("host_firewall") == "fail":
+            reasons.append("Elevated exposure: host_firewall FAIL")
         if asset_criticality in ("critical", "high"):
             reasons.append(f"{asset_criticality.title()}-criticality asset")
         if business_criticality in ("critical", "high") and business_criticality != asset_criticality:
@@ -198,8 +330,9 @@ def _scored_open_items(
             reasons.append(f"Open {int(age_days)} days")
         if not reasons:
             reasons.append(f"{severity.title()} severity finding")
-        if is_monitored:
-            reasons.append("Partially offset by active agent monitoring")
+        # Host/monitoring reasons after severity context so "why fix first"
+        # still leads with impact signals.
+        reasons.extend(host_reasons)
 
         scored.append(
             {
@@ -217,6 +350,8 @@ def _scored_open_items(
                 "exposure": exposure,
                 "compensating_controls": compensating_controls,
                 "monitored": is_monitored,
+                "host_control_passes": host_passes,
+                "host_control_fails": host_fails,
                 "score": result["score"],
                 "band": result["band"],
                 "factors": result["factors"],

@@ -524,6 +524,93 @@ def test_priority_list_lowers_score_for_actively_monitored_asset(tmp_path, monke
     assert any("monitoring" in r.lower() for r in items[v_monitored["id"]]["reasons"])
 
 
+def test_priority_list_host_control_pass_lowers_score_vs_fail(tmp_path, monkeypatch):
+    """Phase 6 — live host PASS raises compensating_controls vs FAIL on the
+    same monitored asset shape. UNKNOWN is never invented as PASS."""
+    client, token, uid = _client_and_token(tmp_path, monkeypatch, username="host_risk_prio")
+    from app.agents import checkin, enroll_agent
+    from app.enterprise import create_vulnerability, update_asset
+
+    enrolled_pass = enroll_agent(uid, name="host-pass")
+    enrolled_fail = enroll_agent(uid, name="host-fail")
+    enrolled_unk = enroll_agent(uid, name="host-unk")
+
+    good = {
+        "hostname": "host-pass",
+        "os": "linux",
+        "firewall_status": {"collected": True, "enabled": True, "backend": "ufw"},
+        "disk_encryption_status": {"collected": True, "encrypted": True, "backend": "luks"},
+        "ssh_config": {"collected": True, "settings": {"PermitRootLogin": "no"}},
+        "defender_status": {"collected": False, "reason": "not Windows"},
+    }
+    bad = {
+        "hostname": "host-fail",
+        "os": "linux",
+        "firewall_status": {"collected": True, "enabled": False, "backend": "ufw"},
+        "disk_encryption_status": {"collected": True, "encrypted": False, "backend": "none"},
+        "ssh_config": {"collected": True, "settings": {"PermitRootLogin": "yes"}},
+        "defender_status": {"collected": False, "reason": "not Windows"},
+    }
+    unk = {
+        "hostname": "host-unk",
+        "os": "linux",
+        # no host telemetry keys — all UNKNOWN
+    }
+
+    aid_pass = checkin(enrolled_pass["agent_id"], good)["asset_id"]
+    aid_fail = checkin(enrolled_fail["agent_id"], bad)["asset_id"]
+    aid_unk = checkin(enrolled_unk["agent_id"], unk)["asset_id"]
+    for aid in (aid_pass, aid_fail, aid_unk):
+        update_asset(uid, aid, {"criticality": "high"})
+
+    v_pass = create_vulnerability(
+        uid,
+        {
+            "asset_id": aid_pass,
+            "asset_name": "host-pass",
+            "title": "Vulnerable curl",
+            "severity": "high",
+            "cvss": 8.0,
+            "status": "open",
+        },
+    )
+    v_fail = create_vulnerability(
+        uid,
+        {
+            "asset_id": aid_fail,
+            "asset_name": "host-fail",
+            "title": "Vulnerable curl",
+            "severity": "high",
+            "cvss": 8.0,
+            "status": "open",
+        },
+    )
+    v_unk = create_vulnerability(
+        uid,
+        {
+            "asset_id": aid_unk,
+            "asset_name": "host-unk",
+            "title": "Vulnerable curl",
+            "severity": "high",
+            "cvss": 8.0,
+            "status": "open",
+        },
+    )
+
+    res = client.get("/api/risk/priority", headers=_auth(token))
+    assert res.status_code == 200, res.text
+    items = {i["vuln_id"]: i for i in res.json()["items"]}
+
+    assert items[v_pass["id"]]["compensating_controls"] > items[v_unk["id"]]["compensating_controls"]
+    assert items[v_fail["id"]]["compensating_controls"] < items[v_unk["id"]]["compensating_controls"]
+    assert items[v_pass["id"]]["score"] < items[v_fail["id"]]["score"]
+    assert any("host_firewall PASS" in r for r in items[v_pass["id"]]["reasons"])
+    assert any("host_firewall FAIL" in r for r in items[v_fail["id"]]["reasons"])
+    assert any("host_disk_encryption FAIL" in r for r in items[v_fail["id"]]["reasons"])
+    # UNKNOWN must not claim host PASS offset
+    assert not any("PASS" in r and "host_" in r for r in items[v_unk["id"]]["reasons"])
+
+
 # ---------------------------------------------------------------------------
 # CMMC/CUI scope-aware business-criticality floor (Sprint 7-adjacent, per
 # app.cmmc_scoping). cmmc_asset_category is a self-reported classification —

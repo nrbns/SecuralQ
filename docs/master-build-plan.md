@@ -161,7 +161,9 @@ full CPE/NVD mirror, path-aware prioritization depth, OS-package match coverage.
 
 - Combine severity, exploitability, EPSS/KEV, exposure, criticality, attack path, controls, threat activity → technical / business / compliance / path risk
 
-**Status: Partial** — risk engine + org scoring exist; multi-lens business/compliance risk not complete.
+**Status: Partial** — risk engine + org scoring exist; live host PASS/FAIL now
+adjusts compensating_controls / priority reasons (architecture Phase 6 wedge);
+multi-lens business/compliance risk not complete.
 
 ---
 
