@@ -659,7 +659,12 @@ def checkin(agent_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     # Prefer effective (live + newest ACKed buffer) so offline catch-up re-applies.
     _host_present = any(
         isinstance(effective_payload.get(k), dict)
-        for k in ("firewall_status", "defender_status", "ssh_config")
+        for k in (
+            "firewall_status",
+            "defender_status",
+            "ssh_config",
+            "disk_encryption_status",
+        )
     )
     _eff = effective_payload if isinstance(effective_payload, dict) else payload
     if not (_eff or {}).get("truncated") or _host_present:

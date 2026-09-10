@@ -115,7 +115,7 @@ No direct DB or OS shell from the model.
 | **2** | Inventory | OS/hardware/software/users/processes/services/network |
 | **3** | Security telemetry | logs, FIM, firewall/AV/encryption config |
 | **4** | Vulnerability | package → CVE → exposure → risk |
-| **5** | Config & compliance | observe → control test → evidence |
+| **5** | Config & compliance | observe → control test → evidence — **host_disk_encryption** live test wired (v0.3 telemetry) |
 | **6–7** | Detection + risk | correlation, attack path, business risk |
 | **8** | AI SecOps | investigation / risk / compliance / remediation / verification agents |
 | **9–10** | Response + campaigns | signed commands, canary, rollback |

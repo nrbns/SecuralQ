@@ -50,7 +50,8 @@ def test_live_tests_returns_mapped_controls_only(tmp_path, monkeypatch):
     body = res.json()
     assert body["framework_id"] == "cis_controls"
     assert "CIS-1" in body["tested_control_ids"]
-    assert "CIS-3" not in body["tested_control_ids"]
+    assert "CIS-3" in body["tested_control_ids"]  # host_disk_encryption
+    assert "CIS-2" not in body["tested_control_ids"]
     assert set(body["results"].keys()) == set(body["tested_control_ids"])
 
 

@@ -211,6 +211,7 @@ HOST_TELEMETRY_KEYS: frozenset[str] = frozenset(
         "firewall_status",
         "defender_status",
         "ssh_config",
+        "disk_encryption_status",
         "packages",
         "hostname",
         "os",

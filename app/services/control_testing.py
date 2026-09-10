@@ -36,6 +36,7 @@ from app.controls.test_registry import (
     TEST_ASSET_INVENTORY,
     TEST_FIPS_REMOTE_ACCESS,
     TEST_HOST_DEFENDER,
+    TEST_HOST_DISK_ENCRYPTION,
     TEST_HOST_FIREWALL,
     TEST_HOST_SSH_ROOT,
     TEST_PATCH_MANAGEMENT,
@@ -439,10 +440,77 @@ def evaluate_host_ssh_root_payload(
     }
 
 
+def evaluate_host_disk_encryption_payload(
+    payload: dict[str, Any],
+    *,
+    agent_id: str = "",
+    asset_id: str = "",
+    collected_at: Any = None,
+) -> dict[str, Any]:
+    """Single-agent host_disk_encryption from disk_encryption_status telemetry.
+
+    PASS when collected and encrypted is truthy; FAIL when collected and
+    explicitly not encrypted; UNKNOWN when not collected or undecided.
+    Never invents BitLocker/LUKS/FileVault PASS.
+    """
+    de = (
+        payload.get("disk_encryption_status")
+        if isinstance(payload.get("disk_encryption_status"), dict)
+        else {}
+    )
+    collected = bool(de.get("collected"))
+    encrypted = _truthy_enabled(de.get("encrypted"))
+    snippet = {
+        "collected": collected,
+        "encrypted": de.get("encrypted"),
+        "backend": de.get("backend") or de.get("method") or de.get("type"),
+        "volumes": de.get("volumes"),
+        "reason": (de.get("reason") or "")[:200],
+    }
+    prov = _provenance(
+        test_id=TEST_HOST_DISK_ENCRYPTION,
+        agent_id=agent_id,
+        asset_id=asset_id,
+        observed=snippet,
+        collected_at=collected_at,
+        confidence=0.9 if collected and encrypted is not None else 0.4,
+    )
+    if not collected or encrypted is None:
+        return {
+            "test": TEST_HOST_DISK_ENCRYPTION,
+            "status": "unknown",
+            "summary": "Disk encryption status not collected by agent telemetry.",
+            "detail": {**snippet, **prov},
+            **prov,
+        }
+    if encrypted:
+        return {
+            "test": TEST_HOST_DISK_ENCRYPTION,
+            "status": "pass",
+            "summary": (
+                f"Disk encryption enabled "
+                f"({snippet.get('backend') or 'unknown backend'})."
+            ),
+            "detail": {**snippet, **prov},
+            **prov,
+        }
+    return {
+        "test": TEST_HOST_DISK_ENCRYPTION,
+        "status": "fail",
+        "summary": (
+            f"Disk encryption collected but not enabled "
+            f"({snippet.get('backend') or 'unknown backend'})."
+        ),
+        "detail": {**snippet, **prov},
+        **prov,
+    }
+
+
 _HOST_EVALUATORS = {
     TEST_HOST_FIREWALL: evaluate_host_firewall_payload,
     TEST_HOST_DEFENDER: evaluate_host_defender_payload,
     TEST_HOST_SSH_ROOT: evaluate_host_ssh_root_payload,
+    TEST_HOST_DISK_ENCRYPTION: evaluate_host_disk_encryption_payload,
 }
 
 
@@ -529,6 +597,10 @@ def _test_host_ssh_root(user_id: str) -> dict[str, Any]:
     return _aggregate_host_test(user_id, TEST_HOST_SSH_ROOT)
 
 
+def _test_host_disk_encryption(user_id: str) -> dict[str, Any]:
+    return _aggregate_host_test(user_id, TEST_HOST_DISK_ENCRYPTION)
+
+
 _TEST_FUNCS = {
     TEST_ASSET_INVENTORY: _test_asset_inventory,
     TEST_VULNERABILITY_MANAGEMENT: _test_vulnerability_management,
@@ -537,6 +609,7 @@ _TEST_FUNCS = {
     TEST_HOST_FIREWALL: _test_host_firewall,
     TEST_HOST_DEFENDER: _test_host_defender,
     TEST_HOST_SSH_ROOT: _test_host_ssh_root,
+    TEST_HOST_DISK_ENCRYPTION: _test_host_disk_encryption,
 }
 
 
@@ -626,6 +699,8 @@ def _failure_risk_score(test_result: dict[str, Any]) -> float:
         base += min(30.0, float(detail.get("failing_agents") or 1) * 10.0)
     elif test == TEST_HOST_SSH_ROOT:
         base += min(28.0, float(detail.get("failing_agents") or 1) * 9.0)
+    elif test == TEST_HOST_DISK_ENCRYPTION:
+        base += min(30.0, float(detail.get("failing_agents") or 1) * 10.0)
     elif test == TEST_FIPS_REMOTE_ACCESS:
         base += min(30.0, float(len(detail.get("risky_findings") or [])) * 10.0)
     return round(min(99.0, base), 1)
@@ -706,6 +781,12 @@ def list_live_control_failures(
                     ws = "agents"
                 elif t.get("test") == TEST_HOST_SSH_ROOT:
                     fix_hint = "Set PermitRootLogin no (or prohibit-password) in sshd_config"
+                    ws = "agents"
+                elif t.get("test") == TEST_HOST_DISK_ENCRYPTION:
+                    fix_hint = (
+                        "Enable full-disk encryption (BitLocker / LUKS / FileVault), "
+                        "then verify on next agent check-in — no auto-remediation"
+                    )
                     ws = "agents"
                 failures.append(
                     {
@@ -955,7 +1036,7 @@ def evaluate_agent_host_controls(
     *,
     asset_id: str = "",
 ) -> dict[str, Any]:
-    """RT-10/11 — run host_firewall / host_defender / host_ssh_root for one agent.
+    """RT-10/11 — run host firewall / Defender / SSH / disk encryption for one agent.
 
     Publishes compliance (+ optional risk) events and records observed evidence
     on FAIL/PASS transitions. Never raises to callers (check-in must stay up).
@@ -978,6 +1059,9 @@ def evaluate_agent_host_controls(
                 payload, agent_id=agent_id, asset_id=asset, collected_at=collected_at, os_name=os_name
             )),
             (TEST_HOST_SSH_ROOT, lambda: evaluate_host_ssh_root_payload(
+                payload, agent_id=agent_id, asset_id=asset, collected_at=collected_at
+            )),
+            (TEST_HOST_DISK_ENCRYPTION, lambda: evaluate_host_disk_encryption_payload(
                 payload, agent_id=agent_id, asset_id=asset, collected_at=collected_at
             )),
         )

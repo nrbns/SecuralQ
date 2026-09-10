@@ -23,10 +23,16 @@ TEST_PATCH_MANAGEMENT = "patch_management"
 TEST_HOST_FIREWALL = "host_firewall"
 TEST_HOST_DEFENDER = "host_defender"
 TEST_HOST_SSH_ROOT = "host_ssh_root"
+TEST_HOST_DISK_ENCRYPTION = "host_disk_encryption"
 TEST_FIPS_REMOTE_ACCESS = "fips_remote_access_tooling"
 
 _HOST_TELEMETRY_TESTS = frozenset(
-    {TEST_HOST_FIREWALL, TEST_HOST_DEFENDER, TEST_HOST_SSH_ROOT}
+    {
+        TEST_HOST_FIREWALL,
+        TEST_HOST_DEFENDER,
+        TEST_HOST_SSH_ROOT,
+        TEST_HOST_DISK_ENCRYPTION,
+    }
 )
 
 # Primary framework control ids when publishing from a single agent check-in.
@@ -35,6 +41,7 @@ _HOST_TEST_PRIMARY_CONTROLS: dict[str, tuple[str, str]] = {
     TEST_HOST_FIREWALL: ("cmmc_l2", "SC.L2-3.13.1"),
     TEST_HOST_DEFENDER: ("cmmc_l2", "SI.L2-3.14.2"),
     TEST_HOST_SSH_ROOT: ("cmmc_l2", "AC.L2-3.1.5"),
+    TEST_HOST_DISK_ENCRYPTION: ("cmmc_l2", "SC.L2-3.13.16"),
 }
 
 
@@ -163,6 +170,26 @@ CONTROL_TEST_REGISTRY: list[dict[str, Any]] = [
             ("cmmc_l2", "AC.L2-3.1.5"),
         ],
         remediation_hint="Set PermitRootLogin no (or prohibit-password) in sshd_config.",
+    ),
+    _entry(
+        TEST_HOST_DISK_ENCRYPTION,
+        data_sources=["securaiq_agent.disk_encryption_status"],
+        expected_state={"encrypted": True},
+        frequency="checkin",
+        verifiability="machine",
+        control_bindings=[
+            ("cis_controls", "CIS-3"),
+            ("nist_csf", "PR.DS-01"),
+            ("iso27001", "A.8.24"),
+            ("nist_800_53", "SC-28"),
+            ("nist_800_171", "3.13.16"),
+            ("cmmc_l2", "SC.L2-3.13.16"),
+        ],
+        remediation_hint=(
+            "Enable full-disk encryption (BitLocker / LUKS / FileVault) on the host, "
+            "then wait for the next agent check-in. UNKNOWN when not collected — "
+            "never invent PASS. No auto-remediation."
+        ),
     ),
     _entry(
         TEST_FIPS_REMOTE_ACCESS,

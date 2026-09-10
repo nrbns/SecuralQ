@@ -193,7 +193,9 @@ full CPE/NVD mirror, path-aware prioritization depth, OS-package match coverage.
 
 - Control metadata + test definition + data sources + pass/fail + evidence rules + frequency
 
-**Status: Partial** — live host control tests (firewall / Defender / SSH) from agent telemetry; curated map only. Sprint 1 package: [control-config-engine.md](./control-config-engine.md) (`app/controls/`, `/api/controls`). Task #144 Live Test UI remains frozen.
+**Status: Partial** — live host control tests (firewall / Defender / SSH / disk encryption)
+from agent telemetry; curated map only. Sprint 1 package: [control-config-engine.md](./control-config-engine.md)
+(`app/controls/`, `/api/controls`). Task #144 Live Test UI remains frozen.
 
 ---
 
@@ -201,7 +203,8 @@ full CPE/NVD mirror, path-aware prioritization depth, OS-package match coverage.
 
 - Telemetry → control test → PASS/FAIL → evidence → score/risk; FAIL → remediate → verify → PASS (no manual score editing)
 
-**Status: Partial** — continuous compliance panel + RT-10/11 firewall stub loop; not certification / full auto rem.
+**Status: Partial** — continuous compliance panel + RT-10/11 host control loops (firewall auto-rem
+optional; disk encryption observe→test→POA&M recommend-only); not certification / full auto rem.
 
 ---
 

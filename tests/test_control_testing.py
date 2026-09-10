@@ -27,7 +27,8 @@ def test_controls_with_live_tests_only_returns_mapped_controls():
     cis_tested = controls_with_live_tests("cis_controls")
     assert "CIS-1" in cis_tested
     assert "CIS-7" in cis_tested
-    assert "CIS-3" not in cis_tested  # Data Protection has no live test mapped
+    assert "CIS-3" in cis_tested  # host_disk_encryption
+    assert "CIS-12" in cis_tested  # host_firewall
 
     assert controls_with_live_tests("owasp_top10") == set()  # no mappings for this framework at all
 
@@ -149,7 +150,7 @@ def test_run_live_tests_for_control_no_mapping_returns_empty(tmp_path, monkeypat
     from app.services.control_testing import run_live_tests_for_control
 
     uid = _setup(monkeypatch, tmp_path)
-    assert run_live_tests_for_control(uid, "cis_controls", "CIS-3") == []
+    assert run_live_tests_for_control(uid, "cis_controls", "CIS-2") == []
 
 
 def test_control_with_two_mapped_tests_returns_both(tmp_path, monkeypatch):
@@ -183,7 +184,11 @@ def test_run_gap_analysis_attaches_live_tests_without_overriding_declared_status
     assert cis1["live_tests"][0]["status"] == "fail"  # no real assets either, in this test
 
     cis3 = next(r for r in result["results"] if r["control_id"] == "CIS-3")
-    assert cis3["live_tests"] == []  # no live test mapped to this control
+    assert cis3["live_tests"]
+    assert cis3["live_tests"][0]["test"] == "host_disk_encryption"
+
+    cis2 = next(r for r in result["results"] if r["control_id"] == "CIS-2")
+    assert cis2["live_tests"] == []  # no live test mapped to this control
 
 
 def test_host_firewall_fail_when_disabled():
@@ -250,6 +255,46 @@ def test_host_ssh_root_pass_on_permit_no():
         {"ssh_config": {"collected": True, "settings": {"PermitRootLogin": "no"}}}
     )
     assert r["status"] == "pass"
+
+
+def test_host_disk_encryption_fail_when_not_encrypted():
+    from app.services.control_testing import evaluate_host_disk_encryption_payload
+
+    r = evaluate_host_disk_encryption_payload(
+        {
+            "disk_encryption_status": {
+                "collected": True,
+                "encrypted": False,
+                "backend": "bitlocker",
+            }
+        }
+    )
+    assert r["test"] == "host_disk_encryption"
+    assert r["status"] == "fail"
+
+
+def test_host_disk_encryption_pass_when_encrypted():
+    from app.services.control_testing import evaluate_host_disk_encryption_payload
+
+    r = evaluate_host_disk_encryption_payload(
+        {
+            "disk_encryption_status": {
+                "collected": True,
+                "encrypted": True,
+                "backend": "luks",
+            }
+        }
+    )
+    assert r["status"] == "pass"
+
+
+def test_host_disk_encryption_unknown_when_not_collected():
+    from app.services.control_testing import evaluate_host_disk_encryption_payload
+
+    r = evaluate_host_disk_encryption_payload(
+        {"disk_encryption_status": {"collected": False, "encrypted": None, "reason": "lsblk unavailable"}}
+    )
+    assert r["status"] == "unknown"
 
 
 def test_evaluate_agent_host_controls_firewall_loop_and_checkin_safe(tmp_path, monkeypatch):
@@ -371,6 +416,7 @@ def test_host_ssh_root_fail_opens_poam_and_pass_closes(tmp_path, monkeypatch):
 def test_control_test_registry_loads_firewall_bindings():
     """Registry is the single source of truth for host_firewall control maps."""
     from app.controls.test_registry import (
+        TEST_HOST_DISK_ENCRYPTION,
         TEST_HOST_FIREWALL,
         build_control_test_map,
         get_test_entry,
@@ -390,6 +436,58 @@ def test_control_test_registry_loads_firewall_bindings():
     assert derived[("cis_controls", "CIS-12")] == [TEST_HOST_FIREWALL]
     assert _CONTROL_TEST_MAP[("cis_controls", "CIS-12")] == [TEST_HOST_FIREWALL]
     assert _CONTROL_TEST_MAP[("cmmc_l2", "SC.L2-3.13.1")] == [TEST_HOST_FIREWALL]
+
+    disk = get_test_entry(TEST_HOST_DISK_ENCRYPTION)
+    assert disk is not None
+    assert disk["frequency"] == "checkin"
+    disk_bindings = {(b[0], b[1]) for b in disk["control_bindings"]}
+    assert ("cmmc_l2", "SC.L2-3.13.16") in disk_bindings
+    assert ("nist_800_171", "3.13.16") in disk_bindings
+    assert _CONTROL_TEST_MAP[("cmmc_l2", "SC.L2-3.13.16")] == [TEST_HOST_DISK_ENCRYPTION]
+
+
+def test_open_poam_from_aggregate_fail_uses_agents_list(tmp_path, monkeypatch):
+    """failing_agents is an int on aggregate results; open from detail.agents FAIL rows."""
+    from app.controls.poam import open_poam_from_control_fail_result, poam_marker
+    from app.enterprise import list_remediations
+
+    uid = _setup(monkeypatch, tmp_path, username="poam_agg_user")
+    opened = open_poam_from_control_fail_result(
+        uid,
+        framework_id="cmmc_l2",
+        control_id="SC.L2-3.13.16",
+        result={
+            "test": "host_disk_encryption",
+            "status": "fail",
+            "summary": "1 of 1 online agent(s) failed",
+            "detail": {
+                "failing_agents": 1,
+                "agents": [
+                    {
+                        "agent_id": "agt-disk-1",
+                        "hostname": "lab-disk",
+                        "status": "fail",
+                    },
+                    {
+                        "agent_id": "agt-ok",
+                        "hostname": "ok-host",
+                        "status": "pass",
+                    },
+                ],
+            },
+        },
+    )
+    assert opened
+    marker = poam_marker("host_disk_encryption", "agt-disk-1")
+    assert any(
+        marker in (r.get("notes") or "") or marker in (r.get("recommendation") or "")
+        for r in list_remediations(uid, status="open")
+    )
+    # Must not open a row for the PASS agent
+    assert not any(
+        poam_marker("host_disk_encryption", "agt-ok") in (r.get("notes") or "")
+        for r in list_remediations(uid, status="open")
+    )
 
 
 def test_enable_firewall_in_supported_command_kinds():

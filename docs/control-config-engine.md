@@ -146,6 +146,7 @@ Registry bindings (exact catalog IDs):
 | `host_firewall` | `3.13.1`, `3.4.7` | `SC.L2-3.13.1`, `CM.L2-3.4.2` |
 | `host_defender` | `3.14.2` | `SI.L2-3.14.2` |
 | `host_ssh_root` | `3.1.5` | `AC.L2-3.1.5` |
+| `host_disk_encryption` | `3.13.16` | `SC.L2-3.13.16` |
 
 Baseline setting → control IDs (seeded `CMMC Windows Workstation`):
 
@@ -153,7 +154,7 @@ Baseline setting → control IDs (seeded `CMMC Windows Workstation`):
 |---------|----------|----------|
 | `firewall.enabled` | `true` | `SC.L2-3.13.1` / `3.13.1` |
 | `defender.enabled` | `true` (windows) | `SI.L2-3.14.2` / `3.14.2` |
-| `disk_encryption.enabled` | `true` when collected | `SC.L2-3.13.16` / `3.13.16` (baseline only — no live test; UNKNOWN if not collected) |
+| `disk_encryption.enabled` | `true` when collected | `SC.L2-3.13.16` / `3.13.16` (live `host_disk_encryption`; UNKNOWN if not collected) |
 | `ssh.permit_root_login` | `false` (linux) | `AC.L2-3.1.5` / `3.1.5` |
 
 Existing CIS / CSF / ISO / 800-53 host mappings unchanged. Never invent BitLocker PASS without telemetry.

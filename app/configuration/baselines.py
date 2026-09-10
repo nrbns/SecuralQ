@@ -2,8 +2,8 @@
 
 Control IDs for live-tested settings must match entries in
 ``app.controls.test_registry`` / derived ``_CONTROL_TEST_MAP``
-(CMMC L2 / NIST 800-171 host mappings). Disk encryption is observed from
-agent ``disk_encryption_status`` when collected — UNKNOWN / absent when not;
+(CMMC L2 / NIST 800-171 host mappings). Disk encryption is live-tested from
+agent ``disk_encryption_status`` when collected — UNKNOWN when not;
 never invent BitLocker PASS. This is not a certification checklist.
 """
 
@@ -12,7 +12,8 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-# Explicit control mappings used by live host tests (firewall / Defender / SSH).
+# Explicit control mappings used by live host tests (firewall / Defender / SSH /
+# disk encryption). Control IDs must match ``app.controls.test_registry``.
 _CTRL_FIREWALL = [
     {"framework_id": "cmmc_l2", "control_id": "SC.L2-3.13.1"},
     {"framework_id": "nist_800_171", "control_id": "3.13.1"},
@@ -25,7 +26,6 @@ _CTRL_SSH_ROOT = [
     {"framework_id": "cmmc_l2", "control_id": "AC.L2-3.1.5"},
     {"framework_id": "nist_800_171", "control_id": "3.1.5"},
 ]
-# Baseline-only refs (no live test yet) — catalog crypto-at-rest practices.
 _CTRL_DISK_ENCRYPTION = [
     {"framework_id": "cmmc_l2", "control_id": "SC.L2-3.13.16"},
     {"framework_id": "nist_800_171", "control_id": "3.13.16"},

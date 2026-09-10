@@ -30,6 +30,11 @@ _FIX_HINTS: dict[str, str] = {
         "Set PermitRootLogin no (or prohibit-password) in sshd_config, then "
         "wait for the next agent check-in to verify PASS. No auto-remediation."
     ),
+    "host_disk_encryption": (
+        "Enable full-disk encryption (BitLocker / LUKS / FileVault) on the host, "
+        "then wait for the next agent check-in to verify PASS. "
+        "UNKNOWN when not collected — never invent PASS. No auto-remediation."
+    ),
 }
 
 
@@ -215,7 +220,15 @@ def open_poam_from_control_fail_result(
             return opened
         test_name = str(result.get("test") or "")
         detail = result.get("detail") if isinstance(result.get("detail"), dict) else {}
-        agents = detail.get("failing_agents") or []
+        agents = detail.get("failing_agents")
+        # Aggregate host tests store failing_agents as an int count and the
+        # per-agent rows under detail.agents — derive FAIL rows from there.
+        if isinstance(agents, int) or agents is None:
+            agents = [
+                a
+                for a in (detail.get("agents") or [])
+                if isinstance(a, dict) and str(a.get("status") or "").lower() == "fail"
+            ]
         if isinstance(agents, list) and agents:
             for entry in agents:
                 if isinstance(entry, dict):
