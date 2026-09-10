@@ -611,6 +611,58 @@ def test_priority_list_host_control_pass_lowers_score_vs_fail(tmp_path, monkeypa
     assert not any("PASS" in r and "host_" in r for r in items[v_unk["id"]]["reasons"])
 
 
+def test_priority_list_active_agent_threat_raises_score(tmp_path, monkeypatch):
+    """Active native agent threats on an asset bump threat_intel / score."""
+    client, token, uid = _client_and_token(tmp_path, monkeypatch, username="threat_risk_prio")
+    from app.agents import checkin, enroll_agent
+    from app.enterprise import create_vulnerability, update_asset
+
+    clean = enroll_agent(uid, name="clean-host")
+    hot = enroll_agent(uid, name="hot-host")
+    aid_clean = checkin(clean["agent_id"], {"hostname": "clean-host", "os": "linux"})["asset_id"]
+    aid_hot = checkin(
+        hot["agent_id"],
+        {
+            "hostname": "hot-host",
+            "os": "linux",
+            "file_integrity": [
+                {"path": "/etc/passwd", "status": "modified", "hash": "ff"},
+            ],
+        },
+    )["asset_id"]
+    for aid in (aid_clean, aid_hot):
+        update_asset(uid, aid, {"criticality": "high"})
+
+    v_clean = create_vulnerability(
+        uid,
+        {
+            "asset_id": aid_clean,
+            "asset_name": "clean-host",
+            "title": "Vulnerable curl",
+            "severity": "high",
+            "cvss": 8.0,
+            "status": "open",
+        },
+    )
+    v_hot = create_vulnerability(
+        uid,
+        {
+            "asset_id": aid_hot,
+            "asset_name": "hot-host",
+            "title": "Vulnerable curl",
+            "severity": "high",
+            "cvss": 8.0,
+            "status": "open",
+        },
+    )
+    res = client.get("/api/risk/priority", headers=_auth(token))
+    items = {i["vuln_id"]: i for i in res.json()["items"]}
+    assert items[v_hot["id"]]["score"] > items[v_clean["id"]]["score"]
+    assert items[v_hot["id"]]["active_agent_threats"] >= 1
+    assert items[v_hot["id"]]["factors"]["threat_intel"] > items[v_clean["id"]]["factors"]["threat_intel"]
+    assert any("Active agent threat" in r for r in items[v_hot["id"]]["reasons"])
+
+
 # ---------------------------------------------------------------------------
 # CMMC/CUI scope-aware business-criticality floor (Sprint 7-adjacent, per
 # app.cmmc_scoping). cmmc_asset_category is a self-reported classification —

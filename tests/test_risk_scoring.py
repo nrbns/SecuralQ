@@ -130,6 +130,29 @@ def test_compensating_from_host_controls_unknown_ignored():
     assert reasons == ["Partially offset by active agent monitoring"]
 
 
+def test_threat_intel_with_active_threats_kev_dominates():
+    from app.services.risk_priority import _threat_intel_with_active_threats
+
+    v, reasons = _threat_intel_with_active_threats(
+        is_kev=True,
+        active={"count": 3, "max_severity": "critical", "categories": ["file_integrity"]},
+    )
+    assert v == 0.9
+    assert any("KEV" in r for r in reasons)
+
+
+def test_threat_intel_with_active_threats_bumps_non_kev():
+    from app.services.risk_priority import _threat_intel_with_active_threats
+
+    base, _ = _threat_intel_with_active_threats(is_kev=False, active=None)
+    bumped, reasons = _threat_intel_with_active_threats(
+        is_kev=False,
+        active={"count": 2, "max_severity": "high", "categories": ["security_log"]},
+    )
+    assert bumped > base
+    assert any("Active agent threat" in r for r in reasons)
+
+
 def test_kev_style_high_threat_intel_still_dominant_with_full_mitigation():
     """Even with strong compensating controls, an actively-exploited
     critical CVE on a critical asset should not fall to a low/info band —

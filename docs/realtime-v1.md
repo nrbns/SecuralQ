@@ -231,6 +231,7 @@ loop (`scripts/securaiq_agent.py` ≥ 1.1.1). Server recovery path strengthened 
 **Ingest paths into `agent_threat`:**
 - `POST /api/agents/threat` (Python Sentinel watcher)
 - Check-in `file_integrity` modify/delete → `record_threat_detections` (Rust + any check-in-only agent; same titles/fingerprints as Sentinel FIM). `added` / truncated empty → no alert.
+- Check-in `security_logs` → allowlisted Windows Event IDs (1102/4697/7045/4720/4732) and Linux auth substrings only — never open-ended heuristics.
 
 When `agent_threat` is processed and `user_id` is known:
 

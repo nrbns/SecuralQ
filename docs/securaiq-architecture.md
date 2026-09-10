@@ -116,8 +116,8 @@ No direct DB or OS shell from the model.
 | **3** | Security telemetry | logs, FIM, firewall/AV/encryption config |
 | **4** | Vulnerability | package → CVE → exposure → risk |
 | **5** | Config & compliance | observe → control test → evidence — **host_disk_encryption** live test wired (v0.3 telemetry) |
-| **6–7** | Detection + risk | host PASS/FAIL → priority; **check-in FIM modify/delete → native threats** + graph hotspots |
-| **8** | AI SecOps | investigation / risk / compliance / remediation / verification agents |
+| **6–7** | Detection + risk | **Complete for this arc:** host PASS/FAIL → priority; check-in FIM + allowlisted security_logs → threats → graph; active threats bump priority. Not full XDR/Sigma/EDR. |
+| **8** | AI SecOps | investigation / risk / compliance / remediation / verification agents — **deferred until ops packaging / deeper twin as needed** |
 | **9–10** | Response + campaigns | signed commands, canary, rollback |
 | **11** | Advanced | graph twin, cloud/K8s, SBOM, deeper EDR |
 

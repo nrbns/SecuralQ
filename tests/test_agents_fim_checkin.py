@@ -48,6 +48,73 @@ def test_detections_from_checkin_fim_truncated_empty_no_invent():
     assert detections_from_checkin_file_integrity(None) == []
 
 
+def test_detections_from_security_logs_allowlist_only():
+    from app.agents import detections_from_checkin_security_logs
+
+    dets = detections_from_checkin_security_logs(
+        {
+            "security_logs": {
+                "collected": True,
+                "backend": "Windows Security",
+                "items": [
+                    {"Id": 1102, "ProviderName": "Microsoft-Windows-Eventlog"},
+                    {"Id": 4624, "ProviderName": "Microsoft-Windows-Security-Auditing"},  # success logon — not allowlisted
+                    {"Id": 4720},
+                ],
+            }
+        }
+    )
+    assert len(dets) == 2
+    assert {d["title"] for d in dets} == {
+        "Security audit log cleared",
+        "User account created",
+    }
+    assert any(d["severity"] == "high" for d in dets)
+
+    linux = detections_from_checkin_security_logs(
+        {
+            "security_logs": {
+                "collected": True,
+                "backend": "journalctl",
+                "items": [
+                    {"line": "sshd: Failed password for root from 10.0.0.1"},
+                    {"line": "cron: Session opened for user alice"},  # not allowlisted
+                ],
+            }
+        }
+    )
+    assert len(linux) == 1
+    assert linux[0]["title"] == "SSH failed password attempt"
+
+    assert detections_from_checkin_security_logs(
+        {"security_logs": {"collected": False, "items": [{"Id": 1102}]}}
+    ) == []
+    assert detections_from_checkin_security_logs({"truncated": True, "security_logs": {"items": []}}) == []
+
+
+def test_checkin_security_logs_creates_threat(tmp_path, monkeypatch):
+    from app.agents import checkin, enroll_agent, list_threats
+
+    uid = _setup(monkeypatch, tmp_path, username="sec_log_checkin")
+    enrolled = enroll_agent(uid, name="seclog-host")
+    checkin(
+        enrolled["agent_id"],
+        {
+            "hostname": "seclog-host",
+            "os": "windows",
+            "security_logs": {
+                "collected": True,
+                "backend": "Windows Security",
+                "items": [{"Id": 1102}],
+            },
+        },
+    )
+    threats = list_threats(uid, agent_id=enrolled["agent_id"])
+    assert len(threats) == 1
+    assert threats[0]["category"] == "security_log"
+    assert threats[0]["severity"] == "high"
+
+
 def test_checkin_fim_creates_threat_and_skips_realert(tmp_path, monkeypatch):
     from app.agents import checkin, enroll_agent, list_threats
     from app.enterprise import list_vulnerabilities

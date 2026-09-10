@@ -691,11 +691,16 @@ def checkin(agent_id: str, payload: dict[str, Any]) -> dict[str, Any]:
             )
         except Exception:
             pass
-    # Detect (architecture Phase 6) — check-in FIM modify/delete → native threats.
-    # Same semantics as Python Sentinel FIM; never invent from added/truncated.
+    # Detect (architecture Phase 6–7) — check-in FIM + allowlisted security_logs
+    # → native threats. Never invent from added/truncated/non-allowlisted lines.
     # Must never break check-in.
+    _detect_payload = _eff if isinstance(_eff, dict) else payload
     try:
-        _ingest_checkin_file_integrity(agent_id, _eff if isinstance(_eff, dict) else payload)
+        _ingest_checkin_file_integrity(agent_id, _detect_payload)
+    except Exception:
+        pass
+    try:
+        _ingest_checkin_security_logs(agent_id, _detect_payload)
     except Exception:
         pass
     commands = _dispatch_queued_commands(agent_id)
@@ -931,6 +936,118 @@ def _ingest_checkin_file_integrity(agent_id: str, payload: dict[str, Any] | None
     Never raises to callers. Empty / added-only / truncated → no-op.
     """
     detections = detections_from_checkin_file_integrity(payload)
+    if not detections:
+        return {"ok": True, "created": 0, "skipped": 0, "detections": []}
+    return record_threat_detections(agent_id, detections)
+
+
+# Allowlisted security-log signals only — never heuristic "anything suspicious".
+# Windows: classic IR Event IDs from the bounded Security sample.
+# Linux/macOS: exact substring matches on journal/auth lines.
+_WINDOWS_LOG_EVENT_ALLOWLIST: dict[int, tuple[str, str]] = {
+    1102: ("high", "Security audit log cleared"),
+    4697: ("medium", "System service installed"),
+    7045: ("medium", "A service was installed on the system"),
+    4720: ("medium", "User account created"),
+    4732: ("medium", "Member added to security-enabled local group"),
+}
+_LINUX_LOG_LINE_ALLOWLIST: tuple[tuple[str, str, str], ...] = (
+    ("failed password for", "medium", "SSH failed password attempt"),
+    ("invalid user", "medium", "SSH invalid user attempt"),
+    ("authentication failure", "medium", "Authentication failure"),
+    ("possible break-in attempt", "high", "Possible break-in attempt"),
+)
+
+
+def detections_from_checkin_security_logs(payload: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Map allowlisted ``security_logs`` sample rows to Sentinel detections.
+
+    Honesty: only fixed Windows Event IDs / Linux substrings. No open-ended
+    ML or keyword soup. Truncated/empty/not collected → invent nothing.
+    """
+    if not isinstance(payload, dict):
+        return []
+    block = payload.get("security_logs")
+    if not isinstance(block, dict):
+        return []
+    if payload.get("truncated") and not block.get("items"):
+        return []
+    if block.get("collected") is False:
+        return []
+    items = block.get("items")
+    if not isinstance(items, list) or not items:
+        return []
+
+    out: list[dict[str, Any]] = []
+    seen_fp: set[str] = set()
+    backend = str(block.get("backend") or "")[:80]
+
+    for raw in items:
+        if not isinstance(raw, dict):
+            continue
+        # Windows Get-WinEvent shape: Id / TimeCreated / ProviderName
+        event_id = raw.get("Id")
+        if event_id is None:
+            event_id = raw.get("id")
+        try:
+            eid = int(event_id) if event_id is not None and str(event_id).strip() != "" else None
+        except (TypeError, ValueError):
+            eid = None
+        if eid is not None and eid in _WINDOWS_LOG_EVENT_ALLOWLIST:
+            sev, title = _WINDOWS_LOG_EVENT_ALLOWLIST[eid]
+            target = f"windows_event:{eid}"
+            key = f"{sev}|{title}|{target}"
+            if key in seen_fp:
+                continue
+            seen_fp.add(key)
+            out.append(
+                {
+                    "severity": sev,
+                    "category": "security_log",
+                    "title": title[:200],
+                    "detail": f"Windows Security Event ID {eid} ({backend or 'Windows Security'})"[:1000],
+                    "target": target[:500],
+                    "source": "checkin_security_logs",
+                }
+            )
+            if len(out) >= 15:
+                break
+            continue
+
+        line = str(raw.get("line") or raw.get("Message") or raw.get("message") or "")
+        if not line.strip():
+            continue
+        lower = line.lower()
+        for needle, sev, title in _LINUX_LOG_LINE_ALLOWLIST:
+            if needle not in lower:
+                continue
+            # Fingerprint by allowlist title + short line hash so identical spam
+            # collapses via record_threat_detections, but distinct lines can re-alert.
+            snippet = line.strip()[:120]
+            target = f"log:{needle}:{hashlib.sha256(snippet.encode('utf-8')).hexdigest()[:12]}"
+            key = f"{sev}|{title}|{target}"
+            if key in seen_fp:
+                break
+            seen_fp.add(key)
+            out.append(
+                {
+                    "severity": sev,
+                    "category": "security_log",
+                    "title": title[:200],
+                    "detail": f"{backend or 'auth'}: {snippet}"[:1000],
+                    "target": target[:500],
+                    "source": "checkin_security_logs",
+                }
+            )
+            break
+        if len(out) >= 15:
+            break
+    return out
+
+
+def _ingest_checkin_security_logs(agent_id: str, payload: dict[str, Any] | None) -> dict[str, Any]:
+    """Best-effort allowlisted security_logs → threats. Never raises."""
+    detections = detections_from_checkin_security_logs(payload)
     if not detections:
         return {"ok": True, "created": 0, "skipped": 0, "detections": []}
     return record_threat_detections(agent_id, detections)

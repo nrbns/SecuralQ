@@ -128,8 +128,9 @@ See [securaiq-architecture.md](./securaiq-architecture.md) · [agent-platform.md
 - Severity, confidence, suppression, grouping, MITRE, IOC, tuning
 
 **Status: Partial** — foundations (threat ingest, processor hooks, RT-07 burst/keyword → incident);
-check-in FIM modify/delete now feeds native `securaiq_agent_threats` (parity with Python Sentinel FIM);
-knowledge graph hotspots include those detections. **Not** a full XDR / Sigma rule engine.
+check-in FIM modify/delete + **allowlisted** `security_logs` feed native `securaiq_agent_threats`;
+knowledge graph hotspots include those detections; active threats bump risk priority
+`threat_intel`. **Not** a full XDR / Sigma rule engine.
 
 ---
 
@@ -163,8 +164,9 @@ full CPE/NVD mirror, path-aware prioritization depth, OS-package match coverage.
 
 - Combine severity, exploitability, EPSS/KEV, exposure, criticality, attack path, controls, threat activity → technical / business / compliance / path risk
 
-**Status: Partial** — risk engine + org scoring exist; live host PASS/FAIL now
-adjusts compensating_controls / priority reasons (architecture Phase 6 wedge);
+**Status: Partial** — risk engine + org scoring exist; live host PASS/FAIL adjusts
+compensating_controls; **active agent threats** bump threat_intel / priority reasons
+(architecture Phase 6–7 Detect→Prioritize closed for this arc);
 multi-lens business/compliance risk not complete.
 
 ---

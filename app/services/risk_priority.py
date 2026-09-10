@@ -213,6 +213,65 @@ def _compensating_from_host_controls(
     return value, reasons, passes, fails
 
 
+_SEVERITY_RANK = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+# Active native agent threats raise threat_intel (real rows only — not invented).
+_ACTIVE_THREAT_INTEL = {"medium": 0.55, "high": 0.72, "critical": 0.85}
+
+
+def _active_agent_threats_by_asset(user_id: str) -> dict[str, dict[str, Any]]:
+    """asset_id → {count, max_severity, categories} for status=active threats."""
+    try:
+        from app.agents import list_threats
+
+        rows = list_threats(user_id, limit=500)
+    except Exception:
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for t in rows:
+        if str(t.get("status") or "active").lower() != "active":
+            continue
+        asset_id = str(t.get("asset_id") or "").strip()
+        if not asset_id:
+            continue
+        sev = str(t.get("severity") or "medium").lower()
+        cat = str(t.get("category") or "behavioral")[:32]
+        bucket = out.setdefault(
+            asset_id,
+            {"count": 0, "max_severity": "info", "categories": set()},
+        )
+        bucket["count"] += 1
+        if isinstance(bucket["categories"], set):
+            bucket["categories"].add(cat)
+        if _SEVERITY_RANK.get(sev, 0) > _SEVERITY_RANK.get(str(bucket["max_severity"]), 0):
+            bucket["max_severity"] = sev
+    for bucket in out.values():
+        cats = bucket.get("categories") or set()
+        bucket["categories"] = sorted(cats) if isinstance(cats, set) else list(cats)
+    return out
+
+
+def _threat_intel_with_active_threats(
+    *,
+    is_kev: bool,
+    active: dict[str, Any] | None,
+) -> tuple[float, list[str]]:
+    """KEV still dominates; otherwise bump from active agent threats on the asset."""
+    if is_kev:
+        return 0.9, ["Actively exploited (CISA KEV)"]
+    base = 0.3
+    reasons: list[str] = []
+    if not active or int(active.get("count") or 0) <= 0:
+        return base, reasons
+    sev = str(active.get("max_severity") or "medium").lower()
+    bump = float(_ACTIVE_THREAT_INTEL.get(sev, 0.55))
+    value = max(base, bump)
+    cats = ", ".join((active.get("categories") or [])[:4]) or "agent"
+    reasons.append(
+        f"Active agent threat(s) on asset ({int(active['count'])} {cats}; max={sev})"
+    )
+    return value, reasons
+
+
 def _patchable_cves(user_id: str) -> set[str]:
     """CVEs for which the software-inventory pipeline already has a target
     fix version recorded somewhere in this user's installations — a cheap,
@@ -264,6 +323,7 @@ def _scored_open_items(
     patchable = _patchable_cves(user_id)
     monitored_asset_ids = _agent_monitored_asset_ids(user_id)
     host_by_asset = _host_control_status_by_asset(user_id)
+    threats_by_asset = _active_agent_threats_by_asset(user_id)
 
     scored: list[dict[str, Any]] = []
     for v in vulns:
@@ -284,12 +344,15 @@ def _scored_open_items(
         effective_business_criticality, cmmc_floor_applied = _floor_business_criticality(
             (business_criticality or str(asset_criticality).lower()), cmmc_scope
         )
-        threat_intel = 0.9 if is_kev else 0.3
+        asset_id = v.get("asset_id") or ""
+        active_threats = threats_by_asset.get(asset_id)
+        threat_intel, threat_reasons = _threat_intel_with_active_threats(
+            is_kev=is_kev, active=active_threats
+        )
         age_days = max(0.0, (now() - float(v.get("created_at") or now())) / 86400.0)
         # long-open findings nudge confidence up slightly — they've survived
         # re-scans, so they're not a transient/false-positive blip.
         confidence = 0.85 if age_days > 14 else 0.7
-        asset_id = v.get("asset_id") or ""
         is_monitored = bool(asset_id) and asset_id in monitored_asset_ids
         host_statuses = host_by_asset.get(asset_id) or {}
         compensating_controls, host_reasons, host_passes, host_fails = _compensating_from_host_controls(
@@ -312,8 +375,7 @@ def _scored_open_items(
             business_criticality=effective_business_criticality,
         )
         reasons: list[str] = []
-        if is_kev:
-            reasons.append("Actively exploited (CISA KEV)")
+        reasons.extend(threat_reasons)
         if exposure >= 0.8:
             reasons.append("Internet-facing asset")
         elif host_statuses.get("host_firewall") == "fail":
@@ -352,6 +414,7 @@ def _scored_open_items(
                 "monitored": is_monitored,
                 "host_control_passes": host_passes,
                 "host_control_fails": host_fails,
+                "active_agent_threats": int((active_threats or {}).get("count") or 0),
                 "score": result["score"],
                 "band": result["band"],
                 "factors": result["factors"],

@@ -163,6 +163,7 @@ Existing CIS / CSF / ISO / 800-53 host mappings unchanged. Never invent BitLocke
 `app.services.risk_priority` compensating_controls (and a small exposure bump on
 `host_firewall` FAIL). Priority reasons explain offsets/elevations; UNKNOWN does
 not invent PASS. Attack-path ranking inherits the same scored findings.
+Active `securaiq_agent_threats` on the asset also raise `threat_intel` (KEV still wins).
 
 ---
 
