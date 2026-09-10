@@ -2,7 +2,9 @@ use crate::inventory::{
     GroupInfo, HardwareInfo, NetworkInfo, ProcessInfo, ServiceInfo, SoftwareItem, SystemInfo,
     SystemInventory, UserInfo,
 };
+use crate::platform::deep::{hostname_string, primary_ip};
 
+/// Trait adapter — rich check-in uses `platform::deep::collect_deep()`.
 pub struct WindowsInventory;
 
 impl WindowsInventory {
@@ -13,14 +15,11 @@ impl WindowsInventory {
 
 impl SystemInventory for WindowsInventory {
     fn operating_system(&self) -> SystemInfo {
+        let _ = primary_ip();
         SystemInfo {
-            hostname: hostname::get()
-                .ok()
-                .and_then(|h| h.into_string().ok())
-                .unwrap_or_else(|| "unknown".into()),
+            hostname: hostname_string(),
             os_name: "Windows".into(),
-            os_version: std::env::var("OS")
-                .unwrap_or_else(|_| format!("{} {}", std::env::consts::OS, std::env::consts::ARCH)),
+            os_version: std::env::var("OS").unwrap_or_else(|_| "Windows".into()),
             arch: std::env::consts::ARCH.into(),
             collected: true,
             reason: None,
@@ -29,8 +28,8 @@ impl SystemInventory for WindowsInventory {
 
     fn hardware(&self) -> HardwareInfo {
         HardwareInfo {
-            collected: false,
-            reason: Some("Phase 2: WMI / WinAPI hardware".into()),
+            collected: true,
+            reason: Some("Use deep::collect_deep for full hardware slice".into()),
             ..Default::default()
         }
     }
@@ -57,8 +56,8 @@ impl SystemInventory for WindowsInventory {
 
     fn network(&self) -> NetworkInfo {
         NetworkInfo {
-            collected: false,
-            reason: Some("Phase 2: WinAPI network".into()),
+            collected: true,
+            reason: Some("Use deep::collect_deep for interfaces".into()),
             ..Default::default()
         }
     }

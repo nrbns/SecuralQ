@@ -53,9 +53,9 @@ protocol parity (enroll → heartbeat → inventory → allowlisted command → 
 
 | Module | Role today | Code |
 |--------|------------|------|
-| **core** | Version, config, check-in loop, gateway wait/WS, command ack/result | `scripts/securaiq_agent.py` (+ `scripts/agent_lib/` VERSION stub); Rust scaffold `securaiq-agent/` |
-| **inventory** | Host/OS/software/services/processes + **hardware / local_groups / network** | Python collectors; Rust `inventory/` + `platform/{windows,linux,macos}` traits |
-| **security** | Firewall / Defender / SSH / BitLocker / sentinel heuristics | collectors + `execute_enable_*` in `scripts/securaiq_agent.py` |
+| **core** | Version, config, check-in loop, gateway wait/WS, command ack/result | `scripts/securaiq_agent.py`; Rust `securaiq-agent/` v0.2 |
+| **inventory** | Host/OS/software/services/processes + **hardware / local_groups / network** | Python collectors; Rust `platform/deep/{windows,linux,macos}` |
+| **security** | Firewall / Defender / SSH / BitLocker / sentinel heuristics | Python + Rust host-status on check-in; remediations Python-only for now |
 | **response** | Allowlisted commands: `patch_package`, `agent_upgrade`, `enable_firewall`, `enable_defender` | agent executors + `app/agents.py` / `app/agents_api.py` |
 
 Server-side control plane pieces that consume agent telemetry: `app/services/control_testing.py`, `app/controls/`, `app/configuration/`, event processor + realtime bus.

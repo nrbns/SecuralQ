@@ -1,3 +1,6 @@
+pub mod cmd;
+pub mod deep;
+
 #[cfg(target_os = "windows")]
 mod windows;
 #[cfg(target_os = "linux")]
@@ -20,9 +23,5 @@ pub fn native_inventory() -> impl SystemInventory {
     #[cfg(target_os = "macos")]
     {
         macos::MacOsInventory::new()
-    }
-    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
-    {
-        compile_error!("SecuraIQ agent supports Windows, Linux, and macOS only");
     }
 }

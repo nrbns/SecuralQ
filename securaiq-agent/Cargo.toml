@@ -1,6 +1,6 @@
 [package]
 name = "securaiq-agent"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "SecuraIQ cross-platform endpoint agent (Rust core + OS adapters)"
 license = "Proprietary"
@@ -27,6 +27,7 @@ futures-util = { version = "0.3", default-features = false, features = ["sink"] 
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 url = "2"
 base64 = "0.22"
+wait-timeout = "0.2"
 
 [profile.release]
 lto = true
