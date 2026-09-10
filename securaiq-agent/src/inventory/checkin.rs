@@ -1,3 +1,5 @@
+use crate::collectors::fim::scan_fim_events;
+use crate::collectors::logs::collect_security_logs;
 use crate::platform::deep::collect_deep;
 use crate::transport::protocol::AGENT_VERSION;
 use serde_json::{json, Value};
@@ -5,6 +7,8 @@ use serde_json::{json, Value};
 /// Build a check-in JSON body matching `CheckinPayload` on the server.
 pub fn collect_checkin_payload() -> Value {
     let deep = collect_deep();
+    let fim_events = scan_fim_events();
+    let security_logs = collect_security_logs();
     json!({
         "hostname": deep.hostname,
         "ip": deep.ip,
@@ -14,7 +18,7 @@ pub fn collect_checkin_payload() -> Value {
         "listening_ports": deep.listening_ports,
         "processes": deep.processes,
         "packages": deep.packages,
-        "file_integrity": Value::Array(vec![]),
+        "file_integrity": fim_events,
         "uptime_sec": Value::Null,
         "services": deep.services,
         "local_users": deep.local_users,
@@ -26,5 +30,6 @@ pub fn collect_checkin_payload() -> Value {
         "defender_status": deep.defender_status,
         "startup_apps": deep.startup_apps,
         "ssh_config": deep.ssh_config,
+        "security_logs": security_logs,
     })
 }

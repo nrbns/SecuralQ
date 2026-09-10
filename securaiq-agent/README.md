@@ -8,13 +8,13 @@ Cross-platform **SecuraIQ endpoint agent**: one core, OS-specific adapters.
 
 ## Status
 
-**v0.2.0 — Phase 2 inventory + host security status**
+**v0.3.0 — Phase 3 security telemetry + allowlisted remediations**
 
-- Token auth, HTTPS check-in (HMAC), offline queue, gateway WS/HTTP
-- Deep inventory: OS, hardware, software/packages, users, groups, processes,
-  services, network, listening ports, startup apps
-- Host status: firewall, disk encryption, Defender (Windows), SSH config (Lin/mac)
-- Allowlisted remediations still ACK-only in Rust — use Python bridge to execute
+- Deep inventory + host status (v0.2)
+- FIM baseline + `file_integrity` events on check-in
+- Bounded `security_logs` sample (Windows Security / journalctl / macOS log)
+- Seal verify + **`enable_firewall` / `enable_defender`** fixed-argv execution
+- `patch_package` / `agent_upgrade` still Python bridge
 
 ```powershell
 cd securaiq-agent
@@ -23,13 +23,11 @@ cargo build --release
 .\target\release\securaiq-agent.exe --server http://127.0.0.1:8080 --token "<id>.<key>" --once
 ```
 
-Env: `SECURAIQ_SERVER`, `SECURAIQ_TOKEN`, `SECURAIQ_AGENT_DATA_DIR`.
-
-Admin enrolls via dashboard / `POST /api/agents/enroll` (token shown once).
+Optional: `SECURAIQ_AGENT_SIGNING_KEY` (must match server), `SECURAIQ_REQUIRE_COMMAND_VERIFY=1`.
 
 ## Principles
 
-1. Speak **existing** Agent Gateway / HTTPS APIs.
-2. No arbitrary shell; allowlisted remediation only.
-3. Honest `collected` / `reason` when a signal cannot be gathered.
+1. Speak existing Agent Gateway / HTTPS APIs.
+2. No arbitrary shell — allowlisted remediations only.
+3. Honest `collected` / `reason` when signals cannot be gathered.
 4. AI stays on the **server**.

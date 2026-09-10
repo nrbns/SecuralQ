@@ -97,8 +97,8 @@ Lab without Redis: in-process SSE bus is the supported realtime path.
 - **One Rust core + OS adapters** (`securaiq-agent/`); Python lab agent until v0.1 parity
 
 **Status: Partial** — Python bridge has inventory + allowlisted remediations; Rust agent
-**v0.2** deep inventory + host security status (firewall/Defender/encryption) on check-in.
-Remediations still Python. **Not** full Win/Lin/Mac EDR.  
+**v0.3** deep inventory, FIM, security log samples, and **`enable_firewall` / `enable_defender`**
+(fixed argv + seal verify). Patch/upgrade still Python. **Not** full EDR.  
 See [securaiq-architecture.md](./securaiq-architecture.md) · [agent-platform.md](./agent-platform.md).
 
 ---
