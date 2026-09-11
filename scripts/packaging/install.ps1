@@ -1,7 +1,12 @@
 # SecuraIQ Agent — Windows package installer (Scheduled Task).
 #
-# Prefer a packaged SecuraIQ-Agent.exe in this folder; fall back to
-# securaiq_agent.py + python on PATH (same model as install_agent_windows.ps1).
+# Prefer a packaged SecuraIQ-Agent.exe in this folder (Rust or PyInstaller);
+# fall back to securaiq_agent.py + python on PATH.
+# Rust builds accept the same --server/--token-file/--interval/--sentinel-interval/--insecure
+# flags (sentinel-interval is installer-parity only; FIM/logs ship on check-in).
+#
+# Build Rust exe into this folder:
+#   powershell -File scripts\packaging\build_rust_windows.ps1
 #
 # Usage (elevated PowerShell):
 #   .\install.ps1 -Server "https://securaiq.example.com" -Token "<agent_id>.<agent_key>"

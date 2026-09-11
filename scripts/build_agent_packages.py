@@ -48,6 +48,12 @@ def _agent_version() -> str:
     return m.group(1) if m else "0.0.0"
 
 
+def _rust_agent_version() -> str:
+    cargo = (ROOT / "securaiq-agent" / "Cargo.toml").read_text(encoding="utf-8")
+    m = re.search(r'(?m)^version\s*=\s*"([^"]+)"', cargo)
+    return m.group(1) if m else "0.0.0"
+
+
 def _host_arch() -> str:
     m = platform.machine().lower()
     if m in ("amd64", "x86_64"):
@@ -95,6 +101,32 @@ def build_native_binary(py: Path) -> Path:
     if not path.is_file():
         raise SystemExit(f"PyInstaller finished but {path} was not created")
     return path
+
+
+def build_rust_binary() -> Path:
+    """``cargo build --release`` → copy to dist/SecuraIQ-Agent(.exe)."""
+    crate = ROOT / "securaiq-agent"
+    if not (crate / "Cargo.toml").is_file():
+        raise SystemExit(f"Rust crate missing: {crate}")
+    env = os.environ.copy()
+    # Keep artifacts under the crate (Windows sandbox/CI often redirect target/).
+    target_dir = crate / "target"
+    env["CARGO_TARGET_DIR"] = str(target_dir)
+    print("+", "cargo build --release")
+    subprocess.check_call(["cargo", "build", "--release"], cwd=str(crate), env=env)
+    bin_name = "securaiq-agent.exe" if os.name == "nt" else "securaiq-agent"
+    built = target_dir / "release" / bin_name
+    if not built.is_file():
+        raise SystemExit(f"cargo finished but {built} was not created")
+    PYI_DIST.mkdir(parents=True, exist_ok=True)
+    dest_name = "SecuraIQ-Agent.exe" if os.name == "nt" else "SecuraIQ-Agent"
+    dest = PYI_DIST / dest_name
+    shutil.copy2(built, dest)
+    # Also drop beside packaging installers for local install.ps1 / install.sh.
+    pkg_copy = PACKAGING / dest_name
+    shutil.copy2(built, pkg_copy)
+    print(f"Rust agent → {dest} (+ {pkg_copy})")
+    return dest
 
 
 def _copy_common(dest: Path, *, include_macos_installer: bool = False) -> None:
@@ -268,12 +300,13 @@ def smoke_test_binary(binary: Path) -> None:
         )
         out = (r.stdout or "") + (r.stderr or "")
         if r.returncode != 0 and args != ["--help"]:
-            # --version uses argparse version action → exit 0; --help also 0
             print(out)
             raise SystemExit(f"Smoke test failed: {binary} {' '.join(args)} → {r.returncode}")
-        if args == ["--version"] and "SecuraIQ-Agent" not in out and r.returncode != 0:
-            print(out)
-            raise SystemExit("Smoke test: --version did not print SecuraIQ-Agent")
+        if args == ["--version"]:
+            # PyInstaller: SecuraIQ-Agent; Rust clap: securaiq-agent <ver>
+            if "SecuraIQ" not in out and "securaiq-agent" not in out.lower() and r.returncode != 0:
+                print(out)
+                raise SystemExit("Smoke test: --version did not identify SecuraIQ agent")
         print(f"  {' '.join(args)}: ok (exit {r.returncode})")
 
 
@@ -292,6 +325,11 @@ def main() -> int:
         help="Skip native binary; still produce portable script packages",
     )
     ap.add_argument(
+        "--rust",
+        action="store_true",
+        help="Build the Rust securaiq-agent release binary instead of PyInstaller",
+    )
+    ap.add_argument(
         "--out-dir",
         default=str(ROOT / "dist" / "agent-packages"),
         help="Artifact output directory (default: dist/agent-packages)",
@@ -303,23 +341,26 @@ def main() -> int:
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "_stage").mkdir(parents=True, exist_ok=True)
 
-    version = _agent_version()
+    version = _rust_agent_version() if args.rust else _agent_version()
     host = _host_os()
-    print(f"SecuraIQ Agent packaging — version {version} — host {host}-{_host_arch()}")
+    engine = "rust" if args.rust else "pyinstaller"
+    print(f"SecuraIQ Agent packaging — version {version} ({engine}) — host {host}-{_host_arch()}")
 
     want = args.platform
     if want == "host":
         want = host
 
-    # Native PyInstaller binary only for the OS we are actually running on.
-    need_native = (not args.skip_pyinstaller) and (
+    need_native = (args.rust or not args.skip_pyinstaller) and (
         want in ("all", host) or (want == "host")
     )
     binary: Path | None = None
     if need_native:
-        py = _python()
-        print(f"Using Python: {py}")
-        binary = build_native_binary(py)
+        if args.rust:
+            binary = build_rust_binary()
+        else:
+            py = _python()
+            print(f"Using Python: {py}")
+            binary = build_native_binary(py)
         if not args.no_smoke:
             smoke_test_binary(binary)
 
@@ -339,12 +380,11 @@ def main() -> int:
                 version, binary if host == "macos" else None, native=(host == "macos")
             )
         )
-        if host == "macos" and not args.skip_pyinstaller:
+        if host == "macos" and not args.skip_pyinstaller and not args.rust:
             artifacts.extend(try_macos_dmg(version))
 
-    # Manifest
     manifest = OUT / "MANIFEST.txt"
-    lines = [f"SecuraIQ-Agent {version}", f"host={host}-{_host_arch()}", ""]
+    lines = [f"SecuraIQ-Agent {version}", f"engine={engine}", f"host={host}-{_host_arch()}", ""]
     for p in artifacts:
         if p.is_file():
             lines.append(f"{p.name}\t{p.stat().st_size}\t{p}")

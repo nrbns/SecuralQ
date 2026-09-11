@@ -21,6 +21,7 @@ on:
       - "scripts/build_agent_packages.py"
       - "scripts/packaging/**"
       - "packaging/securaiq_agent.spec"
+      - "securaiq-agent/**"
       - ".github/workflows/agent-packages.yml"
 
 permissions:
@@ -47,11 +48,19 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Build agent packages
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build agent packages (Rust preferred)
         shell: bash
         run: |
           python -m pip install -q "pyinstaller>=6.3"
-          python scripts/build_agent_packages.py --platform ${{ matrix.platform }}
+          # Prefer the cross-platform Rust agent; PyInstaller remains a fallback.
+          if command -v cargo >/dev/null 2>&1; then
+            python scripts/build_agent_packages.py --platform ${{ matrix.platform }} --rust
+          else
+            python scripts/build_agent_packages.py --platform ${{ matrix.platform }}
+          fi
 
       - name: List artifacts
         shell: bash

@@ -23,4 +23,6 @@ Thumbs.db
 dist/
 build/
 securaiq-agent/target/
+scripts/packaging/SecuraIQ-Agent.exe
+scripts/packaging/SecuraIQ-Agent
 *.pyo

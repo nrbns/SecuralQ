@@ -44,6 +44,7 @@ impl Agent {
             &self.identity.token,
             &self.identity.agent_key,
             env!("CARGO_PKG_VERSION"),
+            self.config.insecure,
         );
 
         if let Err(e) = client.probe_health().await {

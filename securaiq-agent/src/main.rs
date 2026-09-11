@@ -31,6 +31,15 @@ struct Cli {
     #[arg(long)]
     once: bool,
 
+    /// Allow self-signed / invalid TLS (lab only)
+    #[arg(long, env = "SECURAIQ_INSECURE")]
+    insecure: bool,
+
+    /// Accepted for install.ps1 parity with the Python Sentinel loop.
+    /// Rust ships FIM/security_logs on check-in — this interval is ignored.
+    #[arg(long, default_value_t = 10)]
+    sentinel_interval: u64,
+
     /// Disable Agent Gateway long-poll
     #[arg(long)]
     no_gateway: bool,
@@ -64,10 +73,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         use_websocket: !cli.no_websocket,
         use_offline_buffer: !cli.no_offline_buffer,
         once: cli.once,
-        insecure: false,
+        insecure: cli.insecure,
         data_dir: None,
         protocol_version: 1,
     };
+
+    if cli.sentinel_interval > 0 {
+        tracing::info!(
+            sentinel_interval = cli.sentinel_interval,
+            "sentinel-interval accepted for installer parity; FIM/logs ship on check-in (not a separate Sentinel loop)"
+        );
+    }
 
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),

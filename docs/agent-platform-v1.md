@@ -52,9 +52,10 @@ Record measured `success_rate_pct` / latency from the script JSON output. Do **n
 
 Build packages from the repo root:
 
-```bash
-python scripts/build_agent_packages.py
-# artifacts → dist/agent-packages/
-```
-
-See README **Host agents** and `scripts/packaging/QUICKSTART.md`. CI: `.github/workflows/agent-packages.yml`.
+\\ash
+python scripts/build_agent_packages.py              # PyInstaller (legacy bridge)
+python scripts/build_agent_packages.py --rust        # preferred Rust core
+# Windows: powershell -File scripts/packaging/build_rust_windows.ps1
+# artifacts -> dist/agent-packages/
+\
+See README **Host agents** and \scripts/packaging/QUICKSTART.md\. CI: \.github/workflows/agent-packages.yml\ (prefers Rust).

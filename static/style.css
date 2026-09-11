@@ -2010,6 +2010,43 @@ html[data-theme="dark"] .theme-toggle-icon {
 .scan-step-active { opacity: 1; font-weight: 600; }
 .scan-step-failed { opacity: 1; color: var(--danger, #c44); }
 
+.code-scan-progress { margin: 0.5rem 0 0.15rem; display: none; }
+.code-scan-progress.is-active { display: block; }
+.code-scan-progress-track {
+  height: 8px;
+  border-radius: 99px;
+  overflow: hidden;
+  background: var(--border);
+  position: relative;
+}
+.code-scan-progress-fill {
+  display: block;
+  height: 100%;
+  min-width: 4px;
+  border-radius: 99px;
+  background: var(--accent);
+  transition: width 0.25s ease;
+}
+.code-scan-progress-fill.is-done { background: #3d8b6e; }
+.code-scan-progress-fill.is-error { background: var(--danger, #c44); }
+.code-scan-progress-fill.is-indeterminate {
+  width: 28% !important;
+  animation: codeScanIndeterminate 1.1s ease-in-out infinite;
+}
+@keyframes codeScanIndeterminate {
+  0% { margin-left: 0%; }
+  50% { margin-left: 72%; }
+  100% { margin-left: 0%; }
+}
+.code-scan-progress-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.72rem;
+  color: var(--muted);
+  margin-top: 0.3rem;
+}
+
 .settings-form fieldset {
   border: 1px solid var(--border);
   border-radius: 12px;

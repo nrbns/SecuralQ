@@ -22,13 +22,21 @@ pub struct HttpsClient {
 }
 
 impl HttpsClient {
-    pub fn new(server_url: &str, token: &str, agent_key: &str, agent_version: &str) -> Self {
+    pub fn new(
+        server_url: &str,
+        token: &str,
+        agent_key: &str,
+        agent_version: &str,
+        insecure: bool,
+    ) -> Self {
+        let mut builder = Client::builder().timeout(std::time::Duration::from_secs(45));
+        if insecure {
+            // Lab / self-signed only — never default in production packaging docs.
+            builder = builder.danger_accept_invalid_certs(true);
+        }
         Self {
             base: server_url.trim_end_matches('/').to_string(),
-            client: Client::builder()
-                .timeout(std::time::Duration::from_secs(45))
-                .build()
-                .expect("reqwest client"),
+            client: builder.build().expect("reqwest client"),
             token: token.to_string(),
             agent_key: agent_key.to_string(),
             agent_version: agent_version.to_string(),

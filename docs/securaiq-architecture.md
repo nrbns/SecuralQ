@@ -117,11 +117,12 @@ No direct DB or OS shell from the model.
 | **4** | Vulnerability | package → CVE → exposure → risk |
 | **5** | Config & compliance | observe → control test → evidence — **host_disk_encryption** live test wired (v0.3 telemetry) |
 | **6–7** | Detection + risk | **Complete for this arc:** host PASS/FAIL → priority; check-in FIM + allowlisted security_logs → threats → graph; active threats bump priority. Not full XDR/Sigma/EDR. |
-| **8** | AI SecOps | investigation / risk / compliance / remediation / verification agents — **deferred until ops packaging / deeper twin as needed** |
+| **ops** | Agent packaging | Scheduled Task / systemd + **`--rust` package builds** (CI prefers Rust). Signed MSI still later. |
+| **8** | AI SecOps | investigation / risk / compliance / remediation / verification agents — **next product track** |
 | **9–10** | Response + campaigns | signed commands, canary, rollback |
 | **11** | Advanced | graph twin, cloud/K8s, SBOM, deeper EDR |
 
-**Do not start Phase 8 (AI missions) before Phases 1–5 are solid.**
+**Do not invent Phase 8 AI missions as a substitute for missing telemetry.** Phases 1–7 + ops packaging (Task Scheduler / systemd / `--rust` builds) are the closed loop for this arc; Phase 8 is the next product track.
 
 ---
 

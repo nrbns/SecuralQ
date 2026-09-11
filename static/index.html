@@ -690,6 +690,15 @@
                     <label class="code-scan-auth"><input type="checkbox" id="codeScanAuth" checked /> Auth</label>
                   </div>
                   <p class="hint code-scan-live" id="codeScanLive" hidden></p>
+                  <div class="code-scan-progress" id="codeScanProgress" aria-live="polite">
+                    <div class="code-scan-progress-track">
+                      <i class="code-scan-progress-fill" id="codeScanProgressFill" style="width:0%"></i>
+                    </div>
+                    <div class="code-scan-progress-label">
+                      <span id="codeScanProgressCount"></span>
+                      <span id="codeScanProgressFindings"></span>
+                    </div>
+                  </div>
                   <div id="sonarPanelBody"><p class="hint">Loading…</p></div>
                 </section>
                 <section class="cc-panel vuln-source-card" id="cloudPosturePanel">

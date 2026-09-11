@@ -52,7 +52,15 @@ Useful flags: `--once` (single check-in), `--help`, `--version`, `--insecure` (l
 
 This copies the exe under `%ProgramData%\SecuraIQ\agent` and registers a SYSTEM Scheduled Task (`SecuraIQAgent`).
 
-Optional service-style registration with `sc.exe` is not required; Task Scheduler is the supported unattended mode (no NSSM/WinSW dependency).
+**Build Rust exe locally (repo root)**
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\packaging\build_rust_windows.ps1
+```
+
+Produces `dist/agent-packages/` zip + copies `SecuraIQ-Agent.exe` next to `install.ps1`. Same CLI flags as the Python package (`--interval`, `--sentinel-interval`, `--insecure`); Rust ships FIM/security_logs on check-in (no separate Sentinel loop).
+
+Optional service-style registration with `sc.exe` is not required; Task Scheduler is the supported unattended mode (no NSSM/WinSW dependency). Signed MSI remains later.
 
 ---
 

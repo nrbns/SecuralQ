@@ -2659,6 +2659,54 @@
     live.textContent = text || "";
   }
 
+  // Real progress graphic for code_scan/SecuraIQ Code: driven entirely by
+  // the scanned/total/findings counts the backend actually streams over
+  // /api/code/scan/stream (app.tools.runner._tool_code_scan's on_progress
+  // callback) — never a fabricated or simulated fill.
+  function setCodeScanProgress(state, scanned, total, findings) {
+    const wrap = qs("codeScanProgress");
+    const fill = qs("codeScanProgressFill");
+    const countEl = qs("codeScanProgressCount");
+    const findingsEl = qs("codeScanProgressFindings");
+    if (!wrap || !fill) return;
+    if (!state) {
+      wrap.classList.remove("is-active");
+      return;
+    }
+    wrap.classList.add("is-active");
+    fill.classList.toggle("is-done", state === "done");
+    fill.classList.toggle("is-error", state === "error");
+    const total_ = Number(total || 0);
+    const scanned_ = Number(scanned || 0);
+    if (state === "done" || state === "error") {
+      fill.classList.remove("is-indeterminate");
+      fill.style.width = "100%";
+    } else if (total_ > 0) {
+      fill.classList.remove("is-indeterminate");
+      const pct = Math.max(0, Math.min(100, Math.round((scanned_ / total_) * 100)));
+      fill.style.width = `${pct}%`;
+    } else {
+      // Total isn't known yet (scan just started) — an indeterminate pulse
+      // is honest here; a fake percentage against an unknown total is not.
+      fill.classList.add("is-indeterminate");
+      fill.style.width = "";
+    }
+    if (countEl) {
+      countEl.textContent =
+        state === "done"
+          ? `${scanned_} file(s) scanned`
+          : state === "error"
+            ? "Scan stopped"
+            : total_ > 0
+              ? `${scanned_}/${total_} file(s)`
+              : "Enumerating files…";
+    }
+    if (findingsEl) {
+      const f = Number(findings || 0);
+      findingsEl.textContent = f ? `${f} finding(s)` : "";
+    }
+  }
+
   async function runCodeFolderScan() {
     const pathEl = qs("codeScanPath");
     const authEl = qs("codeScanAuth");
@@ -2685,9 +2733,13 @@
       btn.textContent = "Scanning…";
     }
     setCodeScanLive("Starting code analysis…", true);
+    setCodeScanProgress("active", 0, 0, 0);
     if (typeof setLiveState === "function") {
       setLiveState("live-busy", "Code analysis…", path);
     }
+    let lastScanned = 0;
+    let lastTotal = 0;
+    let lastFindings = 0;
     try {
       const res = await fetch("/api/code/scan/stream", {
         method: "POST",
@@ -2721,10 +2773,14 @@
             const scanned = Number(ev.scanned || 0);
             const total = Number(ev.total || 0);
             const findings = Number(ev.findings || 0);
+            lastScanned = scanned;
+            lastTotal = total;
+            lastFindings = findings;
             setCodeScanLive(
               `Scanning ${scanned}/${total || "?"} · ${findings} hit(s)${ev.file ? ` · ${ev.file}` : ""}`,
               true
             );
+            setCodeScanProgress("active", scanned, total, findings);
             if (typeof setLiveState === "function") {
               setLiveState(
                 "live-busy",
@@ -2734,6 +2790,7 @@
             }
           } else if (ev.event === "tool_start") {
             setCodeScanLive(`Running ${ev.name || ev.tool}…`, true);
+            setCodeScanProgress("active", 0, 0, 0);
           } else if (ev.event === "done") {
             data = ev.payload || {};
           }
@@ -2748,6 +2805,7 @@
           : `Finished with errors · ${(data && data.error) || "see chat / tool output"}`,
         true
       );
+      setCodeScanProgress(ok ? "done" : "error", lastScanned, lastTotal, lastFindings);
       if (typeof notifyUser === "function") {
         notifyUser(
           ok
@@ -2762,6 +2820,7 @@
       if (typeof setLiveState === "function") setLiveState("live-on", "Ready", "");
     } catch (err) {
       setCodeScanLive(`Failed: ${err.message || err}`, true);
+      setCodeScanProgress("error", lastScanned, lastTotal, lastFindings);
       if (typeof notifyUser === "function") notifyUser(`**Code scan failed:** ${err.message || err}`);
       if (typeof setLiveState === "function") setLiveState("live-off", "Code scan error", "");
     } finally {
@@ -4405,8 +4464,12 @@
               (i) => `<tr>
                 <td><span class="auto-job-status ${bandCls(i.band)}">${escapeHtml(String(i.score))}</span></td>
                 <td><strong>${escapeHtml(i.title || i.cve || "Untitled finding")}</strong>${i.cve ? ` <span class="hint">${escapeHtml(i.cve)}</span>` : ""}</td>
-                <td class="hint">${escapeHtml(i.asset_name || "—")}</td>
-                <td class="hint">${i.reasons.map((r) => escapeHtml(r)).join(" · ")}</td>
+                <td class="hint">${escapeHtml(i.asset_name || "—")}${
+                  Number(i.active_agent_threats) > 0
+                    ? ` <span class="auto-job-status status-error" title="Active native agent threats on this asset">${escapeHtml(String(i.active_agent_threats))} threat(s)</span>`
+                    : ""
+                }</td>
+                <td class="hint">${(i.reasons || []).map((r) => escapeHtml(r)).join(" · ")}</td>
               </tr>`
             )
             .join("")}</tbody></table></div>`;
