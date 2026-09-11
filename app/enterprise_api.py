@@ -696,6 +696,8 @@ class InvestigateRequest(BaseModel):
     limit: int = Field(default=5, ge=1, le=25)
     engagement_id: str | None = None
     org_id: str | None = None
+    asset_id: str | None = None
+    mode: str = Field(default="legacy", description="legacy | secops_tools")
 
 
 class InvestigateScanRequest(BaseModel):
@@ -826,15 +828,58 @@ async def ai_investigate(
     user: Annotated[AuthUser, Depends(require_user)],
     x_securaiq_org: str | None = Header(default=None, alias="X-SecuraIQ-Org"),
 ):
-    """Flagship workflow: investigate top-risk assets inside the caller's tenant."""
+    """Flagship workflow: investigate top-risk assets inside the caller's tenant.
+
+    ``mode=secops_tools`` runs Phase 8 allowlisted control-plane tools (no shell).
+    Default ``legacy`` keeps the prior pack shape for existing UI callers.
+    """
     oid = resolve_request_org(user, org_id=req.org_id, header_org=x_securaiq_org)
     require_perm(user, "asset.read", org_id=oid)
     require_perm(user, "vuln.read", org_id=oid)
+    mode = (req.mode or "legacy").strip().lower()
+    if mode in ("secops_tools", "secops", "tools"):
+        from app.secops import run_secops_investigation
+
+        return run_secops_investigation(
+            user.id,
+            org_id=oid,
+            engagement_id=req.engagement_id,
+            asset_id=req.asset_id,
+            limit=req.limit,
+        )
     return investigate_top_assets(
         user.id,
         org_id=oid,
         engagement_id=req.engagement_id,
         limit=req.limit,
+    )
+
+
+@router.get("/ai/secops/tools")
+async def ai_secops_tools_list(user: Annotated[AuthUser, Depends(require_user)]):
+    """List Phase 8 allowlisted SecOps tools (read + propose-only)."""
+    from app.secops import list_allowed_tools
+
+    return {
+        "tools": list_allowed_tools(),
+        "honesty": "Allowlisted server tools only — no DB/shell. Propose tools do not mutate.",
+    }
+
+
+@router.post("/ai/secops/verify-host")
+async def ai_secops_verify_host(
+    user: Annotated[AuthUser, Depends(require_user)],
+    agent_id: str,
+    test_name: str = "host_firewall",
+    x_securaiq_org: str | None = Header(default=None, alias="X-SecuraIQ-Org"),
+):
+    """Phase 9–10 thin verify: observed host-control PASS/FAIL after remediation."""
+    oid = resolve_request_org(user, org_id=None, header_org=x_securaiq_org)
+    require_perm(user, "asset.read", org_id=oid)
+    from app.secops.verification import verify_host_remediation
+
+    return verify_host_remediation(
+        user.id, agent_id=agent_id, test_name=test_name, org_id=oid
     )
 
 

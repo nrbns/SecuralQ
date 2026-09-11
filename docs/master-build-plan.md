@@ -283,7 +283,7 @@ optional; disk encryption observe→test→POA&M recommend-only); not certificat
 | **28** Third-party risk | Vendor questionnaire → evidence → risk | **Missing / Partial** |
 | **29** Malware analysis | Hash → static → behavior → sandbox (isolated) | **Missing** (lab knowledge only) |
 | **30** Incident response | Detection → entities → MITRE → path → response → verify | **Partial** — SOC desk + playbooks; deep IR timeline incomplete |
-| **31** AI Security Operations | Investigate → recommend → **approve** → execute → verify | **Partial** — AI Analyst / investigate + approvals; not unrestricted tool autonomy |
+| **31** AI Security Operations | Investigate → recommend → **approve** → execute → verify | **Partial→improved** — Phase 8 `app/secops` allowlisted tools + `mode=secops_tools` investigate + propose-only remediations + thin `verify_host_remediation`; not unrestricted tool autonomy or auto-execute |
 | **32** AI Security (AISPM) | Models, keys, prompt injection, AI governance | **Missing** |
 
 **Freeze note:** do not expand these until Phase 1 completion + acceptance workflow greens.

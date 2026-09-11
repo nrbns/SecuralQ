@@ -93,16 +93,19 @@ Rust agent **must speak the same protocol** as [agent-protocol-v1.md](./agent-pr
 
 ---
 
-## AI agents (server only — after Phase 5+)
+## AI agents (server only — Phase 8 foundation)
 
-Specialized agents with **validated tools** only:
+Specialized agents with **validated tools** only (`app/secops/`):
 
 `get_asset`, `get_agent`, `get_inventory`, `get_events`, `get_vulnerabilities`,
 `get_controls`, `get_evidence`, `get_attack_paths`, `calculate_risk`,
-`run_control_test`, `create_finding`, `create_remediation`, `request_approval`,
-`create_campaign`, `verify_remediation`
+`list_priority_findings`, `list_agent_threats`, `verify_host_remediation`,
+`propose_remediation`, `propose_approval`
 
+Mutating tools are **propose-only** until a human uses existing Agents / remediation APIs.
 No direct DB or OS shell from the model.
+
+`POST /api/ai/investigate` with `{"mode":"secops_tools"}` runs the orchestrator.
 
 ---
 
@@ -117,12 +120,14 @@ No direct DB or OS shell from the model.
 | **4** | Vulnerability | package → CVE → exposure → risk |
 | **5** | Config & compliance | observe → control test → evidence — **host_disk_encryption** live test wired (v0.3 telemetry) |
 | **6–7** | Detection + risk | **Complete for this arc:** host PASS/FAIL → priority; check-in FIM + allowlisted security_logs → threats → graph; active threats bump priority. Not full XDR/Sigma/EDR. |
+| **8** | AI SecOps | **Foundation shipped:** allowlisted tools + `mode=secops_tools` investigate + propose-only remediations. Not autonomous remediation. |
 | **ops** | Agent packaging | Scheduled Task / systemd + **`--rust` package builds** (CI prefers Rust). Signed MSI still later. |
-| **8** | AI SecOps | investigation / risk / compliance / remediation / verification agents — **next product track** |
-| **9–10** | Response + campaigns | signed commands, canary, rollback |
-| **11** | Advanced | graph twin, cloud/K8s, SBOM, deeper EDR |
+| **9–10** | Response + campaigns | **Thin verify:** `verify_host_remediation` (observed PASS/FAIL). Patch campaigns already partial. Canary/rollback/Ed25519-mandatory/MSI deferred. |
+| **11** | Advanced | graph twin, cloud/K8s, SBOM, deeper EDR — **deferred** |
 
-**Do not invent Phase 8 AI missions as a substitute for missing telemetry.** Phases 1–7 + ops packaging (Task Scheduler / systemd / `--rust` builds) are the closed loop for this arc; Phase 8 is the next product track.
+**Phases 0–8 foundation + thin 9–10 verify are the closed product loop for this arc.**
+Phase 11 (twin/cloud/K8s/SBOM/EDR), signed MSI, mandatory Ed25519/canary/rollback, and
+task **#144** remain deferred — do not claim them complete.
 
 ---
 
