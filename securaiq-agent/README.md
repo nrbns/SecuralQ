@@ -13,7 +13,7 @@ Cross-platform **SecuraIQ endpoint agent**: one core, OS-specific adapters.
 - Deep inventory + host status (v0.2)
 - FIM baseline + `file_integrity` events on check-in
 - Bounded `security_logs` sample (Windows Security / journalctl / macOS log)
-- Seal verify + **`enable_firewall` / `enable_defender`** fixed-argv execution
+- Seal verify (HMAC + **Ed25519**) + **`enable_firewall` / `enable_defender`** fixed-argv execution
 - `patch_package` / `agent_upgrade` still Python bridge
 
 ```powershell
@@ -23,7 +23,7 @@ cargo build --release
 .\target\release\securaiq-agent.exe --server http://127.0.0.1:8080 --token "<id>.<key>" --once
 ```
 
-Optional: `SECURAIQ_AGENT_SIGNING_KEY` (must match server), `SECURAIQ_REQUIRE_COMMAND_VERIFY=1`.
+Optional: `SECURAIQ_AGENT_SIGNING_KEY` (HMAC, must match server), `SECURAIQ_AGENT_ED25519_PUBLIC_KEY` (or trust `signing_public_key` on sealed commands), `SECURAIQ_REQUIRE_COMMAND_VERIFY=1`.
 
 ## Principles
 

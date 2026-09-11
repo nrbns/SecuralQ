@@ -755,7 +755,57 @@ def run_server_acceptance(
         )
     )
 
-    # Step 3 — check-in firewall enabled → PASS evidence
+    # Step 2b — request → approve → lab-simulated enable_firewall result
+    code_cmd, cmd_body = _request(
+        "POST",
+        f"{base}/api/agents/{agent_id}/commands/enable-firewall",
+        headers=auth_user,
+        body={},
+        insecure=insecure,
+    )
+    cmd_id = ""
+    if isinstance(cmd_body, dict):
+        cmd_id = str(cmd_body.get("id") or "")
+    cmd_ok = code_cmd in (200, 201) and bool(cmd_id)
+    report.steps.append(
+        StepResult(
+            name="request_enable_firewall",
+            ok=cmd_ok,
+            detail=f"http={code_cmd} cmd={cmd_id[:16]}",
+            data={"http_status": code_cmd, "command_id": cmd_id},
+        )
+    )
+    if cmd_ok:
+        code_appr, appr = _request(
+            "POST",
+            f"{base}/api/agents/{agent_id}/commands/{cmd_id}/approve",
+            headers=auth_user,
+            body={},
+            insecure=insecure,
+        )
+        report.steps.append(
+            StepResult(
+                name="approve_enable_firewall",
+                ok=code_appr == 200,
+                detail=f"http={code_appr} status={(appr or {}).get('status') if isinstance(appr, dict) else None}",
+            )
+        )
+        code_res, res = _request(
+            "POST",
+            f"{base}/api/agents/commands/{cmd_id}/result",
+            headers=agent_auth,
+            body={"status": "done", "result": {"ok": True, "lab": True, "simulated": True}},
+            insecure=insecure,
+        )
+        report.steps.append(
+            StepResult(
+                name="agent_command_result",
+                ok=code_res == 200,
+                detail=f"http={code_res} body={str(res)[:120]}",
+            )
+        )
+
+    # Step 3 — check-in firewall enabled → PASS evidence (+ command verified)
     code_pass, resp_pass = _request(
         "POST",
         f"{base}/api/agents/checkin",
@@ -794,6 +844,42 @@ def run_server_acceptance(
                 "evidence_http": code_ev2,
                 "evidence_rows": len(rows2),
             },
+        )
+    )
+
+    if cmd_id:
+        code_cmds, cmds = _request(
+            "GET",
+            f"{base}/api/agents/{agent_id}/commands?limit=20",
+            headers=auth_user,
+            insecure=insecure,
+        )
+        rows_c = (cmds.get("commands") if isinstance(cmds, dict) else None) or []
+        mine = next((c for c in rows_c if isinstance(c, dict) and c.get("id") == cmd_id), None)
+        vstat = (mine or {}).get("verification_status") or ""
+        report.steps.append(
+            StepResult(
+                name="command_verification_verified",
+                ok=code_cmds == 200 and vstat == "verified",
+                detail=f"http={code_cmds} verification_status={vstat}",
+                data={"verification_status": vstat},
+            )
+        )
+
+    code_h, health = _request(
+        "GET",
+        f"{base}/api/health",
+        headers=auth_user,
+        insecure=insecure,
+    )
+    bus = (health.get("realtime_bus") if isinstance(health, dict) else None) or {}
+    mode = str(bus.get("mode") or "")
+    report.steps.append(
+        StepResult(
+            name="realtime_bus_mode",
+            ok=code_h == 200 and mode in ("in_process", "redis_streams_fanout", "redis_streams+pubsub"),
+            detail=f"http={code_h} mode={mode}",
+            data={"mode": mode},
         )
     )
     return report

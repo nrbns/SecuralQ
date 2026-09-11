@@ -95,6 +95,72 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     diff == 0
 }
 
+fn b64url_decode(text: &str) -> Option<Vec<u8>> {
+    use base64::{
+        engine::general_purpose::{URL_SAFE, URL_SAFE_NO_PAD},
+        Engine,
+    };
+    let t = text.trim();
+    URL_SAFE_NO_PAD
+        .decode(t)
+        .or_else(|_| URL_SAFE.decode(t))
+        .ok()
+}
+
+fn ed25519_public_material(cmd: &Value) -> String {
+    cmd.get("signing_public_key")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| env::var("SECURAIQ_AGENT_ED25519_PUBLIC_KEY").ok())
+        .unwrap_or_default()
+        .trim()
+        .to_string()
+}
+
+fn verify_command_ed25519(cmd: &Value, agent_id: &str) -> Result<(), String> {
+    use ed25519_dalek::pkcs8::DecodePublicKey;
+    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+
+    let pub_mat = ed25519_public_material(cmd);
+    if pub_mat.is_empty() {
+        return Err(
+            "Ed25519 seal present but no signing_public_key / SECURAIQ_AGENT_ED25519_PUBLIC_KEY"
+                .into(),
+        );
+    }
+    let sig_b64 = cmd
+        .get("signature_ed25519")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    let sig_bytes =
+        b64url_decode(sig_b64).ok_or_else(|| "invalid signature_ed25519 encoding".to_string())?;
+    let sig =
+        Signature::from_slice(&sig_bytes).map_err(|_| "invalid Ed25519 signature length")?;
+
+    let verifying = if pub_mat.contains("BEGIN") {
+        VerifyingKey::from_public_key_pem(&pub_mat)
+            .map_err(|e| format!("invalid Ed25519 public PEM: {e}"))?
+    } else {
+        let raw =
+            b64url_decode(&pub_mat).ok_or_else(|| "invalid Ed25519 public key encoding".to_string())?;
+        if raw.len() != 32 {
+            return Err("Ed25519 public key must be 32 raw bytes (base64url)".into());
+        }
+        let arr: [u8; 32] = raw
+            .as_slice()
+            .try_into()
+            .map_err(|_| "bad key length")?;
+        VerifyingKey::from_bytes(&arr).map_err(|e| format!("invalid Ed25519 public key: {e}"))?
+    };
+
+    let msg = canonical_command_bytes(cmd, agent_id);
+    verifying
+        .verify(&msg, &sig)
+        .map_err(|_| "Ed25519 signature verification failed".to_string())
+}
+
 /// Lab-friendly by default; mandatory when env or command require_verify.
 pub fn command_signatures_ok(cmd: &Value, agent_id: &str) -> Result<(), String> {
     let env_require = matches!(
@@ -135,22 +201,21 @@ pub fn command_signatures_ok(cmd: &Value, agent_id: &str) -> Result<(), String> 
         return Err("missing signature (require_verify)".into());
     }
 
-    if !hmac_sig.is_empty() {
-        // Prefer verifying when a signature is present.
-        if !verify_command_hmac(cmd, agent_id) {
-            // Lab: if signing key mismatch and not required, allow with warning path.
-            if require {
-                return Err("HMAC signature verification failed".into());
-            }
-            // Still refuse bad HMAC when present — a wrong seal should not execute.
-            return Err("HMAC signature verification failed".into());
-        }
+    if !hmac_sig.is_empty() && !verify_command_hmac(cmd, agent_id) {
+        return Err("HMAC signature verification failed".into());
     }
 
     if !ed_sig.is_empty() {
-        // Ed25519 verify deferred (needs cryptography crate); refuse if required.
-        if require {
-            return Err("Ed25519 seal present but Rust agent Ed25519 verify not enabled yet".into());
+        match verify_command_ed25519(cmd, agent_id) {
+            Ok(()) => {}
+            Err(e) if require => return Err(e),
+            Err(e) => {
+                // Soft mode: still refuse a present-but-invalid Ed seal.
+                if e.contains("verification failed") || e.contains("invalid Ed25519 signature") {
+                    return Err(e);
+                }
+                // Missing key material in soft mode — allow without Ed check.
+            }
         }
     }
 

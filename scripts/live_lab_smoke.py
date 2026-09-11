@@ -179,6 +179,33 @@ def main() -> int:
         )
     )
 
+    # Command verification_status must flip to verified after observed PASS
+    if cmd_id:
+        code, cmds = req("GET", f"/api/agents/{agent_id}/commands?limit=20")
+        rows = (cmds or {}).get("commands") or []
+        mine = next((c for c in rows if c.get("id") == cmd_id), None)
+        vstat = (mine or {}).get("verification_status") or ""
+        steps.append(
+            (
+                "command_verification_verified",
+                code == 200 and vstat == "verified",
+                f"http={code} verification_status={vstat}",
+            )
+        )
+
+    # Realtime bus health — when Redis configured, prefer Streams fan-out mode
+    code, health2 = req("GET", "/api/health")
+    bus = (health2 or {}).get("realtime_bus") or {}
+    mode = str(bus.get("mode") or "")
+    redis_ok = mode in ("in_process", "redis_streams_fanout", "redis_streams+pubsub")
+    steps.append(
+        (
+            "realtime_bus_mode",
+            code == 200 and redis_ok,
+            f"http={code} mode={mode} streams_fanout={bus.get('streams_fanout')}",
+        )
+    )
+
     return _print(steps)
 
 

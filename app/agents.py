@@ -2303,19 +2303,19 @@ def list_commands(user_id: str, agent_id: str, *, limit: int = 100) -> list[dict
 def report_command_result(agent_id: str, command_id: str, *, status: str, result: dict[str, Any]) -> dict[str, Any]:
     """Agent reports the outcome of a command it executed.
 
-    IMPORTANT: 'done' here means the agent's patch-manager invocation
-    exited successfully — it does NOT mean the fix is confirmed. Those are
-    different claims (a package manager can report success while the CVE
-    that motivated the patch is still present, e.g. a version pin, a
-    partial install, or advisory data that hasn't caught up yet). So a
-    'done' command starts in verification_status='pending' and a
-    software_advisory_refresh job is enqueued; once that job re-syncs the
-    installed version and re-runs CVE/advisory correlation, it calls
-    record_command_verification() to flip verification_status to
-    'verified' or 'verification_failed' — see app/jobs.py's
-    _job_software_advisory_refresh. Callers that only check `status=='done'`
-    are checking execution, not verification; check `verification_status`
-    for the latter."""
+    IMPORTANT: 'done' here means the agent's invocation exited successfully —
+    it does NOT mean the fix is confirmed. Those are different claims.
+
+    - ``patch_package`` / ``agent_upgrade``: ``verification_status='pending'`` and a
+      ``software_advisory_refresh`` job re-syncs inventory then calls
+      ``record_command_verification``.
+    - ``enable_firewall`` / ``enable_defender``: stay ``pending`` until the next
+      host-control check-in observes PASS/FAIL (see
+      ``verify_pending_host_remediation_commands``).
+
+    Callers that only check ``status=='done'`` are checking execution, not
+    verification; check ``verification_status`` for the latter.
+    """
     ensure_schema()
     c = get_conn()
     row = c.execute(
@@ -2323,6 +2323,8 @@ def report_command_result(agent_id: str, command_id: str, *, status: str, result
     ).fetchone()
     if not row:
         return {"ok": False, "error": "unknown command"}
+    row_d = dict(row)
+    kind = str(row_d.get("kind") or "")
     status = status if status in ("done", "error") else "error"
     ts = now()
     c.execute(
@@ -2377,7 +2379,8 @@ def report_command_result(agent_id: str, command_id: str, *, status: str, result
             phase="FAILED",
             error=str((result or {}).get("error") or "")[:200],
         )
-    if status == "done" and asset_id:
+    host_kinds = {"enable_firewall", "enable_defender"}
+    if status == "done" and asset_id and kind not in host_kinds:
         # Stamp installed version from the agent result immediately so the
         # advisory-refresh verification job is not racing an empty inventory.
         try:
@@ -2385,7 +2388,7 @@ def report_command_result(agent_id: str, command_id: str, *, status: str, result
             new_ver = str(payload_d.get("new_version") or "").strip()
             pkg = ""
             try:
-                cmd_payload = json.loads(dict(row).get("payload_json") or "{}")
+                cmd_payload = json.loads(row_d.get("payload_json") or "{}")
                 pkg = str(cmd_payload.get("package") or "").strip()
             except Exception:
                 pkg = str(payload_d.get("package") or "").strip()
@@ -2416,13 +2419,13 @@ def report_command_result(agent_id: str, command_id: str, *, status: str, result
             )
         except Exception:
             pass
-    campaign_id = dict(row).get("campaign_id") or ""
+    campaign_id = row_d.get("campaign_id") or ""
     if campaign_id:
         try:
             _maybe_advance_campaign_ring(campaign_id, (agent or {}).get("user_id") or "local")
         except Exception:
             pass
-    return {"ok": True, "status": status}
+    return {"ok": True, "status": status, "verification_status": v_status or ("pending" if status == "done" and asset_id else "")}
 
 
 def _resolve_vulnerabilities_for_verified_patch(command_id: str, command_row: dict[str, Any]) -> int:
@@ -2556,3 +2559,54 @@ def record_command_verification(command_id: str, *, verified: bool | None, detai
         except Exception:
             pass
     return {"ok": True, "verification_status": v_status, "resolved_findings": resolved_findings}
+
+
+_HOST_REMEDIATION_KIND_BY_TEST: dict[str, str] = {
+    "host_firewall": "enable_firewall",
+    "host_defender": "enable_defender",
+}
+
+
+def verify_pending_host_remediation_commands(
+    agent_id: str,
+    *,
+    test_name: str,
+    observed_pass: bool,
+) -> list[dict[str, Any]]:
+    """Close enable_firewall / enable_defender verification from live host controls.
+
+    Called from check-in control evaluation when firewall/Defender PASS or FAIL is
+    observed. Only touches commands already ``status=done`` with pending/empty
+    verification — never invents verification without a prior approved execution.
+    """
+    kind = _HOST_REMEDIATION_KIND_BY_TEST.get(str(test_name or "").strip())
+    if not kind:
+        return []
+    ensure_schema()
+    c = get_conn()
+    rows = c.execute(
+        """
+        SELECT id FROM securaiq_agent_commands
+        WHERE agent_id = ? AND kind = ? AND status = 'done'
+          AND verification_status IN ('', 'pending')
+        ORDER BY completed_at DESC LIMIT 5
+        """,
+        (str(agent_id or "").strip(), kind),
+    ).fetchall()
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        cid = str(r["id"] if hasattr(r, "keys") else r[0])
+        detail = (
+            f"Host control {test_name} observed PASS after {kind}"
+            if observed_pass
+            else f"Host control {test_name} still FAIL after {kind}"
+        )
+        try:
+            out.append(
+                record_command_verification(
+                    cid, verified=bool(observed_pass), detail=detail
+                )
+            )
+        except Exception:
+            continue
+    return out

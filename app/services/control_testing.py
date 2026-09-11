@@ -1291,6 +1291,33 @@ def evaluate_agent_host_controls(
                     except Exception:
                         if test_name == TEST_HOST_FIREWALL:
                             _close_host_firewall_remediation(user_id, agent_id)
+
+                # Close enable_firewall / enable_defender verification from observed host state
+                if status in ("pass", "fail") and test_name in (
+                    TEST_HOST_FIREWALL,
+                    TEST_HOST_DEFENDER,
+                ):
+                    try:
+                        from app.agents import verify_pending_host_remediation_commands
+
+                        verified = verify_pending_host_remediation_commands(
+                            agent_id,
+                            test_name=test_name,
+                            observed_pass=(status == "pass"),
+                        )
+                        if verified:
+                            out.setdefault("command_verifications", []).extend(verified)
+                            out["events"].append(
+                                {
+                                    "type": "command.verified"
+                                    if status == "pass"
+                                    else "command.verification_failed",
+                                    "test": test_name,
+                                    "count": len(verified),
+                                }
+                            )
+                    except Exception:
+                        pass
             except Exception:
                 continue
     except Exception as exc:

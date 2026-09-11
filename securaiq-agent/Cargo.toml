@@ -28,6 +28,7 @@ tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 url = "2"
 base64 = "0.22"
 wait-timeout = "0.2"
+ed25519-dalek = { version = "2.1", features = ["pkcs8", "pem", "std"] }
 
 [profile.release]
 lto = true

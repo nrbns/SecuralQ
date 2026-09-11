@@ -386,7 +386,7 @@ Agent check-in payloads already include `firewall_status`, `defender_status`, an
 
 | Piece | Role |
 |-------|------|
-| Firewall FAIL | Ensures an open `gap_remediations` row (CIS-12) via `create_remediation`, notes `host_firewall:{agent_id}` — **manual** enable on host; optional approved agent command is TODO |
+| Firewall FAIL | Ensures an open `gap_remediations` / POA&M row; operator may request approved `enable_firewall` (never auto-executed). On PASS check-in, pending host commands flip `verification_status=verified`. |
 | Re-check PASS | Next check-in with firewall enabled → PASS evidence + compliance pass + risk-reduction hint; matching rem marked `done` |
 | Approve path | Remediations workspace → assign owner → fix host → wait for agent check-in verify |
 
@@ -408,7 +408,7 @@ Agent check-in payloads already include `firewall_status`, `defender_status`, an
 | **RT-08** | Inventory → Vulnerability → Risk → Dashboard | **Partial→improved** (inventory/vuln hooks → org risk + high/crit evidence) |
 | **RT-09** | Threat → Attack Path → Risk → Incident | **Partial→improved** (critical/incident → `compute_attack_paths` + `attack_path` event) |
 | **RT-10** | Agent telemetry → control test → compliance → evidence → risk → dashboard | **Partial→improved** (foundations) |
-| **RT-11** | Control FAIL → rem → approve → agent → verify → PASS → evidence | **Partial** (minimal firewall stub) |
+| **RT-11** | Control FAIL → rem → approve → agent → verify → PASS → evidence | **Partial→improved** (enable_firewall verify on host PASS) |
 | **E** / **RT-12** | Central dashboard realtime (`RealtimeManager` + Last-Event-ID) | **Done→partial** (manager exists; not every panel) |
 | **F** / **RT-13** | Remove polling from major dashboards | **Partial** (soft-poll skip while SSE connected) |
 | **RT-14** | Connection state + stale-data indicators | **Partial→improved** (live badge states) |
