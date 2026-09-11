@@ -73,6 +73,7 @@ from app.canonical_controls_api import router as canonical_controls_router
 from app.controls.controls_api import router as controls_router
 from app.configuration.configuration_api import router as configuration_router
 from app.live_ssp_api import router as live_ssp_router
+from app.compliance_doc_library_api import router as compliance_doc_library_router
 from app.commercial_ext import ensure_org_schema
 from app.gap_analysis import ensure_gap_schema
 from app.db import init_schema
@@ -360,6 +361,7 @@ app.include_router(canonical_controls_router)
 app.include_router(controls_router)
 app.include_router(configuration_router)
 app.include_router(live_ssp_router)
+app.include_router(compliance_doc_library_router)
 
 _PUBLIC_API_PREFIXES = (
     "/api/auth/login",

@@ -81,7 +81,15 @@ def fetch_nvd_sync(cve_id: str) -> dict[str, Any]:
     try:
         from app.intel_feeds import lookup_nvd_cve
 
-        return asyncio.run(lookup_nvd_cve(cve))
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(lookup_nvd_cve(cve))
+        # Already on an event loop (uvicorn) — never nest asyncio.run (deadlocks).
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, lookup_nvd_cve(cve)).result(timeout=20)
     except Exception:
         return {}
 

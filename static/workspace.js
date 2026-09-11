@@ -2038,6 +2038,7 @@
   }
   let _vulnFilters = { q: "", severity: "", status: "", source: "", owner: "" };
   let _vulnSelectedId = "";
+  let _vulnSourcesAutoCollapsed = false;
 
   function vulnAgeDays(v) {
     const raw = v.created_at || v.updated_at || "";
@@ -2514,8 +2515,16 @@
     el.querySelector("#hkVulnSummaryAudit")?.addEventListener("click", () => {
       if (typeof window.runHardeningKittyAudit === "function") window.runHardeningKittyAudit();
     });
+    // Auto-collapse the "Scan sources" panel the first time findings show up (decluttering
+    // an empty-state default-open panel) — but only once, and never while the user has it
+    // open from their own click. Doing this on every render (including quiet realtime
+    // re-renders after a background sync) would yank the panel shut out from under anyone
+    // who had it open to watch live scan results, which is the opposite of "real time".
     const details = qs("vulnSourcesDetails");
-    if (details && total > 0) details.open = false;
+    if (details && total > 0 && !_vulnSourcesAutoCollapsed) {
+      _vulnSourcesAutoCollapsed = true;
+      details.open = false;
+    }
   }
 
   async function renderHkVulnPanel() {
@@ -2598,10 +2607,14 @@
     if (!quiet) paintVulnFilters();
     await renderVulnSummaryBar();
     paintVulnTable();
-    if (quiet) return;
+    // These three sub-panels (SecuraIQ Code, Cloud posture, Windows hardening) fetch their
+    // own data and target static DOM containers that exist whether or not this is a full
+    // render — always refresh them so a quiet realtime re-render (job-pulse driven) actually
+    // updates what's on screen, instead of only updating on full page navigation.
     renderCloudPosturePanel();
     renderSonarPanel();
     renderHkVulnPanel();
+    if (quiet) return;
     wireCloudSyncBtn();
     wireCloudImportBtn();
     wireSonarSyncBtns();
@@ -7217,12 +7230,20 @@
           </form>
         </section>
       </div>
+      <section class="cc-panel" style="margin-top:1rem" id="complianceDocsSection">
+        <header>
+          <h2>Compliance document library</h2>
+          <span class="hint">Write policy/procedure documents from a template, review them, and approve — approving creates real, linked evidence automatically.</span>
+        </header>
+        <div id="complianceDocsPanelBody"><p class="hint">Loading…</p></div>
+      </section>
       <div class="cc-action-row" style="margin-top:1rem">
         <button type="button" class="cc-action" id="evidenceAsk">Ask AI: missing evidence</button>
         <button type="button" class="btn-secondary" id="evidenceAuditPack">Download latest audit pack</button>
         <button type="button" class="btn-secondary" data-workspace="frameworks">Open frameworks</button>
         <button type="button" class="btn-secondary" data-workspace="remediations">Open controls</button>
       </div>`;
+    renderComplianceDocsPanel();
     qs("evidenceLinkForm")?.addEventListener("submit", async (e) => {
       e.preventDefault();
       const statusEl = qs("evidenceUploadStatus");
@@ -7344,6 +7365,295 @@
       });
     });
   }
+
+  // --- Compliance document library ------------------------------------
+  // Author policy/procedure documents from a template, edit them in place,
+  // and approve them — approving is the only step with a real side effect:
+  // it writes the document to disk as a real file and creates a real
+  // evidence_links row (app/services/compliance_doc_library.py), so the
+  // Evidence register table above (and Live SSP, Control Center) picks it
+  // up immediately. Everything before approval is just an editable draft.
+  const _complianceDocStatusLabel = {
+    draft: "draft",
+    in_review: "in review",
+    approved: "approved",
+    rejected: "rejected",
+  };
+
+  async function renderComplianceDocsPanel() {
+    const el = qs("complianceDocsPanelBody");
+    if (!el) return;
+    let templates = [];
+    let docs = [];
+    try {
+      const [tRes, dRes] = await Promise.all([
+        fetch("/api/compliance/documents/templates", { headers: authHeaders() }),
+        fetch("/api/compliance/documents", { headers: authHeaders() }),
+      ]);
+      const tData = await tRes.json().catch(() => ({}));
+      const dData = await dRes.json().catch(() => ({}));
+      if (!tRes.ok || !dRes.ok) throw new Error(dData.detail || tData.detail || "Load failed");
+      templates = tData.templates || [];
+      docs = dData.documents || [];
+    } catch (err) {
+      el.innerHTML = `<p class="hint">Could not load compliance documents: ${escapeHtml(err.message || String(err))}</p>`;
+      return;
+    }
+    const tplOpts = templates
+      .map(
+        (t) =>
+          `<option value="${escapeHtml(t.id)}" title="${escapeHtml(t.description || "")}">${escapeHtml(t.title)}${
+            t.family ? ` (${escapeHtml(t.family)})` : ""
+          }</option>`
+      )
+      .join("");
+    const rows = docs.length
+      ? docs
+          .map((d) => {
+            const st = d.status || "draft";
+            const pri = st === "approved" ? "low" : st === "in_review" ? "medium" : st === "rejected" ? "high" : "medium";
+            return `<tr data-id="${escapeHtml(d.id)}">
+              <td><strong>${escapeHtml(d.title)}</strong><div class="hint">${escapeHtml(d.template_id || "")}${
+                d.family ? ` · ${escapeHtml(d.family)}` : ""
+              }</div></td>
+              <td><code>${escapeHtml(d.control_id || "—")}</code></td>
+              <td><span class="wq-badge pri-${pri}">${escapeHtml(_complianceDocStatusLabel[st] || st)}</span></td>
+              <td>v${escapeHtml(String(d.version || 1))}</td>
+              <td class="hint">${escapeHtml(d.owner || "—")}</td>
+              <td class="ws-actions">
+                <button type="button" class="btn-secondary ws-doc-open" data-id="${escapeHtml(d.id)}">Open</button>
+                <button type="button" class="btn-secondary ws-doc-del" data-id="${escapeHtml(d.id)}">Delete</button>
+              </td>
+            </tr>`;
+          })
+          .join("")
+      : `<tr><td colspan="6" class="hint">No compliance documents yet — create one from a template below.</td></tr>`;
+    el.innerHTML = `
+      <div class="data-table-wrap">
+        <table class="data-table">
+          <thead><tr><th>Document</th><th>Control</th><th>Status</th><th>Ver</th><th>Owner</th><th></th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      <form id="complianceDocNewForm" class="inline-form inline-form-col" style="gap:0.5rem;margin-top:0.75rem">
+        <input id="complianceDocTitle" placeholder="Document title (e.g. Access Control Policy — Acme Corp)" required />
+        <select id="complianceDocTemplate">${tplOpts}</select>
+        <input id="complianceDocControlId" placeholder="Mapped control (e.g. AC.L2-3.1.1) — optional" />
+        <input id="complianceDocOwner" placeholder="Owner" />
+        <button type="submit">Create from template</button>
+        <p class="hint" id="complianceDocNewStatus" style="margin:0"></p>
+      </form>
+      <div id="complianceDocEditorHost" style="margin-top:0.75rem"></div>`;
+    qs("complianceDocNewForm")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const statusEl = qs("complianceDocNewStatus");
+      const title = qs("complianceDocTitle")?.value?.trim();
+      if (!title) {
+        if (statusEl) statusEl.textContent = "Enter a title.";
+        return;
+      }
+      try {
+        const res = await fetch("/api/compliance/documents", {
+          method: "POST",
+          headers: authHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify({
+            title,
+            template_id: qs("complianceDocTemplate")?.value || "blank",
+            control_id: qs("complianceDocControlId")?.value?.trim() || "",
+            owner: qs("complianceDocOwner")?.value?.trim() || "",
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+        if (typeof notifyUser === "function") notifyUser(`**Document created:** ${escapeHtml(title)}`);
+        await renderComplianceDocsPanel();
+        openComplianceDocEditor(data.id);
+      } catch (err) {
+        if (statusEl) statusEl.textContent = err.message || "Create failed";
+      }
+    });
+    el.querySelectorAll(".ws-doc-open").forEach((btn) => {
+      btn.addEventListener("click", () => openComplianceDocEditor(btn.getAttribute("data-id")));
+    });
+    el.querySelectorAll(".ws-doc-del").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        await fetch(`/api/compliance/documents/${btn.getAttribute("data-id")}`, {
+          method: "DELETE",
+          headers: authHeaders(),
+        });
+        renderComplianceDocsPanel();
+      });
+    });
+  }
+  window.renderComplianceDocsPanel = renderComplianceDocsPanel;
+
+  async function openComplianceDocEditor(docId) {
+    const host = qs("complianceDocEditorHost");
+    if (!host || !docId) return;
+    host.innerHTML = `<p class="hint">Loading document…</p>`;
+    let doc;
+    try {
+      const res = await fetch(`/api/compliance/documents/${docId}`, { headers: authHeaders() });
+      doc = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(doc.detail || `HTTP ${res.status}`);
+    } catch (err) {
+      host.innerHTML = `<p class="hint">Could not load document: ${escapeHtml(err.message || String(err))}</p>`;
+      return;
+    }
+    const sections = doc.sections || [];
+    const st = doc.status || "draft";
+    const sectionsHtml = sections
+      .map(
+        (s, i) => `
+        <div class="doc-section" style="margin:0.6rem 0">
+          <label class="hint" style="display:block;margin-bottom:0.15rem"><strong>${escapeHtml(
+            s.heading
+          )}</strong> — ${escapeHtml(s.prompt || "")}</label>
+          <textarea data-section-idx="${i}" rows="4" style="width:100%">${escapeHtml(s.content || "")}</textarea>
+        </div>`
+      )
+      .join("");
+    host.innerHTML = `
+      <div class="cc-panel" style="border-top:1px solid var(--border);padding-top:0.75rem">
+        <header style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.4rem">
+          <h3 style="margin:0">${escapeHtml(doc.title)}</h3>
+          <span class="wq-badge pri-${
+            st === "approved" ? "low" : st === "in_review" ? "medium" : st === "rejected" ? "high" : "medium"
+          }">${escapeHtml(_complianceDocStatusLabel[st] || st)} · v${escapeHtml(String(doc.version || 1))}</span>
+        </header>
+        ${
+          st === "approved"
+            ? `<p class="hint">Approved by ${escapeHtml(doc.reviewer || "reviewer")} — linked to real evidence (file <code>${escapeHtml(
+                doc.file_id || ""
+              )}</code>). Editing below will revert this document to draft and require re-approval before it counts as evidence again.</p>`
+            : ""
+        }
+        ${
+          st === "rejected" && doc.review_comments
+            ? `<p class="hint">Rejected by ${escapeHtml(doc.reviewer || "reviewer")}: ${escapeHtml(doc.review_comments)}</p>`
+            : ""
+        }
+        <div class="inline-form inline-form-col" style="gap:0.4rem;margin:0.5rem 0">
+          <label class="hint" style="margin:0">Mapped control</label>
+          <input id="docEditControlId" value="${escapeHtml(doc.control_id || "")}" placeholder="e.g. AC.L2-3.1.1" />
+          <label class="hint" style="margin:0">Owner</label>
+          <input id="docEditOwner" value="${escapeHtml(doc.owner || "")}" placeholder="Owner" />
+        </div>
+        ${sectionsHtml}
+        <div class="cc-action-row" style="margin-top:0.6rem;flex-wrap:wrap;gap:0.4rem">
+          <button type="button" class="btn-primary-cc" id="docEditSave">Save</button>
+          ${
+            st === "draft" || st === "rejected"
+              ? `<button type="button" class="btn-secondary" id="docEditSubmit">Submit for review</button>`
+              : ""
+          }
+          <button type="button" class="btn-secondary" id="docEditClose">Close</button>
+        </div>
+        ${
+          st === "in_review"
+            ? `<div class="inline-form inline-form-col" style="gap:0.4rem;margin-top:0.6rem;border-top:1px solid var(--border);padding-top:0.6rem">
+                <label class="hint" style="margin:0">Reviewer name</label>
+                <input id="docReviewReviewer" placeholder="Your name" />
+                <label class="hint" style="margin:0">Comments (required to reject)</label>
+                <textarea id="docReviewComments" rows="2"></textarea>
+                <div class="cc-action-row" style="gap:0.4rem">
+                  <button type="button" class="btn-primary-cc" id="docReviewApprove">Approve (creates real evidence)</button>
+                  <button type="button" class="btn-secondary" id="docReviewReject">Reject</button>
+                </div>
+              </div>`
+            : ""
+        }
+        <p class="hint" id="docEditStatus" style="margin-top:0.4rem"></p>
+      </div>`;
+    const collectSections = () =>
+      Array.from(host.querySelectorAll("textarea[data-section-idx]")).map((ta, i) => ({
+        heading: sections[i]?.heading || "Section",
+        prompt: sections[i]?.prompt || "",
+        content: ta.value,
+      }));
+    qs("docEditSave")?.addEventListener("click", async () => {
+      const statusEl = qs("docEditStatus");
+      try {
+        const res = await fetch(`/api/compliance/documents/${docId}`, {
+          method: "PATCH",
+          headers: authHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify({
+            control_id: qs("docEditControlId")?.value?.trim() || "",
+            owner: qs("docEditOwner")?.value?.trim() || "",
+            sections: collectSections(),
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+        if (statusEl) statusEl.textContent = "Saved.";
+        if (typeof notifyUser === "function") notifyUser(`**Document saved:** ${escapeHtml(doc.title)}`);
+        renderComplianceDocsPanel();
+        openComplianceDocEditor(docId);
+      } catch (err) {
+        if (statusEl) statusEl.textContent = err.message || "Save failed";
+      }
+    });
+    qs("docEditSubmit")?.addEventListener("click", async () => {
+      await fetch(`/api/compliance/documents/${docId}/submit`, { method: "POST", headers: authHeaders() });
+      if (typeof notifyUser === "function") notifyUser(`**Submitted for review:** ${escapeHtml(doc.title)}`);
+      renderComplianceDocsPanel();
+      openComplianceDocEditor(docId);
+    });
+    qs("docEditClose")?.addEventListener("click", () => {
+      host.innerHTML = "";
+    });
+    qs("docReviewApprove")?.addEventListener("click", async () => {
+      const statusEl = qs("docEditStatus");
+      try {
+        const res = await fetch(`/api/compliance/documents/${docId}/review`, {
+          method: "POST",
+          headers: authHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify({
+            decision: "approve",
+            reviewer: qs("docReviewReviewer")?.value?.trim() || "",
+            comments: qs("docReviewComments")?.value?.trim() || "",
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+        if (typeof notifyUser === "function")
+          notifyUser(`**Document approved** — real evidence linked for control \`${escapeHtml(data.control_id || "—")}\`.`);
+        // Re-render the whole Evidence page (not just this panel) so the new
+        // evidence_links row this approval just created shows up in the
+        // Evidence register table above immediately — that's the point.
+        await renderEvidencePage();
+      } catch (err) {
+        if (statusEl) statusEl.textContent = err.message || "Approve failed";
+      }
+    });
+    qs("docReviewReject")?.addEventListener("click", async () => {
+      const statusEl = qs("docEditStatus");
+      const comments = qs("docReviewComments")?.value?.trim() || "";
+      if (!comments) {
+        if (statusEl) statusEl.textContent = "Add a comment explaining the rejection.";
+        return;
+      }
+      try {
+        const res = await fetch(`/api/compliance/documents/${docId}/review`, {
+          method: "POST",
+          headers: authHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify({
+            decision: "reject",
+            reviewer: qs("docReviewReviewer")?.value?.trim() || "",
+            comments,
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+        if (typeof notifyUser === "function") notifyUser(`**Document rejected:** ${escapeHtml(doc.title)}`);
+        renderComplianceDocsPanel();
+        openComplianceDocEditor(docId);
+      } catch (err) {
+        if (statusEl) statusEl.textContent = err.message || "Reject failed";
+      }
+    });
+  }
+  window.openComplianceDocEditor = openComplianceDocEditor;
 
   async function renderOrgsPage() {
     const body = qs("orgsPageBody");

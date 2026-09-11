@@ -36,14 +36,17 @@ _scheduler_task: asyncio.Task | None = None
 
 KEV_SYNC_INTERVAL_SEC = 6 * 3600  # matches the 12h KEV cache TTL with margin
 _SCHEDULER_TICK_SEC = 60  # wake scheduled syncs quickly for near-realtime connectors
-_last_kev_sync = 0.0
-_last_xdr_sync = 0.0
-_last_wazuh_sync = 0.0
-_last_openaudit_sync = 0.0
-_last_thehive_sync = 0.0
-_last_cloud_posture_sync = 0.0
-_last_sonarqube_sync = 0.0
-_last_software_sync = 0.0
+# Seed to "now" so the first scheduler tick does not immediately enqueue heavy
+# sync jobs that can block the uvicorn event loop right after boot.
+_boot_ts = time.time()
+_last_kev_sync = _boot_ts
+_last_xdr_sync = _boot_ts
+_last_wazuh_sync = _boot_ts
+_last_openaudit_sync = _boot_ts
+_last_thehive_sync = _boot_ts
+_last_cloud_posture_sync = _boot_ts
+_last_sonarqube_sync = _boot_ts
+_last_software_sync = _boot_ts
 
 
 def register_job(kind: str):
@@ -613,18 +616,24 @@ async def _job_software_sync_all(payload: dict[str, Any]) -> dict[str, Any]:
     queued = queue_software_sync_jobs(uid)
     job_ids = [j["id"] for j in queued if j.get("id")]
     wait_results: dict[str, str] = {}
-    if job_ids:
+    # Single in-process worker cannot wait on child jobs it must also run —
+    # that deadlocks until timeout. Only wait when explicitly requested and
+    # children were queued for a multi-worker deployment.
+    if job_ids and payload.get("wait_for_children"):
         wait_results = await wait_for_jobs(job_ids, timeout_sec=180)
+    elif job_ids:
+        wait_results = {jid: "queued" for jid in job_ids}
 
     local_os: dict[str, Any] = {"ingested": 0, "probe": {}}
     try:
-        local_os["probe"] = probe_local_os_patches()
+        local_os["probe"] = await asyncio.to_thread(probe_local_os_patches)
     except Exception:
         pass
 
-    rebuilt = rebuild_for_user(uid)
+    # rebuild_for_user does sync HTTP/DB — never block the uvicorn event loop.
+    rebuilt = await asyncio.to_thread(rebuild_for_user, uid)
     local_os["ingested"] = int(rebuilt.get("local_os") or 0)
-    posture = posture_summary(uid, rebuild_if_empty=False)
+    posture = await asyncio.to_thread(posture_summary, uid, rebuild_if_empty=False)
     server_summary = posture.get("server_summary") or {}
     needs_update = int(server_summary.get("needs_update") or 0)
 

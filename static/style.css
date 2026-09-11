@@ -2908,7 +2908,7 @@ html[data-theme="light"],
   gap: 0.4rem;
   margin-top: 0.75rem;
 }
-.inline-form input, .inline-form select {
+.inline-form input, .inline-form select, .inline-form textarea {
   flex: 1 1 8rem;
   min-height: 36px;
   border-radius: 10px;
@@ -2930,8 +2930,28 @@ html[data-theme="light"],
 }
 .inline-form.inline-form-col > input,
 .inline-form.inline-form-col > select,
+.inline-form.inline-form-col > textarea,
 .inline-form.inline-form-col > button {
   flex: 0 0 auto;
+}
+.inline-form.inline-form-col > textarea {
+  resize: vertical;
+  width: 100%;
+}
+/* Compliance document editor: section textareas live outside .inline-form
+   (each is paired with its own heading/prompt label, not a flat field list),
+   so they need the same real input styling on their own rather than via the
+   .inline-form rule above. */
+.doc-section textarea {
+  min-height: 36px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--input-bg);
+  color: var(--text);
+  padding: 0.5rem 0.6rem;
+  font: inherit;
+  resize: vertical;
+  box-sizing: border-box;
 }
 .inline-form button {
   font: inherit;

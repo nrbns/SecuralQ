@@ -866,11 +866,15 @@ async def ai_secops_tools_list(user: Annotated[AuthUser, Depends(require_user)])
     }
 
 
+class VerifyHostRequest(BaseModel):
+    agent_id: str = Field(min_length=4, max_length=80)
+    test_name: str = Field(default="host_firewall", max_length=80)
+
+
 @router.post("/ai/secops/verify-host")
 async def ai_secops_verify_host(
+    req: VerifyHostRequest,
     user: Annotated[AuthUser, Depends(require_user)],
-    agent_id: str,
-    test_name: str = "host_firewall",
     x_securaiq_org: str | None = Header(default=None, alias="X-SecuraIQ-Org"),
 ):
     """Phase 9–10 thin verify: observed host-control PASS/FAIL after remediation."""
@@ -879,7 +883,10 @@ async def ai_secops_verify_host(
     from app.secops.verification import verify_host_remediation
 
     return verify_host_remediation(
-        user.id, agent_id=agent_id, test_name=test_name, org_id=oid
+        user.id,
+        agent_id=req.agent_id.strip(),
+        test_name=(req.test_name or "host_firewall").strip(),
+        org_id=oid,
     )
 
 
