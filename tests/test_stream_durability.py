@@ -286,3 +286,9 @@ def test_dotted_event_type_aliases_registered():
         "scan.completed",
     ):
         assert is_registered_event_type(et), et
+
+
+def test_streams_fanout_default_true():
+    from app.config import settings
+
+    assert settings.realtime_streams_fanout is True

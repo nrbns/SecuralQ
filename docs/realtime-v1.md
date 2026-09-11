@@ -33,7 +33,7 @@ Related: [production-readiness.md](./production-readiness.md) ·
        │                              (+ RT-06 idempotency ledger)
        │                              │
        │         ┌────────────────────┘
-       │         ▼  (opt-in fanout)
+       │         ▼  (default Streams fanout)
        │   securaiq-realtime-{pid}
        │   XREADGROUP → _fanout_local
        ▼
@@ -46,12 +46,11 @@ Related: [production-readiness.md](./production-readiness.md) ·
 | Mechanism | Role |
 |-----------|------|
 | **In-process** `_fanout_local` | Always — same worker / lab (no Redis) |
-| **Pub/Sub** `securaiq:realtime` | **Transitional** multi-worker SSE notify when `REDIS_URL` set and `REALTIME_STREAMS_FANOUT=false` (default) |
+| **Pub/Sub** `securaiq:realtime` | **Transitional** multi-worker SSE notify when `REDIS_URL` set and `REALTIME_STREAMS_FANOUT=false` |
 | **Streams** `XADD` | **Durable source of truth** when `REDIS_URL` set (always XADD; independent of fan-out mode) |
-| **Streams fan-out** | **Opt-in** (`REALTIME_STREAMS_FANOUT=true`): skip pub/sub; each process runs group `securaiq-realtime-{pid}` and fans to local SSE after `XREADGROUP` |
+| **Streams fan-out** | **Default** when `REDIS_URL` set (`REALTIME_STREAMS_FANOUT=true`): skip pub/sub; each process runs group `securaiq-realtime-{pid}` and fans to local SSE after `XREADGROUP` |
 
-Lab without Redis is unchanged. Do not enable Streams fan-out as default until operators accept the per-process consumer model (Streams still **partial** for HA until fan-out is default + Sentinel/Cluster).
-
+Lab without Redis is unchanged. Redis HA/Sentinel remains a separate production gate item.
 - **In-process bus** is the lab default and always works with `AUTH_ENABLED=false`.
   Ring buffer (`REALTIME_REPLAY_BUFFER`, default 2000) powers `replay_since` for
   Last-Event-ID catch-up without Redis. With Redis, `replay_since` also
@@ -124,11 +123,11 @@ SSE consumers in `static/app.js` keep working; they are also copied into `data`.
 
 | Piece | Role |
 |-------|------|
-| `realtime_bus.publish` | `XADD` to Streams when `REDIS_URL` set; pub/sub unless `REALTIME_STREAMS_FANOUT` |
+| `realtime_bus.publish` | `XADD` to Streams when `REDIS_URL` set; pub/sub only when `REALTIME_STREAMS_FANOUT=false` |
 | In-process ring buffer | Last N events by `event_id` for lab `replay_since` |
 | `replay_since(last_event_id, limit=200)` | Ring buffer + best-effort limited Stream scan when Redis available |
 | `stream_status()` / `backend_status()` | Modes: `in_process` \| `redis_streams+pubsub` \| `redis_streams_fanout`; best-effort `stream_length` / `dlq_length` / `pending_count` / lag |
-| Config | `REDIS_STREAM_KEY`, `REDIS_STREAM_MAXLEN`, `REDIS_STREAM_DLQ_KEY`, `REDIS_STREAM_MAX_DELIVERIES`, `REDIS_STREAM_CLAIM_IDLE_MS`, `REALTIME_REPLAY_BUFFER`, `REALTIME_STREAMS_FANOUT` (default **false**) |
+| Config | `REDIS_STREAM_KEY`, `REDIS_STREAM_MAXLEN`, `REDIS_STREAM_DLQ_KEY`, `REDIS_STREAM_MAX_DELIVERIES`, `REDIS_STREAM_CLAIM_IDLE_MS`, `REALTIME_REPLAY_BUFFER`, `REALTIME_STREAMS_FANOUT` (default **true** when Redis used; set `false` for transitional pub/sub) |
 
 ### Phase 1 durability (DLQ + reclaim)
 
@@ -143,7 +142,7 @@ When `REDIS_URL` is set, the `securaiq-workers` consumer:
 
 Monitoring keys on `stream_status()` / `processor_status()` / health `realtime_bus` are best-effort and **never raise**.
 
-**Still partial for HA:** pub/sub remains default multi-worker notify; Streams fan-out is opt-in (per-process `securaiq-realtime-{pid}`). No Sentinel/Cluster. Full HA catch-up API not claimed.
+**Still partial for HA:** Streams fan-out is now the default multi-worker SSE path when `REDIS_URL` is set (`REALTIME_STREAMS_FANOUT=true`). Pub/sub remains available via `REALTIME_STREAMS_FANOUT=false`. No Sentinel/Cluster. Full HA catch-up API not claimed.
 
 ---
 
@@ -400,7 +399,7 @@ Agent check-in payloads already include `firewall_status`, `defender_status`, an
 | Task | Scope | Status |
 |------|--------|--------|
 | **A** / **RT-01** | Unified versioned event contract + normalize on publish | **Done** |
-| **B** / **RT-02** | Durable queue via **Redis Streams** (XADD, trim; opt-in Streams fan-out; Phase 1 DLQ + reclaim) | **Partial** (needs `REDIS_URL`; fan-out opt-in, pub/sub still default) |
+| **B** / **RT-02** | Durable queue via **Redis Streams** (XADD, trim; default Streams fan-out; Phase 1 DLQ + reclaim) | **Partial→improved** (needs `REDIS_URL`; fan-out default; pub/sub opt-out; no Redis HA) |
 | **C** / **RT-03** | Event processor (consumer group + lab hooks; scoped notify/evidence/risk) | **Partial→improved** |
 | **D** / **RT-04** | Agent offline spool fully wired into packaged agents | **Partial→improved** (v1.1.1 wired; not HA durable) |
 | **RT-05** | Event ordering + gap recovery (contiguous ACK, re-apply host telemetry, `sequence_gap`) | **Partial→improved** (foundations) |
@@ -422,8 +421,7 @@ Agent check-in payloads already include `firewall_status`, `defender_status`, an
 | **H** / **RT-20** | 5K measured load test | **Partial** (ladder ≤1k; **do not claim 5k**) |
 
 **Later / not this slice:** per-tenant sequence authority, Redis Sentinel/Cluster HA,
-default Streams fan-out (still opt-in), exactly-once beyond SQLite ledger + LRU,
-ops SLOs, forced Ed25519-only cutover,
+exactly-once beyond SQLite ledger + LRU, ops SLOs, forced Ed25519-only cutover,
 approved agent commands that enable firewall automatically.
 
 **Out of scope for this track:** Task #144 Live Test UI (frozen).
@@ -434,7 +432,7 @@ approved agent commands that enable firewall automatically.
 
 - Event IDs + schema: **improved** (contract + normalize), still not durable exactly-once across HA.
 - Event ordering: **partial→improved** — agent contiguous ACK + gap publish + host telemetry re-apply (RT-05); millis `sequence` still best-effort; no per-tenant log.
-- Persistent event queue: **partial** — Streams when `REDIS_URL` set; Phase 1 DLQ + pending reclaim; pub/sub still default for multi-worker SSE; Streams fan-out **opt-in**; lab remains in-process buffer only.
+- Persistent event queue: **partial→improved** — Streams when `REDIS_URL` set; Phase 1 DLQ + pending reclaim; **Streams fan-out default** for multi-worker SSE (`REALTIME_STREAMS_FANOUT=true`); pub/sub via `=false`; lab remains in-process buffer only. Redis HA still missing.
 - Event processor: **partial→improved** — consumer group + scoped hooks + RT-06 ledger + RT-07 threat→incident + RT-08 inventory/vuln→risk + RT-09 attack-path refresh; not full detection→risk / XDR correlation.
 - SSE tenancy: **improved** — push filtered when AUTH on; heartbeats unfiltered.
 - Offline agent buffer: **partial→improved** — packaged agent wired (v1.1.1); contiguous ACK + re-apply host keys from newest ACKed buffer; not HA durable.

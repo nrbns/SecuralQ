@@ -11,10 +11,10 @@ keep working.
 When ``REDIS_URL`` is set:
   - **Streams** (`REDIS_STREAM_KEY`, default ``securaiq:events``) durable ``XADD``
     — authoritative durable log (REALTIME Task B / RT-02).
-  - **pub/sub** (`securaiq:realtime`) — *transitional* multi-worker SSE notify
-    (default on). Opt out via ``REALTIME_STREAMS_FANOUT=true`` so each process
-    fans out from Streams via a per-process ``securaiq-realtime-*`` consumer
-    instead of pub/sub.
+  - **Streams fan-out** (default) — each process runs a per-process
+    ``securaiq-realtime-*`` consumer and fans to local SSE after ``XREADGROUP``.
+  - **pub/sub** (`securaiq:realtime`) — *transitional* multi-worker SSE notify.
+    Opt in via ``REALTIME_STREAMS_FANOUT=false`` if you need the older path.
 
 Without Redis: single-process lab default — in-memory ring buffer supports
 ``replay_since`` for Last-Event-ID catch-up.
@@ -261,8 +261,8 @@ def publish(event: dict[str, Any] | None = None, **kwargs: Any) -> None:
         return
     # Durable log first — Streams are the SoT when REDIS_URL is set.
     _xadd_stream(payload, url)
-    # Pub/sub remains the default multi-worker SSE notify until operators opt in
-    # to REALTIME_STREAMS_FANOUT (then per-process Streams consumers fan out).
+    # Default: Streams fan-out consumers deliver to local SSE (no pub/sub).
+    # Transitional: REALTIME_STREAMS_FANOUT=false keeps Redis pub/sub notify.
     if not _streams_fanout_enabled():
         _pubsub_publish(payload, url)
 
@@ -616,22 +616,22 @@ def backend_status() -> dict[str, Any]:
     if url and fanout:
         mode = "redis_streams_fanout"
         hint = (
-            "REDIS_URL set + REALTIME_STREAMS_FANOUT: durable XADD to Streams "
-            f"({stream.get('stream_key')}); per-process securaiq-realtime-* "
-            "consumer fans out to local SSE (pub/sub skipped)."
+            "REDIS_URL set: durable XADD to Streams "
+            f"({stream.get('stream_key')}); default Streams fan-out via "
+            "per-process securaiq-realtime-* consumers (pub/sub skipped)."
         )
     elif url:
         mode = "redis_streams+pubsub"
         hint = (
             "REDIS_URL set: durable XADD to Streams "
-            f"({stream.get('stream_key')}) + pub/sub fan-out for multi-worker SSE "
-            "(transitional; set REALTIME_STREAMS_FANOUT=true to prefer Streams)."
+            f"({stream.get('stream_key')}) + transitional pub/sub SSE fan-out "
+            "(REALTIME_STREAMS_FANOUT=false). Default is Streams fan-out."
         )
     else:
         mode = "in_process"
         hint = (
             "Single-process only — in-memory replay buffer for Last-Event-ID. "
-            "Set REDIS_URL for Streams durability + multi-worker pub/sub."
+            "Set REDIS_URL for Streams durability + Streams SSE fan-out."
         )
     processor: dict[str, Any] = {}
     try:

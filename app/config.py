@@ -161,9 +161,9 @@ class Settings(BaseSettings):
     redis_stream_max_deliveries: int = 5  # then DLQ + XACK
     redis_stream_claim_idle_ms: int = 60000  # XAUTOCLAIM idle threshold
     realtime_replay_buffer: int = 2000  # in-process ring buffer for Last-Event-ID (lab)
-    # RT-02 opt-in: Streams as authoritative multi-worker SSE fan-out (skip pub/sub).
-    # Default False — keep pub/sub until operators enable Streams fanout.
-    realtime_streams_fanout: bool = False
+    # When REDIS_URL is set: Streams consumers fan out to local SSE (skip pub/sub).
+    # Set REALTIME_STREAMS_FANOUT=false for transitional Redis pub/sub notify.
+    realtime_streams_fanout: bool = True
     # RT-06: prune processed event_id rows older than N days (SQLite/Postgres table).
     event_idempotency_prune_days: int = 7
     # Native agent gateway (WebSocket) + replay protection

@@ -56,14 +56,17 @@ Modules reinforce this loop. AI may recommend; it must not claim success unless 
 
 **Priority: prove firewall closed loop (`realtime_acceptance_demo.py`) before Phase 22+ / full OS config trees.**
 
-**Next only: complete Phase 1** (Realtime Foundation durability):
+**Next only: complete Phase 1 remaining** (Realtime Foundation):
 
-1. Dead-letter queue (`XADD` to DLQ after max deliveries)
-2. Pending reclaim (`XAUTOCLAIM` / idle pending recovery)
-3. Stream metrics / monitoring (lag, pending, DLQ depth)
-4. Acceptance harness for the end-to-end workflow below
+1. ~~Dead-letter queue~~ (**done** when `REDIS_URL` set)
+2. ~~Pending reclaim / XAUTOCLAIM~~ (**done**)
+3. ~~Stream metrics~~ (**done** — `stream_monitor_snapshot` / health)
+4. ~~Default Streams fan-out~~ (**done** — `REALTIME_STREAMS_FANOUT=true` default)
+5. Acceptance harness for the end-to-end workflow below (lab green; Redis HA still missing)
 
-Run the local acceptance demo with `scripts/realtime_acceptance_demo.py` once Redis Streams durability (DLQ + reclaim) is up.
+Remaining Phase 1 claim blockers: Redis HA/Sentinel + multi-worker production proof.
+
+Run `scripts/realtime_acceptance_demo.py` / `scripts/live_lab_smoke.py` on owned lab endpoints.
 
 **Freeze Phase 22+** (cloud / container / AppSec / identity / data / TPRM / malware depth / AI SecOps expansions) until the acceptance workflow works reliably on lab endpoints you own.
 
@@ -84,10 +87,10 @@ Legend by track: **🔴** foundation / production · **🟠** domain expansion �
 - Bounded offline agent queue → reconnect → ACK
 
 **Status: Near-done (lab)** — event schema, Streams `XADD`, processor, offline
-buffer, ordering, **DLQ + XAUTOCLAIM + stream metrics** (when `REDIS_URL` set),
-firewall FAIL→PASS acceptance harness green. Remaining for full Phase 1 claim:
-default Streams fan-out + Redis HA/Sentinel (multi-worker production).
-Lab without Redis: in-process SSE bus is the supported realtime path.
+buffer, ordering, DLQ + XAUTOCLAIM + stream metrics, **default Streams fan-out**
+(when `REDIS_URL` set). Remaining for full Phase 1 claim: Redis HA/Sentinel
+(multi-worker production). Lab without Redis: in-process SSE bus is the supported
+realtime path.
 
 ---
 
@@ -365,7 +368,7 @@ optional; disk encryption observe→test→POA&M recommend-only); not certificat
 
 ## 10 most important remaining things
 
-1. **Durable realtime event pipeline** — DLQ, reclaim, default Streams fan-out, metrics (finish Phase 1)
+1. **Durable realtime event pipeline** — Redis HA/Sentinel (Phase 1 almost done: DLQ/reclaim/metrics/default Streams fan-out)
 2. **Fully wired offline-capable secure agents** — mTLS/certs + richer telemetry (Phases 2–3)
 3. **Detection → Risk → Incident → Evidence** pipeline depth (Phases 5–6)
 4. **Agent telemetry → Control Test → Compliance → Evidence** (Phases 13–14)
