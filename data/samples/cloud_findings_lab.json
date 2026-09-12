@@ -1,0 +1,45 @@
+{
+  "vendor": "cloud_import",
+  "findings": [
+    {
+      "id": "lab-s3-public",
+      "title": "Public S3 bucket — lab-bucket",
+      "severity": "high",
+      "status": "open",
+      "resource": "arn:aws:s3:::lab-bucket",
+      "source": "cloud_import"
+    },
+    {
+      "id": "lab-sg-open-ssh",
+      "title": "Security group allows 0.0.0.0/0 on SSH",
+      "severity": "high",
+      "status": "open",
+      "resource": "sg-lab-012345",
+      "source": "cloud_import"
+    },
+    {
+      "id": "lab-storage-unencrypted",
+      "title": "Storage account encryption disabled (lab)",
+      "severity": "medium",
+      "status": "open",
+      "resource": "storage-lab-unenc",
+      "source": "cloud_import"
+    },
+    {
+      "id": "lab-iam-mfa",
+      "title": "Root / break-glass account without MFA (lab)",
+      "severity": "critical",
+      "status": "open",
+      "resource": "iam-root-lab",
+      "source": "cloud_import"
+    },
+    {
+      "id": "lab-info-tagging",
+      "title": "Missing required cost-center tags (lab)",
+      "severity": "low",
+      "status": "open",
+      "resource": "resource-group-lab",
+      "source": "cloud_import"
+    }
+  ]
+}

@@ -74,6 +74,7 @@
           <button type="button" class="nav-link" id="softwareBtn" data-workspace="software"><span class="nav-ico sm" data-ico="fw" aria-hidden="true"></span> Software &amp; patches</button>
           <button type="button" class="nav-link" id="vulnBtn" data-workspace="vulns"><span class="nav-ico sm" data-ico="vuln" aria-hidden="true"></span> Vulnerabilities</button>
           <button type="button" class="nav-link" data-workspace="soc"><span class="nav-ico sm" data-ico="soc" aria-hidden="true"></span> Incidents</button>
+          <button type="button" class="nav-link" id="logsNavBtn" data-workspace="logs"><span class="nav-ico sm" data-ico="soc" aria-hidden="true"></span> Logs (SIEM)</button>
           <button type="button" class="nav-link" id="agentsNavBtn" data-workspace="agents"><span class="nav-ico sm" data-ico="asset" aria-hidden="true"></span> Agents</button>
           <button type="button" class="nav-link" data-workspace="intel"><span class="nav-ico sm" data-ico="intel" aria-hidden="true"></span> Threat intelligence</button>
           <button type="button" class="nav-link" id="webscanBtn" data-workspace="webscan"><span class="nav-ico sm" data-ico="web" aria-hidden="true"></span> Web Scan</button>
@@ -706,13 +707,13 @@
                     <h2>Cloud posture</h2>
                     <div class="page-head-actions">
                       <button type="button" class="btn-secondary" id="cloudImportBtn">Import JSON</button>
+                      <button type="button" class="btn-secondary" id="cloudSampleBtn" title="Load lab sample findings">Load sample</button>
                       <button type="button" class="btn-secondary" id="cloudSyncBtn">Sync cloud</button>
                     </div>
                   </header>
                   <input type="file" id="cloudImportInput" accept=".json,application/json" class="hidden" />
                   <div id="cloudPosturePanelBody"><p class="hint">Loading…</p></div>
-                </section>
-                <section class="cc-panel vuln-source-card" id="hkVulnPanel">
+                </section>                <section class="cc-panel vuln-source-card" id="hkVulnPanel">
                   <header>
                     <h2>Windows hardening</h2>
                     <div class="page-head-actions">
@@ -799,6 +800,17 @@
         <section id="viewSoc" class="workspace-view hidden" data-module-page data-view-panel="soc">
           <div class="page-head"><h1>Security operations</h1></div>
           <div id="socPageBody"></div>
+        </section>
+        <section id="viewLogs" class="workspace-view hidden" data-module-page data-view-panel="logs">
+          <div class="page-head">
+            <div>
+              <h1>Logs (SIEM)</h1>
+              <p class="page-intro hint" style="margin:0.35rem 0 0">Unified, real-time search across every log source SecuraIQ actually has: native agent events, Wazuh/XDR/EDR alerts, and SecuraIQ's own audit trail — plus one auditable correlation rule that opens a real incident on repeated auth failures.</p>
+            </div>
+          </div>
+          <div id="logsStatsBar" class="vuln-summary-bar" aria-live="polite"></div>
+          <div id="logsFilterBar" class="filter-bar" aria-label="Log filters"></div>
+          <div id="logsPageBody"><p class="hint">Loading…</p></div>
         </section>
         <section id="viewAgents" class="workspace-view hidden" data-module-page data-view-panel="agents">
           <div class="page-head">

@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -40,6 +40,13 @@ async def get_status(user: Annotated[AuthUser, Depends(require_user)]):
 
 @router.post("/sync")
 async def trigger_sync(user: Annotated[AuthUser, Depends(require_user)]):
+    st = sonar_status()
+    if not st.get("configured"):
+        raise HTTPException(
+            400,
+            "No code engine configured — use Scan folder for local SAST "
+            "(or set SecuraIQ Code / Sonar settings).",
+        )
     from app.jobs import enqueue_job
 
     job = enqueue_job("sonarqube_sync", {"user_id": user.id}, engine="auto")

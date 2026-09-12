@@ -79,6 +79,17 @@ async def run_audit(req: AuditRequest, user: Annotated[AuthUser, Depends(require
 
     if req.mode not in {"Audit", "Config"}:
         raise HTTPException(400, "Only Audit and Config modes are allowed")
+    st = hk.status()
+    if str(st.get("platform") or "").lower() != "windows":
+        raise HTTPException(400, "HardeningKitty runs on Windows lab hosts only")
+    if not st.get("installed"):
+        raise HTTPException(
+            400,
+            "HardeningKitty not installed — run .\\scripts\\use_hardeningkitty.cmd -Download "
+            "or set HARDENINGKITTY_MODULE_PATH",
+        )
+    if not st.get("powershell"):
+        raise HTTPException(400, "PowerShell not found on PATH")
     try:
         job = enqueue_job(
             "hardeningkitty_audit",

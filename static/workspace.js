@@ -343,6 +343,7 @@
       reports: "viewReports",
       webscan: "viewWebscan",
       soc: "viewSoc",
+      logs: "viewLogs",
       agents: "viewAgents",
       agent_detail: "viewAgentDetail",
       evidence: "viewEvidence",
@@ -391,6 +392,7 @@
         reports: "Reports",
         webscan: "Web URL Scan",
         soc: "SOC",
+        logs: "Logs (SIEM)",
         agents: "Agents & packages",
         agent_detail: "Agent detail",
         evidence: "Evidence Locker",
@@ -424,6 +426,7 @@
     if (view === "reports") renderReportsPage();
     if (view === "webscan") renderWebScanPage();
     if (view === "soc") renderSocPage();
+    if (view === "logs") renderLogsPage();
     if (view === "agents") renderAgentsPage();
     if (view === "agent_detail") renderAgentDetailPage(window.__securaiqSelectedAgentId);
     if (view === "evidence") renderEvidencePage();
@@ -2541,25 +2544,48 @@
       const runs = st.recent_runs || [];
       const auditDone = Boolean(hk.audit_done);
       const installed = Boolean(st.installed || hk.installed);
+      const plat = String(st.platform || "").toLowerCase();
+      const isWin = plat === "windows";
+      const psOk = Boolean(st.powershell);
       let chip = `<span class="auto-job-status status-planned">Not installed</span>`;
-      if (auditDone) chip = `<span class="auto-job-status status-done">Audit done</span>`;
+      if (!isWin) chip = `<span class="auto-job-status status-planned">Windows only</span>`;
+      else if (auditDone) chip = `<span class="auto-job-status status-done">Audit done</span>`;
       else if (installed) chip = `<span class="auto-job-status status-running">Ready — not audited</span>`;
       const hkFindings = _vulnCache.filter((v) => /hardeningkitty/i.test(v.source || ""));
       const hkOpen = hkFindings.filter((v) => (v.status || "open") === "open").length;
+      const auditBtn = qs("hkVulnAuditBtn");
+      if (auditBtn) {
+        const canRun = isWin && installed && psOk;
+        auditBtn.disabled = !canRun;
+        auditBtn.title = !isWin
+          ? "HardeningKitty runs on Windows lab hosts"
+          : !installed
+            ? "Install HardeningKitty first"
+            : !psOk
+              ? "PowerShell required"
+              : "Run HardeningKitty audit on this host";
+      }
+      const installCmd = ".\\scripts\\use_hardeningkitty.cmd -Download";
       el.innerHTML = `
         <p class="vuln-source-status">${chip}
           <span class="hint">${hkOpen} open / ${hkFindings.length} total HK findings</span>
         </p>
         ${
-          !installed
-            ? `<p class="hint">Not installed on this host yet.</p>
-               <details class="hk-setup-advanced">
-                 <summary>Advanced: install manually</summary>
-                 <code class="hk-setup-code">.\\scripts\\use_hardeningkitty.cmd -Download</code>
-               </details>`
-            : auditDone
-              ? `<p class="hint">Last score ${hk.last_score != null ? escapeHtml(String(hk.last_score)) : "—"} · failed ${hk.last_failed || 0} · imported ${hk.last_imported || 0}</p>`
-              : `<p class="hint">${Number(st.finding_lists) || 0} CIS lists ready — run Audit to populate findings.</p>`
+          !isWin
+            ? `<p class="hint">HardeningKitty audits Windows CIS baselines on this host. Use Import CSV on Frameworks from another machine if needed.</p>`
+            : !installed
+              ? `<p class="hint">Not installed on this host yet.</p>
+                 <div class="hk-setup-actions">
+                   <button type="button" class="btn-secondary" id="hkCopyInstallBtn">Copy install command</button>
+                 </div>
+                 <details class="hk-setup-advanced" open>
+                   <summary>Install on this Windows lab host</summary>
+                   <code class="hk-setup-code">${escapeHtml(installCmd)}</code>
+                   <p class="hint">Or set HARDENINGKITTY_MODULE_PATH in Settings after a manual clone.</p>
+                 </details>`
+              : auditDone
+                ? `<p class="hint">Last score ${hk.last_score != null ? escapeHtml(String(hk.last_score)) : "—"} · failed ${hk.last_failed || 0} · imported ${hk.last_imported || 0}</p>`
+                : `<p class="hint">${Number(st.finding_lists) || 0} CIS lists ready — Run audit to populate findings (live).</p>`
         }
         ${
           runs.length
@@ -2574,11 +2600,21 @@
                 .join("")}</ul>`
             : ""
         }`;
+      const copyBtn = el.querySelector("#hkCopyInstallBtn");
+      if (copyBtn) {
+        copyBtn.addEventListener("click", async () => {
+          try {
+            await navigator.clipboard.writeText(installCmd);
+            if (typeof notifyUser === "function") notifyUser("**Install command copied** — paste in PowerShell on this host.");
+          } catch {
+            if (typeof notifyUser === "function") notifyUser(`**Run:** \`${installCmd}\``);
+          }
+        });
+      }
     } catch (err) {
       el.innerHTML = `<p class="hint">Couldn't load the hardening panel — try refreshing. <span class="hint-sub">(${escapeHtml(err.message)})</span></p>`;
     }
   }
-
   function wireHkVulnAuditBtn() {
     const btn = qs("hkVulnAuditBtn");
     if (!btn || btn.dataset.wired) return;
@@ -2617,6 +2653,7 @@
     if (quiet) return;
     wireCloudSyncBtn();
     wireCloudImportBtn();
+    wireCloudSampleBtn();
     wireSonarSyncBtns();
     wireCodeScanUi();
     wireHkVulnAuditBtn();
@@ -2627,12 +2664,20 @@
     if (!el) return;
     const pathEl = qs("codeScanPath");
     if (pathEl && !pathEl.value) {
-      const fromLive =
-        (typeof window.getScanTarget === "function" && window.getScanTarget()) ||
-        (document.getElementById("scanTargetIp") || {}).value ||
-        "";
-      if (fromLive && (/[\\/]/.test(fromLive) || fromLive.length > 2)) {
-        pathEl.value = fromLive;
+      try {
+        const saved = localStorage.getItem("securaiq_code_scan_path") || "";
+        if (saved) pathEl.value = saved;
+      } catch {
+        /* ignore */
+      }
+      if (!pathEl.value) {
+        const fromLive =
+          (typeof window.getScanTarget === "function" && window.getScanTarget()) ||
+          (document.getElementById("scanTargetIp") || {}).value ||
+          "";
+        if (fromLive && (/[\\/]/.test(fromLive) || fromLive.length > 2)) {
+          pathEl.value = fromLive;
+        }
       }
     }
     try {
@@ -2644,6 +2689,13 @@
           ? `<span class="auto-job-status status-done">connected</span>`
           : `<span class="auto-job-status status-error">error</span>`
         : `<span class="auto-job-status status-planned">local SAST</span>`;
+      const syncBtn = qs("sonarPanelSyncBtn");
+      if (syncBtn) {
+        syncBtn.disabled = !st.configured;
+        syncBtn.title = st.configured
+          ? "Pull findings from configured code engine"
+          : "No engine — use Scan folder for local SAST";
+      }
       el.innerHTML = `
         <p class="vuln-source-status">${chip}${
           st.base_url ? ` <span class="hint">${escapeHtml(st.base_url)}</span>` : ""
@@ -2653,13 +2705,12 @@
             ? ping.ok
               ? `Engine ready · ${escapeHtml(String(ping.status || "UP"))}${ping.version ? ` · v${escapeHtml(String(ping.version))}` : ""}`
               : escapeHtml(ping.error || "Connection failed — check Settings → SecuraIQ Code")
-            : "Path + Auth → Scan folder. Findings stream into the register. Optional engine Sync in Settings."
+            : "LOCAL SAST. Path + Auth → Scan folder. Findings stream into the register live. Optional engine Sync when configured."
         }</p>`;
     } catch (err) {
       el.innerHTML = `<p class="hint">Couldn't load the code scan panel — try refreshing. <span class="hint-sub">(${escapeHtml(err.message)})</span></p>`;
     }
   }
-
   function setCodeScanLive(text, show) {
     const live = qs("codeScanLive");
     if (!live) return;
@@ -2732,6 +2783,11 @@
       }
       pathEl?.focus();
       return;
+    }
+    try {
+      localStorage.setItem("securaiq_code_scan_path", path);
+    } catch {
+      /* ignore */
     }
     if (typeof window.setScanTarget === "function") {
       window.setScanTarget(path, authorized);
@@ -2853,6 +2909,21 @@
     const pathEl = qs("codeScanPath");
     if (pathEl && !pathEl.dataset.wired) {
       pathEl.dataset.wired = "1";
+      try {
+        if (!pathEl.value) {
+          const saved = localStorage.getItem("securaiq_code_scan_path") || "";
+          if (saved) pathEl.value = saved;
+        }
+      } catch {
+        /* ignore */
+      }
+      pathEl.addEventListener("change", () => {
+        try {
+          localStorage.setItem("securaiq_code_scan_path", (pathEl.value || "").trim());
+        } catch {
+          /* ignore */
+        }
+      });
       pathEl.addEventListener("keydown", (e) => {
         if (e.key === "Enter") {
           e.preventDefault();
@@ -2884,8 +2955,14 @@
           const res = await fetch("/api/code/sync", { method: "POST", headers: authHeaders() });
           const data = await res.json().catch(() => ({}));
           if (!res.ok) {
+            const detail =
+              typeof data.detail === "string"
+                ? data.detail
+                : Array.isArray(data.detail)
+                  ? data.detail.map((d) => d.msg || d).join("; ")
+                  : data.detail || res.status;
             if (typeof notifyUser === "function") {
-              notifyUser(`**SecuraIQ Code sync failed:** ${data.detail || res.status}`);
+              notifyUser(`**SecuraIQ Code:** ${detail}`);
             }
             return;
           }
@@ -2907,7 +2984,6 @@
       });
     });
   }
-
   async function renderCloudPosturePanel() {
     const el = qs("cloudPosturePanelBody");
     if (!el) return;
@@ -2948,8 +3024,17 @@
         : `<li class="hint">${
             (st.configured_count || 0) > 0
               ? "No findings synced yet — click Sync cloud"
-              : "Configure AWS, Azure, or GCP in Settings, or import JSON via API"
+              : "Lab path: Import JSON or Load sample — live vendors need Settings → Cloud posture"
           }</li>`;
+      const syncBtn = qs("cloudSyncBtn");
+      if (syncBtn) {
+        const n = Number(st.configured_count || 0);
+        syncBtn.disabled = n <= 0;
+        syncBtn.title =
+          n > 0
+            ? "Pull from configured AWS / Azure / GCP connectors"
+            : "No vendors configured — use Import JSON or Load sample";
+      }
       el.innerHTML = `
         ${vendorChips}
         <div class="vuln-cloud-kpis">
@@ -2958,10 +3043,26 @@
         </div>
         <p class="hint vuln-cloud-label">Recent cloud findings</p>
         <ul class="cc-list">${findingsHtml}</ul>
-        <p class="hint">Settings → Cloud posture to connect Security Hub / Defender / SCC.</p>`;
+        <p class="hint">Import JSON / Load sample for lab. Live Security Hub / Defender / SCC only when configured in Settings.</p>`;
     } catch (err) {
       el.innerHTML = `<p class="hint">Couldn't load cloud posture — try refreshing. <span class="hint-sub">(${escapeHtml(err.message)})</span></p>`;
     }
+  }
+
+  async function _importCloudFindingsPayload(parsed) {
+    const findings = Array.isArray(parsed) ? parsed : parsed.findings || [];
+    if (!findings.length) throw new Error("JSON must be an array of findings or { findings: [...] }");
+    const res = await fetch("/api/cloud/import", {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({
+        vendor: parsed.vendor || "cloud_import",
+        findings,
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `Import failed (${res.status})`);
+    return data;
   }
 
   function wireCloudImportBtn() {
@@ -2979,27 +3080,90 @@
       try {
         const text = await file.text();
         const parsed = JSON.parse(text);
-        const findings = Array.isArray(parsed) ? parsed : parsed.findings || [];
-        if (!findings.length) throw new Error("JSON must be an array of findings or { findings: [...] }");
-        const res = await fetch("/api/cloud/import", {
-          method: "POST",
-          headers: authHeaders({ "Content-Type": "application/json" }),
-          body: JSON.stringify({
-            vendor: parsed.vendor || "cloud_import",
-            findings,
-          }),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.detail || `Import failed (${res.status})`);
+        const data = await _importCloudFindingsPayload(parsed);
         if (typeof notifyUser === "function") {
-          notifyUser(`**Cloud import OK** · ${data.imported ?? findings.length} finding(s)`);
+          notifyUser(`**Cloud import OK** · ${data.imported ?? 0} finding(s) live in the register`);
         }
         renderVulnsPage();
+        if (typeof loadCommandCenter === "function") loadCommandCenter();
       } catch (err) {
         if (typeof notifyUser === "function") notifyUser(`**Cloud import failed:** ${err.message || err}`);
       } finally {
         btn.disabled = false;
         btn.textContent = "Import JSON";
+      }
+    });
+  }
+
+  function wireCloudSampleBtn() {
+    const btn = qs("cloudSampleBtn");
+    if (!btn || btn.dataset.wired) return;
+    btn.dataset.wired = "1";
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      btn.textContent = "Loading…";
+      try {
+        // Prefer repo sample when served; always fall back to built-in lab payload.
+        let parsed = null;
+        try {
+          const res = await fetch("/api/cloud/lab-sample", { headers: authHeaders() });
+          if (res.ok) parsed = await res.json();
+        } catch {
+          parsed = null;
+        }
+        if (!parsed) {
+          parsed = {
+            vendor: "cloud_import",
+            findings: [
+              {
+                id: "lab-s3-public",
+                title: "Public S3 bucket — lab-bucket",
+                severity: "high",
+                status: "open",
+                resource: "arn:aws:s3:::lab-bucket",
+              },
+              {
+                id: "lab-sg-open-ssh",
+                title: "Security group allows 0.0.0.0/0 on SSH",
+                severity: "high",
+                status: "open",
+                resource: "sg-lab-012345",
+              },
+              {
+                id: "lab-storage-unencrypted",
+                title: "Storage account encryption disabled (lab)",
+                severity: "medium",
+                status: "open",
+                resource: "storage-lab-unenc",
+              },
+              {
+                id: "lab-iam-mfa",
+                title: "Root / break-glass account without MFA (lab)",
+                severity: "critical",
+                status: "open",
+                resource: "iam-root-lab",
+              },
+              {
+                id: "lab-info-tagging",
+                title: "Missing required cost-center tags (lab)",
+                severity: "low",
+                status: "open",
+                resource: "resource-group-lab",
+              },
+            ],
+          };
+        }
+        const data = await _importCloudFindingsPayload(parsed);
+        if (typeof notifyUser === "function") {
+          notifyUser(`**Cloud sample loaded** · ${data.imported ?? 0} finding(s) live in the register`);
+        }
+        renderVulnsPage();
+        if (typeof loadCommandCenter === "function") loadCommandCenter();
+      } catch (err) {
+        if (typeof notifyUser === "function") notifyUser(`**Cloud sample failed:** ${err.message || err}`);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "Load sample";
       }
     });
   }
@@ -3014,22 +3178,29 @@
       try {
         const res = await fetch("/api/cloud/sync", { method: "POST", headers: authHeaders() });
         const data = await res.json().catch(() => ({}));
-        if (!res.ok && typeof notifyUser === "function") {
-          notifyUser(`**Cloud sync failed:** ${data.detail || res.status}`);
-        } else if (typeof notifyUser === "function") {
+        if (!res.ok) {
+          const detail =
+            typeof data.detail === "string"
+              ? data.detail
+              : data.detail || res.status;
+          if (typeof notifyUser === "function") notifyUser(`**Cloud sync:** ${detail}`);
+          return;
+        }
+        if (typeof notifyUser === "function") {
           notifyUser(`**Cloud sync queued** · job \`${(data.job && data.job.id) || "?"}\``);
         }
         const jobId = data.job && data.job.id;
         if (jobId && typeof window.waitForJob === "function") {
           await window.waitForJob(jobId, { timeoutMs: 120000 });
         }
+        renderCloudPosturePanel();
+        renderVulnsPage();
       } catch (err) {
-        if (typeof notifyUser === "function") notifyUser(`**Cloud sync error:** ${err.message || err}`);
-      }
-      renderVulnsPage();
-      if (btn) {
+        if (typeof notifyUser === "function") notifyUser(`**Cloud sync failed:** ${err.message || err}`);
+      } finally {
         btn.disabled = false;
         btn.textContent = "Sync cloud";
+        renderCloudPosturePanel();
       }
     });
   }
@@ -7088,6 +7259,182 @@
     });
   }
 
+  // --- Logs (SIEM) ------------------------------------------------------
+  // Unified search over three genuinely separate real sources -- never
+  // blended into one synthetic "log" identity, per app/services/log_management.py:
+  //   ingested  -- native agent push / manual API push / syslog bridge, stored in ingested_logs
+  //   wazuh/xdr -- already-real xdr_events table (Wazuh SIEM + XDR/EDR vendors)
+  //   audit     -- SecuraIQ's own audit_log (every authenticated action)
+  // Plus one auditable threshold correlation rule (repeated auth failures ->
+  // real incident), never framed as AI/ML detection.
+  let _logFilters = { q: "", source: "", severity: "" };
+
+  async function renderLogsStatsBar() {
+    const el = qs("logsStatsBar");
+    if (!el) return;
+    let stats = {};
+    try {
+      const res = await fetch("/api/logs/stats", { headers: authHeaders() });
+      stats = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(stats.detail || `HTTP ${res.status}`);
+    } catch (err) {
+      el.innerHTML = `<p class="hint">Could not load log stats: ${escapeHtml(err.message || String(err))}</p>`;
+      return;
+    }
+    const rule = stats.correlation_rule || {};
+    el.innerHTML = `
+      <div class="vuln-summary-metrics">
+        <strong>${stats.total || 0}</strong> total ·
+        <strong>${stats.ingested_count || 0}</strong> agent/API ·
+        <strong>${stats.wazuh_count || 0}</strong> Wazuh ·
+        <strong>${stats.xdr_count || 0}</strong> XDR/EDR ·
+        <strong>${stats.audit_count || 0}</strong> SecuraIQ audit
+      </div>
+      <div class="vuln-summary-actions">
+        <span class="hint" title="${escapeHtml(rule.disclaimer || "")}">Correlation rule: ${escapeHtml(
+          rule.name || "—"
+        )} (≥${escapeHtml(String(rule.threshold || "?"))} in ${escapeHtml(
+          String(Math.round((rule.window_sec || 0) / 60))
+        )}m) → real incident</span>
+      </div>`;
+  }
+
+  function paintLogFilters() {
+    const bar = qs("logsFilterBar");
+    if (!bar) return;
+    bar.innerHTML = `
+      <input type="search" id="logFilterQ" class="filter-input" placeholder="Search message, host, actor…" value="${escapeHtml(
+        _logFilters.q
+      )}" />
+      <select id="logFilterSource" class="filter-select" title="Source">
+        <option value="">All sources</option>
+        <option value="ingested" ${_logFilters.source === "ingested" ? "selected" : ""}>Agent / API</option>
+        <option value="wazuh" ${_logFilters.source === "wazuh" ? "selected" : ""}>Wazuh</option>
+        <option value="xdr" ${_logFilters.source === "xdr" ? "selected" : ""}>XDR / EDR</option>
+        <option value="audit" ${_logFilters.source === "audit" ? "selected" : ""}>SecuraIQ audit</option>
+      </select>
+      <select id="logFilterSeverity" class="filter-select" title="Severity">
+        <option value="">Severity</option>
+        ${["critical", "high", "medium", "low", "info"]
+          .map(
+            (s) =>
+              `<option value="${s}" ${_logFilters.severity === s ? "selected" : ""}>${s}</option>`
+          )
+          .join("")}
+      </select>
+      <button type="button" class="btn-ghost" id="logFilterReset">Reset</button>`;
+    const sync = () => {
+      _logFilters = {
+        q: qs("logFilterQ")?.value || "",
+        source: qs("logFilterSource")?.value || "",
+        severity: qs("logFilterSeverity")?.value || "",
+      };
+      paintLogTable();
+    };
+    ["logFilterQ", "logFilterSource", "logFilterSeverity"].forEach((id) => {
+      qs(id)?.addEventListener("input", sync);
+      qs(id)?.addEventListener("change", sync);
+    });
+    qs("logFilterReset")?.addEventListener("click", () => {
+      _logFilters = { q: "", source: "", severity: "" };
+      paintLogFilters();
+      paintLogTable();
+    });
+  }
+
+  const _logSourceLabel = { ingested: "Agent/API", wazuh: "Wazuh", xdr: "XDR/EDR", audit: "Audit" };
+
+  async function paintLogTable() {
+    const el = qs("logsPageBody");
+    if (!el) return;
+    const params = new URLSearchParams();
+    if (_logFilters.q) params.set("q", _logFilters.q);
+    if (_logFilters.source) params.set("source", _logFilters.source);
+    if (_logFilters.severity) params.set("severity", _logFilters.severity);
+    let logs = [];
+    try {
+      const res = await fetch(`/api/logs?${params.toString()}`, { headers: authHeaders() });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+      logs = data.logs || [];
+    } catch (err) {
+      el.innerHTML = `<p class="hint">Could not load logs: ${escapeHtml(err.message || String(err))}</p>`;
+      return;
+    }
+    if (!logs.length) {
+      el.innerHTML = `<div class="page-empty">
+        <p class="page-empty-title">No matching log events</p>
+        <p class="hint">Configure Wazuh/XDR in Settings, push events from an agent, or use "Send a test event" below.</p>
+      </div>`;
+      return;
+    }
+    const rows = logs
+      .map((e) => {
+        const ts = e.ts ? new Date(Number(e.ts) * (Number(e.ts) < 1e12 ? 1000 : 1)).toLocaleString() : "—";
+        const sev = (e.severity || "info").toLowerCase();
+        return `<tr>
+          <td class="hint">${escapeHtml(ts)}</td>
+          <td><span class="wq-badge pri-medium">${escapeHtml(_logSourceLabel[e.source] || e.source || "?")}</span></td>
+          <td><span class="sev sev-${escapeHtml(sev)}">${escapeHtml(sev)}</span></td>
+          <td>${escapeHtml(e.host || e.actor || "—")}</td>
+          <td>${escapeHtml(e.event_type || "—")}</td>
+          <td>${escapeHtml(e.message || "")}</td>
+        </tr>`;
+      })
+      .join("");
+    el.innerHTML = `
+      <div class="data-table-wrap">
+        <table class="data-table">
+          <thead><tr><th>Time</th><th>Source</th><th>Severity</th><th>Host/Actor</th><th>Event</th><th>Message</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      <p class="hint">Showing ${logs.length} event(s). Sources are shown as-is — never relabeled to look like they came from somewhere they didn't.</p>`;
+  }
+
+  async function renderLogsPage() {
+    const body = qs("logsPageBody");
+    if (!body) return;
+    paintLogFilters();
+    await renderLogsStatsBar();
+    await paintLogTable();
+    if (!qs("logsTestEventRow")) {
+      const bar = qs("logsFilterBar");
+      if (bar && bar.parentElement) {
+        const row = document.createElement("div");
+        row.id = "logsTestEventRow";
+        row.className = "cc-action-row";
+        row.style.margin = "0.5rem 0";
+        row.innerHTML = `<button type="button" class="btn-secondary" id="logsSendTest">Send a test event</button>
+          <span class="hint" id="logsTestStatus"></span>`;
+        bar.parentElement.insertBefore(row, bar.nextSibling);
+        qs("logsSendTest")?.addEventListener("click", async () => {
+          const statusEl = qs("logsTestStatus");
+          try {
+            const res = await fetch("/api/logs/ingest", {
+              method: "POST",
+              headers: authHeaders({ "Content-Type": "application/json" }),
+              body: JSON.stringify({
+                severity: "info",
+                event_type: "manual_test",
+                message: "Manual test event sent from the Logs page",
+                host: "this-browser-session",
+              }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+            if (statusEl) statusEl.textContent = "Sent — appears below.";
+            await renderLogsStatsBar();
+            await paintLogTable();
+          } catch (err) {
+            if (statusEl) statusEl.textContent = err.message || "Failed to send";
+          }
+        });
+      }
+    }
+  }
+  window.renderLogsPage = renderLogsPage;
+
   async function renderEvidencePage() {
     const body = qs("evidencePageBody");
     if (!body) return;
@@ -7895,7 +8242,7 @@
   }
 
   async function runHardeningKittyAudit() {
-    const btn = qs("hkAuditBtn");
+    const btn = qs("hkAuditBtn") || qs("hkVulnAuditBtn");
     if (btn) {
       btn.disabled = true;
       btn.textContent = "Queuing…";
@@ -7909,10 +8256,12 @@
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
+        const detail =
+          typeof data.detail === "string"
+            ? data.detail
+            : data.detail || res.status;
         if (typeof notifyUser === "function") {
-          notifyUser(
-            `**HardeningKitty:** ${typeof data.detail === "string" ? data.detail : data.detail || res.status}`
-          );
+          notifyUser(`**HardeningKitty:** ${detail}`);
         }
       } else {
         const jobId = data.job && data.job.id;
@@ -7937,15 +8286,17 @@
     } catch (err) {
       if (typeof notifyUser === "function") notifyUser(`**HardeningKitty error:** ${err.message || err}`);
     }
-    renderHardeningPanel();
+    if (typeof renderHardeningPanel === "function") renderHardeningPanel();
     renderHkVulnPanel();
     if (typeof loadCommandCenter === "function") loadCommandCenter();
     if (typeof renderVulnsPage === "function" && window.__securaiqWorkspaceView === "vulns") {
-      renderVulnSummaryBar();
+      renderVulnsPage();
     }
     if (btn) {
       btn.disabled = false;
-      btn.textContent = "Run HardeningKitty audit";
+      btn.textContent = btn.id === "hkVulnAuditBtn" ? "Run audit" : "Run HardeningKitty audit";
+      // Re-apply install/platform gating after restore
+      renderHkVulnPanel();
     }
   }
   window.runHardeningKittyAudit = runHardeningKittyAudit;
@@ -11414,6 +11765,7 @@
           renderIntelPage(),
         reports: () => typeof renderReportsPage === "function" && renderReportsPage(),
         soc: () => typeof renderSocPage === "function" && renderSocPage(),
+        logs: () => typeof renderLogsPage === "function" && renderLogsPage(),
         agents: () => typeof renderAgentsPage === "function" && renderAgentsPage({ quiet: true }),
         agent_detail: () =>
           typeof window.renderAgentDetailPage === "function" &&
@@ -11464,6 +11816,7 @@
       if (view === "assets" && typeof renderAssetsPage === "function") renderAssetsPage({ quiet: true });
       if (view === "vulns" && typeof renderVulnsPage === "function") renderVulnsPage({ quiet: true });
       if (view === "soc" && typeof renderSocPage === "function") renderSocPage();
+      if (view === "logs" && typeof renderLogsPage === "function") renderLogsPage();
       if (view === "frameworks") {
         if (typeof renderHardeningPanel === "function") renderHardeningPanel();
         if (typeof renderFrameworksPage === "function") renderFrameworksPage();
