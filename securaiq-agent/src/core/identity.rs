@@ -1,3 +1,9 @@
+//! Local enrollment identity. Private material never leaves the endpoint.
+//!
+//! Commercial Alpha: bearer token `agent_id.agent_key` + optional HMAC / Ed25519
+//! *command* seals (server keys). Device Ed25519 identity keypairs and mTLS
+//! certificates are Phase 3 (RT-16) — see `docs/agent-protocol-v1.md`.
+
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -33,10 +39,12 @@ impl AgentIdentity {
             "agent_id": self.agent_id,
             "has_key": true,
             // Token file separate preferred; store id only in identity.json for discovery.
+            // Future RT-16 fields: public_key, certificate_pem, certificate_expiry, status.
         });
         fs::write(path, serde_json::to_vec_pretty(&body).unwrap_or_default())
     }
 
+    /// Placeholder until local device-key persistence lands (RT-16).
     pub fn load_optional() -> Option<Self> {
         None
     }

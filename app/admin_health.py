@@ -37,10 +37,11 @@ def collect_admin_health() -> dict[str, Any]:
     except Exception as exc:
         components["database"] = _status(False, str(exc)[:200])
 
-    # Redis (optional)
+    # Redis (optional) + Streams durability snapshot
     redis_url = (settings.redis_url or "").strip()
     if not redis_url:
         components["redis"] = _status(True, "not configured (in-process bus)", degraded=True)
+        components["event_bus"] = _status(True, "mode=in_process", degraded=True)
     else:
         try:
             import redis  # type: ignore
@@ -50,6 +51,65 @@ def collect_admin_health() -> dict[str, Any]:
             components["redis"] = _status(True, "ping ok")
         except Exception as exc:
             components["redis"] = _status(False, str(exc)[:200])
+        try:
+            from app.realtime_bus import backend_status
+            from app.event_processor import stream_monitor_snapshot
+
+            bus = backend_status() or {}
+            snap = stream_monitor_snapshot() or {}
+            mode = bus.get("mode") or "unknown"
+            detail = (
+                f"mode={mode} stream_len={snap.get('stream_length')} "
+                f"pending={snap.get('pending_count')} dlq={snap.get('dlq_length')} "
+                f"lag={snap.get('consumer_group_lag')}"
+            )
+            degraded = mode not in ("redis_streams_fanout", "redis_streams+pubsub")
+            components["event_bus"] = _status(True, detail[:240], degraded=degraded)
+        except Exception as exc:
+            components["event_bus"] = _status(False, str(exc)[:200])
+
+    # Agent gateway
+    try:
+        gw_on = bool(getattr(settings, "agent_gateway_enabled", True))
+        components["agent_gateway"] = _status(
+            True,
+            "enabled" if gw_on else "disabled",
+            degraded=not gw_on,
+        )
+    except Exception:
+        components["agent_gateway"] = _status(True, "unknown", degraded=True)
+
+    # Agent crypto posture (RT-17) — warn when production lacks mandatory seals
+    try:
+        prod = (settings.deployment_mode or "").lower() in {
+            "production",
+            "prod",
+            "commercial",
+            "saas",
+            "cloud",
+        }
+        require_sig = bool(getattr(settings, "agent_require_command_signature", False))
+        require_replay = bool(getattr(settings, "agent_require_replay_protection", False))
+        if prod and (not require_sig or not require_replay):
+            components["agent_crypto"] = _status(
+                True,
+                "production should set AGENT_REQUIRE_COMMAND_SIGNATURE=true and "
+                "AGENT_REQUIRE_REPLAY_PROTECTION=true (mTLS still separate)",
+                degraded=True,
+            )
+        elif require_sig:
+            components["agent_crypto"] = _status(
+                True,
+                f"require_signature={require_sig} require_replay={require_replay}",
+            )
+        else:
+            components["agent_crypto"] = _status(
+                True,
+                "lab soft seals (HMAC default; RT-17 off)",
+                degraded=True,
+            )
+    except Exception as exc:
+        components["agent_crypto"] = _status(True, str(exc)[:120], degraded=True)
 
     # AI gateway (config readiness — not a live model call)
     backend = settings.model_backend

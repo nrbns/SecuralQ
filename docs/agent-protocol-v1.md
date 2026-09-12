@@ -21,15 +21,28 @@ Base URL is the SecuraIQ server (e.g. `http://127.0.0.1:8080`). Agent never talk
 ## Identity & enrollment
 
 1. Admin creates enrollment (token + org).
-2. Agent generates keypair (lab: HMAC shared secret / Ed25519 as configured).
-3. Agent calls enroll → receives `agent_id`, policy hints, signing material.
-4. Private key **stays on endpoint**.
+2. Agent stores bearer material (`agent_id` + `agent_key`); lab HMAC / Ed25519 seals as configured.
+3. Agent check-in / gateway authenticate with bearer (+ optional replay HMAC headers).
+4. Private signing keys **stay on endpoint** (or server-held HMAC shared secret for lab).
+
+### Identity record (current + future device cert)
+
+| Field | Status |
+|-------|--------|
+| `agent_id` | **Done** |
+| `organization_id` / `org_id` | **Done** |
+| `agent_key` (hashed server-side) | **Done** |
+| `status` / `revoked` | **Done** |
+| `public_key` (Ed25519 device key) | **Planned** (command seal pubkey today is server-side) |
+| `certificate` / `certificate_expiry` | **Planned** (RT-16 mTLS) |
 
 Headers (check-in / ACK / result / gateway wait) include request authenticity
 (`X-SecuraIQ-Sig` over **raw body** where applicable). Command seals carry
 `issued_at` / `expires_at`; expired seals are refused.
 
-Production target (later): device certificate + mTLS. Not required for v0.1.
+Production profile (Commercial Alpha, still **not** mTLS):
+`AGENT_REQUIRE_COMMAND_SIGNATURE=true` + `AGENT_REQUIRE_REPLAY_PROTECTION=true`
++ `SECURAIQ_AGENT_SIGNING_KEY`. Device certificates / mTLS remain Phase 3.
 
 ---
 
@@ -66,8 +79,8 @@ Deferred for later protocol revisions: certificates, scheduled tasks, rich port�
 
 ## Command model (security-critical)
 
-Commands are **allowlisted kinds** only (e.g. `enable_firewall`, `enable_defender`,
-agent upgrade). Flow:
+Commands are **allowlisted kinds** only (`enable_firewall`, `enable_defender`,
+`disable_ssh_root`, `patch_package`, `agent_upgrade`). Flow:
 
 ```text
 Recommendation → policy → human approval → signed seal → agent verify

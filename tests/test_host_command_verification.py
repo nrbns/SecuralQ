@@ -172,3 +172,67 @@ def test_disable_ssh_root_verifies_on_host_pass(tmp_path, monkeypatch):
         .fetchone()
     )
     assert row2["verification_status"] == "verified"
+
+
+def test_enable_defender_verifies_on_host_pass(tmp_path, monkeypatch):
+    from app.agents import (
+        approve_command,
+        checkin,
+        enroll_agent,
+        report_command_result,
+        request_enable_defender_command,
+    )
+    from app.db import get_conn
+
+    uid = _setup(monkeypatch, tmp_path, username="def_cmd_verify")
+    enrolled = enroll_agent(uid, name="def-verify-agent")
+    aid = enrolled["agent_id"]
+    checkin(
+        aid,
+        {
+            "hostname": "def-verify",
+            "os": "windows",
+            "defender_status": {
+                "collected": True,
+                "realtime_protection_enabled": False,
+                "antivirus_enabled": True,
+            },
+        },
+    )
+    cmd = request_enable_defender_command(uid, aid)
+    approve_command(uid, aid, cmd["id"], approver_id=uid)
+    report_command_result(aid, cmd["id"], status="done", result={"ok": True, "lab": True})
+    assert (
+        dict(
+            get_conn()
+            .execute(
+                "SELECT verification_status FROM securaiq_agent_commands WHERE id=?",
+                (cmd["id"],),
+            )
+            .fetchone()
+        )["verification_status"]
+        == "pending"
+    )
+    checkin(
+        aid,
+        {
+            "hostname": "def-verify",
+            "os": "windows",
+            "defender_status": {
+                "collected": True,
+                "realtime_protection_enabled": True,
+                "antivirus_enabled": True,
+            },
+        },
+    )
+    assert (
+        dict(
+            get_conn()
+            .execute(
+                "SELECT verification_status FROM securaiq_agent_commands WHERE id=?",
+                (cmd["id"],),
+            )
+            .fetchone()
+        )["verification_status"]
+        == "verified"
+    )

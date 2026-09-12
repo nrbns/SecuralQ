@@ -5130,6 +5130,9 @@
     if (kind === "enable_defender") {
       return `<code>enable defender</code> <span class="hint">Windows Defender realtime (pending until approved)</span>`;
     }
+    if (kind === "disable_ssh_root") {
+      return `<code>disable ssh root</code> <span class="hint">PermitRootLogin no (pending until approved)</span>`;
+    }
     if (kind === "agent_upgrade") {
       return `<code>agent upgrade</code> <span class="hint">self-upgrade · checksum-verified install script</span>`;
     }
@@ -5197,9 +5200,15 @@
   function _agentSshOk(ssh) {
     if (!ssh || typeof ssh !== "object" || !ssh.collected) return null;
     const settings = ssh.settings || {};
-    const pwd = String(settings.PasswordAuthentication || settings.passwordauthentication || "").toLowerCase();
-    if (pwd === "no" || pwd === "off") return true;
-    if (pwd === "yes" || pwd === "on") return false;
+    const root = String(
+      settings.PermitRootLogin || settings.permitrootlogin || ""
+    ).toLowerCase();
+    if (!root) return null;
+    // Align with host_ssh_root live test / disable_ssh_root remediation
+    if (root === "no" || root === "prohibit-password" || root === "without-password" || root === "forced-commands-only") {
+      return true;
+    }
+    if (root === "yes" || root === "on") return false;
     return null;
   }
 
@@ -5214,7 +5223,7 @@
       const chips = [
         _agentSecChip("Firewall", _agentFirewallOk(fw), fw.backend || ""),
         _agentSecChip("Defender", _agentDefenderOk(def), "realtime protection"),
-        _agentSecChip("SSH", _agentSshOk(ssh), "PasswordAuthentication"),
+        _agentSecChip("SSH", _agentSshOk(ssh), "PermitRootLogin"),
         _agentSecChip("Disk encryption", _agentDiskOk(disk), disk.backend || ""),
       ].join(" ");
       return `
@@ -5498,6 +5507,7 @@
       const payload = agent.last_payload || {};
       const fwOk = _agentFirewallOk(payload.firewall_status);
       const defOk = _agentDefenderOk(payload.defender_status);
+      const sshOk = _agentSshOk(payload.ssh_config);
       const risk =
         agent.risk_score != null
           ? agent.risk_score
@@ -5522,6 +5532,11 @@
       if (defOk === false && agent.status !== "revoked") {
         actionBtns.push(
           `<button type="button" class="btn-secondary" id="agentDetailEnableDef">Request enable Defender</button>`
+        );
+      }
+      if (sshOk === false && agent.status !== "revoked") {
+        actionBtns.push(
+          `<button type="button" class="btn-secondary" id="agentDetailDisableSshRoot">Request disable SSH root</button>`
         );
       }
       if (agent.status !== "revoked" && agent.status !== "upgrading") {
@@ -5619,6 +5634,36 @@
           if (typeof notifyUser === "function") {
             notifyUser(
               "**Enable Defender requested** — approve it on the Commands tab before the agent runs it."
+            );
+          }
+          window.__securaiqAgentDetailTab = "commands";
+          renderAgentDetailPage(id);
+        } catch (err) {
+          alert(err.message || "Request failed");
+          btn.disabled = false;
+        }
+      });
+
+      qs("agentDetailDisableSshRoot")?.addEventListener("click", async (ev) => {
+        const btn = ev.currentTarget;
+        if (
+          !confirm(
+            "Request disable_ssh_root for this agent? It stays pending until approved — sets PermitRootLogin no only after approval."
+          )
+        )
+          return;
+        btn.disabled = true;
+        try {
+          const r = await fetch(`/api/agents/${encodeURIComponent(id)}/commands/disable-ssh-root`, {
+            method: "POST",
+            headers: authHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify({}),
+          });
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+          if (typeof notifyUser === "function") {
+            notifyUser(
+              "**Disable SSH root requested** — approve it on the Commands tab before the agent rewrites sshd_config."
             );
           }
           window.__securaiqAgentDetailTab = "commands";
@@ -6027,7 +6072,7 @@
           pendingCommands.length
             ? `<div class="agents-pending-approvals" style="margin-top:12px">
                 <h4 style="margin:0 0 6px">Pending approvals</h4>
-                <p class="hint" style="margin:0 0 6px">Patch, upgrade, enable_firewall, and enable_defender commands wait here until approved — nothing runs on a host until you approve it.</p>
+                <p class="hint" style="margin:0 0 6px">Patch, upgrade, enable_firewall, enable_defender, and disable_ssh_root commands wait here until approved — nothing runs on a host until you approve it.</p>
                 <div class="data-table-wrap"><table class="data-table">
                   <thead><tr><th>Host</th><th>Command</th><th>Requested</th><th></th></tr></thead>
                   <tbody>${pendingCommands
@@ -9224,6 +9269,15 @@
                       }</button>`
                   );
                 }
+                if (testName === "host_ssh_root" && failAgentId) {
+                  remediations.push(
+                    `<button type="button" class="btn-secondary cc-disable-ssh-root"
+                      data-agent-id="${escapeHtml(failAgentId)}"
+                      title="Request disable_ssh_root (pending until approved)">Disable SSH root${
+                        hostLabel ? ` · ${escapeHtml(String(hostLabel).slice(0, 24))}` : ""
+                      }</button>`
+                  );
+                }
                 return `<tr>
                   <td><strong>${escapeHtml(f.control_id || "")}</strong>
                     <div class="hint">${escapeHtml(f.title || "")}</div></td>
@@ -9491,6 +9545,43 @@
         } catch (err) {
           if (typeof notifyUser === "function") {
             notifyUser(`Enable Defender request failed: ${err.message || err}`);
+          } else {
+            alert(err.message || "Request failed");
+          }
+          btn.disabled = false;
+        }
+      });
+    });
+    body.querySelectorAll(".cc-disable-ssh-root").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const agentId = btn.getAttribute("data-agent-id") || "";
+        if (!agentId) return;
+        if (
+          !confirm(
+            "Request disable_ssh_root for this agent? It stays pending until approved — nothing runs until then."
+          )
+        )
+          return;
+        btn.disabled = true;
+        try {
+          const r = await fetch(`/api/agents/${encodeURIComponent(agentId)}/commands/disable-ssh-root`, {
+            method: "POST",
+            headers: authHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify({}),
+          });
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+          if (typeof notifyUser === "function") {
+            notifyUser(
+              "**Disable SSH root requested** — open Agents → Commands (or agent detail) to approve before sshd_config is rewritten."
+            );
+          }
+          window.__securaiqSelectedAgentId = agentId;
+          window.__securaiqAgentDetailTab = "commands";
+          showWorkspace("agent_detail");
+        } catch (err) {
+          if (typeof notifyUser === "function") {
+            notifyUser(`Disable SSH root request failed: ${err.message || err}`);
           } else {
             alert(err.message || "Request failed");
           }

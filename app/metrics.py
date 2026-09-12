@@ -71,4 +71,46 @@ def render_prometheus() -> str:
     except Exception:
         pass
 
+    # Phase 1 Streams durability gauges (best-effort; nulls omitted when Redis off)
+    try:
+        from app.event_processor import stream_monitor_snapshot
+
+        snap = stream_monitor_snapshot() or {}
+        lines.append("# HELP securaiq_stream_length Redis Streams main event log length (XLEN).")
+        lines.append("# TYPE securaiq_stream_length gauge")
+        sl = snap.get("stream_length")
+        lines.append(f"securaiq_stream_length {int(sl) if sl is not None else -1}")
+
+        lines.append("# HELP securaiq_stream_dlq_length Redis Streams dead-letter queue length.")
+        lines.append("# TYPE securaiq_stream_dlq_length gauge")
+        dlq = snap.get("dlq_length")
+        lines.append(f"securaiq_stream_dlq_length {int(dlq) if dlq is not None else -1}")
+
+        lines.append("# HELP securaiq_stream_pending Redis Streams consumer-group pending count.")
+        lines.append("# TYPE securaiq_stream_pending gauge")
+        pend = snap.get("pending_count")
+        lines.append(f"securaiq_stream_pending {int(pend) if pend is not None else -1}")
+
+        lines.append("# HELP securaiq_stream_consumer_lag Redis Streams consumer-group lag (when available).")
+        lines.append("# TYPE securaiq_stream_consumer_lag gauge")
+        lag = snap.get("consumer_group_lag")
+        lines.append(f"securaiq_stream_consumer_lag {int(lag) if lag is not None else -1}")
+    except Exception:
+        pass
+
+    # Connected agents (best-effort)
+    try:
+        from app.agents import list_agents
+
+        agents = list_agents("local", limit=500)
+        online = sum(1 for a in agents if (a.get("status") or "").lower() in ("online", "active", "ok"))
+        lines.append("# HELP securaiq_agents_total Enrolled agents visible to local/lab scope (last 500).")
+        lines.append("# TYPE securaiq_agents_total gauge")
+        lines.append(f"securaiq_agents_total {len(agents)}")
+        lines.append("# HELP securaiq_agents_online Agents with online/active status.")
+        lines.append("# TYPE securaiq_agents_online gauge")
+        lines.append(f"securaiq_agents_online {online}")
+    except Exception:
+        pass
+
     return "\n".join(lines) + "\n"

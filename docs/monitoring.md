@@ -20,7 +20,20 @@ securaiq_http_responses_total{class="4xx"} 2
 # HELP securaiq_jobs_total Background jobs by status (last 500).
 # TYPE securaiq_jobs_total gauge
 securaiq_jobs_total{status="done"} 12
+# HELP securaiq_stream_length Redis Streams main event log length (XLEN).
+# TYPE securaiq_stream_length gauge
+securaiq_stream_length -1
+# HELP securaiq_stream_dlq_length Redis Streams dead-letter queue length.
+# TYPE securaiq_stream_dlq_length gauge
+securaiq_stream_dlq_length -1
+# HELP securaiq_agents_total Enrolled agents visible to local/lab scope (last 500).
+# TYPE securaiq_agents_total gauge
+securaiq_agents_total 3
 ```
+
+Stream gauges use `-1` when Redis is not configured (lab in-process bus). With `REDIS_URL`, values reflect XLEN / pending / DLQ / lag from `stream_monitor_snapshot()`.
+
+**Admin board:** `GET /api/admin/health` (admin role) includes `event_bus`, `agent_gateway`, and `agent_crypto` posture alongside API/DB/Redis.
 
 **Prometheus scrape config:**
 

@@ -112,7 +112,9 @@ See [securaiq-architecture.md](./securaiq-architecture.md) · [agent-platform.md
 - Enrollment → device identity → certs → mTLS → short-lived creds → rotation
 - Replay protection, signed commands, policy, signed updates / rollback
 
-**Status: Partial** — bearer + HMAC + opt-in Ed25519 + require-signature flag; **missing** mTLS / cert rotation.
+**Status: Partial** — bearer + HMAC + opt-in Ed25519; **RT-17** mandatory seals when
+`AGENT_REQUIRE_COMMAND_SIGNATURE=true` (+ replay). **Missing:** mTLS / device certs /
+cert rotation (RT-16). Signed agent installers still deferred.
 
 ---
 
@@ -121,7 +123,9 @@ See [securaiq-architecture.md](./securaiq-architecture.md) · [agent-platform.md
 - Lifecycle: PENDING → APPROVED → … → VERIFIED (+ REJECTED / TIMEOUT / FAILED / EXPIRED)
 - Controlled actions (patch, isolate, stop process, firewall, collect, scan, config) under approval/policy
 
-**Status: Partial** — command lifecycle dual-write on the bus; **limited** action kinds.
+**Status: Partial** — command lifecycle dual-write on the bus; allowlisted kinds include
+`enable_firewall`, `enable_defender`, `disable_ssh_root`, `patch_package`, `agent_upgrade`
+with host-control verification on next PASS/FAIL check-in. Not full isolate/kill-process yet.
 
 ---
 

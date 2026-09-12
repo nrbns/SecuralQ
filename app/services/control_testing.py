@@ -308,8 +308,12 @@ def evaluate_host_defender_payload(
     os_l = (os_name or str(payload.get("os") or "")).lower()
     def_st = payload.get("defender_status") if isinstance(payload.get("defender_status"), dict) else {}
     collected = bool(def_st.get("collected"))
-    # Agent may expose enabled, or antivirus_enabled + realtime_protection_enabled.
-    rt = _truthy_enabled(def_st.get("realtime_protection_enabled"))
+    # Agent may expose enabled, or antivirus_enabled + realtime_protection(_enabled).
+    rt = _truthy_enabled(
+        def_st.get("realtime_protection_enabled")
+        if def_st.get("realtime_protection_enabled") is not None
+        else def_st.get("realtime_protection")
+    )
     av = _truthy_enabled(def_st.get("antivirus_enabled"))
     top = _truthy_enabled(def_st.get("enabled"))
     if top is not None:

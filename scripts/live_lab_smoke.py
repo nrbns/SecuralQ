@@ -193,6 +193,82 @@ def main() -> int:
             )
         )
 
+    # --- Defender closed loop (Windows-shaped telemetry; lab-simulated agent result) ---
+    fail_body["defender_status"] = {
+        "collected": True,
+        "realtime_protection": False,
+        "antivirus_enabled": True,
+        "backend": "defender",
+    }
+    code, _ = req("POST", "/api/agents/checkin", body=fail_body, token=agent_token)
+    steps.append(("checkin_defender_fail", code == 200, f"http={code}"))
+    code, cmd_d = req("POST", f"/api/agents/{agent_id}/commands/enable-defender", body={})
+    def_cmd = str((cmd_d or {}).get("id") or "")
+    steps.append(("request_enable_defender", code in (200, 201) and bool(def_cmd), f"http={code} cmd={def_cmd[:16]}"))
+    if def_cmd:
+        code, _ = req("POST", f"/api/agents/{agent_id}/commands/{def_cmd}/approve", body={})
+        steps.append(("approve_enable_defender", code == 200, f"http={code}"))
+        code, _ = req(
+            "POST",
+            f"/api/agents/commands/{def_cmd}/result",
+            body={"status": "done", "result": {"ok": True, "lab": True}},
+            token=agent_token,
+        )
+        steps.append(("defender_command_result", code == 200, f"http={code}"))
+    fail_body["defender_status"] = {
+        "collected": True,
+        "realtime_protection": True,
+        "antivirus_enabled": True,
+        "backend": "defender",
+    }
+    code, _ = req("POST", "/api/agents/checkin", body=fail_body, token=agent_token)
+    steps.append(("checkin_defender_pass", code == 200, f"http={code}"))
+    if def_cmd:
+        code, cmds = req("GET", f"/api/agents/{agent_id}/commands?limit=30")
+        rows = (cmds or {}).get("commands") or []
+        mine = next((c for c in rows if c.get("id") == def_cmd), None)
+        vstat = (mine or {}).get("verification_status") or ""
+        steps.append(
+            (
+                "defender_command_verified",
+                code == 200 and vstat == "verified",
+                f"http={code} verification_status={vstat}",
+            )
+        )
+
+    # --- SSH root closed loop ---
+    fail_body["ssh_config"] = {"collected": True, "settings": {"PermitRootLogin": "yes"}}
+    code, _ = req("POST", "/api/agents/checkin", body=fail_body, token=agent_token)
+    steps.append(("checkin_ssh_root_fail", code == 200, f"http={code}"))
+    code, cmd_s = req("POST", f"/api/agents/{agent_id}/commands/disable-ssh-root", body={})
+    ssh_cmd = str((cmd_s or {}).get("id") or "")
+    steps.append(("request_disable_ssh_root", code in (200, 201) and bool(ssh_cmd), f"http={code} cmd={ssh_cmd[:16]}"))
+    if ssh_cmd:
+        code, _ = req("POST", f"/api/agents/{agent_id}/commands/{ssh_cmd}/approve", body={})
+        steps.append(("approve_disable_ssh_root", code == 200, f"http={code}"))
+        code, _ = req(
+            "POST",
+            f"/api/agents/commands/{ssh_cmd}/result",
+            body={"status": "done", "result": {"ok": True, "lab": True}},
+            token=agent_token,
+        )
+        steps.append(("ssh_command_result", code == 200, f"http={code}"))
+    fail_body["ssh_config"] = {"collected": True, "settings": {"PermitRootLogin": "no"}}
+    code, _ = req("POST", "/api/agents/checkin", body=fail_body, token=agent_token)
+    steps.append(("checkin_ssh_root_pass", code == 200, f"http={code}"))
+    if ssh_cmd:
+        code, cmds = req("GET", f"/api/agents/{agent_id}/commands?limit=40")
+        rows = (cmds or {}).get("commands") or []
+        mine = next((c for c in rows if c.get("id") == ssh_cmd), None)
+        vstat = (mine or {}).get("verification_status") or ""
+        steps.append(
+            (
+                "ssh_command_verified",
+                code == 200 and vstat == "verified",
+                f"http={code} verification_status={vstat}",
+            )
+        )
+
     # Realtime bus health — when Redis configured, prefer Streams fan-out mode
     code, health2 = req("GET", "/api/health")
     bus = (health2 or {}).get("realtime_bus") or {}
