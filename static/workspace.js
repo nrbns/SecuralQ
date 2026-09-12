@@ -1066,9 +1066,21 @@
     });
     qs("assetsPageBody")?.querySelectorAll(".ws-del-asset").forEach((btn) => {
       btn.addEventListener("click", async () => {
-        await fetch(`/api/assets/${btn.getAttribute("data-id")}`, { method: "DELETE", headers: authHeaders() });
-        renderAssetsPage({ quiet: true });
-        if (typeof loadCommandCenter === "function") loadCommandCenter();
+        btn.disabled = true;
+        try {
+          await afterMutateDelete(`/api/assets/${btn.getAttribute("data-id")}`, {
+            confirmMsg: "Delete this asset?",
+            successMsg: "**Asset deleted** — inventory updated live.",
+            onSuccess: async () => {
+              await renderAssetsPage({ quiet: true });
+              if (typeof loadCommandCenter === "function") loadCommandCenter();
+            },
+          });
+        } catch (err) {
+          if (typeof notifyUser === "function") notifyUser(`**Delete failed:** ${err.message || err}`);
+        } finally {
+          btn.disabled = false;
+        }
       });
     });
   }
@@ -2032,10 +2044,21 @@
     });
     qs("risksPageBody")?.querySelectorAll(".ws-del-risk").forEach((btn) => {
       btn.addEventListener("click", async () => {
-        if (!confirm("Delete this risk?")) return;
-        await fetch(`/api/risks/${btn.getAttribute("data-id")}`, { method: "DELETE", headers: authHeaders() });
-        renderRisksPage();
-        if (typeof loadCommandCenter === "function") loadCommandCenter();
+        btn.disabled = true;
+        try {
+          await afterMutateDelete(`/api/risks/${btn.getAttribute("data-id")}`, {
+            confirmMsg: "Delete this risk?",
+            successMsg: "**Risk deleted** — register updated live.",
+            onSuccess: async () => {
+              await renderRisksPage();
+              if (typeof loadCommandCenter === "function") loadCommandCenter();
+            },
+          });
+        } catch (err) {
+          if (typeof notifyUser === "function") notifyUser(`**Delete failed:** ${err.message || err}`);
+        } finally {
+          btn.disabled = false;
+        }
       });
     });
   }
@@ -2731,28 +2754,46 @@
     if (typeof loadCommandCenter === "function") loadCommandCenter();
   }
 
-  async function deleteVulnerabilityById(id, { confirmMsg } = {}) {
-    const vid = String(id || "").trim();
-    if (!vid) return false;
-    if (confirmMsg !== false) {
-      if (!confirm(confirmMsg || "Delete this finding? This cannot be undone.")) return false;
-    }
-    const res = await fetch(`/api/vulnerabilities/${encodeURIComponent(vid)}`, {
-      method: "DELETE",
-      headers: authHeaders(),
+  /** Shared delete contract for every UI phase: confirm → DELETE → res.ok → live re-render. */
+  async function afterMutateDelete(url, opts) {
+    const o = opts || {};
+    if (o.confirmMsg && !confirm(o.confirmMsg)) return false;
+    const method = o.method || "DELETE";
+    const headers = o.body
+      ? authHeaders({ "Content-Type": "application/json" })
+      : authHeaders();
+    const res = await fetch(url, {
+      method,
+      headers,
+      body: o.body != null ? JSON.stringify(o.body) : undefined,
     });
     if (!res.ok) {
       const d = await res.json().catch(() => ({}));
-      throw new Error(d.detail || `HTTP ${res.status}`);
+      let detail = d.detail;
+      if (Array.isArray(detail)) detail = detail.map((x) => x.msg || x).join("; ");
+      throw new Error((typeof detail === "string" && detail) || `HTTP ${res.status}`);
     }
-    _vulnCache = _vulnCache.filter((v) => v.id !== vid);
-    if (_vulnSelectedId === vid) {
-      _vulnSelectedId = "";
-      renderVulnDetail(null);
-    }
-    await refreshVulnsAfterMutation({ quiet: true });
-    if (typeof notifyUser === "function") notifyUser("**Finding deleted** — register updated live.");
+    if (typeof o.onSuccess === "function") await o.onSuccess(res);
+    if (o.successMsg && typeof notifyUser === "function") notifyUser(o.successMsg);
     return true;
+  }
+  window.afterMutateDelete = afterMutateDelete;
+
+  async function deleteVulnerabilityById(id, { confirmMsg } = {}) {
+    const vid = String(id || "").trim();
+    if (!vid) return false;
+    return afterMutateDelete(`/api/vulnerabilities/${encodeURIComponent(vid)}`, {
+      confirmMsg: confirmMsg === false ? "" : confirmMsg || "Delete this finding? This cannot be undone.",
+      successMsg: "**Finding deleted** — register updated live.",
+      onSuccess: async () => {
+        _vulnCache = _vulnCache.filter((v) => v.id !== vid);
+        if (_vulnSelectedId === vid) {
+          _vulnSelectedId = "";
+          renderVulnDetail(null);
+        }
+        await refreshVulnsAfterMutation({ quiet: true });
+      },
+    });
   }
 
   async function renderSonarPanel() {
@@ -3560,19 +3601,21 @@
     });
     qs("remsPageBody")?.querySelectorAll(".ws-rem-del").forEach((btn) => {
       btn.addEventListener("click", async () => {
-        if (!confirm("Delete this remediation/control task?")) return;
-        const id = btn.getAttribute("data-id");
+        btn.disabled = true;
         try {
-          const res = await fetch(`/api/gap/remediations/${id}`, { method: "DELETE", headers: authHeaders() });
-          if (!res.ok) {
-            const d = await res.json().catch(() => ({}));
-            throw new Error(d.detail || `HTTP ${res.status}`);
-          }
-          renderRemsPage();
-          if (typeof loadCommandCenter === "function") loadCommandCenter();
+          await afterMutateDelete(`/api/gap/remediations/${btn.getAttribute("data-id")}`, {
+            confirmMsg: "Delete this remediation/control task?",
+            successMsg: "**Remediation deleted** — list updated live.",
+            onSuccess: async () => {
+              await renderRemsPage();
+              if (typeof loadCommandCenter === "function") loadCommandCenter();
+            },
+          });
         } catch (err) {
           if (typeof notifyUser === "function") notifyUser(`**Delete failed:** ${err.message || err}`);
           else alert(err.message || "Delete failed");
+        } finally {
+          btn.disabled = false;
         }
       });
     });
@@ -3679,9 +3722,18 @@
     wireAskAiButtons("playbooksPageBody");
     qs("playbooksPageBody")?.querySelectorAll(".ws-pb-del").forEach((btn) => {
       btn.addEventListener("click", async () => {
-        if (!confirm("Delete this playbook?")) return;
-        await fetch(`/api/playbooks/${btn.getAttribute("data-id")}`, { method: "DELETE", headers: authHeaders() });
-        renderPlaybooksPage();
+        btn.disabled = true;
+        try {
+          await afterMutateDelete(`/api/playbooks/${btn.getAttribute("data-id")}`, {
+            confirmMsg: "Delete this playbook?",
+            successMsg: "**Playbook deleted** — list updated live.",
+            onSuccess: () => renderPlaybooksPage(),
+          });
+        } catch (err) {
+          if (typeof notifyUser === "function") notifyUser(`**Delete failed:** ${err.message || err}`);
+        } finally {
+          btn.disabled = false;
+        }
       });
     });
   }
@@ -3725,9 +3777,18 @@
     });
     qs("campaignsPageBody")?.querySelectorAll(".ws-camp-del").forEach((btn) => {
       btn.addEventListener("click", async () => {
-        if (!confirm("Delete this campaign?")) return;
-        await fetch(`/api/campaigns/${btn.getAttribute("data-id")}`, { method: "DELETE", headers: authHeaders() });
-        renderCampaignsPage();
+        btn.disabled = true;
+        try {
+          await afterMutateDelete(`/api/campaigns/${btn.getAttribute("data-id")}`, {
+            confirmMsg: "Delete this campaign?",
+            successMsg: "**Campaign deleted** — list updated live.",
+            onSuccess: () => renderCampaignsPage(),
+          });
+        } catch (err) {
+          if (typeof notifyUser === "function") notifyUser(`**Delete failed:** ${err.message || err}`);
+        } finally {
+          btn.disabled = false;
+        }
       });
     });
   }
@@ -4120,8 +4181,18 @@
     });
     body.querySelectorAll(".ws-del-watch").forEach((btn) => {
       btn.addEventListener("click", async () => {
-        await fetch(`/api/intel/watch/${btn.getAttribute("data-id")}`, { method: "DELETE", headers: authHeaders() });
-        renderIntelPage();
+        btn.disabled = true;
+        try {
+          await afterMutateDelete(`/api/intel/watch/${btn.getAttribute("data-id")}`, {
+            confirmMsg: "Remove this watch item?",
+            successMsg: "**Watch removed** — intel list updated live.",
+            onSuccess: () => renderIntelPage(),
+          });
+        } catch (err) {
+          if (typeof notifyUser === "function") notifyUser(`**Delete failed:** ${err.message || err}`);
+        } finally {
+          btn.disabled = false;
+        }
       });
     });
     qs("intelAskAi")?.addEventListener("click", () => {
@@ -7182,10 +7253,21 @@
         });
         incList.querySelectorAll(".ws-del-inc").forEach((btn) => {
           btn.addEventListener("click", async () => {
-            if (!confirm("Delete this incident?")) return;
-            await fetch(`/api/incidents/${btn.getAttribute("data-id")}`, { method: "DELETE", headers: authHeaders() });
-            renderSocPage();
-            if (typeof loadCommandCenter === "function") loadCommandCenter();
+            btn.disabled = true;
+            try {
+              await afterMutateDelete(`/api/incidents/${btn.getAttribute("data-id")}`, {
+                confirmMsg: "Delete this incident?",
+                successMsg: "**Incident deleted** — SOC updated live.",
+                onSuccess: async () => {
+                  await renderSocPage();
+                  if (typeof loadCommandCenter === "function") loadCommandCenter();
+                },
+              });
+            } catch (err) {
+              if (typeof notifyUser === "function") notifyUser(`**Delete failed:** ${err.message || err}`);
+            } finally {
+              btn.disabled = false;
+            }
           });
         });
       }
@@ -7563,10 +7645,21 @@
     });
     body.querySelectorAll(".ws-del-inc").forEach((btn) => {
       btn.addEventListener("click", async () => {
-        if (!confirm("Delete this incident?")) return;
-        await fetch(`/api/incidents/${btn.getAttribute("data-id")}`, { method: "DELETE", headers: authHeaders() });
-        renderSocPage();
-        if (typeof loadCommandCenter === "function") loadCommandCenter();
+        btn.disabled = true;
+        try {
+          await afterMutateDelete(`/api/incidents/${btn.getAttribute("data-id")}`, {
+            confirmMsg: "Delete this incident?",
+            successMsg: "**Incident deleted** — SOC updated live.",
+            onSuccess: async () => {
+              await renderSocPage();
+              if (typeof loadCommandCenter === "function") loadCommandCenter();
+            },
+          });
+        } catch (err) {
+          if (typeof notifyUser === "function") notifyUser(`**Delete failed:** ${err.message || err}`);
+        } finally {
+          btn.disabled = false;
+        }
       });
     });
   }
@@ -8130,11 +8223,18 @@
     });
     body.querySelectorAll(".ws-del-ev").forEach((btn) => {
       btn.addEventListener("click", async () => {
-        await fetch(`/api/evidence/${btn.getAttribute("data-id")}`, {
-          method: "DELETE",
-          headers: authHeaders(),
-        });
-        renderEvidencePage();
+        btn.disabled = true;
+        try {
+          await afterMutateDelete(`/api/evidence/${btn.getAttribute("data-id")}`, {
+            confirmMsg: "Remove this evidence link?",
+            successMsg: "**Evidence removed** — locker updated live.",
+            onSuccess: () => renderEvidencePage(),
+          });
+        } catch (err) {
+          if (typeof notifyUser === "function") notifyUser(`**Delete failed:** ${err.message || err}`);
+        } finally {
+          btn.disabled = false;
+        }
       });
     });
     body.querySelectorAll(".ws-edit-ev").forEach((btn) => {
@@ -8309,11 +8409,18 @@
     });
     el.querySelectorAll(".ws-doc-del").forEach((btn) => {
       btn.addEventListener("click", async () => {
-        await fetch(`/api/compliance/documents/${btn.getAttribute("data-id")}`, {
-          method: "DELETE",
-          headers: authHeaders(),
-        });
-        renderComplianceDocsPanel();
+        btn.disabled = true;
+        try {
+          await afterMutateDelete(`/api/compliance/documents/${btn.getAttribute("data-id")}`, {
+            confirmMsg: "Delete this compliance document?",
+            successMsg: "**Document deleted** — library updated live.",
+            onSuccess: () => renderComplianceDocsPanel(),
+          });
+        } catch (err) {
+          if (typeof notifyUser === "function") notifyUser(`**Delete failed:** ${err.message || err}`);
+        } finally {
+          btn.disabled = false;
+        }
       });
     });
   }
@@ -10554,19 +10661,35 @@
     });
     body.querySelectorAll(".exc-revoke").forEach((btn) => {
       btn.addEventListener("click", async () => {
-        if (!confirm("Revoke this exception now, before its expiry?")) return;
-        await fetch(`/api/exceptions/${btn.getAttribute("data-id")}/revoke`, {
-          method: "POST",
-          headers: authHeaders(),
-        });
-        refresh();
+        btn.disabled = true;
+        try {
+          await afterMutateDelete(`/api/exceptions/${btn.getAttribute("data-id")}/revoke`, {
+            method: "POST",
+            confirmMsg: "Revoke this exception now, before its expiry?",
+            successMsg: "**Exception revoked** — list updated live.",
+            onSuccess: () => refresh(),
+          });
+        } catch (err) {
+          if (typeof notifyUser === "function") notifyUser(`**Revoke failed:** ${err.message || err}`);
+        } finally {
+          btn.disabled = false;
+        }
       });
     });
     body.querySelectorAll(".exc-delete").forEach((btn) => {
       btn.addEventListener("click", async () => {
-        if (!confirm("Delete this exception record permanently?")) return;
-        await fetch(`/api/exceptions/${btn.getAttribute("data-id")}`, { method: "DELETE", headers: authHeaders() });
-        refresh();
+        btn.disabled = true;
+        try {
+          await afterMutateDelete(`/api/exceptions/${btn.getAttribute("data-id")}`, {
+            confirmMsg: "Delete this exception record permanently?",
+            successMsg: "**Exception deleted** — list updated live.",
+            onSuccess: () => refresh(),
+          });
+        } catch (err) {
+          if (typeof notifyUser === "function") notifyUser(`**Delete failed:** ${err.message || err}`);
+        } finally {
+          btn.disabled = false;
+        }
       });
     });
     if (!window.__securaiqExcFormWired) {
@@ -11057,9 +11180,21 @@
         : `<li class="hint">No webhooks yet</li>`;
       list.querySelectorAll(".ws-del-hook").forEach((btn) => {
         btn.addEventListener("click", async () => {
-          await fetch(`/api/webhooks/${btn.getAttribute("data-id")}`, { method: "DELETE", headers: authHeaders() });
-          loadHooks();
-          loadStatusStrip();
+          btn.disabled = true;
+          try {
+            await afterMutateDelete(`/api/webhooks/${btn.getAttribute("data-id")}`, {
+              confirmMsg: "Remove this webhook?",
+              successMsg: "**Webhook removed** — settings updated live.",
+              onSuccess: () => {
+                loadHooks();
+                loadStatusStrip();
+              },
+            });
+          } catch (err) {
+            if (typeof notifyUser === "function") notifyUser(`**Delete failed:** ${err.message || err}`);
+          } finally {
+            btn.disabled = false;
+          }
         });
       });
       loadStatusStrip();

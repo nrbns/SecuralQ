@@ -2343,12 +2343,32 @@ async function loadAssets() {
   assetList.innerHTML = `<p class="sidebar-label">Inventory (${(data.assets || []).length})</p><ul>${rows || "<li>Empty</li>"}</ul>`;
   assetList.querySelectorAll(".asset-del").forEach((btn) => {
     btn.addEventListener("click", async () => {
-      await fetch(`/api/assets/${btn.getAttribute("data-id")}`, {
-        method: "DELETE",
-        headers: authHeaders(),
-      });
-      loadAssets();
-      refreshActiveWorkspace("assets");
+      btn.disabled = true;
+      try {
+        if (typeof window.afterMutateDelete === "function") {
+          await window.afterMutateDelete(`/api/assets/${btn.getAttribute("data-id")}`, {
+            confirmMsg: "Delete this asset?",
+            successMsg: "**Asset deleted** — inventory updated live.",
+            onSuccess: () => {
+              loadAssets();
+              refreshActiveWorkspace("assets");
+            },
+          });
+        } else {
+          if (!confirm("Delete this asset?")) return;
+          const res = await fetch(`/api/assets/${btn.getAttribute("data-id")}`, {
+            method: "DELETE",
+            headers: authHeaders(),
+          });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          loadAssets();
+          refreshActiveWorkspace("assets");
+        }
+      } catch (err) {
+        if (typeof notifyUser === "function") notifyUser(`**Delete failed:** ${err.message || err}`);
+      } finally {
+        btn.disabled = false;
+      }
     });
   });
 }
@@ -2422,12 +2442,32 @@ async function loadPlaybooks() {
   playbookList.innerHTML = `<p class="sidebar-label">Playbooks (${(data.playbooks || []).length})</p><ul>${rows || "<li>Empty</li>"}</ul>`;
   playbookList.querySelectorAll(".pb-del").forEach((btn) => {
     btn.addEventListener("click", async () => {
-      await fetch(`/api/playbooks/${btn.getAttribute("data-id")}`, {
-        method: "DELETE",
-        headers: authHeaders(),
-      });
-      loadPlaybooks();
-      refreshActiveWorkspace("playbooks");
+      btn.disabled = true;
+      try {
+        if (typeof window.afterMutateDelete === "function") {
+          await window.afterMutateDelete(`/api/playbooks/${btn.getAttribute("data-id")}`, {
+            confirmMsg: "Delete this playbook?",
+            successMsg: "**Playbook deleted** — list updated live.",
+            onSuccess: () => {
+              loadPlaybooks();
+              refreshActiveWorkspace("playbooks");
+            },
+          });
+        } else {
+          if (!confirm("Delete this playbook?")) return;
+          const res = await fetch(`/api/playbooks/${btn.getAttribute("data-id")}`, {
+            method: "DELETE",
+            headers: authHeaders(),
+          });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          loadPlaybooks();
+          refreshActiveWorkspace("playbooks");
+        }
+      } catch (err) {
+        if (typeof notifyUser === "function") notifyUser(`**Delete failed:** ${err.message || err}`);
+      } finally {
+        btn.disabled = false;
+      }
     });
   });
 }
@@ -2488,12 +2528,32 @@ async function loadCampaigns() {
   });
   campaignList.querySelectorAll(".camp-del").forEach((btn) => {
     btn.addEventListener("click", async () => {
-      await fetch(`/api/campaigns/${btn.getAttribute("data-id")}`, {
-        method: "DELETE",
-        headers: authHeaders(),
-      });
-      loadCampaigns();
-      refreshActiveWorkspace("campaigns");
+      btn.disabled = true;
+      try {
+        if (typeof window.afterMutateDelete === "function") {
+          await window.afterMutateDelete(`/api/campaigns/${btn.getAttribute("data-id")}`, {
+            confirmMsg: "Delete this campaign?",
+            successMsg: "**Campaign deleted** — list updated live.",
+            onSuccess: () => {
+              loadCampaigns();
+              refreshActiveWorkspace("campaigns");
+            },
+          });
+        } else {
+          if (!confirm("Delete this campaign?")) return;
+          const res = await fetch(`/api/campaigns/${btn.getAttribute("data-id")}`, {
+            method: "DELETE",
+            headers: authHeaders(),
+          });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          loadCampaigns();
+          refreshActiveWorkspace("campaigns");
+        }
+      } catch (err) {
+        if (typeof notifyUser === "function") notifyUser(`**Delete failed:** ${err.message || err}`);
+      } finally {
+        btn.disabled = false;
+      }
     });
   });
 }
@@ -3596,9 +3656,8 @@ function deleteChat(id) {
   if (streaming) return;
   const doomed = chatStore.find((c) => c.id === id);
   const sid = doomed?.serverId || (doomed?.fromServer ? doomed.id : null);
-  if (sid) {
-    fetch(`/api/chats/${sid}`, { method: "DELETE", headers: authHeaders() }).catch(() => {});
-  }
+  const prevStore = chatStore.slice();
+  const prevCurrent = currentChatId;
   const next = chatStore.filter((c) => c.id !== id);
   chatStore = next;
   if (currentChatId === id) {
@@ -3612,13 +3671,30 @@ function deleteChat(id) {
         renderQuickPrompts();
       }
     } else {
-      createChat(true);
-      return;
+      currentChatId = null;
+      history = [];
+      renderTranscript(history);
     }
   }
-  saveChatStore();
   renderChatList();
-  updateChatTitle();
+  saveChatStore();
+  if (!sid) return;
+  fetch(`/api/chats/${sid}`, { method: "DELETE", headers: authHeaders() })
+    .then(async (res) => {
+      if (res.ok || res.status === 404) return;
+      const d = await res.json().catch(() => ({}));
+      throw new Error(d.detail || `HTTP ${res.status}`);
+    })
+    .catch((err) => {
+      chatStore = prevStore;
+      currentChatId = prevCurrent;
+      const restored = chatStore.find((c) => c.id === currentChatId);
+      history = restored ? (restored.messages || []).slice(-MAX_MESSAGES) : [];
+      renderTranscript(history);
+      renderChatList();
+      saveChatStore();
+      if (typeof notifyUser === "function") notifyUser(`**Chat delete failed:** ${err.message || err}`);
+    });
 }
 
 async function syncServerChats() {
