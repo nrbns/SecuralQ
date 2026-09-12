@@ -83,7 +83,7 @@ Aligned with [master-build-plan.md](./master-build-plan.md) Phases 1–7. Finish
 
 **This doc’s “Phase 1” agent slice:** document the platform, keep the monolith packagable, add safe allowlisted host fixes (`enable_firewall`, `enable_defender`), Agents detail + Control Center remediations, and scaffold `scripts/agent_lib/` without a big-bang split.
 
-**Firewall acceptance bar:** `python scripts/realtime_acceptance_demo.py --local` must green (FAIL → evidence → POA&M → risk → approve `enable_firewall` → PASS).
+**Host rem acceptance bar:** `python scripts/realtime_acceptance_demo.py --local` must green for firewall + Defender + SSH (FAIL → evidence → POA&M → risk → approve rem command → PASS → `verification_status=verified`). Lab-simulated payloads only — not owned-host proof.
 
 ---
 

@@ -1,20 +1,21 @@
 """REALTIME v1 RT-10/11 acceptance harness — lab only.
 
-Simulates the master-plan firewall fail → evidence → risk → POA&M →
-approved enable_firewall → pass chain **without** changing a real Windows firewall.
+Simulates host-control fail → evidence → risk → POA&M → approved rem command →
+pass for **firewall**, **Defender**, and **SSH** **without** mutating a real host.
 
-Local mode asserts the full in-process closed loop:
+Local mode asserts the full in-process closed loop per control:
 
-  1. Firewall OFF → host control FAIL
+  1. Control FAIL (synthetic telemetry)
   2. Evidence created (observed)
   3. Compliance / control.failed event published (capture bus)
   4. POA&M / gap_remediation OPEN (or rem exists)
   5. risk event published (and risk.changed if available)
-  6. enable_firewall pending → approve → lab-simulated agent result
-  7. Firewall ON → PASS (synthetic payload)
+  6. rem command pending → approve → lab-simulated agent result
+  7. Control PASS (synthetic payload)
   8. Evidence PASS
   9. POA&M CLOSED / rem done
  10. risk reduction hint / risk.changed
+ 11. command verification_status=verified (after PASS check-in)
 
 Modes:
   --local (default)  In-process via evaluate_agent_host_controls + temp DB
@@ -43,7 +44,7 @@ import urllib.request
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
@@ -51,6 +52,7 @@ if str(_ROOT) not in sys.path:
 
 DISCLAIMER = "lab acceptance harness — not a 5k/HA proof"
 
+# Firewall step names (stable for older tests / docs).
 LOCAL_STEP_NAMES = [
     "1_firewall_off_host_control_fail",
     "2_evidence_created_observed",
@@ -63,8 +65,150 @@ LOCAL_STEP_NAMES = [
     "9_poam_closed_rem_done",
     "10_risk_reduction_hint",
 ]
-# Backward-compatible alias (older tests / docs may still import this name).
 OPTIONAL_ENABLE_FW_STEP = "6_enable_firewall_command"
+LOCAL_VERIFY_STEP = "11_command_verification_verified"
+
+PayloadFn = Callable[..., dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class HostLoopSpec:
+    test_id: str
+    command_kind: str
+    api_path: str  # e.g. enable-firewall
+    fail_payload: PayloadFn
+    pass_payload: PayloadFn
+    request_fn_name: str
+    step_names: tuple[str, ...]  # 10 core steps (1–10); verify appended separately
+    status_key: str  # data key for fail/pass status (firewall_status / …)
+
+
+def _base_payload(*, hostname: str, os_name: str) -> dict[str, Any]:
+    return {
+        "hostname": hostname,
+        "ip": "127.0.0.1",
+        "os": os_name,
+        "os_version": "lab",
+        "agent_version": "realtime-acceptance",
+        "listening_ports": [],
+        "processes": [],
+        "packages": [],
+        "firewall_status": {"collected": True, "enabled": True, "backend": "ufw"},
+        "defender_status": {"collected": False, "reason": "Not applicable"},
+        "ssh_config": {"collected": True, "settings": {"PermitRootLogin": "no"}},
+    }
+
+
+def firewall_disabled_payload(*, hostname: str = "rt-accept-host") -> dict[str, Any]:
+    p = _base_payload(hostname=hostname, os_name="linux")
+    p["firewall_status"] = {"collected": True, "enabled": False, "backend": "ufw"}
+    p["defender_status"] = {"collected": False, "reason": "Not applicable on linux"}
+    return p
+
+
+def firewall_enabled_payload(*, hostname: str = "rt-accept-host") -> dict[str, Any]:
+    base = firewall_disabled_payload(hostname=hostname)
+    base["firewall_status"] = {"collected": True, "enabled": True, "backend": "ufw"}
+    return base
+
+
+def defender_disabled_payload(*, hostname: str = "rt-accept-host") -> dict[str, Any]:
+    p = _base_payload(hostname=hostname, os_name="windows")
+    p["firewall_status"] = {"collected": True, "enabled": True, "backend": "windows"}
+    p["defender_status"] = {
+        "collected": True,
+        "realtime_protection_enabled": False,
+        "antivirus_enabled": True,
+    }
+    p["ssh_config"] = {"collected": False, "reason": "Not applicable on windows"}
+    return p
+
+
+def defender_enabled_payload(*, hostname: str = "rt-accept-host") -> dict[str, Any]:
+    base = defender_disabled_payload(hostname=hostname)
+    base["defender_status"] = {
+        "collected": True,
+        "realtime_protection_enabled": True,
+        "antivirus_enabled": True,
+    }
+    return base
+
+
+def ssh_root_allowed_payload(*, hostname: str = "rt-accept-host") -> dict[str, Any]:
+    p = _base_payload(hostname=hostname, os_name="linux")
+    p["ssh_config"] = {"collected": True, "settings": {"PermitRootLogin": "yes"}}
+    p["defender_status"] = {"collected": False, "reason": "Not applicable on linux"}
+    return p
+
+
+def ssh_root_denied_payload(*, hostname: str = "rt-accept-host") -> dict[str, Any]:
+    base = ssh_root_allowed_payload(hostname=hostname)
+    base["ssh_config"] = {"collected": True, "settings": {"PermitRootLogin": "no"}}
+    return base
+
+
+def _defender_step_names() -> tuple[str, ...]:
+    return (
+        "1_defender_off_host_control_fail",
+        "2_evidence_created_observed",
+        "3_compliance_or_control_failed_event",
+        "4_poam_gap_remediation_open",
+        "5_risk_event_published",
+        "6_enable_defender_command",
+        "7_defender_on_pass",
+        "8_evidence_pass",
+        "9_poam_closed_rem_done",
+        "10_risk_reduction_hint",
+    )
+
+
+def _ssh_step_names() -> tuple[str, ...]:
+    return (
+        "1_ssh_permit_root_host_control_fail",
+        "2_evidence_created_observed",
+        "3_compliance_or_control_failed_event",
+        "4_poam_gap_remediation_open",
+        "5_risk_event_published",
+        "6_disable_ssh_root_command",
+        "7_ssh_permit_root_pass",
+        "8_evidence_pass",
+        "9_poam_closed_rem_done",
+        "10_risk_reduction_hint",
+    )
+
+
+HOST_LOOPS: tuple[HostLoopSpec, ...] = (
+    HostLoopSpec(
+        test_id="host_firewall",
+        command_kind="enable_firewall",
+        api_path="enable-firewall",
+        fail_payload=firewall_disabled_payload,
+        pass_payload=firewall_enabled_payload,
+        request_fn_name="request_enable_firewall_command",
+        step_names=tuple(LOCAL_STEP_NAMES),
+        status_key="firewall_status",
+    ),
+    HostLoopSpec(
+        test_id="host_defender",
+        command_kind="enable_defender",
+        api_path="enable-defender",
+        fail_payload=defender_disabled_payload,
+        pass_payload=defender_enabled_payload,
+        request_fn_name="request_enable_defender_command",
+        step_names=_defender_step_names(),
+        status_key="defender_status",
+    ),
+    HostLoopSpec(
+        test_id="host_ssh_root",
+        command_kind="disable_ssh_root",
+        api_path="disable-ssh-root",
+        fail_payload=ssh_root_allowed_payload,
+        pass_payload=ssh_root_denied_payload,
+        request_fn_name="request_disable_ssh_root_command",
+        step_names=_ssh_step_names(),
+        status_key="ssh_status",
+    ),
+)
 
 
 @dataclass
@@ -94,31 +238,9 @@ class AcceptanceReport:
         }
 
 
-def firewall_disabled_payload(*, hostname: str = "rt-accept-host") -> dict[str, Any]:
-    return {
-        "hostname": hostname,
-        "ip": "127.0.0.1",
-        "os": "linux",
-        "os_version": "lab",
-        "agent_version": "realtime-acceptance",
-        "listening_ports": [],
-        "processes": [],
-        "packages": [],
-        "firewall_status": {"collected": True, "enabled": False, "backend": "ufw"},
-        "defender_status": {"collected": False, "reason": "Not applicable on linux"},
-        "ssh_config": {"collected": True, "settings": {"PermitRootLogin": "no"}},
-    }
-
-
-def firewall_enabled_payload(*, hostname: str = "rt-accept-host") -> dict[str, Any]:
-    base = firewall_disabled_payload(hostname=hostname)
-    base["firewall_status"] = {"collected": True, "enabled": True, "backend": "ufw"}
-    return base
-
-
-def _fw_result(out: dict[str, Any]) -> dict[str, Any] | None:
+def _test_result(out: dict[str, Any], test_id: str) -> dict[str, Any] | None:
     for r in out.get("results") or []:
-        if (r.get("test") or "") == "host_firewall":
+        if (r.get("test") or "") == test_id:
             return r
     return None
 
@@ -158,64 +280,68 @@ def _capture_bus() -> Iterator[list[dict[str, Any]]]:
         bus.publish = orig  # type: ignore[assignment]
 
 
-def _fw_markers(agent_id: str) -> tuple[str, str]:
+def _markers(test_id: str, agent_id: str) -> tuple[str, str]:
     from app.controls.poam import poam_marker
 
-    return poam_marker("host_firewall", agent_id), f"host_firewall:{agent_id}"
+    return poam_marker(test_id, agent_id), f"{test_id}:{agent_id}"
 
 
-def _rem_matches_fw(rem: dict[str, Any], agent_id: str) -> bool:
-    marker, legacy = _fw_markers(agent_id)
+def _rem_matches(rem: dict[str, Any], test_id: str, agent_id: str) -> bool:
+    marker, legacy = _markers(test_id, agent_id)
     notes = rem.get("notes") or ""
     rec = rem.get("recommendation") or ""
     return marker in notes or marker in rec or legacy in notes or legacy in rec
 
 
-def _list_fw_rems(user_id: str, agent_id: str, *, status: str | None = None) -> list[dict[str, Any]]:
+def _list_rems(
+    user_id: str, agent_id: str, test_id: str, *, status: str | None = None
+) -> list[dict[str, Any]]:
     from app.enterprise import list_remediations
 
     rows = list_remediations(user_id, status=status) if status else list_remediations(user_id)
-    return [r for r in rows if _rem_matches_fw(r, agent_id)]
+    return [r for r in rows if _rem_matches(r, test_id, agent_id)]
 
 
-def _evidence_has_status(rows: list[dict[str, Any]], *, want: str) -> bool:
+def _evidence_has_status(rows: list[dict[str, Any]], *, test_id: str, want: str) -> bool:
     want = want.lower()
     for row in rows:
         detail = row.get("detail") or {}
         if isinstance(detail, dict) and (detail.get("status") or "").lower() == want:
             return True
         summary = (row.get("summary") or "").lower()
-        if f"host_firewall:{want}" in summary:
+        if f"{test_id}:{want}" in summary:
             return True
         if (row.get("source") or "").lower() == "observed" and want in summary:
             return True
     return False
 
 
-def _compliance_fail_on_bus(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _compliance_fail_on_bus(events: list[dict[str, Any]], test_id: str) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for e in events:
         et = _event_type(e)
         test = _event_test(e)
-        if test and test != "host_firewall":
+        if test and test != test_id:
             continue
         if et == "control.failed":
             out.append(e)
             continue
         if et in ("compliance", "control.test.completed") and _event_status(e) == "fail":
-            if not test or test == "host_firewall":
+            if not test or test == test_id:
                 out.append(e)
     return out
 
 
-def _risk_events(events: list[dict[str, Any]], *, reduction: bool = False) -> list[dict[str, Any]]:
+def _risk_events(
+    events: list[dict[str, Any]], test_id: str, *, reduction: bool = False
+) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for e in events:
         et = _event_type(e)
         if et not in ("risk", "risk.changed") and not et.startswith("risk"):
             continue
         test = _event_test(e)
-        if test and test != "host_firewall":
+        if test and test != test_id:
             continue
         if reduction:
             hint = str(e.get("risk_hint") or e.get("hint") or "").lower()
@@ -231,86 +357,80 @@ def _risk_changed_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [e for e in events if _event_type(e) == "risk.changed"]
 
 
-def _enable_firewall_supported() -> bool:
-    """Resolve enable_firewall after app.agents is fully initialized (avoid import-timing miss)."""
+def _command_supported(kind: str) -> bool:
     try:
         import app.agents as agents_mod
 
         kinds = getattr(agents_mod, "SUPPORTED_COMMAND_KINDS", None)
         if kinds is None:
-            # Module still initializing — re-import attribute once package load finishes.
             from importlib import reload
 
             agents_mod = reload(agents_mod)
             kinds = getattr(agents_mod, "SUPPORTED_COMMAND_KINDS", set())
-        return "enable_firewall" in kinds
+        return kind in kinds
     except Exception:
         return False
 
 
-def _run_enable_firewall_command(
+def _run_rem_command(
     report: AcceptanceReport,
+    loop: HostLoopSpec,
     *,
     user_id: str,
     agent_id: str,
-) -> None:
-    """Step 6 — request → approve → lab-simulated agent result for enable_firewall.
-
-    Local mode does not mutate a real host firewall; the next step still
-    evaluates a synthetic ON payload (honest lab verify).
-    """
-    step_name = LOCAL_STEP_NAMES[5]  # 6_enable_firewall_command
-    if not _enable_firewall_supported():
+    step_name: str,
+) -> str:
+    """Request → approve → lab-simulated agent result. Returns command_id or ''."""
+    if not _command_supported(loop.command_kind):
         report.steps.append(
             StepResult(
                 name=step_name,
                 ok=False,
-                detail="FAIL: enable_firewall missing from SUPPORTED_COMMAND_KINDS",
+                detail=f"FAIL: {loop.command_kind} missing from SUPPORTED_COMMAND_KINDS",
                 data={"skipped": False, "supported": False},
             )
         )
-        return
+        return ""
 
-    from app.agents import approve_command, report_command_result, request_enable_firewall_command
+    import app.agents as agents_mod
     from app.db import get_conn
 
+    request_fn = getattr(agents_mod, loop.request_fn_name)
     try:
-        cmd = request_enable_firewall_command(
-            user_id,
-            agent_id,
-            requested_by=user_id,
-        )
+        cmd = request_fn(user_id, agent_id, requested_by=user_id)
         cid = str(cmd.get("id") or "")
         pending_ok = bool(cid) and (cmd.get("status") or "") == "pending_approval"
-        approved = approve_command(user_id, agent_id, cid, approver_id=user_id)
+        approved = agents_mod.approve_command(user_id, agent_id, cid, approver_id=user_id)
         approve_ok = (approved.get("status") or "") == "queued"
-        # Simulate dispatch so agent result can be recorded (queued → sent).
         get_conn().execute(
             "UPDATE securaiq_agent_commands SET status = 'sent' WHERE id = ?",
             (cid,),
         )
         get_conn().commit()
-        result = report_command_result(
+        result = agents_mod.report_command_result(
             agent_id,
             cid,
             status="done",
-            result={"ok": True, "summary": "lab simulated enable_firewall", "lab": True},
+            result={"ok": True, "summary": f"lab simulated {loop.command_kind}", "lab": True},
         )
         result_ok = bool(result.get("ok"))
         row = get_conn().execute(
-            "SELECT status FROM securaiq_agent_commands WHERE id = ?",
+            "SELECT status, verification_status FROM securaiq_agent_commands WHERE id = ?",
             (cid,),
         ).fetchone()
-        final_status = (dict(row).get("status") if row else "") or ""
+        row_d = dict(row) if row else {}
+        final_status = row_d.get("status") or ""
+        v_pending = (row_d.get("verification_status") or "") == "pending"
         done_ok = final_status == "done"
-        step_ok = pending_ok and approve_ok and result_ok and done_ok
+        step_ok = pending_ok and approve_ok and result_ok and done_ok and v_pending
         report.steps.append(
             StepResult(
                 name=step_name,
                 ok=step_ok,
                 detail=(
                     f"pending={pending_ok} approved={approve_ok} "
-                    f"result_ok={result_ok} status={final_status!r}"
+                    f"result_ok={result_ok} status={final_status!r} "
+                    f"verification_pending={v_pending}"
                 ),
                 data={
                     "command_id": cid,
@@ -318,49 +438,62 @@ def _run_enable_firewall_command(
                     "approve_ok": approve_ok,
                     "result_ok": result_ok,
                     "final_status": final_status,
+                    "verification_status": row_d.get("verification_status"),
                     "lab_simulated_agent_result": True,
                 },
             )
         )
+        return cid if step_ok else cid
     except Exception as exc:
         report.steps.append(
             StepResult(
                 name=step_name,
                 ok=False,
-                detail=f"enable_firewall loop error: {exc}"[:240],
+                detail=f"{loop.command_kind} loop error: {exc}"[:240],
             )
         )
+        return ""
 
 
-def run_local_chain(user_id: str, agent_id: str) -> AcceptanceReport:
-    """Full FAIL → evidence → bus → POA&M → risk → approve enable_firewall → PASS.
-
-    Caller must have already pointed the app at an isolated DB (test fixture
-    or CLI temp dir). No network. Local PASS uses a synthetic ON payload
-    (does not mutate a real Windows/Linux firewall).
-    """
+def run_local_host_loop(
+    user_id: str,
+    agent_id: str,
+    loop: HostLoopSpec,
+    *,
+    report: AcceptanceReport | None = None,
+    step_prefix: str = "",
+) -> AcceptanceReport:
+    """One FAIL → evidence → bus → POA&M → risk → approve rem → PASS → verified."""
+    from app.db import get_conn
     from app.services.control_testing import evaluate_agent_host_controls
     from app.services.evidence import get_evidence_for
 
-    report = AcceptanceReport(mode="local")
-    disabled = firewall_disabled_payload()
-    enabled = firewall_enabled_payload()
-    entity_id = f"{agent_id}:host_firewall"
+    report = report or AcceptanceReport(mode="local")
+    names = loop.step_names
+    prefix = f"{step_prefix}:" if step_prefix else ""
+
+    def _n(i: int) -> str:
+        return f"{prefix}{names[i]}"
+
+    disabled = loop.fail_payload()
+    enabled = loop.pass_payload()
+    entity_id = f"{agent_id}:{loop.test_id}"
+    test_id = loop.test_id
 
     with _capture_bus() as bus_fail:
         out_fail = evaluate_agent_host_controls(user_id, agent_id, disabled, asset_id="")
-    fw_fail = _fw_result(out_fail) or {}
+    tr_fail = _test_result(out_fail, test_id) or {}
 
-    # 1 — Firewall OFF → host control FAIL
-    fail_ok = bool(out_fail.get("ok")) and (fw_fail.get("status") or "").lower() == "fail"
+    fail_ok = bool(out_fail.get("ok")) and (tr_fail.get("status") or "").lower() == "fail"
     report.steps.append(
         StepResult(
-            name=LOCAL_STEP_NAMES[0],
+            name=_n(0),
             ok=fail_ok,
-            detail=f"status={fw_fail.get('status')!r} summary={fw_fail.get('summary') or ''}"[:240],
+            detail=f"status={tr_fail.get('status')!r} summary={tr_fail.get('summary') or ''}"[:240],
             data={
                 "evaluator_ok": out_fail.get("ok"),
-                "firewall_status": fw_fail.get("status"),
+                loop.status_key: tr_fail.get("status"),
+                "test_id": test_id,
                 "events": out_fail.get("events") or [],
                 "evidence_ids": out_fail.get("evidence_ids") or [],
                 "remediation_id": out_fail.get("remediation_id"),
@@ -368,17 +501,18 @@ def run_local_chain(user_id: str, agent_id: str) -> AcceptanceReport:
         )
     )
 
-    # 2 — Evidence created (observed)
     trail_fail = get_evidence_for(
         user_id, entity_type="agent_host_control", entity_id=entity_id, limit=20
     )
     observed = any((r.get("source") or "").lower() == "observed" for r in trail_fail)
     evidence_fail_ok = bool(trail_fail) and (
-        observed or bool(out_fail.get("evidence_ids")) or _evidence_has_status(trail_fail, want="fail")
+        observed
+        or bool(out_fail.get("evidence_ids"))
+        or _evidence_has_status(trail_fail, test_id=test_id, want="fail")
     )
     report.steps.append(
         StepResult(
-            name=LOCAL_STEP_NAMES[1],
+            name=_n(1),
             ok=evidence_fail_ok,
             detail=(
                 f"rows={len(trail_fail)} observed={observed} "
@@ -392,20 +526,18 @@ def run_local_chain(user_id: str, agent_id: str) -> AcceptanceReport:
         )
     )
 
-    # 3 — Compliance / control.failed on bus
-    bus_comp = _compliance_fail_on_bus(bus_fail)
+    bus_comp = _compliance_fail_on_bus(bus_fail, test_id)
     out_comp = [
         e
         for e in (out_fail.get("events") or [])
         if e.get("type") == "compliance"
-        and e.get("test") == "host_firewall"
+        and e.get("test") == test_id
         and (e.get("status") or "").lower() == "fail"
     ]
-    step3_ok = bool(bus_comp) or bool(out_comp)
     report.steps.append(
         StepResult(
-            name=LOCAL_STEP_NAMES[2],
-            ok=step3_ok,
+            name=_n(2),
+            ok=bool(bus_comp) or bool(out_comp),
             detail=(
                 f"bus_compliance_or_control_failed={len(bus_comp)} "
                 f"evaluator_compliance_fail={len(out_comp)}"
@@ -420,17 +552,13 @@ def run_local_chain(user_id: str, agent_id: str) -> AcceptanceReport:
         )
     )
 
-    # 4 — POA&M / gap_remediation OPEN
-    open_rems = _list_fw_rems(user_id, agent_id, status="open")
-    rem_id = out_fail.get("remediation_id") or (
-        (out_fail.get("remediation_ids") or [None])[0]
-    )
-    poam_open_ok = bool(open_rems) or bool(rem_id)
+    open_rems = _list_rems(user_id, agent_id, test_id, status="open")
+    rem_id = out_fail.get("remediation_id") or ((out_fail.get("remediation_ids") or [None])[0])
     report.steps.append(
         StepResult(
-            name=LOCAL_STEP_NAMES[3],
-            ok=poam_open_ok,
-            detail=f"open_fw_rems={len(open_rems)} remediation_id={rem_id!r}",
+            name=_n(3),
+            ok=bool(open_rems) or bool(rem_id),
+            detail=f"open_rems={len(open_rems)} remediation_id={rem_id!r}",
             data={
                 "open_count": len(open_rems),
                 "remediation_id": rem_id,
@@ -439,15 +567,13 @@ def run_local_chain(user_id: str, agent_id: str) -> AcceptanceReport:
         )
     )
 
-    # 5 — risk event (risk.changed if available)
-    bus_risk = _risk_events(bus_fail, reduction=False)
+    bus_risk = _risk_events(bus_fail, test_id, reduction=False)
     out_risk = [e for e in (out_fail.get("events") or []) if e.get("type") == "risk"]
     risk_changed = _risk_changed_events(bus_fail)
-    risk_ok = bool(bus_risk) or bool(out_risk)
     report.steps.append(
         StepResult(
-            name=LOCAL_STEP_NAMES[4],
-            ok=risk_ok,
+            name=_n(4),
+            ok=bool(bus_risk) or bool(out_risk),
             detail=(
                 f"bus_risk={len(bus_risk)} evaluator_risk={len(out_risk)} "
                 f"risk_changed={'yes' if risk_changed else 'n/a'}"
@@ -461,52 +587,48 @@ def run_local_chain(user_id: str, agent_id: str) -> AcceptanceReport:
         )
     )
 
-    # 6 — enable_firewall request → approve → lab-simulated agent result
-    # (causal remediation before verify PASS; does not mutate a real host firewall)
-    _run_enable_firewall_command(report, user_id=user_id, agent_id=agent_id)
+    cid = _run_rem_command(
+        report, loop, user_id=user_id, agent_id=agent_id, step_name=_n(5)
+    )
 
-    # 7 — Firewall ON → PASS (synthetic payload = lab verify after remediation)
     with _capture_bus() as bus_pass:
         out_pass = evaluate_agent_host_controls(user_id, agent_id, enabled, asset_id="")
-    fw_pass = _fw_result(out_pass) or {}
-    pass_ok = bool(out_pass.get("ok")) and (fw_pass.get("status") or "").lower() == "pass"
+    tr_pass = _test_result(out_pass, test_id) or {}
+    pass_ok = bool(out_pass.get("ok")) and (tr_pass.get("status") or "").lower() == "pass"
     report.steps.append(
         StepResult(
-            name=LOCAL_STEP_NAMES[6],
+            name=_n(6),
             ok=pass_ok,
-            detail=f"status={fw_pass.get('status')!r} summary={fw_pass.get('summary') or ''}"[:240],
+            detail=f"status={tr_pass.get('status')!r} summary={tr_pass.get('summary') or ''}"[:240],
             data={
                 "evaluator_ok": out_pass.get("ok"),
-                "firewall_status": fw_pass.get("status"),
+                loop.status_key: tr_pass.get("status"),
                 "events": out_pass.get("events") or [],
                 "evidence_ids": out_pass.get("evidence_ids") or [],
             },
         )
     )
 
-    # 8 — Evidence PASS
     trail_pass = get_evidence_for(
         user_id, entity_type="agent_host_control", entity_id=entity_id, limit=20
     )
-    evidence_pass_ok = _evidence_has_status(trail_pass, want="pass")
+    evidence_pass_ok = _evidence_has_status(trail_pass, test_id=test_id, want="pass")
     report.steps.append(
         StepResult(
-            name=LOCAL_STEP_NAMES[7],
+            name=_n(7),
             ok=evidence_pass_ok,
             detail=f"rows={len(trail_pass)} has_pass={evidence_pass_ok}",
             data={"evidence_count": len(trail_pass), "has_pass": evidence_pass_ok},
         )
     )
 
-    # 9 — POA&M CLOSED / rem done
-    still_open = _list_fw_rems(user_id, agent_id, status="open")
-    done_rems = _list_fw_rems(user_id, agent_id, status="done")
+    still_open = _list_rems(user_id, agent_id, test_id, status="open")
+    done_rems = _list_rems(user_id, agent_id, test_id, status="done")
     had_open = bool(open_rems) or bool(rem_id)
-    poam_closed_ok = had_open and not still_open
     report.steps.append(
         StepResult(
-            name=LOCAL_STEP_NAMES[8],
-            ok=poam_closed_ok,
+            name=_n(8),
+            ok=had_open and not still_open,
             detail=f"still_open={len(still_open)} done={len(done_rems)} had_open={had_open}",
             data={
                 "still_open": len(still_open),
@@ -516,19 +638,17 @@ def run_local_chain(user_id: str, agent_id: str) -> AcceptanceReport:
         )
     )
 
-    # 10 — risk reduction hint / risk.changed
-    bus_reduce = _risk_events(bus_pass, reduction=True)
+    bus_reduce = _risk_events(bus_pass, test_id, reduction=True)
     out_reduce = [
         e
         for e in (out_pass.get("events") or [])
         if e.get("type") == "risk" and (e.get("hint") or "").lower() == "reduction"
     ]
     risk_changed_pass = _risk_changed_events(bus_pass)
-    reduce_ok = bool(bus_reduce) or bool(out_reduce) or bool(risk_changed_pass)
     report.steps.append(
         StepResult(
-            name=LOCAL_STEP_NAMES[9],
-            ok=reduce_ok,
+            name=_n(9),
+            ok=bool(bus_reduce) or bool(out_reduce) or bool(risk_changed_pass),
             detail=(
                 f"bus_reduction={len(bus_reduce)} evaluator_reduction={len(out_reduce)} "
                 f"risk_changed={'yes' if risk_changed_pass else 'n/a'}"
@@ -541,6 +661,40 @@ def run_local_chain(user_id: str, agent_id: str) -> AcceptanceReport:
         )
     )
 
+    vstat = ""
+    if cid:
+        row = get_conn().execute(
+            "SELECT verification_status FROM securaiq_agent_commands WHERE id = ?",
+            (cid,),
+        ).fetchone()
+        vstat = (dict(row).get("verification_status") if row else "") or ""
+    report.steps.append(
+        StepResult(
+            name=f"{prefix}{LOCAL_VERIFY_STEP}",
+            ok=bool(cid) and vstat == "verified",
+            detail=f"command_id={cid[:16] if cid else ''} verification_status={vstat}",
+            data={"command_id": cid, "verification_status": vstat},
+        )
+    )
+    return report
+
+
+def run_local_chain(user_id: str, agent_id: str) -> AcceptanceReport:
+    """Firewall-only closed loop (backward compatible)."""
+    return run_local_host_loop(user_id, agent_id, HOST_LOOPS[0])
+
+
+def run_local_all_host_loops(user_id: str, agent_id: str) -> AcceptanceReport:
+    """RT-11 triple host: firewall + Defender + SSH on one lab agent."""
+    report = AcceptanceReport(mode="local")
+    for loop in HOST_LOOPS:
+        run_local_host_loop(
+            user_id,
+            agent_id,
+            loop,
+            report=report,
+            step_prefix=loop.test_id,
+        )
     return report
 
 
@@ -575,7 +729,7 @@ def _patch_settings_for_temp_data(data_dir: Path) -> None:
 
 
 def run_local_acceptance(*, data_dir: Path | None = None) -> AcceptanceReport:
-    """CLI-friendly local run with an isolated temp DB."""
+    """CLI-friendly local run with an isolated temp DB (all three host loops)."""
     td_ctx = None
     if data_dir is None:
         td_ctx = tempfile.TemporaryDirectory(prefix="rt-accept-", ignore_cleanup_errors=True)
@@ -593,8 +747,7 @@ def run_local_acceptance(*, data_dir: Path | None = None) -> AcceptanceReport:
         register_user(username, "password123", role="admin")
         user, _token = login(username, "password123")
         agent = enroll_agent(user.id, name="rt-accept-local")
-        report = run_local_chain(user.id, agent["agent_id"])
-        # Release SQLite before temp-dir cleanup (Windows file locks).
+        report = run_local_all_host_loops(user.id, agent["agent_id"])
         reset_conn_for_tests()
         return report
     finally:
@@ -643,7 +796,7 @@ def _request(
             return exc.code, raw
 
 
-def _evidence_status(rows: list[dict[str, Any]], *, want: str) -> bool:
+def _evidence_status(rows: list[dict[str, Any]], *, test_id: str, want: str) -> bool:
     want = want.lower()
     for row in rows:
         detail = row.get("detail") or {}
@@ -651,69 +804,46 @@ def _evidence_status(rows: list[dict[str, Any]], *, want: str) -> bool:
         if st == want:
             return True
         summary = (row.get("summary") or "").lower()
-        if f"host_firewall:{want}" in summary:
+        if f"{test_id}:{want}" in summary:
             return True
     return False
 
 
-def run_server_acceptance(
-    server: str,
-    admin_token: str,
+def _run_server_host_loop(
+    report: AcceptanceReport,
     *,
-    insecure: bool = False,
-) -> AcceptanceReport:
-    """Live HTTP check-in against a lab server; assert via evidence / live-failures."""
-    report = AcceptanceReport(mode="server")
-    base = server.rstrip("/")
-    auth_user = {"Authorization": f"Bearer {admin_token}"}
-
-    code, enrolled = _request(
-        "POST",
-        f"{base}/api/agents/enroll",
-        headers=auth_user,
-        body={"name": f"rt-accept-{int(time.time())}"},
-        insecure=insecure,
-    )
-    if code != 200 or not isinstance(enrolled, dict) or not enrolled.get("agent_token"):
-        report.steps.append(
-            StepResult(
-                name="enroll",
-                ok=False,
-                detail=f"enroll failed: {code} {enrolled}",
-            )
-        )
-        return report
-
-    agent_token = str(enrolled["agent_token"])
-    agent_id = str(enrolled.get("agent_id") or agent_token.split(".", 1)[0])
-    agent_auth = {"Authorization": f"Bearer {agent_token}"}
-    hostname = f"rt-accept-{agent_id[:8]}"
-
-    # Step 1 — check-in firewall disabled
+    base: str,
+    agent_id: str,
+    agent_auth: dict[str, str],
+    auth_user: dict[str, str],
+    loop: HostLoopSpec,
+    hostname: str,
+    insecure: bool,
+) -> None:
+    prefix = loop.test_id
     code_fail, resp_fail = _request(
         "POST",
         f"{base}/api/agents/checkin",
         headers=agent_auth,
-        body=firewall_disabled_payload(hostname=hostname),
+        body=loop.fail_payload(hostname=hostname),
         insecure=insecure,
     )
     checkin_fail_ok = code_fail == 200 and isinstance(resp_fail, dict) and bool(resp_fail.get("ok"))
     report.steps.append(
         StepResult(
-            name="firewall_disabled_checkin",
+            name=f"{prefix}:disabled_checkin",
             ok=checkin_fail_ok,
-            detail=f"http={code_fail} response_ok={checkin_fail_ok} agent_id={agent_id}",
-            data={"http_status": code_fail, "response_ok": checkin_fail_ok, "agent_id": agent_id},
+            detail=f"http={code_fail} response_ok={checkin_fail_ok}",
+            data={"http_status": code_fail, "response_ok": checkin_fail_ok},
         )
     )
     if not checkin_fail_ok:
-        return report
+        return
 
-    # Step 2 — evidence / live-failures show firewall FAIL
     time.sleep(0.3)
     code_ev, ev_data = _request(
         "GET",
-        f"{base}/api/evidence/agent_host_control/{agent_id}:host_firewall",
+        f"{base}/api/evidence/agent_host_control/{agent_id}:{loop.test_id}",
         headers=auth_user,
         insecure=insecure,
     )
@@ -725,51 +855,42 @@ def run_server_acceptance(
         insecure=insecure,
     )
     failures = (live.get("failures") if isinstance(live, dict) else None) or []
-    live_fw_fail = False
-    for f in failures:
-        if not isinstance(f, dict):
-            continue
-        if (f.get("test") or "") != "host_firewall":
-            continue
-        if (f.get("status") or "").lower() != "fail":
-            continue
-        live_fw_fail = True
-        break
-
-    evidence_fail_ok = code_ev == 200 and _evidence_status(rows, want="fail")
-    step2_ok = evidence_fail_ok or (code_live == 200 and live_fw_fail)
+    live_fail = any(
+        isinstance(f, dict)
+        and (f.get("test") or "") == loop.test_id
+        and (f.get("status") or "").lower() == "fail"
+        for f in failures
+    )
+    evidence_fail_ok = code_ev == 200 and _evidence_status(rows, test_id=loop.test_id, want="fail")
     report.steps.append(
         StepResult(
-            name="evidence_and_compliance_event",
-            ok=step2_ok,
+            name=f"{prefix}:evidence_and_compliance_fail",
+            ok=evidence_fail_ok or (code_live == 200 and live_fail),
             detail=(
                 f"evidence_http={code_ev} evidence_fail={evidence_fail_ok} "
-                f"live_http={code_live} live_fw_fail={live_fw_fail} evidence_rows={len(rows)}"
+                f"live_http={code_live} live_fail={live_fail}"
             ),
             data={
                 "evidence_http": code_ev,
                 "evidence_rows": len(rows),
                 "live_failures_http": code_live,
-                "live_fw_fail": live_fw_fail,
+                "live_fail": live_fail,
             },
         )
     )
 
-    # Step 2b — request → approve → lab-simulated enable_firewall result
     code_cmd, cmd_body = _request(
         "POST",
-        f"{base}/api/agents/{agent_id}/commands/enable-firewall",
+        f"{base}/api/agents/{agent_id}/commands/{loop.api_path}",
         headers=auth_user,
         body={},
         insecure=insecure,
     )
-    cmd_id = ""
-    if isinstance(cmd_body, dict):
-        cmd_id = str(cmd_body.get("id") or "")
+    cmd_id = str(cmd_body.get("id") or "") if isinstance(cmd_body, dict) else ""
     cmd_ok = code_cmd in (200, 201) and bool(cmd_id)
     report.steps.append(
         StepResult(
-            name="request_enable_firewall",
+            name=f"{prefix}:request_{loop.command_kind}",
             ok=cmd_ok,
             detail=f"http={code_cmd} cmd={cmd_id[:16]}",
             data={"http_status": code_cmd, "command_id": cmd_id},
@@ -785,7 +906,7 @@ def run_server_acceptance(
         )
         report.steps.append(
             StepResult(
-                name="approve_enable_firewall",
+                name=f"{prefix}:approve_{loop.command_kind}",
                 ok=code_appr == 200,
                 detail=f"http={code_appr} status={(appr or {}).get('status') if isinstance(appr, dict) else None}",
             )
@@ -799,46 +920,50 @@ def run_server_acceptance(
         )
         report.steps.append(
             StepResult(
-                name="agent_command_result",
+                name=f"{prefix}:agent_command_result",
                 ok=code_res == 200,
                 detail=f"http={code_res} body={str(res)[:120]}",
             )
         )
 
-    # Step 3 — check-in firewall enabled → PASS evidence (+ command verified)
     code_pass, resp_pass = _request(
         "POST",
         f"{base}/api/agents/checkin",
         headers=agent_auth,
-        body=firewall_enabled_payload(hostname=hostname),
+        body=loop.pass_payload(hostname=hostname),
         insecure=insecure,
     )
     checkin_pass_ok = code_pass == 200 and isinstance(resp_pass, dict) and bool(resp_pass.get("ok"))
     if not checkin_pass_ok:
         report.steps.append(
             StepResult(
-                name="firewall_enabled_compliance_pass",
+                name=f"{prefix}:enabled_compliance_pass",
                 ok=False,
                 detail=f"check-in failed http={code_pass}",
                 data={"http_status": code_pass},
             )
         )
-        return report
+        return
 
     time.sleep(0.3)
     code_ev2, ev_data2 = _request(
         "GET",
-        f"{base}/api/evidence/agent_host_control/{agent_id}:host_firewall",
+        f"{base}/api/evidence/agent_host_control/{agent_id}:{loop.test_id}",
         headers=auth_user,
         insecure=insecure,
     )
     rows2 = (ev_data2.get("evidence") if isinstance(ev_data2, dict) else None) or []
-    pass_ok = checkin_pass_ok and code_ev2 == 200 and _evidence_status(rows2, want="pass")
+    pass_ok = checkin_pass_ok and code_ev2 == 200 and _evidence_status(
+        rows2, test_id=loop.test_id, want="pass"
+    )
     report.steps.append(
         StepResult(
-            name="firewall_enabled_compliance_pass",
+            name=f"{prefix}:enabled_compliance_pass",
             ok=pass_ok,
-            detail=f"checkin_http={code_pass} evidence_http={code_ev2} has_pass={_evidence_status(rows2, want='pass')}",
+            detail=(
+                f"checkin_http={code_pass} evidence_http={code_ev2} "
+                f"has_pass={_evidence_status(rows2, test_id=loop.test_id, want='pass')}"
+            ),
             data={
                 "http_status": code_pass,
                 "evidence_http": code_ev2,
@@ -850,7 +975,7 @@ def run_server_acceptance(
     if cmd_id:
         code_cmds, cmds = _request(
             "GET",
-            f"{base}/api/agents/{agent_id}/commands?limit=20",
+            f"{base}/api/agents/{agent_id}/commands?limit=40",
             headers=auth_user,
             insecure=insecure,
         )
@@ -859,11 +984,53 @@ def run_server_acceptance(
         vstat = (mine or {}).get("verification_status") or ""
         report.steps.append(
             StepResult(
-                name="command_verification_verified",
+                name=f"{prefix}:command_verification_verified",
                 ok=code_cmds == 200 and vstat == "verified",
                 detail=f"http={code_cmds} verification_status={vstat}",
                 data={"verification_status": vstat},
             )
+        )
+
+
+def run_server_acceptance(
+    server: str,
+    admin_token: str,
+    *,
+    insecure: bool = False,
+) -> AcceptanceReport:
+    """Live HTTP check-in against a lab server; firewall + Defender + SSH loops."""
+    report = AcceptanceReport(mode="server")
+    base = server.rstrip("/")
+    auth_user = {"Authorization": f"Bearer {admin_token}"}
+
+    code, enrolled = _request(
+        "POST",
+        f"{base}/api/agents/enroll",
+        headers=auth_user,
+        body={"name": f"rt-accept-{int(time.time())}"},
+        insecure=insecure,
+    )
+    if code != 200 or not isinstance(enrolled, dict) or not enrolled.get("agent_token"):
+        report.steps.append(
+            StepResult(name="enroll", ok=False, detail=f"enroll failed: {code} {enrolled}")
+        )
+        return report
+
+    agent_token = str(enrolled["agent_token"])
+    agent_id = str(enrolled.get("agent_id") or agent_token.split(".", 1)[0])
+    agent_auth = {"Authorization": f"Bearer {agent_token}"}
+    hostname = f"rt-accept-{agent_id[:8]}"
+
+    for loop in HOST_LOOPS:
+        _run_server_host_loop(
+            report,
+            base=base,
+            agent_id=agent_id,
+            agent_auth=agent_auth,
+            auth_user=auth_user,
+            loop=loop,
+            hostname=hostname,
+            insecure=insecure,
         )
 
     code_h, health = _request(
@@ -877,7 +1044,8 @@ def run_server_acceptance(
     report.steps.append(
         StepResult(
             name="realtime_bus_mode",
-            ok=code_h == 200 and mode in ("in_process", "redis_streams_fanout", "redis_streams+pubsub"),
+            ok=code_h == 200
+            and mode in ("in_process", "redis_streams_fanout", "redis_streams+pubsub"),
             detail=f"http={code_h} mode={mode}",
             data={"mode": mode},
         )
@@ -896,13 +1064,18 @@ def print_report(report: AcceptanceReport) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
-        description="SecuraIQ RT-10/11 firewall fail→pass acceptance (lab only)"
+        description="SecuraIQ RT-10/11 host fail→pass acceptance (firewall+Defender+SSH, lab only)"
     )
     ap.add_argument(
         "--local",
         action="store_true",
         default=False,
         help="In-process unit path with temp DB (default when --server not set)",
+    )
+    ap.add_argument(
+        "--firewall-only",
+        action="store_true",
+        help="Local mode: only host_firewall loop (legacy)",
     )
     ap.add_argument(
         "--server",
@@ -914,25 +1087,44 @@ def main(argv: list[str] | None = None) -> int:
         default=os.environ.get("SECURAIQ_ADMIN_TOKEN", ""),
         help="Admin JWT for enroll + evidence (or SECURAIQ_ADMIN_TOKEN)",
     )
-    ap.add_argument(
-        "--admin-token",
-        default="",
-        help="Alias for --token",
-    )
+    ap.add_argument("--admin-token", default="", help="Alias for --token")
     ap.add_argument("--insecure", action="store_true", help="Skip TLS verify for https lab servers")
     args = ap.parse_args(argv)
 
     token = (args.admin_token or args.token or "").strip()
-    server = (args.server or "").strip()
 
-    if server:
+    if args.server:
         if not token:
-            print("[rt-accept] --server requires --token (admin JWT)", flush=True)
-            print(f"[rt-accept] {DISCLAIMER}", flush=True)
+            print("[rt-accept] --token / SECURAIQ_ADMIN_TOKEN required for --server", flush=True)
             return 2
-        report = run_server_acceptance(server, token, insecure=args.insecure)
+        report = run_server_acceptance(args.server, token, insecure=args.insecure)
+    elif args.firewall_only:
+        # Legacy single-loop CLI path
+        td_ctx = tempfile.TemporaryDirectory(prefix="rt-accept-", ignore_cleanup_errors=True)
+        try:
+            data_dir = Path(td_ctx.name) / "data"
+            _patch_settings_for_temp_data(data_dir)
+            from app.agents import enroll_agent
+            from app.auth import login, register_user
+            from app.db import reset_conn_for_tests
+            from app.tenancy import ensure_tenant_schema
+
+            ensure_tenant_schema()
+            username = f"rt_accept_{int(time.time())}"
+            register_user(username, "password123", role="admin")
+            user, _token = login(username, "password123")
+            agent = enroll_agent(user.id, name="rt-accept-fw")
+            report = run_local_chain(user.id, agent["agent_id"])
+            reset_conn_for_tests()
+        finally:
+            try:
+                from app.db import reset_conn_for_tests
+
+                reset_conn_for_tests()
+            except Exception:
+                pass
+            td_ctx.cleanup()
     else:
-        # --local is default when no --server
         report = run_local_acceptance()
 
     print_report(report)

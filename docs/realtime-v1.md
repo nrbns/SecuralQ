@@ -386,11 +386,12 @@ Agent check-in payloads already include `firewall_status`, `defender_status`, an
 
 | Piece | Role |
 |-------|------|
-| Firewall FAIL | Ensures an open `gap_remediations` / POA&M row; operator may request approved `enable_firewall` (never auto-executed). On PASS check-in, pending host commands flip `verification_status=verified`. |
-| Re-check PASS | Next check-in with firewall enabled → PASS evidence + compliance pass + risk-reduction hint; matching rem marked `done` |
-| Approve path | Remediations workspace → assign owner → fix host → wait for agent check-in verify |
+| Host control FAIL | `host_firewall` / `host_defender` / `host_ssh_root` open a POA&M / rem row; operator may request approved `enable_firewall` / `enable_defender` / `disable_ssh_root` (never auto-executed). |
+| Re-check PASS | Next check-in with healthy telemetry → PASS evidence + compliance pass + risk-reduction hint; matching rem marked `done`; pending host commands flip `verification_status=verified`. |
+| Approve path | Remediations / Agents → approve → agent result → wait for check-in verify |
+| Lab bar | `python scripts/realtime_acceptance_demo.py --local` covers all three loops (synthetic payloads only) |
 
-**Honest status:** stub loop for host_firewall only; Defender/SSH publish compliance/risk only (no auto rem yet).
+**Honest status:** lab closed-loop parity for firewall + Defender + SSH. Not owned-host proof; disk encryption remains observe→POA&M recommend-only (no auto rem command).
 
 ---
 
@@ -408,7 +409,7 @@ Agent check-in payloads already include `firewall_status`, `defender_status`, an
 | **RT-08** | Inventory → Vulnerability → Risk → Dashboard | **Partial→improved** (inventory/vuln hooks → org risk + high/crit evidence) |
 | **RT-09** | Threat → Attack Path → Risk → Incident | **Partial→improved** (critical/incident → `compute_attack_paths` + `attack_path` event) |
 | **RT-10** | Agent telemetry → control test → compliance → evidence → risk → dashboard | **Partial→improved** (foundations) |
-| **RT-11** | Control FAIL → rem → approve → agent → verify → PASS → evidence | **Partial→improved** (enable_firewall verify on host PASS) |
+| **RT-11** | Control FAIL → rem → approve → agent → verify → PASS → evidence | **Partial→improved** (firewall + Defender + SSH lab loops; verify on host PASS) |
 | **E** / **RT-12** | Central dashboard realtime (`RealtimeManager` + Last-Event-ID) | **Done→partial** (manager exists; not every panel) |
 | **F** / **RT-13** | Remove polling from major dashboards | **Partial** (soft-poll skip while SSE connected) |
 | **RT-14** | Connection state + stale-data indicators | **Partial→improved** (live badge states) |

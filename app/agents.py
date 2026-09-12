@@ -2366,8 +2366,12 @@ def report_command_result(agent_id: str, command_id: str, *, status: str, result
     c.commit()
     agent = get_agent(agent_id)
     asset_id = (agent or {}).get("asset_id") or ""
+    host_kinds = {"enable_firewall", "enable_defender", "disable_ssh_root"}
+    # Host rem verification is agent_id + next check-in control PASS/FAIL — it
+    # does not require a linked asset (unlike patch_package advisory refresh).
+    can_verify = bool(asset_id) or (kind in host_kinds)
     if status == "done":
-        if asset_id:
+        if can_verify:
             c.execute("UPDATE securaiq_agent_commands SET verification_status = 'pending' WHERE id = ?", (command_id,))
         else:
             c.execute(
@@ -2377,7 +2381,7 @@ def report_command_result(agent_id: str, command_id: str, *, status: str, result
         c.commit()
     v_status = ""
     if status == "done":
-        v_status = "pending" if asset_id else "unknown"
+        v_status = "pending" if can_verify else "unknown"
         # Execution complete, then verification loop (kept as separate lifecycle publish).
         _publish_agent_command(
             agent_id=agent_id,
@@ -2387,7 +2391,7 @@ def report_command_result(agent_id: str, command_id: str, *, status: str, result
             asset_id=asset_id,
             phase="COMPLETED",
         )
-        if asset_id:
+        if can_verify:
             _publish_agent_command(
                 agent_id=agent_id,
                 command_id=command_id,
@@ -2405,7 +2409,6 @@ def report_command_result(agent_id: str, command_id: str, *, status: str, result
             phase="FAILED",
             error=str((result or {}).get("error") or "")[:200],
         )
-    host_kinds = {"enable_firewall", "enable_defender", "disable_ssh_root"}
     if status == "done" and asset_id and kind not in host_kinds:
         # Stamp installed version from the agent result immediately so the
         # advisory-refresh verification job is not racing an empty inventory.
@@ -2451,7 +2454,7 @@ def report_command_result(agent_id: str, command_id: str, *, status: str, result
             _maybe_advance_campaign_ring(campaign_id, (agent or {}).get("user_id") or "local")
         except Exception:
             pass
-    return {"ok": True, "status": status, "verification_status": v_status or ("pending" if status == "done" and asset_id else "")}
+    return {"ok": True, "status": status, "verification_status": v_status or ("pending" if status == "done" and can_verify else "")}
 
 
 def _resolve_vulnerabilities_for_verified_patch(command_id: str, command_row: dict[str, Any]) -> int:

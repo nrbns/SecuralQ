@@ -216,8 +216,9 @@ from agent telemetry; curated map only. Sprint 1 package: [control-config-engine
 
 - Telemetry → control test → PASS/FAIL → evidence → score/risk; FAIL → remediate → verify → PASS (no manual score editing)
 
-**Status: Partial** — continuous compliance panel + RT-10/11 host control loops (firewall auto-rem
-optional; disk encryption observe→test→POA&M recommend-only); not certification / full auto rem.
+**Status: Partial** — continuous compliance panel + RT-10/11 host control loops
+(firewall / Defender / SSH approve→verify lab parity; disk encryption observe→test→POA&M
+recommend-only); not certification / owned-host proof / full auto rem.
 
 ---
 

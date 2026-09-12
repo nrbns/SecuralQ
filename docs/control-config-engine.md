@@ -129,7 +129,7 @@ Host FAIL still **recommend-only** by default (open rem + `remediation.recommend
 | **2** | Configuration observe/drift (`app/configuration/`), Control Center UI, check-in hook | **Done** (foundations) |
 | **3** | CMMC/800-171 deeper test coverage + why-failing UX | **Partial foundations** (why/deviations on GET catalog control; host maps from Sprint 1) |
 | **4** | Realtime score + POA&M auto-open from FAIL | **Partial foundations** (`app/controls/poam.py` opens/closes `gap_remediations` on host FAIL/PASS; not a formal POA&M package) |
-| **5** | Remediate → Approve → Agent → Verify → PASS (extend RT-11; no default auto-fix) | **Partial foundations** (`enable_firewall` + rem recommend; verify on check-in PASS; no auto-execute) |
+| **5** | Remediate → Approve → Agent → Verify → PASS (extend RT-11; no default auto-fix) | **Partial→improved** (`enable_firewall` / `enable_defender` / `disable_ssh_root` + rem recommend; verify on check-in PASS; no auto-execute; lab acceptance covers all three) |
 | **6** | Live SSP / exceptions / audit packages | Planned |
 | **7** | CUI enclave / boundary / SPA classification | Planned |
 
