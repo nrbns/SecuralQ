@@ -33,7 +33,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/style.css?v=162" />
+  <link rel="stylesheet" href="/style.css?v=163" />
   <script src="/vendor/marked.min.js"></script>
 </head>
 <body>
@@ -667,7 +667,8 @@
               <button type="button" class="btn-secondary" id="vulnsOpenImport">Import</button>
               <button type="button" class="btn-secondary" id="vulnsOpenCodeScan">Code scan</button>
               <button type="button" class="btn-secondary" id="sonarSyncBtn">Sync engine</button>
-              <button type="button" class="btn-secondary" id="vulnsOpenExport">Export</button>
+              <button type="button" class="btn-secondary" id="vulnsOpenExport" title="Export findings as Markdown">Export MD</button>
+              <button type="button" class="btn-secondary" id="vulnsOpenExportPdf" title="Export findings as PDF">Export PDF</button>
             </div>
           </div>
           <p class="hint code-scan-live" id="vaScanLive" hidden aria-live="polite"></p>
@@ -2044,6 +2045,7 @@
       <div class="settings-row">
         <button type="button" id="vulnImportBtn" class="btn-sidebar">Import file</button>
         <button type="button" id="vulnExportBtn" class="btn-secondary">Export Markdown</button>
+        <button type="button" id="vulnExportPdfBtn" class="btn-secondary">Export PDF</button>
         <input id="vulnFileInput" type="file" class="hidden" accept=".csv,.json,.xml,.txt" />
       </div>
       <div id="vulnList" class="gap-result"></div>
@@ -2264,7 +2266,7 @@
     </div>
   </div>
 
-  <script src="/app.js?v=211"></script>
-  <script src="/workspace.js?v=204"></script>
+  <script src="/app.js?v=212"></script>
+  <script src="/workspace.js?v=205"></script>
 </body>
 </html>

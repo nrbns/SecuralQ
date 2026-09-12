@@ -2963,6 +2963,7 @@
       setLiveState("live-busy", "Code analysis…", path || gitUrl);
     }
     let lastScanned = 0;
+    let lastScanId = "";
     let lastTotal = 0;
     let lastFindings = 0;
     try {
@@ -3023,6 +3024,8 @@
           } else if (ev.event === "tool_start") {
             setCodeScanLive(`Running ${ev.name || ev.tool}…`, true);
             setCodeScanProgress("active", 0, 0, 0);
+          } else if (ev.event === "scan_created") {
+            lastScanId = String(ev.scan_id || "");
           } else if (ev.event === "git_clone_start") {
             setCodeScanLive(`Cloning ${ev.url}${ev.ref ? ` (${ev.ref})` : ""}…`, true);
             setCodeScanProgress("active", 0, 0, 0);
@@ -3032,6 +3035,7 @@
             setCodeScanLive(`Git clone failed: ${ev.error || "see error"}`, true);
           } else if (ev.event === "done") {
             data = ev.payload || ev;
+            if (ev.scan_id) lastScanId = String(ev.scan_id);
           }
         }
       }
@@ -3052,10 +3056,16 @@
       // here made it look like findings had vanished.
       setCodeScanProgress(ok ? "done" : "error", lastScanned, lastTotal, ok ? created : lastFindings);
       if (typeof notifyUser === "function") {
+        // This run now has a real row in Reports (same place network scans
+        // land) with a downloadable Markdown/PDF report — surface that link
+        // instead of leaving the result only visible live in this panel.
+        const reportLine = lastScanId
+          ? ` · [View report](/api/scans/${encodeURIComponent(lastScanId)}/report.pdf) · saved to Reports`
+          : "";
         notifyUser(
           ok
-            ? `**Code analysis complete** · **${created}** finding(s) live in Vulnerabilities`
-            : `**Code analysis issue:** ${(data && data.error) || "see output"}`
+            ? `**Code analysis complete** · **${created}** finding(s) live in Vulnerabilities${reportLine}`
+            : `**Code analysis issue:** ${(data && data.error) || "see output"}${reportLine}`
         );
       }
       renderSonarPanel();
@@ -7985,6 +7995,13 @@
   async function renderEvidencePage() {
     const body = qs("evidencePageBody");
     if (!body) return;
+    // A control's "Evidence" button (Frameworks page) stashes which control
+    // it was clicked from here, one-shot — read and clear it immediately so
+    // a later realtime-triggered re-render of this same page, or a manual
+    // sidebar visit, never re-applies a stale prefill over what the user has
+    // since typed.
+    const evidencePrefill = window.__evidencePrefill || null;
+    window.__evidencePrefill = null;
     let filesRes, linksRes, remsRes, queueRes;
     try {
       [filesRes, linksRes, remsRes, queueRes] = await Promise.all([
@@ -8182,7 +8199,27 @@
         <button type="button" class="btn-secondary" data-workspace="frameworks">Open frameworks</button>
         <button type="button" class="btn-secondary" data-workspace="remediations">Open controls</button>
       </div>`;
-    renderComplianceDocsPanel();
+    if (evidencePrefill && evidencePrefill.control_id) {
+      const controlInput = qs("evidenceControlId");
+      if (controlInput) {
+        controlInput.value = evidencePrefill.control_id;
+        controlInput.focus();
+      }
+    }
+    await renderComplianceDocsPanel();
+    if (evidencePrefill && evidencePrefill.control_id) {
+      const docControlInput = qs("complianceDocControlId");
+      const docFrameworkInput = qs("complianceDocFrameworkId");
+      if (docControlInput) docControlInput.value = evidencePrefill.control_id;
+      if (docFrameworkInput) docFrameworkInput.value = evidencePrefill.framework_id || "";
+      if (typeof notifyUser === "function") {
+        notifyUser(
+          `**Collecting evidence for \`${evidencePrefill.control_id}\`**${
+            evidencePrefill.control_title ? ` — ${evidencePrefill.control_title}` : ""
+          }: upload an existing policy/evidence file below, or author one from a template in the document library.`
+        );
+      }
+    }
     qs("evidenceLinkForm")?.addEventListener("submit", async (e) => {
       e.preventDefault();
       const statusEl = qs("evidenceUploadStatus");
@@ -8385,6 +8422,7 @@
         <input id="complianceDocTitle" placeholder="Document title (e.g. Access Control Policy — Acme Corp)" required />
         <select id="complianceDocTemplate">${tplOpts}</select>
         <input id="complianceDocControlId" placeholder="Mapped control (e.g. AC.L2-3.1.1) — optional" />
+        <input type="hidden" id="complianceDocFrameworkId" value="" />
         <input id="complianceDocOwner" placeholder="Owner" />
         <button type="submit">Create from template</button>
         <p class="hint" id="complianceDocNewStatus" style="margin:0"></p>
@@ -8406,6 +8444,7 @@
             title,
             template_id: qs("complianceDocTemplate")?.value || "blank",
             control_id: qs("complianceDocControlId")?.value?.trim() || "",
+            framework_id: qs("complianceDocFrameworkId")?.value?.trim() || "",
             owner: qs("complianceDocOwner")?.value?.trim() || "",
           }),
         });
@@ -9445,7 +9484,9 @@
                           <td>
                             <button type="button" class="btn-secondary fw-ctrl-ask"
                               data-id="${escapeHtml(cid)}" data-title="${escapeHtml(r.title || "")}">Ask AI</button>
-                            <button type="button" class="btn-secondary" data-workspace="evidence">Evidence</button>
+                            <button type="button" class="btn-secondary" data-workspace="evidence"
+                              data-control-id="${escapeHtml(cid)}" data-framework-id="${escapeHtml(frameworkId)}"
+                              data-control-title="${escapeHtml(r.title || "")}">Evidence</button>
                           </td>
                         </tr>`;
                       })
@@ -9543,6 +9584,19 @@
       detailEl.querySelectorAll("[data-workspace]").forEach((el) => {
         el.addEventListener("click", (e) => {
           e.preventDefault();
+          // A per-control "Evidence" button carries the control it was
+          // clicked from — stash it so the Evidence page (a separate,
+          // global page: upload/link evidence, compliance document
+          // library) can land pre-scoped to this exact control instead of
+          // making the user retype/reselect the control mapping by hand.
+          const controlId = el.getAttribute("data-control-id");
+          if (controlId) {
+            window.__evidencePrefill = {
+              control_id: controlId,
+              framework_id: el.getAttribute("data-framework-id") || "",
+              control_title: el.getAttribute("data-control-title") || "",
+            };
+          }
           showWorkspace(el.getAttribute("data-workspace"));
         });
       });
@@ -12284,7 +12338,35 @@
       ["mcImportScanners", () => showWorkspace("vulns")],
       [
         "vulnsOpenExport",
-        () => typeof downloadMd === "function" && downloadMd("/api/vulnerabilities/export", "securaiq-vulns.md"),
+        async () => {
+          try {
+            if (typeof downloadMd !== "function") throw new Error("Export helper unavailable");
+            await downloadMd("/api/vulnerabilities/export", "securaiq-vulns.md");
+            if (typeof notifyUser === "function") notifyUser("**Exported** vulnerability register (Markdown).");
+          } catch (err) {
+            if (typeof notifyUser === "function") {
+              notifyUser(`**Export failed:** ${err.message || String(err)}`);
+            } else {
+              alert(err.message || "Export failed");
+            }
+          }
+        },
+      ],
+      [
+        "vulnsOpenExportPdf",
+        async () => {
+          try {
+            if (typeof window.downloadBinary !== "function") throw new Error("PDF export helper unavailable");
+            await window.downloadBinary("/api/reports/vulns.pdf", "securaiq-vulns.pdf", "application/pdf");
+            if (typeof notifyUser === "function") notifyUser("**Exported** vulnerability register (PDF).");
+          } catch (err) {
+            if (typeof notifyUser === "function") {
+              notifyUser(`**PDF export failed:** ${err.message || String(err)}`);
+            } else {
+              alert(err.message || "PDF export failed");
+            }
+          }
+        },
       ],
       ["remsOpenGap", () => typeof openGap === "function" && openGap()],
       ["playbooksOpenCreate", () => typeof openPlaybook === "function" && openPlaybook()],

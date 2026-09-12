@@ -9126,6 +9126,11 @@ on(document.getElementById("vulnExportBtn"), "click", () =>
     appendMessage("assistant", renderMarkdown(`**Export failed:** ${err.message}`), true)
   )
 );
+on(document.getElementById("vulnExportPdfBtn"), "click", () =>
+  downloadBinary("/api/reports/vulns.pdf", "securaiq-vulns.pdf", "application/pdf").catch((err) =>
+    appendMessage("assistant", renderMarkdown(`**PDF export failed:** ${err.message}`), true)
+  )
+);
 on(document.getElementById("riskExportBtn"), "click", () =>
   downloadMd("/api/risks/export", "securaiq-risks.md").catch((err) =>
     appendMessage("assistant", renderMarkdown(`**Export failed:** ${err.message}`), true)
