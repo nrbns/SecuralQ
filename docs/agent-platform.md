@@ -56,7 +56,7 @@ protocol parity (enroll → heartbeat → inventory → allowlisted command → 
 | **core** | Version, config, check-in loop, gateway wait/WS, command ack/result | `scripts/securaiq_agent.py`; Rust `securaiq-agent/` v0.3 |
 | **inventory** | Host/OS/software/services/processes + **hardware / local_groups / network** | Python collectors; Rust `platform/deep/{windows,linux,macos}` |
 | **security** | Firewall / Defender / SSH / BitLocker / FIM / logs | Python + Rust host-status, FIM, `security_logs`; remediations: Rust `enable_firewall`/`enable_defender` |
-| **response** | Allowlisted commands: `patch_package`, `agent_upgrade`, `enable_firewall`, `enable_defender` | Python + Rust `enable_firewall`/`enable_defender`; patch/upgrade still Python |
+| **response** | Allowlisted commands: `patch_package`, `agent_upgrade`, `enable_firewall`, `enable_defender`, `disable_ssh_root` | Python + Rust `enable_*` / `disable_ssh_root`; patch/upgrade still Python |
 | **vulnerability** | Package inventory → CVE/KEV/OSV → enterprise finding | Server: check-in → `refresh_advisories_for_asset` → `vuln_bridge` (Phase 4) |
 
 Server-side control plane pieces that consume agent telemetry: `app/services/control_testing.py`, `app/controls/`, `app/configuration/`, `app/software/`, event processor + realtime bus.
@@ -108,5 +108,6 @@ Commercial EDR **connectors** may exist elsewhere in the repo; they are not a su
 |------|-----|----------------|
 | `enable_firewall` | `POST /api/agents/{id}/commands/enable-firewall` | Fixed argv firewall enable (Windows / Linux; macOS honest unsupported) |
 | `enable_defender` | `POST /api/agents/{id}/commands/enable-defender` | Windows: fixed argv `Set-MpPreference -DisableRealtimeMonitoring $false`; non-Windows: honest not supported |
+| `disable_ssh_root` | `POST /api/agents/{id}/commands/disable-ssh-root` | Linux/macOS: rewrite `sshd_config` `PermitRootLogin no` + fixed argv reload; Windows: honest unsupported |
 
-Both always require approval. Failures must be reported honestly (elevation, third-party AV takeover, missing modules).
+All always require approval. Failures must be reported honestly (elevation, missing sshd, third-party AV takeover). Host PASS/FAIL on next check-in flips `verification_status`.

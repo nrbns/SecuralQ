@@ -97,10 +97,95 @@ pub fn execute_enable_defender() -> Value {
     }
 }
 
+pub fn execute_disable_ssh_root() -> Value {
+    #[cfg(target_os = "windows")]
+    {
+        json!({
+            "ok": false,
+            "error": "disable_ssh_root is not automated on Windows — configure OpenSSH PermitRootLogin manually if used",
+            "backend": null,
+        })
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        use std::fs;
+        use std::path::Path;
+        use crate::platform::cmd::run_cmd;
+
+        let candidates: &[&str] = if cfg!(target_os = "macos") {
+            &["/etc/ssh/sshd_config", "/private/etc/ssh/sshd_config"]
+        } else {
+            &["/etc/ssh/sshd_config"]
+        };
+        let path = candidates
+            .iter()
+            .find(|p| Path::new(p).is_file())
+            .copied()
+            .unwrap_or(candidates[0]);
+        let raw = match fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(e) => {
+                return json!({
+                    "ok": false,
+                    "error": format!("Cannot read {path}: {e} (root/elevation may be required)"),
+                    "backend": "sshd_config",
+                    "path": path,
+                });
+            }
+        };
+        let mut found = false;
+        let mut out_lines: Vec<String> = Vec::new();
+        for line in raw.lines() {
+            let stripped = line.trim_start();
+            if stripped.starts_with('#')
+                || !stripped.to_ascii_lowercase().starts_with("permitrootlogin")
+            {
+                out_lines.push(line.to_string());
+                continue;
+            }
+            out_lines.push("PermitRootLogin no".to_string());
+            found = true;
+        }
+        if !found {
+            out_lines.push("PermitRootLogin no".to_string());
+        }
+        let body = out_lines.join("\n") + "\n";
+        if let Err(e) = fs::write(path, body) {
+            return json!({
+                "ok": false,
+                "error": format!("Cannot write {path}: {e} (root/elevation may be required)"),
+                "backend": "sshd_config",
+                "path": path,
+            });
+        }
+        let mut reload_note = "config written; sshd reload not confirmed".to_string();
+        let reloads: &[(&str, &[&str])] = &[
+            ("systemctl", &["reload", "sshd"]),
+            ("systemctl", &["reload", "ssh"]),
+            ("service", &["sshd", "reload"]),
+            ("service", &["ssh", "reload"]),
+        ];
+        for (bin, args) in reloads {
+            if let Some(out) = run_cmd(bin, args, 15) {
+                reload_note = format!("{bin} {} succeeded ({})", args.join(" "), clip(&out, 120));
+                break;
+            }
+        }
+        json!({
+            "ok": true,
+            "backend": "sshd_config",
+            "path": path,
+            "note": format!("PermitRootLogin no applied; {reload_note}"),
+            "output": clip(&reload_note, 2000),
+        })
+    }
+}
+
 pub fn execute_kind(kind: &str) -> Value {
     match kind {
         "enable_firewall" => execute_enable_firewall(),
         "enable_defender" => execute_enable_defender(),
+        "disable_ssh_root" => execute_disable_ssh_root(),
         other => json!({
             "ok": false,
             "error": format!("Unsupported or not-yet-implemented allowlisted kind '{other}' in Rust agent"),

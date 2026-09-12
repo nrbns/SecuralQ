@@ -169,7 +169,10 @@ CONTROL_TEST_REGISTRY: list[dict[str, Any]] = [
             ("nist_800_171", "3.1.5"),
             ("cmmc_l2", "AC.L2-3.1.5"),
         ],
-        remediation_hint="Set PermitRootLogin no (or prohibit-password) in sshd_config.",
+        remediation_hint=(
+            "Request approved disable_ssh_root (PermitRootLogin no), "
+            "then verify on next check-in — never auto-executed."
+        ),
     ),
     _entry(
         TEST_HOST_DISK_ENCRYPTION,

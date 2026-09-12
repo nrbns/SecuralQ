@@ -392,7 +392,13 @@ def _propose_approval(
 ) -> dict[str, Any]:
     """Propose-only — never queues agent commands from the model."""
     kind = str(command_kind or "").strip()
-    allowed_kinds = {"enable_firewall", "enable_defender", "patch_package", "agent_upgrade"}
+    allowed_kinds = {
+        "enable_firewall",
+        "enable_defender",
+        "disable_ssh_root",
+        "patch_package",
+        "agent_upgrade",
+    }
     return {
         "proposed": True,
         "mutated": False,

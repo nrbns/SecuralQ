@@ -495,6 +495,7 @@ def test_enable_firewall_in_supported_command_kinds():
 
     assert "enable_firewall" in SUPPORTED_COMMAND_KINDS
     assert "enable_defender" in SUPPORTED_COMMAND_KINDS
+    assert "disable_ssh_root" in SUPPORTED_COMMAND_KINDS
     assert "patch_package" in SUPPORTED_COMMAND_KINDS
     assert "agent_upgrade" in SUPPORTED_COMMAND_KINDS
 
@@ -504,6 +505,13 @@ def test_enable_defender_in_supported_command_kinds():
 
     assert "enable_defender" in SUPPORTED_COMMAND_KINDS
     assert callable(request_enable_defender_command)
+
+
+def test_disable_ssh_root_in_supported_command_kinds():
+    from app.agents import SUPPORTED_COMMAND_KINDS, request_disable_ssh_root_command
+
+    assert "disable_ssh_root" in SUPPORTED_COMMAND_KINDS
+    assert callable(request_disable_ssh_root_command)
 
 
 def test_evaluate_agent_host_controls_publishes_risk_changed_on_fail(

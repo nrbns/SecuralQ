@@ -1398,8 +1398,8 @@ def expire_timed_out_commands() -> int:
 # agent reports the outcome via report_command_result() (HTTP or WS).
 #
 # `kind` is deliberately an allowlist, not free-form shell: supported kinds are
-# patch_package, agent_upgrade, enable_firewall, and enable_defender (fixed argv
-# only — never an arbitrary command string from the server).
+# patch_package, agent_upgrade, enable_firewall, enable_defender, and
+# disable_ssh_root (fixed argv / file rewrite — never an arbitrary command string).
 #
 # Requesting a command never queues it for delivery directly. It lands in
 # 'pending_approval'; a second, distinct actor (an admin, when auth/RBAC is
@@ -1415,6 +1415,7 @@ SUPPORTED_COMMAND_KINDS = {
     "agent_upgrade",
     "enable_firewall",
     "enable_defender",
+    "disable_ssh_root",
 }
 COMMAND_STATUSES = {"pending_approval", "queued", "sent", "acked", "done", "error", "rejected", "timeout"}
 
@@ -1620,6 +1621,31 @@ def request_enable_defender_command(
         user_id,
         agent_id,
         kind="enable_defender",
+        payload=payload,
+        requested_by=requested_by or user_id,
+    )
+
+
+def request_disable_ssh_root_command(
+    user_id: str,
+    agent_id: str,
+    *,
+    remediation_id: str = "",
+    requested_by: str = "",
+) -> dict[str, Any]:
+    """Create disable_ssh_root in pending_approval (never auto-executed).
+
+    Operator helper after host_ssh_root FAIL — still requires approve_command()
+    before the agent rewrites sshd_config (fixed path / no free-form shell).
+    """
+    payload: dict[str, Any] = {"action": "disable_ssh_root"}
+    rid = (remediation_id or "").strip()
+    if rid:
+        payload["remediation_id"] = rid[:80]
+    return request_command(
+        user_id,
+        agent_id,
+        kind="disable_ssh_root",
         payload=payload,
         requested_by=requested_by or user_id,
     )
@@ -2309,8 +2335,8 @@ def report_command_result(agent_id: str, command_id: str, *, status: str, result
     - ``patch_package`` / ``agent_upgrade``: ``verification_status='pending'`` and a
       ``software_advisory_refresh`` job re-syncs inventory then calls
       ``record_command_verification``.
-    - ``enable_firewall`` / ``enable_defender``: stay ``pending`` until the next
-      host-control check-in observes PASS/FAIL (see
+    - ``enable_firewall`` / ``enable_defender`` / ``disable_ssh_root``: stay
+      ``pending`` until the next host-control check-in observes PASS/FAIL (see
       ``verify_pending_host_remediation_commands``).
 
     Callers that only check ``status=='done'`` are checking execution, not
@@ -2379,7 +2405,7 @@ def report_command_result(agent_id: str, command_id: str, *, status: str, result
             phase="FAILED",
             error=str((result or {}).get("error") or "")[:200],
         )
-    host_kinds = {"enable_firewall", "enable_defender"}
+    host_kinds = {"enable_firewall", "enable_defender", "disable_ssh_root"}
     if status == "done" and asset_id and kind not in host_kinds:
         # Stamp installed version from the agent result immediately so the
         # advisory-refresh verification job is not racing an empty inventory.
@@ -2564,6 +2590,7 @@ def record_command_verification(command_id: str, *, verified: bool | None, detai
 _HOST_REMEDIATION_KIND_BY_TEST: dict[str, str] = {
     "host_firewall": "enable_firewall",
     "host_defender": "enable_defender",
+    "host_ssh_root": "disable_ssh_root",
 }
 
 
@@ -2573,9 +2600,10 @@ def verify_pending_host_remediation_commands(
     test_name: str,
     observed_pass: bool,
 ) -> list[dict[str, Any]]:
-    """Close enable_firewall / enable_defender verification from live host controls.
+    """Close enable_firewall / enable_defender / disable_ssh_root verification
+    from live host controls.
 
-    Called from check-in control evaluation when firewall/Defender PASS or FAIL is
+    Called from check-in control evaluation when matching PASS or FAIL is
     observed. Only touches commands already ``status=done`` with pending/empty
     verification — never invents verification without a prior approved execution.
     """

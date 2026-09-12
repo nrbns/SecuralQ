@@ -780,7 +780,10 @@ def list_live_control_failures(
                     )
                     ws = "agents"
                 elif t.get("test") == TEST_HOST_SSH_ROOT:
-                    fix_hint = "Set PermitRootLogin no (or prohibit-password) in sshd_config"
+                    fix_hint = (
+                        "Request approved disable_ssh_root on the failing agent "
+                        "(sets PermitRootLogin no), then verify on next check-in"
+                    )
                     ws = "agents"
                 elif t.get("test") == TEST_HOST_DISK_ENCRYPTION:
                     fix_hint = (
@@ -1292,10 +1295,11 @@ def evaluate_agent_host_controls(
                         if test_name == TEST_HOST_FIREWALL:
                             _close_host_firewall_remediation(user_id, agent_id)
 
-                # Close enable_firewall / enable_defender verification from observed host state
+                # Close host remediation verification from observed host state
                 if status in ("pass", "fail") and test_name in (
                     TEST_HOST_FIREWALL,
                     TEST_HOST_DEFENDER,
+                    TEST_HOST_SSH_ROOT,
                 ):
                     try:
                         from app.agents import verify_pending_host_remediation_commands

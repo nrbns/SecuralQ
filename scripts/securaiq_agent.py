@@ -2147,6 +2147,89 @@ def execute_enable_firewall(payload: dict | None = None) -> dict:
     return {"ok": False, "error": f"Unsupported OS '{system}' for enable_firewall"}
 
 
+def execute_disable_ssh_root(payload: dict | None = None) -> dict:
+    """Set PermitRootLogin no in sshd_config via file rewrite — no free-form shell.
+
+    Linux/macOS lab hosts only. Reloads sshd with fixed argv when possible.
+    Windows: honest unsupported.
+    """
+    _ = payload
+    system = platform.system().lower()
+    if system == "windows":
+        return {
+            "ok": False,
+            "error": "disable_ssh_root is not automated on Windows — configure OpenSSH PermitRootLogin manually if used",
+            "backend": None,
+        }
+    if system not in ("linux", "darwin"):
+        return {"ok": False, "error": f"Unsupported OS '{system}' for disable_ssh_root"}
+
+    candidates = (
+        ["/etc/ssh/sshd_config", "/private/etc/ssh/sshd_config"]
+        if system == "darwin"
+        else ["/etc/ssh/sshd_config"]
+    )
+    path = next((p for p in candidates if os.path.isfile(p)), candidates[0])
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+    except OSError as exc:
+        return {
+            "ok": False,
+            "error": f"Cannot read {path}: {exc} (root/elevation may be required)",
+            "backend": "sshd_config",
+            "path": path,
+        }
+
+    found = False
+    out_lines: list[str] = []
+    for line in lines:
+        stripped = line.lstrip()
+        if stripped.startswith("#") or not stripped.lower().startswith("permitrootlogin"):
+            out_lines.append(line)
+            continue
+        out_lines.append("PermitRootLogin no\n")
+        found = True
+    if not found:
+        if out_lines and not out_lines[-1].endswith("\n"):
+            out_lines[-1] = out_lines[-1] + "\n"
+        out_lines.append("PermitRootLogin no\n")
+
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.writelines(out_lines)
+    except OSError as exc:
+        return {
+            "ok": False,
+            "error": f"Cannot write {path}: {exc} (root/elevation may be required)",
+            "backend": "sshd_config",
+            "path": path,
+        }
+
+    reload_note = "config written; sshd reload not confirmed"
+    for argv in (
+        ["systemctl", "reload", "sshd"],
+        ["systemctl", "reload", "ssh"],
+        ["service", "sshd", "reload"],
+        ["service", "ssh", "reload"],
+        ["launchctl", "kickstart", "-k", "system/com.openssh.sshd"],
+    ):
+        ok, out = _run(argv, timeout=15)
+        if ok:
+            reload_note = f"{' '.join(argv)} succeeded"
+            break
+        if out:
+            reload_note = f"reload attempt failed ({' '.join(argv)}): {(out or '')[-200:]}"
+
+    return {
+        "ok": True,
+        "backend": "sshd_config",
+        "path": path,
+        "note": f"PermitRootLogin no applied; {reload_note}",
+        "output": reload_note[:2000],
+    }
+
+
 def execute_enable_defender(payload: dict | None = None) -> dict:
     """Enable Windows Defender realtime protection via fixed argv only.
 
@@ -2255,6 +2338,10 @@ def run_commands(server: str, token: str, commands: list, *, insecure: bool = Fa
         elif kind == "enable_defender":
             print(f"[securaiq-agent] running command {cid}: enable_defender")
             result = execute_enable_defender(cmd.get("payload") or {})
+            summary = result.get("note") or result.get("error") or "?"
+        elif kind == "disable_ssh_root":
+            print(f"[securaiq-agent] running command {cid}: disable_ssh_root")
+            result = execute_disable_ssh_root(cmd.get("payload") or {})
             summary = result.get("note") or result.get("error") or "?"
         else:
             send_command_result(server, token, cid, "error", {"error": f"Unknown command kind '{kind}'"}, insecure=insecure)

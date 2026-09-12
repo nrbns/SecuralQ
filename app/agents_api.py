@@ -38,6 +38,7 @@ from app.agents import (
     request_command,
     request_enable_defender_command,
     request_enable_firewall_command,
+    request_disable_ssh_root_command,
     revoke_agent,
 )
 from app.auth import AuthUser
@@ -772,6 +773,41 @@ async def api_request_enable_defender(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     audit(
         "agent_enable_defender_request",
+        user.id,
+        {"agent_id": agent_id, "remediation_id": body.remediation_id or None},
+    )
+    return result
+
+
+class DisableSshRootRequest(BaseModel):
+    remediation_id: str = ""
+
+
+@router.post("/{agent_id}/commands/disable-ssh-root")
+async def api_request_disable_ssh_root(
+    agent_id: str,
+    user: Annotated[AuthUser, Depends(require_user)],
+    req: DisableSshRootRequest | None = None,
+):
+    """Request disable_ssh_root for this agent (pending_approval only).
+
+    Lab/owned Linux/macOS: operator must approve before the agent rewrites
+    sshd_config PermitRootLogin. Never auto-executed on host_ssh_root FAIL.
+    """
+    agent = get_agent(agent_id)
+    require_perm(user, "agent.command", org_id=agent.get("org_id") if agent else None)
+    body = req or DisableSshRootRequest()
+    try:
+        result = request_disable_ssh_root_command(
+            user.id,
+            agent_id,
+            remediation_id=body.remediation_id,
+            requested_by=user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    audit(
+        "agent_disable_ssh_root_request",
         user.id,
         {"agent_id": agent_id, "remediation_id": body.remediation_id or None},
     )

@@ -119,3 +119,56 @@ def test_enable_firewall_fails_verification_on_still_fail(tmp_path, monkeypatch)
         .fetchone()
     )
     assert row["verification_status"] == "verification_failed"
+
+
+def test_disable_ssh_root_verifies_on_host_pass(tmp_path, monkeypatch):
+    from app.agents import (
+        approve_command,
+        checkin,
+        enroll_agent,
+        report_command_result,
+        request_disable_ssh_root_command,
+    )
+    from app.db import get_conn
+
+    uid = _setup(monkeypatch, tmp_path, username="ssh_cmd_verify")
+    enrolled = enroll_agent(uid, name="ssh-verify-agent")
+    aid = enrolled["agent_id"]
+    checkin(
+        aid,
+        {
+            "hostname": "ssh-verify",
+            "os": "linux",
+            "ssh_config": {"collected": True, "settings": {"PermitRootLogin": "yes"}},
+        },
+    )
+    cmd = request_disable_ssh_root_command(uid, aid)
+    approve_command(uid, aid, cmd["id"], approver_id=uid)
+    report_command_result(aid, cmd["id"], status="done", result={"ok": True, "lab": True})
+    row = dict(
+        get_conn()
+        .execute(
+            "SELECT verification_status, kind FROM securaiq_agent_commands WHERE id=?",
+            (cmd["id"],),
+        )
+        .fetchone()
+    )
+    assert row["kind"] == "disable_ssh_root"
+    assert row["verification_status"] == "pending"
+    checkin(
+        aid,
+        {
+            "hostname": "ssh-verify",
+            "os": "linux",
+            "ssh_config": {"collected": True, "settings": {"PermitRootLogin": "no"}},
+        },
+    )
+    row2 = dict(
+        get_conn()
+        .execute(
+            "SELECT verification_status FROM securaiq_agent_commands WHERE id=?",
+            (cmd["id"],),
+        )
+        .fetchone()
+    )
+    assert row2["verification_status"] == "verified"

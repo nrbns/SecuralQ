@@ -38,7 +38,7 @@ pub async fn handle_commands(client: &HttpsClient, commands: Vec<Value>) {
         }
 
         let result = match kind.as_str() {
-            "enable_firewall" | "enable_defender" => execute_kind(&kind),
+            "enable_firewall" | "enable_defender" | "disable_ssh_root" => execute_kind(&kind),
             "patch_package" | "agent_upgrade" => json!({
                 "ok": false,
                 "error": format!("kind '{kind}' not yet implemented in Rust agent — use Python bridge"),

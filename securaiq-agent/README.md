@@ -13,7 +13,7 @@ Cross-platform **SecuraIQ endpoint agent**: one core, OS-specific adapters.
 - Deep inventory + host status (v0.2)
 - FIM baseline + `file_integrity` events on check-in
 - Bounded `security_logs` sample (Windows Security / journalctl / macOS log)
-- Seal verify (HMAC + **Ed25519**) + **`enable_firewall` / `enable_defender`** fixed-argv execution
+- Seal verify (HMAC + **Ed25519**) + **`enable_firewall` / `enable_defender` / `disable_ssh_root`**
 - `patch_package` / `agent_upgrade` still Python bridge
 
 ```powershell
