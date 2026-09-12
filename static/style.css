@@ -3479,8 +3479,9 @@ html[data-theme="dark"] .ai-tab.active {
 .securaiq-toast {
   position: fixed;
   right: 1rem;
-  bottom: 1rem;
-  z-index: 80;
+  /* Sit above the AI Assistant FAB so toasts stay readable */
+  bottom: calc(4.75rem + var(--safe-bottom, 0px));
+  z-index: 95;
   max-width: min(24rem, calc(100vw - 2rem));
   background: var(--panel);
   border: 1px solid var(--border);
@@ -5636,9 +5637,9 @@ html[data-theme="dark"] .main {
   border: 0;
 }
 #viewVulns .vuln-layout {
-  width: min(100%, 72rem);
+  width: min(100%, 88rem);
   margin: 0 auto;
-  padding: 0 1.5rem 2rem;
+  padding: 0 1.25rem 5.5rem;
 }
 .workspace-view[data-module-page] > .page-head + *:not(.page-intro) {
   scroll-margin-top: 0.5rem;
@@ -6282,12 +6283,12 @@ html[data-theme="dark"] .main {
 /* Vulnerability management layout (v120) */
 #viewVulns .vuln-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1.65fr) minmax(18rem, 22rem);
+  grid-template-columns: minmax(0, 1fr) minmax(17.5rem, 20.5rem);
   gap: 1rem;
   align-items: start;
-  width: min(100%, 72rem);
+  width: min(100%, 88rem);
   margin: 0 auto;
-  padding: 0 1.5rem 2rem;
+  padding: 0 1.25rem 5.5rem;
 }
 
 #viewVulns .vuln-main {
@@ -6300,14 +6301,14 @@ html[data-theme="dark"] .main {
 #viewVulns .vuln-sources {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.75rem;
+  gap: 0.85rem;
 }
 
 #viewVulns .vuln-sources-details {
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--surface);
-  padding: 0.55rem 0.75rem 0.75rem;
+  padding: 0.65rem 0.85rem 0.9rem;
 }
 
 #viewVulns .vuln-sources-summary {
@@ -6318,7 +6319,7 @@ html[data-theme="dark"] .main {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  margin-bottom: 0.55rem;
+  margin-bottom: 0.65rem;
 }
 
 #viewVulns .vuln-sources-summary::-webkit-details-marker {
@@ -6341,7 +6342,7 @@ html[data-theme="dark"] .main {
   align-items: center;
   justify-content: space-between;
   gap: 0.55rem 1rem;
-  width: min(100%, 72rem);
+  width: min(100%, 88rem);
   margin: 0 auto 0.75rem;
   padding: 0.65rem 1rem;
   border: 1px solid var(--border);
@@ -6397,20 +6398,23 @@ html[data-theme="dark"] .main {
 
 #viewVulns .vuln-source-card {
   margin: 0;
-  padding: 0.85rem 1rem;
+  padding: 0.95rem 1.05rem 1.05rem;
   border-radius: 12px;
   border: 1px solid var(--border);
   background: var(--surface);
   min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
 }
 
 #viewVulns .vuln-source-card header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: 0.5rem;
+  gap: 0.55rem;
   flex-wrap: wrap;
-  margin-bottom: 0.45rem;
+  margin-bottom: 0.15rem;
 }
 
 #viewVulns .vuln-source-card header h2 {
@@ -6418,32 +6422,39 @@ html[data-theme="dark"] .main {
   font-size: 0.95rem;
   font-weight: 700;
   letter-spacing: -0.01em;
+  line-height: 1.25;
 }
 
 #viewVulns .vuln-source-card .page-head-actions {
-  gap: 0.3rem;
+  gap: 0.35rem;
+  flex: 1 1 auto;
+  justify-content: flex-end;
 }
 
 #viewVulns .vuln-source-card .page-head-actions .btn-secondary,
 #viewVulns .vuln-source-card .page-head-actions .btn-primary-cc {
   font-size: 0.74rem;
-  padding: 0.32rem 0.6rem;
-  min-height: 1.9rem;
+  padding: 0.34rem 0.62rem;
+  min-height: 1.95rem;
+}
+
+#viewVulns #cloudPosturePanel .page-head-actions {
+  max-width: 100%;
 }
 
 #viewVulns .code-scan-form {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.4rem 0.55rem;
-  margin: 0 0 0.4rem;
+  gap: 0.45rem 0.6rem;
+  margin: 0;
 }
 
 #viewVulns .code-scan-form input[type="text"] {
   flex: 1 1 10rem;
   min-width: 0;
-  min-height: 2.1rem;
-  padding: 0.4rem 0.65rem;
+  min-height: 2.15rem;
+  padding: 0.42rem 0.7rem;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--input-bg, var(--surface-soft));
@@ -6452,8 +6463,12 @@ html[data-theme="dark"] .main {
   font-size: 0.84rem;
 }
 
+#viewVulns .code-scan-git-row input[type="text"]:last-of-type {
+  flex: 0 1 8.5rem;
+}
+
 #viewVulns .vuln-source-status {
-  margin: 0 0 0.25rem;
+  margin: 0;
   font-size: 0.8rem;
   display: flex;
   flex-wrap: wrap;
@@ -6465,6 +6480,12 @@ html[data-theme="dark"] .main {
   margin: 0;
   font-size: 0.78rem;
   line-height: 1.4;
+}
+
+#viewVulns .vuln-source-card #sonarPanelBody,
+#viewVulns .vuln-source-card #cloudPosturePanelBody,
+#viewVulns .vuln-source-card #hkVulnPanelBody {
+  margin-top: 0.15rem;
 }
 
 #viewVulns .vuln-cloud-kpis {
@@ -6634,18 +6655,46 @@ html[data-theme="dark"] .main {
 }
 
 #viewVulns .entity-ai-actions,
-#viewVulns .entity-triage-actions {
+#viewVulns .entity-triage-actions,
+#viewVulns .entity-lifecycle-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.35rem;
+  gap: 0.4rem;
+}
+
+#viewVulns .entity-lifecycle-actions {
+  margin-top: 0.55rem;
+  padding-top: 0.55rem;
+  border-top: 1px dashed var(--border);
 }
 
 #viewVulns .entity-ai-actions .btn-secondary,
 #viewVulns .entity-ai-actions .btn-primary-cc,
 #viewVulns .entity-triage-actions .btn-secondary,
-#viewVulns .entity-triage-actions .btn-primary-cc {
-  font-size: 0.74rem;
-  padding: 0.34rem 0.6rem;
+#viewVulns .entity-triage-actions .btn-primary-cc,
+#viewVulns .entity-lifecycle-actions .btn-secondary,
+#viewVulns .entity-lifecycle-actions .btn-primary-cc {
+  font-size: 0.76rem;
+  padding: 0.38rem 0.7rem;
+}
+
+#viewVulns .entity-lifecycle-actions .ws-del-vuln {
+  border-color: color-mix(in srgb, var(--danger, #c44) 45%, var(--border));
+  color: color-mix(in srgb, var(--danger, #e86a6a) 85%, var(--text));
+}
+
+#viewVulns #vulnDetailPanel.entity-detail-panel {
+  position: sticky;
+  top: 0.75rem;
+  max-height: calc(100vh - 5.5rem);
+  overflow: auto;
+  padding-bottom: 1rem;
+}
+
+@media (max-width: 1200px) {
+  #viewVulns .vuln-sources {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 1100px) {
@@ -6662,6 +6711,12 @@ html[data-theme="dark"] .main {
     position: relative;
     top: auto;
     max-height: none;
+  }
+  .securaiq-toast {
+    right: 0.75rem;
+    left: 0.75rem;
+    max-width: none;
+    bottom: calc(5.25rem + var(--safe-bottom, 0px));
   }
 }
 

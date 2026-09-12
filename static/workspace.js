@@ -2183,6 +2183,8 @@
         <button type="button" class="btn-secondary ws-triage-vuln" data-id="${escapeHtml(v.id)}" data-jira="1">Triage+Jira</button>
         <button type="button" class="btn-secondary ws-vuln-jira" data-id="${escapeHtml(v.id)}">Jira</button>
         <button type="button" class="btn-secondary ws-vuln-sn" data-id="${escapeHtml(v.id)}" data-title="${escapeHtml(v.title || v.cve || "")}">ServiceNow</button>
+      </div>
+      <div class="cc-action-row entity-lifecycle-actions">
         <button type="button" class="btn-secondary ws-close-vuln" data-id="${escapeHtml(v.id)}">Close</button>
         <button type="button" class="btn-secondary ws-del-vuln" data-id="${escapeHtml(v.id)}">Delete</button>
       </div>`;
@@ -2904,7 +2906,13 @@
     }
     if (findingsEl) {
       const f = Number(findings || 0);
-      findingsEl.textContent = f ? `${f} finding(s)` : "";
+      // On "done" the caller passes the persisted (post-dedup) count, not the
+      // raw in-flight hit count — label it "saved" so it reads as the same
+      // number as the "Done · N finding(s) saved" status line above it,
+      // instead of a second, larger "finding(s)" figure that looks like a
+      // discrepancy (raw hits during the scan vs. net-new rows actually
+      // written after de-duplication against existing findings).
+      findingsEl.textContent = f ? (state === "done" ? `${f} finding(s) saved` : `${f} finding(s)`) : "";
     }
   }
 
@@ -3036,7 +3044,13 @@
           : `Finished with errors · ${(data && data.error) || "see chat / tool output"}`,
         true
       );
-      setCodeScanProgress(ok ? "done" : "error", lastScanned, lastTotal, lastFindings);
+      // Use the persisted count (post-dedup) on success, not the raw
+      // in-flight hit count from the last tool_progress event — those two
+      // numbers can legitimately differ (duplicate hits within this run, or
+      // findings that already exist in the register from a prior scan of
+      // the same asset get skipped, not lost) and showing the raw figure
+      // here made it look like findings had vanished.
+      setCodeScanProgress(ok ? "done" : "error", lastScanned, lastTotal, ok ? created : lastFindings);
       if (typeof notifyUser === "function") {
         notifyUser(
           ok
