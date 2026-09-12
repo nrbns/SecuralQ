@@ -151,9 +151,27 @@ def test_stream_status_and_backend_status_in_process():
     assert st["mode"] == "in_process"
     assert st["redis_configured"] is False
     assert st["replay_buffer_max"] >= 16
+    assert "throughput" in st
+    assert "events_per_sec" in st["throughput"]
 
     bs = realtime_bus.backend_status()
     assert bs["mode"] == "in_process"
     assert bs["redis_configured"] is False
     assert isinstance(bs["stream"], dict)
     assert bs["stream"]["mode"] == "in_process"
+    assert "throughput" in bs
+    assert bs["throughput"]["published_total"] >= 0
+
+
+def test_publish_throughput_counts_and_dedupes():
+    realtime_bus.clear_replay_buffer_for_tests()
+    thr0 = realtime_bus.publish_throughput()
+    assert thr0["published_total"] == 0
+    realtime_bus.publish(type="job", id="t1", event_id="thr-a")
+    realtime_bus.publish(type="job", id="t2", event_id="thr-a")  # dup
+    realtime_bus.publish(type="job", id="t3", event_id="thr-b")
+    thr = realtime_bus.publish_throughput()
+    assert thr["published_total"] == 2
+    assert thr["duplicates_dropped"] == 1
+    assert thr["window_publishes"] == 2
+    assert thr["backpressure_active"] is False

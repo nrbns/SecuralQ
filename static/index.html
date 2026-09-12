@@ -33,7 +33,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/style.css?v=163" />
+  <link rel="stylesheet" href="/style.css?v=164" />
   <script src="/vendor/marked.min.js"></script>
 </head>
 <body>
@@ -444,6 +444,21 @@
               <header class="sq-card-head"><h3>Live security stream</h3>
                 <span class="hint" id="sqStreamPulse">SSE</span>
               </header>
+              <div class="rt-health" id="rtHealthPanel" aria-label="Realtime health">
+                <header class="rt-health-head">
+                  <h4>Realtime health</h4>
+                  <span class="hint" id="rtHealthMode">—</span>
+                </header>
+                <dl class="rt-health-grid">
+                  <div><dt>Events/sec</dt><dd id="rtHealthEps">—</dd></div>
+                  <div><dt>Pending</dt><dd id="rtHealthPending">—</dd></div>
+                  <div><dt>DLQ</dt><dd id="rtHealthDlq">—</dd></div>
+                  <div><dt>Lag</dt><dd id="rtHealthLag">—</dd></div>
+                  <div><dt>SSE clients</dt><dd id="rtHealthSubs">—</dd></div>
+                  <div><dt>Dropped dup</dt><dd id="rtHealthDup">—</dd></div>
+                </dl>
+                <p class="hint rt-health-note" id="rtHealthNote">Lab in-process bus until REDIS_URL is set.</p>
+              </div>
               <ul id="ccLiveStream" class="wz-events" aria-live="polite"><li class="hint">Waiting for events…</li></ul>
             </section>
           </div>
@@ -2266,7 +2281,7 @@
     </div>
   </div>
 
-  <script src="/app.js?v=212"></script>
-  <script src="/workspace.js?v=205"></script>
+  <script src="/app.js?v=213"></script>
+  <script src="/workspace.js?v=206"></script>
 </body>
 </html>

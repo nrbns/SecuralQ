@@ -57,13 +57,17 @@ def collect_admin_health() -> dict[str, Any]:
 
             bus = backend_status() or {}
             snap = stream_monitor_snapshot() or {}
+            thr = bus.get("throughput") or {}
             mode = bus.get("mode") or "unknown"
             detail = (
                 f"mode={mode} stream_len={snap.get('stream_length')} "
                 f"pending={snap.get('pending_count')} dlq={snap.get('dlq_length')} "
-                f"lag={snap.get('consumer_group_lag')}"
+                f"lag={snap.get('consumer_group_lag')} "
+                f"eps={thr.get('events_per_sec')} bp={thr.get('backpressure_active')}"
             )
             degraded = mode not in ("redis_streams_fanout", "redis_streams+pubsub")
+            if thr.get("backpressure_active"):
+                degraded = True
             components["event_bus"] = _status(True, detail[:240], degraded=degraded)
         except Exception as exc:
             components["event_bus"] = _status(False, str(exc)[:200])

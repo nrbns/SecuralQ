@@ -156,6 +156,8 @@ class Settings(BaseSettings):
     # REALTIME v1 Task B — Redis Streams durable log (when REDIS_URL is set)
     redis_stream_key: str = "securaiq:events"
     redis_stream_maxlen: int = 10000  # approximate trim on XADD
+    # Soft backpressure signal when stream XLEN exceeds this (still XADD + maxlen trim).
+    redis_stream_backpressure_len: int = 8000
     # Phase 1 durability — DLQ + pending reclaim (no-op when REDIS_URL empty)
     redis_stream_dlq_key: str = "securaiq:events:dlq"
     redis_stream_max_deliveries: int = 5  # then DLQ + XACK
@@ -212,6 +214,17 @@ class Settings(BaseSettings):
     siem_hec_token: str = ""         # set if siem_forward_url is a Splunk HEC collector
     siem_syslog_host: str = ""
     siem_syslog_port: int = 514
+    # Microsoft Sentinel (Azure Monitor Logs Ingestion API) — separate from
+    # Azure Defender for Cloud below (different product, different Entra
+    # permission scope). Tenant/client/secret fall back to the azure_* fields
+    # below when left blank, for operators using one app registration for both.
+    siem_azure_sentinel_enabled: bool = False
+    siem_azure_dce_url: str = ""  # Data Collection Endpoint, e.g. https://xxx.eastus-1.ingest.monitor.azure.com
+    siem_azure_dcr_immutable_id: str = ""  # Data Collection Rule immutable id, e.g. dcr-xxxxxxxx
+    siem_azure_stream_name: str = "Custom-SecuraIQEvents_CL"
+    siem_azure_tenant_id: str = ""
+    siem_azure_client_id: str = ""
+    siem_azure_client_secret: str = ""
     # XDR / EDR connectors (optional — each vendor activates only when its own
     # credentials are set; sync interval applies to all configured vendors)
     xdr_sync_interval_sec: int = 1800

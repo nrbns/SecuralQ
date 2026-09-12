@@ -47,6 +47,14 @@ _DEFAULT_STREAM_REPLAY_SCAN = 500
 _PID = os.getpid()
 # event_id → payload; also serves as publish-path LRU dedupe
 _REPLAY_BUFFER: OrderedDict[str, dict[str, Any]] = OrderedDict()
+# Soft throughput / backpressure meters (process-local; never raises)
+_PUBLISH_TOTAL = 0
+_DUP_DROPPED = 0
+_BACKPRESSURE_HITS = 0
+_BACKPRESSURE_ACTIVE = False
+_PUBLISH_WINDOW: list[float] = []  # recent publish timestamps for events/sec
+_PUBLISH_WINDOW_SEC = 60.0
+_DEFAULT_BACKPRESSURE_LEN = 8000
 
 
 def bind_loop(loop: asyncio.AbstractEventLoop | None = None) -> None:
@@ -158,6 +166,64 @@ def _stream_maxlen() -> int:
         return _DEFAULT_STREAM_MAXLEN
 
 
+def _backpressure_len() -> int:
+    try:
+        from app.config import settings
+
+        n = int(
+            getattr(settings, "redis_stream_backpressure_len", _DEFAULT_BACKPRESSURE_LEN)
+            or _DEFAULT_BACKPRESSURE_LEN
+        )
+        return max(50, min(n, _stream_maxlen()))
+    except Exception:
+        return min(_DEFAULT_BACKPRESSURE_LEN, _DEFAULT_STREAM_MAXLEN)
+
+
+def _note_publish(*, duplicate: bool = False) -> None:
+    """Update process-local publish meters. Never raises."""
+    global _PUBLISH_TOTAL, _DUP_DROPPED
+    now = time.time()
+    with _lock:
+        if duplicate:
+            _DUP_DROPPED += 1
+            return
+        _PUBLISH_TOTAL += 1
+        _PUBLISH_WINDOW.append(now)
+        cutoff = now - _PUBLISH_WINDOW_SEC
+        while _PUBLISH_WINDOW and _PUBLISH_WINDOW[0] < cutoff:
+            _PUBLISH_WINDOW.pop(0)
+
+
+def _note_backpressure(active: bool) -> None:
+    """Set soft-backpressure flag; count transitions into the active state."""
+    global _BACKPRESSURE_ACTIVE, _BACKPRESSURE_HITS
+    with _lock:
+        was = _BACKPRESSURE_ACTIVE
+        _BACKPRESSURE_ACTIVE = bool(active)
+        if active and not was:
+            _BACKPRESSURE_HITS += 1
+
+
+def publish_throughput() -> dict[str, Any]:
+    """Process-local publish / dedupe / soft-backpressure meters."""
+    now = time.time()
+    with _lock:
+        cutoff = now - _PUBLISH_WINDOW_SEC
+        while _PUBLISH_WINDOW and _PUBLISH_WINDOW[0] < cutoff:
+            _PUBLISH_WINDOW.pop(0)
+        window_n = len(_PUBLISH_WINDOW)
+        return {
+            "published_total": _PUBLISH_TOTAL,
+            "duplicates_dropped": _DUP_DROPPED,
+            "events_per_sec": round(window_n / _PUBLISH_WINDOW_SEC, 3) if window_n else 0.0,
+            "window_sec": int(_PUBLISH_WINDOW_SEC),
+            "window_publishes": window_n,
+            "backpressure_active": _BACKPRESSURE_ACTIVE,
+            "backpressure_hits": _BACKPRESSURE_HITS,
+            "backpressure_len": _backpressure_len() if _redis_url() else None,
+        }
+
+
 def _replay_buffer_max() -> int:
     try:
         from app.config import settings
@@ -191,8 +257,19 @@ def _xadd_stream(payload: dict[str, Any], url: str) -> None:
 
         r = redis.from_url(url, decode_responses=True, socket_connect_timeout=0.5)
         try:
+            key = _stream_key()
+            # Soft backpressure signal: still XADD (maxlen trims), but flag operators.
+            try:
+                xlen = int(r.xlen(key))
+                bp = _backpressure_len()
+                if xlen >= bp:
+                    _note_backpressure(True)
+                elif _BACKPRESSURE_ACTIVE and xlen < int(bp * 0.85):
+                    _note_backpressure(False)
+            except Exception:
+                pass
             r.xadd(
-                _stream_key(),
+                key,
                 {"payload": json.dumps(payload, default=str)},
                 maxlen=_stream_maxlen(),
                 approximate=True,
@@ -244,8 +321,10 @@ def publish(event: dict[str, Any] | None = None, **kwargs: Any) -> None:
     payload["_pid"] = _PID
 
     if not _remember_event(payload):
+        _note_publish(duplicate=True)
         return
 
+    _note_publish(duplicate=False)
     _fanout_local(payload)
 
     # Lab path: sync processor hooks when Redis Streams consumer is not running.
@@ -410,6 +489,7 @@ def stream_status() -> dict[str, Any]:
         "pending_count": None,
         "consumer_group_lag": None,
         "dlq_key": None,
+        "throughput": publish_throughput(),
     }
     if url:
         try:
@@ -605,8 +685,14 @@ def subscriber_count() -> int:
 
 def clear_replay_buffer_for_tests() -> None:
     """Test helper — wipe in-process buffer / dedupe state."""
+    global _PUBLISH_TOTAL, _DUP_DROPPED, _BACKPRESSURE_HITS, _BACKPRESSURE_ACTIVE
     with _lock:
         _REPLAY_BUFFER.clear()
+        _PUBLISH_TOTAL = 0
+        _DUP_DROPPED = 0
+        _BACKPRESSURE_HITS = 0
+        _BACKPRESSURE_ACTIVE = False
+        _PUBLISH_WINDOW.clear()
 
 
 def backend_status() -> dict[str, Any]:
@@ -647,6 +733,7 @@ def backend_status() -> dict[str, Any]:
         "streams_fanout": fanout,
         "stream": stream,
         "processor": processor,
+        "throughput": publish_throughput(),
         "local_subscribers": subscriber_count(),
         "pid": _PID,
         "hint": hint,

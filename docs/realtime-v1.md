@@ -126,8 +126,8 @@ SSE consumers in `static/app.js` keep working; they are also copied into `data`.
 | `realtime_bus.publish` | `XADD` to Streams when `REDIS_URL` set; pub/sub only when `REALTIME_STREAMS_FANOUT=false` |
 | In-process ring buffer | Last N events by `event_id` for lab `replay_since` |
 | `replay_since(last_event_id, limit=200)` | Ring buffer + best-effort limited Stream scan when Redis available |
-| `stream_status()` / `backend_status()` | Modes: `in_process` \| `redis_streams+pubsub` \| `redis_streams_fanout`; best-effort `stream_length` / `dlq_length` / `pending_count` / lag |
-| Config | `REDIS_STREAM_KEY`, `REDIS_STREAM_MAXLEN`, `REDIS_STREAM_DLQ_KEY`, `REDIS_STREAM_MAX_DELIVERIES`, `REDIS_STREAM_CLAIM_IDLE_MS`, `REALTIME_REPLAY_BUFFER`, `REALTIME_STREAMS_FANOUT` (default **true** when Redis used; set `false` for transitional pub/sub) |
+| `stream_status()` / `backend_status()` | Modes: `in_process` \| `redis_streams+pubsub` \| `redis_streams_fanout`; best-effort `stream_length` / `dlq_length` / `pending_count` / lag; **throughput** (`events_per_sec`, published, dup drops, soft backpressure) |
+| Config | `REDIS_STREAM_KEY`, `REDIS_STREAM_MAXLEN`, `REDIS_STREAM_BACKPRESSURE_LEN`, `REDIS_STREAM_DLQ_KEY`, `REDIS_STREAM_MAX_DELIVERIES`, `REDIS_STREAM_CLAIM_IDLE_MS`, `REALTIME_REPLAY_BUFFER`, `REALTIME_STREAMS_FANOUT` (default **true** when Redis used; set `false` for transitional pub/sub) |
 
 ### Phase 1 durability (DLQ + reclaim)
 
@@ -138,6 +138,8 @@ When `REDIS_URL` is set, the `securaiq-workers` consumer:
 | Retry | On handler failure, message is **not** ACKed until `REDIS_STREAM_MAX_DELIVERIES` (default **5**) |
 | DLQ | After max deliveries: `XADD` to `REDIS_STREAM_DLQ_KEY` (default `securaiq:events:dlq`) with original payload + error + `delivery_count` + `stream_id`, then `XACK` |
 | Reclaim | Periodic `XAUTOCLAIM` for idle pending older than `REDIS_STREAM_CLAIM_IDLE_MS` (default **60000**); claimed messages re-run `process_event` |
+| Soft backpressure | When stream `XLEN` ≥ `REDIS_STREAM_BACKPRESSURE_LEN` (default **8000**): flag + metric; **still XADD** (approx maxlen trim). Not a hard drop of security events. |
+| Realtime Health UI | Mission Control → Live security stream shows mode, events/sec, pending, DLQ, lag, SSE clients, dup drops |
 | Lab | Without Redis, DLQ/reclaim are no-ops — `on_local_publish` path unchanged |
 
 Monitoring keys on `stream_status()` / `processor_status()` / health `realtime_bus` are best-effort and **never raise**.

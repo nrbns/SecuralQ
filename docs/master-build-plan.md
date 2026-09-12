@@ -60,9 +60,10 @@ Modules reinforce this loop. AI may recommend; it must not claim success unless 
 
 1. ~~Dead-letter queue~~ (**done** when `REDIS_URL` set)
 2. ~~Pending reclaim / XAUTOCLAIM~~ (**done**)
-3. ~~Stream metrics~~ (**done** — `stream_monitor_snapshot` / health)
+3. ~~Stream metrics~~ (**done** — `stream_monitor_snapshot` / health / Realtime Health UI)
 4. ~~Default Streams fan-out~~ (**done** — `REALTIME_STREAMS_FANOUT=true` default)
-5. Acceptance harness for the end-to-end workflow below (lab green; Redis HA still missing)
+5. ~~Soft backpressure signal~~ (**done** — flag + metric near maxlen; still durable XADD)
+6. Acceptance harness for the end-to-end workflow below (lab green; Redis HA still missing)
 
 Remaining Phase 1 claim blockers: Redis HA/Sentinel + multi-worker production proof.
 

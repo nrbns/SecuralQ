@@ -98,6 +98,25 @@ def render_prometheus() -> str:
     except Exception:
         pass
 
+    try:
+        from app.realtime_bus import publish_throughput
+
+        thr = publish_throughput() or {}
+        lines.append("# HELP securaiq_realtime_events_per_sec Approximate publish rate (60s window).")
+        lines.append("# TYPE securaiq_realtime_events_per_sec gauge")
+        lines.append(f"securaiq_realtime_events_per_sec {float(thr.get('events_per_sec') or 0)}")
+        lines.append("# HELP securaiq_realtime_published_total Process-local publish count since start.")
+        lines.append("# TYPE securaiq_realtime_published_total counter")
+        lines.append(f"securaiq_realtime_published_total {int(thr.get('published_total') or 0)}")
+        lines.append("# HELP securaiq_realtime_duplicates_dropped Duplicate event_id drops on publish path.")
+        lines.append("# TYPE securaiq_realtime_duplicates_dropped counter")
+        lines.append(f"securaiq_realtime_duplicates_dropped {int(thr.get('duplicates_dropped') or 0)}")
+        lines.append("# HELP securaiq_realtime_backpressure Soft backpressure active (1) when stream near maxlen.")
+        lines.append("# TYPE securaiq_realtime_backpressure gauge")
+        lines.append(f"securaiq_realtime_backpressure {1 if thr.get('backpressure_active') else 0}")
+    except Exception:
+        pass
+
     # Connected agents (best-effort)
     try:
         from app.agents import list_agents

@@ -2812,6 +2812,66 @@ window.RealtimeManager = window.RealtimeManager || {
   },
 };
 
+function _rtHealthDash(v) {
+  if (v === null || v === undefined || v === "") return "—";
+  return String(v);
+}
+
+async function refreshRealtimeHealthPanel() {
+  const panel = document.getElementById("rtHealthPanel");
+  if (!panel) return;
+  try {
+    const res = await fetch("/api/health", { headers: authHeaders() });
+    const data = res.ok ? await res.json().catch(() => ({})) : {};
+    const bus = data.realtime_bus || {};
+    const stream = bus.stream || {};
+    const thr = bus.throughput || stream.throughput || {};
+    const modeEl = document.getElementById("rtHealthMode");
+    if (modeEl) {
+      const mode = bus.mode || stream.mode || "—";
+      const bp = thr.backpressure_active ? " · backpressure" : "";
+      modeEl.textContent = `${mode}${bp}`;
+    }
+    const set = (id, val) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = _rtHealthDash(val);
+    };
+    set("rtHealthEps", thr.events_per_sec != null ? Number(thr.events_per_sec).toFixed(2) : "—");
+    set("rtHealthPending", stream.pending_count);
+    set("rtHealthDlq", stream.dlq_length);
+    set("rtHealthLag", stream.consumer_group_lag);
+    set("rtHealthSubs", bus.local_subscribers);
+    set("rtHealthDup", thr.duplicates_dropped);
+    const note = document.getElementById("rtHealthNote");
+    if (note) {
+      if (!bus.redis_configured) {
+        note.textContent = "Lab in-process bus — set REDIS_URL for Streams + DLQ metrics.";
+      } else if (thr.backpressure_active) {
+        note.textContent = "Soft backpressure: stream near maxlen (XADD still runs; maxlen trims).";
+      } else {
+        note.textContent =
+          bus.hint ||
+          `Stream ${stream.stream_length ?? "—"} · published ${thr.published_total ?? 0}`;
+      }
+    }
+    panel.dataset.mode = bus.mode || "";
+    panel.classList.toggle("rt-health-warn", Boolean(thr.backpressure_active) || Number(stream.dlq_length || 0) > 0);
+  } catch {
+    /* ignore — panel is best-effort */
+  }
+}
+window.refreshRealtimeHealthPanel = refreshRealtimeHealthPanel;
+
+let _rtHealthWired = false;
+function wireRealtimeHealthRefresh() {
+  if (_rtHealthWired) return;
+  _rtHealthWired = true;
+  window.addEventListener("securaiq:realtime", () => {
+    clearTimeout(window.__securaiqRtHealthTimer);
+    window.__securaiqRtHealthTimer = setTimeout(() => refreshRealtimeHealthPanel(), 1500);
+  });
+}
+
 function realtimeFeedUrl(opts) {
   // EventSource cannot send Authorization — cookie covers most logins; when
   // AUTH is on and we only have a Bearer token in memory, pass it as a query
@@ -4624,6 +4684,8 @@ async function loadCommandCenter() {
       fetch("/api/dashboard/brief", { headers: authHeaders() }).catch(() => null),
       fetch("/api/scans?limit=6", { headers: authHeaders() }).catch(() => null),
     ]);
+    wireRealtimeHealthRefresh();
+    refreshRealtimeHealthPanel();
     const data = await res.json();
     const briefData = briefRes && briefRes.ok ? await briefRes.json().catch(() => ({})) : {};
     const scansData = scansRes && scansRes.ok ? await scansRes.json().catch(() => ({})) : {};
