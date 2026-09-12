@@ -65,8 +65,8 @@ def bind_loop(loop: asyncio.AbstractEventLoop | None = None) -> None:
     """
     global _loop, _redis_task, _streams_fanout_task
     _loop = loop or asyncio.get_running_loop()
-    url = _redis_url()
-    if url and not _streams_fanout_enabled():
+    ready = _redis_ready()
+    if ready and not _streams_fanout_enabled():
         if _redis_task is None or _redis_task.done():
             try:
                 _redis_task = _loop.create_task(_redis_listener())
@@ -74,7 +74,7 @@ def bind_loop(loop: asyncio.AbstractEventLoop | None = None) -> None:
                 _redis_task = None
     else:
         _redis_task = None
-    if url and _streams_fanout_enabled():
+    if ready and _streams_fanout_enabled():
         if _streams_fanout_task is None or _streams_fanout_task.done():
             try:
                 _streams_fanout_task = _loop.create_task(_streams_fanout_listener())
