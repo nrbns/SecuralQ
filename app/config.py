@@ -150,6 +150,8 @@ class Settings(BaseSettings):
     # SCIM 2.0 user provisioning scaffold (Keycloak/Okta/Entra) — beta
     scim_enabled: bool = False
     scim_token: str = ""  # Bearer token IdPs send; required when scim_enabled
+    # Evidence Store — TTL for observed telemetry-backed claims (0 = no auto-expiry)
+    evidence_observed_ttl_sec: int = 172800  # 48h; renewed on re-observation
     # Infra (beta SaaS — Postgres/Redis via compose profiles)
     database_url: str = ""  # empty = SQLite at DATA_DIR/securaiq.db
     redis_url: str = ""

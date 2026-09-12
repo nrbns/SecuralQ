@@ -165,6 +165,45 @@ def test_detail_round_trips_as_dict(tmp_path, monkeypatch):
     assert ev["detail"]["assets_affected"] == 3
 
 
+def test_observed_evidence_gets_ttl_and_freshness(tmp_path, monkeypatch):
+    from app.services import evidence as evidence_mod
+    from app import config as config_mod
+
+    uid = _setup(monkeypatch, tmp_path)
+    monkeypatch.setattr(config_mod.settings, "evidence_observed_ttl_sec", 3600, raising=False)
+    ev = evidence_mod.record_evidence(
+        uid,
+        entity_type="agent_host_control",
+        entity_id="a1:host_firewall",
+        source="observed",
+        summary="host_firewall:fail — off",
+    )
+    assert ev.get("expires_at") is not None
+    assert float(ev["expires_at"]) > float(ev["last_seen"])
+    assert ev["freshness_status"] == "fresh"
+    stale = dict(ev)
+    stale["expires_at"] = float(ev["last_seen"]) - 10
+    assert evidence_mod.freshness_status(stale, at=float(ev["last_seen"]) + 999999) == "expired"
+
+
+def test_explicit_ttl_sec_overrides_default(tmp_path, monkeypatch):
+    from app.services.evidence import record_evidence
+    from app.db import now
+
+    uid = _setup(monkeypatch, tmp_path)
+    before = now()
+    ev = record_evidence(
+        uid,
+        entity_type="software_package",
+        entity_id="a1:curl",
+        source="observed",
+        summary="installed: curl",
+        ttl_sec=120,
+    )
+    assert ev["expires_at"] is not None
+    assert float(ev["expires_at"]) >= before + 100
+
+
 # --- real integration points: confirmed connections, threats, remediation --
 
 

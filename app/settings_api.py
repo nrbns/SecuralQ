@@ -276,6 +276,7 @@ _WRITABLE: dict[str, tuple[str, type]] = {
     "realtime_replay_buffer": ("REALTIME_REPLAY_BUFFER", int),
     "realtime_streams_fanout": ("REALTIME_STREAMS_FANOUT", bool),
     "event_idempotency_prune_days": ("EVENT_IDEMPOTENCY_PRUNE_DAYS", int),
+    "evidence_observed_ttl_sec": ("EVIDENCE_OBSERVED_TTL_SEC", int),
     "prefect_enabled": ("PREFECT_ENABLED", bool),
     "prefect_api_url": ("PREFECT_API_URL", str),
     "siem_forward_enabled": ("SIEM_FORWARD_ENABLED", bool),

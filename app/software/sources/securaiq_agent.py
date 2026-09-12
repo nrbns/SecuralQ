@@ -121,17 +121,134 @@ class SecuraIQAgentSource(InventorySource):
         return rows
 
 
+def _pkg_key(pkg: dict[str, Any]) -> str:
+    return str(pkg.get("name") or pkg.get("package") or "").strip().lower()
+
+
+def _pkg_version(pkg: dict[str, Any]) -> str:
+    return str(pkg.get("version") or "").strip()
+
+
+def diff_package_sets(
+    previous: list[dict[str, Any]] | None,
+    current: list[dict[str, Any]] | None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Compare previous vs current package lists → installed/removed/updated."""
+    prev_map: dict[str, dict[str, Any]] = {}
+    for p in previous or []:
+        if not isinstance(p, dict):
+            continue
+        k = _pkg_key(p)
+        if k:
+            prev_map[k] = p
+    cur_map: dict[str, dict[str, Any]] = {}
+    for p in current or []:
+        if not isinstance(p, dict):
+            continue
+        k = _pkg_key(p)
+        if k:
+            cur_map[k] = p
+    installed = [cur_map[k] for k in cur_map.keys() - prev_map.keys()]
+    removed = [prev_map[k] for k in prev_map.keys() - cur_map.keys()]
+    updated: list[dict[str, Any]] = []
+    for k in cur_map.keys() & prev_map.keys():
+        if _pkg_version(cur_map[k]) != _pkg_version(prev_map[k]):
+            updated.append({**cur_map[k], "previous_version": _pkg_version(prev_map[k])})
+    return {"installed": installed, "removed": removed, "updated": updated}
+
+
+def publish_package_change_events(
+    user_id: str,
+    agent: dict[str, Any],
+    diffs: dict[str, list[dict[str, Any]]],
+) -> dict[str, int]:
+    """Publish software.* events + observed evidence for package diffs."""
+    counts = {"installed": 0, "removed": 0, "updated": 0, "evidence": 0}
+    aid = str(agent.get("id") or "")
+    asset_id = str(agent.get("asset_id") or "")
+    hostname = str(agent.get("hostname") or agent.get("name") or aid[:8] or "agent")
+    org_id = agent.get("org_id")
+    try:
+        from app.realtime_bus import publish
+        from app.services.evidence import record_evidence
+    except Exception:
+        return counts
+
+    def _emit(kind: str, pkg: dict[str, Any]) -> None:
+        name = str(pkg.get("name") or pkg.get("package") or "").strip()
+        if not name:
+            return
+        ver = _pkg_version(pkg)
+        event_type = f"software.{kind}"
+        try:
+            publish(
+                type=event_type,
+                event_type=event_type,
+                user_id=user_id,
+                org_id=org_id,
+                agent_id=aid,
+                asset_id=asset_id,
+                product=name,
+                version=ver,
+                previous_version=pkg.get("previous_version") or "",
+                hostname=hostname,
+                source="securaiq_agent",
+            )
+            counts[kind] = counts.get(kind, 0) + 1
+        except Exception:
+            pass
+        try:
+            summary = f"{kind}: {name}" + (f"@{ver}" if ver else "")
+            if kind == "updated" and pkg.get("previous_version"):
+                summary = f"updated: {name} {pkg.get('previous_version')}→{ver}"
+            ev = record_evidence(
+                user_id,
+                entity_type="software_package",
+                entity_id=f"{aid}:{name.lower()[:80]}",
+                source="observed",
+                summary=summary[:500],
+                confidence=0.9,
+                detail={
+                    "change": kind,
+                    "product": name,
+                    "version": ver,
+                    "previous_version": pkg.get("previous_version") or "",
+                    "agent_id": aid,
+                    "asset_id": asset_id,
+                    "hostname": hostname,
+                },
+                created_by="securaiq_agent",
+                org_id=str(org_id) if org_id else None,
+            )
+            if ev:
+                counts["evidence"] += 1
+        except Exception:
+            pass
+
+    for pkg in (diffs.get("installed") or [])[:100]:
+        _emit("installed", pkg)
+    for pkg in (diffs.get("removed") or [])[:100]:
+        _emit("removed", pkg)
+    for pkg in (diffs.get("updated") or [])[:100]:
+        _emit("updated", pkg)
+    return counts
+
+
 def ingest_agent_packages(
     user_id: str,
     agent: dict[str, Any],
     packages: list[dict[str, Any]] | None = None,
     *,
     sync: bool = True,
+    previous_packages: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Write agent packages into legacy asset_software + optionally sync engine.
 
     Called from check-in so inventory is current before the next patch-verify
     job runs — without waiting for a full rebuild.
+
+    When ``previous_packages`` is provided, publish software.installed|removed|updated
+    and record observed Evidence Store rows (TTL via EVIDENCE_OBSERVED_TTL_SEC).
     """
     from app.software_inventory import upsert_software_row
 
@@ -156,6 +273,18 @@ def ingest_agent_packages(
             detail=f"SecuraIQ agent check-in · {aid[:8]}",
         )
         n += 1
+    changes: dict[str, Any] = {}
+    if previous_packages is not None:
+        try:
+            diffs = diff_package_sets(previous_packages, pkgs)
+            changes = publish_package_change_events(user_id, agent, diffs)
+            changes["diff"] = {
+                "installed": len(diffs.get("installed") or []),
+                "removed": len(diffs.get("removed") or []),
+                "updated": len(diffs.get("updated") or []),
+            }
+        except Exception as exc:
+            changes = {"error": str(exc)[:200]}
     engine: dict[str, Any] = {}
     advisory: dict[str, Any] = {}
     if sync and (n or asset_id):
@@ -206,7 +335,13 @@ def ingest_agent_packages(
                     advisory = {"skipped": "debounced"}
             except Exception as exc:
                 advisory = {"error": str(exc)[:200]}
-    return {"ingested": n, "asset_id": asset_id, "engine": engine, "advisory": advisory}
+    return {
+        "ingested": n,
+        "asset_id": asset_id,
+        "engine": engine,
+        "advisory": advisory,
+        "changes": changes,
+    }
 
 
 def apply_patch_version_to_inventory(

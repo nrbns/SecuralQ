@@ -17,7 +17,8 @@ Local harness: `python scripts/realtime_acceptance_demo.py --local`
 
 Related: [master-build-plan.md](./master-build-plan.md) (Phase 13) ·
 [compliance-platform.md](./compliance-platform.md) ·
-[realtime-v1.md](./realtime-v1.md)
+[realtime-v1.md](./realtime-v1.md) ·
+[realtime-controls-evidence-spec.md](./realtime-controls-evidence-spec.md)
 
 ---
 

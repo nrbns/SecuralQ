@@ -7,6 +7,7 @@ Related: [securaiq-architecture.md](./securaiq-architecture.md) (Phase 0 — Rus
 [agent-protocol-v1.md](./agent-protocol-v1.md) ·
 [production-readiness.md](./production-readiness.md) ·
 [realtime-v1.md](./realtime-v1.md) ·
+[realtime-controls-evidence-spec.md](./realtime-controls-evidence-spec.md) ·
 [control-plane-roadmap.md](./control-plane-roadmap.md) ·
 [control-config-engine.md](./control-config-engine.md) ·
 [agent-platform.md](./agent-platform.md)

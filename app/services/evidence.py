@@ -41,6 +41,16 @@ from app.db import get_conn, new_id, now, table_columns
 VALID_SOURCES = {"declared", "derived", "inferred", "observed"}
 
 
+def _default_observed_ttl_sec() -> int | None:
+    try:
+        from app.config import settings
+
+        n = int(getattr(settings, "evidence_observed_ttl_sec", 172800) or 0)
+        return n if n > 0 else None
+    except Exception:
+        return 172800
+
+
 def ensure_schema() -> None:
     c = get_conn()
     c.execute(
@@ -61,18 +71,25 @@ def ensure_schema() -> None:
             first_seen REAL NOT NULL,
             last_seen REAL NOT NULL,
             hit_count INTEGER NOT NULL DEFAULT 1,
-            created_at REAL NOT NULL
+            created_at REAL NOT NULL,
+            expires_at REAL
         )
         """
     )
     cols = table_columns(c, "securaiq_evidence")
     if cols and "org_id" not in cols:
         c.execute("ALTER TABLE securaiq_evidence ADD COLUMN org_id TEXT")
+    cols = table_columns(c, "securaiq_evidence")
+    if cols and "expires_at" not in cols:
+        c.execute("ALTER TABLE securaiq_evidence ADD COLUMN expires_at REAL")
     c.execute(
         "CREATE INDEX IF NOT EXISTS idx_evidence_entity ON securaiq_evidence(user_id, entity_type, entity_id)"
     )
     c.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_evidence_fingerprint ON securaiq_evidence(user_id, fingerprint)"
+    )
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_evidence_expires ON securaiq_evidence(expires_at)"
     )
     c.commit()
 
@@ -83,6 +100,37 @@ def _fingerprint(entity_type: str, entity_id: str, source: str, summary: str) ->
     of growing the table unboundedly on every recompute."""
     raw = f"{entity_type}\x1f{entity_id}\x1f{source}\x1f{summary}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def freshness_status(row: dict[str, Any] | None, *, at: float | None = None) -> str:
+    """Derive freshness for Evidence Store rows.
+
+    - ``fresh`` — no expiry, or now < expires_at
+    - ``stale`` — past expires_at but within 2× TTL window (soft)
+    - ``expired`` — well past expires_at (or missing last_seen with expiry)
+    """
+    if not isinstance(row, dict):
+        return "unknown"
+    ts = float(at if at is not None else now())
+    exp = row.get("expires_at")
+    if exp is None or exp == "":
+        return "fresh"
+    try:
+        exp_f = float(exp)
+    except (TypeError, ValueError):
+        return "fresh"
+    if ts < exp_f:
+        return "fresh"
+    # Soft stale for a short grace; then expired.
+    last = row.get("last_seen")
+    try:
+        last_f = float(last) if last is not None else exp_f
+    except (TypeError, ValueError):
+        last_f = exp_f
+    ttl_guess = max(60.0, exp_f - last_f) if exp_f >= last_f else 86400.0
+    if ts < exp_f + ttl_guess:
+        return "stale"
+    return "expired"
 
 
 def record_evidence(
@@ -97,17 +145,18 @@ def record_evidence(
     verified: bool | None = None,
     created_by: str = "system",
     org_id: str | None = None,
+    ttl_sec: int | None = None,
+    expires_at: float | None = None,
 ) -> dict[str, Any]:
     """Record one piece of evidence backing a claim made elsewhere in the
     product. Idempotent on (entity_type, entity_id, source, summary) within
     a tenant -- a re-observation bumps last_seen/hit_count rather than
     creating a duplicate row.
 
-    `verified` defaults to True only for source="declared" (matching the
-    attack-graph convention that a human declaration is inherently
-    verified); every other source defaults to False and must be explicitly
-    confirmed later via confirm_evidence() -- never inferred from a high
-    confidence value, which would misrepresent a guess as a fact."""
+    ``ttl_sec`` / ``expires_at`` support Evidence freshness (realtime controls).
+    For ``source=observed``, when neither is set, ``EVIDENCE_OBSERVED_TTL_SEC``
+    applies when configured (>0).
+    """
     if source not in VALID_SOURCES:
         raise ValueError(f"Unknown evidence source '{source}'. Must be one of {sorted(VALID_SOURCES)}")
     if not entity_type or not entity_id:
@@ -120,6 +169,23 @@ def record_evidence(
     is_verified = (source == "declared") if verified is None else bool(verified)
     fp = _fingerprint(entity_type, entity_id, source, summary)
     ts = now()
+    exp: float | None = None
+    if expires_at is not None:
+        try:
+            exp = float(expires_at)
+        except (TypeError, ValueError):
+            exp = None
+    elif ttl_sec is not None:
+        try:
+            n = int(ttl_sec)
+            exp = ts + n if n > 0 else None
+        except (TypeError, ValueError):
+            exp = None
+    elif source == "observed":
+        default_ttl = _default_observed_ttl_sec()
+        if default_ttl:
+            exp = ts + float(default_ttl)
+
     c = get_conn()
     existing = c.execute(
         "SELECT id FROM securaiq_evidence WHERE user_id = ? AND fingerprint = ?", (user_id, fp)
@@ -129,10 +195,10 @@ def record_evidence(
             """
             UPDATE securaiq_evidence
             SET last_seen = ?, hit_count = hit_count + 1, confidence = ?, verified = ?, detail_json = ?,
-                org_id = COALESCE(org_id, ?)
+                org_id = COALESCE(org_id, ?), expires_at = ?
             WHERE id = ?
             """,
-            (ts, conf, 1 if is_verified else 0, json.dumps(detail or {})[:8000], oid, existing["id"]),
+            (ts, conf, 1 if is_verified else 0, json.dumps(detail or {})[:8000], oid, exp, existing["id"]),
         )
         c.commit()
         return get_evidence(user_id, existing["id"])
@@ -141,12 +207,12 @@ def record_evidence(
         """
         INSERT INTO securaiq_evidence
         (id, user_id, org_id, fingerprint, entity_type, entity_id, source, confidence, verified,
-         summary, detail_json, created_by, first_seen, last_seen, hit_count, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+         summary, detail_json, created_by, first_seen, last_seen, hit_count, created_at, expires_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
         """,
         (
             eid, user_id, oid, fp, entity_type, entity_id, source, conf, 1 if is_verified else 0,
-            summary[:500], json.dumps(detail or {})[:8000], created_by, ts, ts, ts,
+            summary[:500], json.dumps(detail or {})[:8000], created_by, ts, ts, ts, exp,
         ),
     )
     c.commit()
@@ -250,4 +316,7 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
     except Exception:
         d["detail"] = {}
     d["verified"] = bool(d.get("verified"))
+    if "expires_at" not in d:
+        d["expires_at"] = None
+    d["freshness_status"] = freshness_status(d)
     return d

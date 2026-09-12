@@ -615,8 +615,9 @@ def checkin(agent_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         pkgs = payload.get("packages") or []
     if pkgs and not effective_payload.get("truncated"):
         try:
-            from app.software.sources.securaiq_agent import ingest_agent_packages
+            from app.software.sources.securaiq_agent import ingest_agent_packages, packages_from_agent_row
 
+            previous_packages = packages_from_agent_row(agent)
             refreshed = dict(agent)
             refreshed["asset_id"] = asset_id
             refreshed["hostname"] = (
@@ -651,6 +652,7 @@ def checkin(agent_id: str, payload: dict[str, Any]) -> dict[str, Any]:
                 refreshed,
                 [p for p in pkgs if isinstance(p, dict)],
                 sync=True,
+                previous_packages=previous_packages,
             )
         except Exception:
             pass
