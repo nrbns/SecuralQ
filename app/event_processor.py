@@ -107,11 +107,16 @@ Handler = Callable[[dict[str, Any]], None]
 
 def _redis_configured() -> bool:
     try:
-        from app.config import settings
+        from app.redis_client import redis_enabled
 
-        return bool((getattr(settings, "redis_url", "") or "").strip())
+        return redis_enabled()
     except Exception:
-        return False
+        try:
+            from app.config import settings
+
+            return bool((getattr(settings, "redis_url", "") or "").strip())
+        except Exception:
+            return False
 
 
 def _stream_key() -> str:
@@ -1181,19 +1186,7 @@ async def _reclaim_pending(client: Any, stream: str) -> int:
 
 
 async def _streams_consumer_loop() -> None:
-    url = ""
-    try:
-        from app.config import settings
-
-        url = (getattr(settings, "redis_url", "") or "").strip()
-    except Exception:
-        return
-    if not url:
-        return
-    try:
-        import redis.asyncio as aioredis
-    except Exception:
-        _log.debug("redis.asyncio unavailable — event processor idle")
+    if not _redis_configured():
         return
 
     stream = _stream_key()
@@ -1201,7 +1194,11 @@ async def _streams_consumer_loop() -> None:
     while True:
         client = None
         try:
-            client = aioredis.from_url(url, decode_responses=True)
+            from app.redis_client import get_async_redis
+
+            client = await get_async_redis(decode_responses=True)
+            if client is None:
+                return
             await _ensure_consumer_group(client, stream)
             backoff = 2.0
             last_reclaim = 0.0
@@ -1281,25 +1278,17 @@ def stream_monitor_snapshot() -> dict[str, Any]:
     }
     if not _redis_configured():
         return out
-    url = ""
-    try:
-        from app.config import settings
-
-        url = (getattr(settings, "redis_url", "") or "").strip()
-    except Exception:
-        return out
-    if not url:
-        return out
     client = None
     try:
-        import redis as redis_sync
+        from app.redis_client import get_sync_redis
 
-        client = redis_sync.from_url(
-            url,
+        client = get_sync_redis(
             decode_responses=True,
             socket_connect_timeout=0.5,
             socket_timeout=0.5,
         )
+        if client is None:
+            return out
         stream = _stream_key()
         dlq = _dlq_key()
         try:
@@ -1340,6 +1329,168 @@ def stream_monitor_snapshot() -> dict[str, Any]:
             except Exception:
                 pass
     return out
+
+
+def list_dlq_entries(*, limit: int = 50) -> list[dict[str, Any]]:
+    """List recent DLQ stream entries (oldest-first). Empty without Redis."""
+    lim = max(1, min(int(limit or 50), 200))
+    if not _redis_configured():
+        return []
+    client = None
+    try:
+        from app.redis_client import get_sync_redis
+
+        client = get_sync_redis(decode_responses=True, socket_connect_timeout=1.0, socket_timeout=2.0)
+        if client is None:
+            return []
+        rows = client.xrange(_dlq_key(), min="-", max="+", count=lim)
+        out: list[dict[str, Any]] = []
+        for msg_id, fields in rows or []:
+            if not isinstance(fields, dict):
+                fields = {}
+            payload = _parse_stream_payload(fields)
+            out.append(
+                {
+                    "id": str(msg_id),
+                    "error": str(fields.get("error") or "")[:500],
+                    "delivery_count": fields.get("delivery_count"),
+                    "stream_id": fields.get("stream_id"),
+                    "source_stream": fields.get("source_stream") or _stream_key(),
+                    "ts": fields.get("ts"),
+                    "event_id": payload.get("event_id"),
+                    "event_type": payload.get("event_type") or payload.get("type"),
+                    "payload": payload,
+                }
+            )
+        return out
+    except Exception as exc:
+        _log.debug("list_dlq_entries: %s", exc)
+        return []
+    finally:
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass
+
+
+def replay_dlq_entries(
+    ids: list[str] | None = None,
+    *,
+    limit: int = 20,
+) -> dict[str, Any]:
+    """Re-XADD selected (or oldest) DLQ payloads onto the main stream, then XDEL.
+
+    Returns counts only — not a guarantee of successful reprocessing.
+    """
+    lim = max(1, min(int(limit or 20), 100))
+    if not _redis_configured():
+        return {"ok": False, "reason": "redis_not_configured", "replayed": 0, "deleted": 0}
+    client = None
+    replayed = 0
+    deleted = 0
+    errors: list[str] = []
+    try:
+        from app.redis_client import get_sync_redis
+        from app.config import settings
+
+        client = get_sync_redis(decode_responses=True, socket_connect_timeout=1.0, socket_timeout=3.0)
+        if client is None:
+            return {"ok": False, "reason": "redis_unavailable", "replayed": 0, "deleted": 0}
+        dlq = _dlq_key()
+        main = _stream_key()
+        maxlen = max(100, int(getattr(settings, "redis_stream_maxlen", 10000) or 10000))
+        want = {str(i) for i in (ids or []) if str(i).strip()} if ids else None
+        rows = client.xrange(dlq, min="-", max="+", count=max(lim, len(want or ())) or lim)
+        for msg_id, fields in rows or []:
+            if want is not None and str(msg_id) not in want:
+                continue
+            if want is None and replayed >= lim:
+                break
+            payload = _parse_stream_payload(fields)
+            if not payload:
+                errors.append(f"{msg_id}:empty_payload")
+                continue
+            try:
+                client.xadd(
+                    main,
+                    {"payload": json.dumps(payload, default=str)},
+                    maxlen=maxlen,
+                    approximate=True,
+                )
+                replayed += 1
+                client.xdel(dlq, msg_id)
+                deleted += 1
+            except Exception as exc:
+                errors.append(f"{msg_id}:{exc}")
+            if want is not None and replayed >= len(want):
+                break
+        return {
+            "ok": True,
+            "replayed": replayed,
+            "deleted": deleted,
+            "errors": errors[:10],
+            "stream": main,
+            "dlq": dlq,
+        }
+    except Exception as exc:
+        return {"ok": False, "reason": str(exc)[:200], "replayed": replayed, "deleted": deleted}
+    finally:
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass
+
+
+def purge_dlq_entries(
+    ids: list[str] | None = None,
+    *,
+    limit: int = 100,
+    purge_all: bool = False,
+) -> dict[str, Any]:
+    """Delete DLQ entries by id, or purge up to ``limit`` oldest (or all if purge_all)."""
+    lim = max(1, min(int(limit or 100), 500))
+    if not _redis_configured():
+        return {"ok": False, "reason": "redis_not_configured", "deleted": 0}
+    client = None
+    deleted = 0
+    try:
+        from app.redis_client import get_sync_redis
+
+        client = get_sync_redis(decode_responses=True, socket_connect_timeout=1.0, socket_timeout=3.0)
+        if client is None:
+            return {"ok": False, "reason": "redis_unavailable", "deleted": 0}
+        dlq = _dlq_key()
+        if ids:
+            for mid in ids:
+                try:
+                    deleted += int(client.xdel(dlq, str(mid)) or 0)
+                except Exception:
+                    pass
+            return {"ok": True, "deleted": deleted, "dlq": dlq}
+        # Oldest-first batch delete
+        while True:
+            count = lim if not purge_all else min(200, lim)
+            rows = client.xrange(dlq, min="-", max="+", count=count)
+            if not rows:
+                break
+            for msg_id, _fields in rows:
+                try:
+                    deleted += int(client.xdel(dlq, msg_id) or 0)
+                except Exception:
+                    pass
+            if not purge_all or len(rows) < count:
+                break
+        return {"ok": True, "deleted": deleted, "dlq": dlq}
+    except Exception as exc:
+        return {"ok": False, "reason": str(exc)[:200], "deleted": deleted}
+    finally:
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass
 
 
 def processor_status() -> dict[str, Any]:

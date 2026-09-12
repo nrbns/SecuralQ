@@ -1,5 +1,29 @@
 from __future__ import annotations
 
+import sys as _sys
+
+if _sys.platform == "win32":
+    try:
+        import ctypes
+
+        # Without this, a scanner binary (nmap, etc.) that can't load a
+        # required DLL — Npcap, a missing Visual C++ runtime like
+        # MSVCP120.dll, whatever — doesn't just fail with a clean exit code.
+        # Windows pops a blocking "X.exe - System Error" dialog on top of
+        # everything that sits there until a human clicks OK, hanging that
+        # scan (and looking like the whole app froze) instead of surfacing
+        # an honest "scan failed: missing dependency" in the UI. This process
+        # error mode is inherited by every child process we spawn for the
+        # life of the app, so set it once, here, before anything else runs.
+        SEM_FAILCRITICALERRORS = 0x0001
+        SEM_NOGPFAULTERRORBOX = 0x0002
+        SEM_NOOPENFILEERRORBOX = 0x8000
+        ctypes.windll.kernel32.SetErrorMode(  # type: ignore[attr-defined]
+            SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX
+        )
+    except Exception:
+        pass
+
 import asyncio
 import base64
 import json
@@ -74,6 +98,7 @@ from app.controls.controls_api import router as controls_router
 from app.configuration.configuration_api import router as configuration_router
 from app.live_ssp_api import router as live_ssp_router
 from app.compliance_doc_library_api import router as compliance_doc_library_router
+from app.log_management_api import router as log_management_router
 from app.commercial_ext import ensure_org_schema
 from app.gap_analysis import ensure_gap_schema
 from app.db import init_schema
@@ -362,6 +387,7 @@ app.include_router(controls_router)
 app.include_router(configuration_router)
 app.include_router(live_ssp_router)
 app.include_router(compliance_doc_library_router)
+app.include_router(log_management_router)
 
 _PUBLIC_API_PREFIXES = (
     "/api/auth/login",
@@ -973,6 +999,66 @@ async def admin_health_board(user: Annotated[AuthUser, Depends(require_user)]):
     from app.admin_health import collect_admin_health
 
     return collect_admin_health()
+
+
+def _require_admin(user: AuthUser) -> None:
+    if settings.auth_enabled and user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin role required")
+
+
+@app.get("/api/admin/realtime/dlq")
+async def admin_realtime_dlq_list(
+    user: Annotated[AuthUser, Depends(require_user)],
+    limit: int = 50,
+):
+    """List dead-lettered stream events (admin). Empty when Redis unset."""
+    _require_admin(user)
+    from app.event_processor import list_dlq_entries, stream_monitor_snapshot
+
+    entries = list_dlq_entries(limit=limit)
+    snap = stream_monitor_snapshot()
+    return {
+        "ok": True,
+        "dlq_key": snap.get("dlq_key"),
+        "dlq_length": snap.get("dlq_length"),
+        "entries": entries,
+        "count": len(entries),
+    }
+
+
+class DlqReplayRequest(BaseModel):
+    ids: list[str] | None = None
+    limit: int = Field(default=20, ge=1, le=100)
+
+
+class DlqPurgeRequest(BaseModel):
+    ids: list[str] | None = None
+    limit: int = Field(default=100, ge=1, le=500)
+    purge_all: bool = False
+
+
+@app.post("/api/admin/realtime/dlq/replay")
+async def admin_realtime_dlq_replay(
+    req: DlqReplayRequest,
+    user: Annotated[AuthUser, Depends(require_user)],
+):
+    """Requeue DLQ payloads onto the main event stream (admin)."""
+    _require_admin(user)
+    from app.event_processor import replay_dlq_entries
+
+    return replay_dlq_entries(req.ids, limit=req.limit)
+
+
+@app.post("/api/admin/realtime/dlq/purge")
+async def admin_realtime_dlq_purge(
+    req: DlqPurgeRequest,
+    user: Annotated[AuthUser, Depends(require_user)],
+):
+    """Delete DLQ entries (admin). Prefer explicit ids in production."""
+    _require_admin(user)
+    from app.event_processor import purge_dlq_entries
+
+    return purge_dlq_entries(req.ids, limit=req.limit, purge_all=bool(req.purge_all))
 
 
 class RouterPlanRequest(BaseModel):

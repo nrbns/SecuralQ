@@ -153,6 +153,10 @@ class Settings(BaseSettings):
     # Infra (beta SaaS — Postgres/Redis via compose profiles)
     database_url: str = ""  # empty = SQLite at DATA_DIR/securaiq.db
     redis_url: str = ""
+    # Optional Redis Sentinel (lab HA stub). When hosts set, takes precedence over REDIS_URL.
+    redis_sentinel_hosts: str = ""  # host:26379,host2:26379
+    redis_sentinel_master: str = "mymaster"
+    redis_sentinel_password: str = ""
     # REALTIME v1 Task B — Redis Streams durable log (when REDIS_URL is set)
     redis_stream_key: str = "securaiq:events"
     redis_stream_maxlen: int = 10000  # approximate trim on XADD

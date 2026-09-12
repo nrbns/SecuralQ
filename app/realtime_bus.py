@@ -129,12 +129,30 @@ def _fanout_local(payload: dict[str, Any]) -> None:
 
 
 def _redis_url() -> str:
+    """Legacy helper — URL string when using direct Redis (empty under Sentinel-only)."""
     try:
-        from app.config import settings
+        from app.redis_client import redis_url, redis_enabled, connection_mode
 
-        return (getattr(settings, "redis_url", "") or "").strip()
+        if connection_mode() == "sentinel":
+            # Sentinel path does not need REDIS_URL; signal "configured" via sentinel.
+            return redis_url() or ("sentinel://" if redis_enabled() else "")
+        return redis_url()
     except Exception:
-        return ""
+        try:
+            from app.config import settings
+
+            return (getattr(settings, "redis_url", "") or "").strip()
+        except Exception:
+            return ""
+
+
+def _redis_ready() -> bool:
+    try:
+        from app.redis_client import redis_enabled
+
+        return redis_enabled()
+    except Exception:
+        return bool(_redis_url())
 
 
 def _streams_fanout_enabled() -> bool:
@@ -220,7 +238,7 @@ def publish_throughput() -> dict[str, Any]:
             "window_publishes": window_n,
             "backpressure_active": _BACKPRESSURE_ACTIVE,
             "backpressure_hits": _BACKPRESSURE_HITS,
-            "backpressure_len": _backpressure_len() if _redis_url() else None,
+            "backpressure_len": _backpressure_len() if _redis_ready() else None,
         }
 
 
@@ -252,10 +270,14 @@ def _remember_event(payload: dict[str, Any]) -> bool:
 
 def _xadd_stream(payload: dict[str, Any], url: str) -> None:
     """Best-effort durable append. Never raises to callers of publish()."""
+    if not _redis_ready():
+        return
     try:
-        import redis
+        from app.redis_client import get_sync_redis
 
-        r = redis.from_url(url, decode_responses=True, socket_connect_timeout=0.5)
+        r = get_sync_redis(decode_responses=True, socket_connect_timeout=0.5, socket_timeout=0.5)
+        if r is None:
+            return
         try:
             key = _stream_key()
             # Soft backpressure signal: still XADD (maxlen trims), but flag operators.
@@ -275,20 +297,30 @@ def _xadd_stream(payload: dict[str, Any], url: str) -> None:
                 approximate=True,
             )
         finally:
-            r.close()
+            try:
+                r.close()
+            except Exception:
+                pass
     except Exception as exc:
         _log.debug("stream XADD skipped: %s", exc)
 
 
 def _pubsub_publish(payload: dict[str, Any], url: str) -> None:
+    if not _redis_ready():
+        return
     try:
-        import redis
+        from app.redis_client import get_sync_redis
 
-        r = redis.from_url(url, decode_responses=True, socket_connect_timeout=0.5)
+        r = get_sync_redis(decode_responses=True, socket_connect_timeout=0.5, socket_timeout=0.5)
+        if r is None:
+            return
         try:
             r.publish(_CHANNEL, json.dumps(payload, default=str))
         finally:
-            r.close()
+            try:
+                r.close()
+            except Exception:
+                pass
     except Exception as exc:
         _log.debug("pubsub publish skipped: %s", exc)
 
@@ -336,9 +368,9 @@ def publish(event: dict[str, Any] | None = None, **kwargs: Any) -> None:
         pass
 
     url = _redis_url()
-    if not url:
+    if not _redis_ready():
         return
-    # Durable log first — Streams are the SoT when REDIS_URL is set.
+    # Durable log first — Streams are the SoT when Redis is configured.
     _xadd_stream(payload, url)
     # Default: Streams fan-out consumers deliver to local SSE (no pub/sub).
     # Transitional: REALTIME_STREAMS_FANOUT=false keeps Redis pub/sub notify.
@@ -365,20 +397,24 @@ def _replay_from_stream(last_event_id: str | None, *, limit: int) -> list[dict[s
 
     Limited count — not a full HA replay API. Failures return [].
     """
-    url = _redis_url()
-    if not url:
+    if not _redis_ready():
         return []
     lim = max(1, min(int(limit or 200), 2000))
     scan = max(lim, min(_DEFAULT_STREAM_REPLAY_SCAN, 2000))
     try:
-        import redis
+        from app.redis_client import get_sync_redis
 
-        r = redis.from_url(url, decode_responses=True, socket_connect_timeout=0.5)
+        r = get_sync_redis(decode_responses=True, socket_connect_timeout=0.5, socket_timeout=0.5)
+        if r is None:
+            return []
         try:
             # Newest-first window, then reverse to oldest-first for catch-up.
             rows = r.xrevrange(_stream_key(), max="+", min="-", count=scan)
         finally:
-            r.close()
+            try:
+                r.close()
+            except Exception:
+                pass
     except Exception as exc:
         _log.debug("stream replay scan skipped: %s", exc)
         return []
@@ -469,21 +505,21 @@ def stream_status() -> dict[str, Any]:
     Best-effort XLEN / DLQ / pending metrics when Redis is configured.
     Never raises.
     """
-    url = _redis_url()
+    ready = _redis_ready()
     fanout = _streams_fanout_enabled()
     with _lock:
         buf_len = len(_REPLAY_BUFFER)
     status: dict[str, Any] = {
-        "stream_key": _stream_key() if url else None,
-        "maxlen": _stream_maxlen() if url else None,
-        "mode": "redis_streams" if url else "in_process",
-        "redis_configured": bool(url),
-        "pubsub_channel": (_CHANNEL if url and not fanout else None),
-        "streams_fanout": bool(url and fanout),
+        "stream_key": _stream_key() if ready else None,
+        "maxlen": _stream_maxlen() if ready else None,
+        "mode": "redis_streams" if ready else "in_process",
+        "redis_configured": ready,
+        "pubsub_channel": (_CHANNEL if ready and not fanout else None),
+        "streams_fanout": bool(ready and fanout),
         "replay_buffer_size": buf_len,
         "replay_buffer_max": _replay_buffer_max(),
-        "consumer_group": "securaiq-workers" if url else None,
-        "realtime_fanout_group": (f"securaiq-realtime-{_PID}" if url and fanout else None),
+        "consumer_group": "securaiq-workers" if ready else None,
+        "realtime_fanout_group": (f"securaiq-realtime-{_PID}" if ready and fanout else None),
         "stream_length": None,
         "dlq_length": None,
         "pending_count": None,
@@ -491,7 +527,7 @@ def stream_status() -> dict[str, Any]:
         "dlq_key": None,
         "throughput": publish_throughput(),
     }
-    if url:
+    if ready:
         try:
             from app.event_processor import stream_monitor_snapshot
 
@@ -509,23 +545,29 @@ def stream_status() -> dict[str, Any]:
                     status[key] = mon[key]
         except Exception:
             pass
+        try:
+            from app.redis_client import describe_backend
+
+            status["redis_backend"] = describe_backend()
+        except Exception:
+            pass
     return status
 
 
 async def _redis_listener() -> None:
     """Subscribe to Redis channel and fan out remote workers' events locally."""
-    url = _redis_url()
-    if not url or _streams_fanout_enabled():
-        return
-    try:
-        import redis.asyncio as aioredis
-    except Exception:
+    if not _redis_ready() or _streams_fanout_enabled():
         return
 
     backoff = 2.0
     while True:
+        client = None
         try:
-            client = aioredis.from_url(url, decode_responses=True)
+            from app.redis_client import get_async_redis
+
+            client = await get_async_redis(decode_responses=True)
+            if client is None:
+                return
             pubsub = client.pubsub()
             await pubsub.subscribe(_CHANNEL)
             backoff = 2.0
@@ -550,6 +592,15 @@ async def _redis_listener() -> None:
         except Exception:
             await asyncio.sleep(backoff)
             backoff = min(60.0, backoff * 2)
+        finally:
+            if client is not None:
+                try:
+                    await client.aclose()
+                except Exception:
+                    try:
+                        await client.close()
+                    except Exception:
+                        pass
 
 
 async def _ensure_realtime_fanout_group(client: Any, stream: str, group: str) -> None:
@@ -562,19 +613,54 @@ async def _ensure_realtime_fanout_group(client: Any, stream: str, group: str) ->
             _log.debug("xgroup_create fanout: %s", exc)
 
 
+async def _reclaim_fanout_pending(client: Any, stream: str, group: str, consumer: str) -> int:
+    """XAUTOCLAIM idle pending for this process fan-out group; fan to SSE + ACK."""
+    claimed = 0
+    try:
+        from app.config import settings
+
+        idle = max(1000, int(getattr(settings, "redis_stream_claim_idle_ms", 60000) or 60000))
+    except Exception:
+        idle = 60000
+    try:
+        result = await client.xautoclaim(
+            name=stream,
+            groupname=group,
+            consumername=consumer,
+            min_idle_time=idle,
+            start_id="0-0",
+            count=20,
+        )
+    except Exception as exc:
+        _log.debug("fanout xautoclaim skipped: %s", exc)
+        return 0
+    messages: list[Any] = []
+    if isinstance(result, (list, tuple)) and len(result) >= 2 and isinstance(result[1], (list, tuple)):
+        messages = list(result[1])
+    for item in messages:
+        try:
+            if not isinstance(item, (list, tuple)) or len(item) < 2:
+                continue
+            msg_id, fields = item[0], item[1]
+            payload = _payload_from_stream_fields(fields) or {}
+            if payload and _remember_event(payload):
+                _fanout_local(payload)
+            await client.xack(stream, group, msg_id)
+            claimed += 1
+        except Exception:
+            pass
+    return claimed
+
+
 async def _streams_fanout_listener() -> None:
-    """Per-process Streams consumer → local SSE (RT-02 opt-in).
+    """Per-process Streams consumer → local SSE (RT-02 default when Redis set).
 
     Uses group ``securaiq-realtime-{pid}`` so *each* worker receives a copy
     (shared single group would not multi-worker fan out). Publishing workers
     already ``_fanout_local``; ``_remember_event`` drops echo duplicates.
+    Idle pending are reclaimed via periodic ``XAUTOCLAIM`` for this group.
     """
-    url = _redis_url()
-    if not url or not _streams_fanout_enabled():
-        return
-    try:
-        import redis.asyncio as aioredis
-    except Exception:
+    if not _redis_ready() or not _streams_fanout_enabled():
         return
 
     stream = _stream_key()
@@ -584,12 +670,24 @@ async def _streams_fanout_listener() -> None:
     while True:
         client = None
         try:
-            client = aioredis.from_url(url, decode_responses=True)
+            from app.redis_client import get_async_redis
+
+            client = await get_async_redis(decode_responses=True)
+            if client is None:
+                return
             await _ensure_realtime_fanout_group(client, stream, group)
             backoff = 2.0
+            last_reclaim = 0.0
             while True:
                 if not _streams_fanout_enabled():
                     return
+                now = time.monotonic()
+                if now - last_reclaim >= 30.0:
+                    try:
+                        await _reclaim_fanout_pending(client, stream, group, consumer)
+                    except Exception as exc:
+                        _log.debug("fanout reclaim: %s", exc)
+                    last_reclaim = now
                 rows = await client.xreadgroup(
                     groupname=group,
                     consumername=consumer,
@@ -696,20 +794,27 @@ def clear_replay_buffer_for_tests() -> None:
 
 
 def backend_status() -> dict[str, Any]:
-    url = _redis_url()
+    ready = _redis_ready()
     stream = stream_status()
-    fanout = bool(url and _streams_fanout_enabled())
-    if url and fanout:
+    fanout = bool(ready and _streams_fanout_enabled())
+    redis_backend: dict[str, Any] = {}
+    try:
+        from app.redis_client import describe_backend
+
+        redis_backend = describe_backend()
+    except Exception:
+        redis_backend = {}
+    if ready and fanout:
         mode = "redis_streams_fanout"
         hint = (
-            "REDIS_URL set: durable XADD to Streams "
+            "Redis configured: durable XADD to Streams "
             f"({stream.get('stream_key')}); default Streams fan-out via "
             "per-process securaiq-realtime-* consumers (pub/sub skipped)."
         )
-    elif url:
+    elif ready:
         mode = "redis_streams+pubsub"
         hint = (
-            "REDIS_URL set: durable XADD to Streams "
+            "Redis configured: durable XADD to Streams "
             f"({stream.get('stream_key')}) + transitional pub/sub SSE fan-out "
             "(REALTIME_STREAMS_FANOUT=false). Default is Streams fan-out."
         )
@@ -717,7 +822,7 @@ def backend_status() -> dict[str, Any]:
         mode = "in_process"
         hint = (
             "Single-process only — in-memory replay buffer for Last-Event-ID. "
-            "Set REDIS_URL for Streams durability + Streams SSE fan-out."
+            "Set REDIS_URL (or REDIS_SENTINEL_HOSTS) for Streams durability + fan-out."
         )
     processor: dict[str, Any] = {}
     try:
@@ -728,8 +833,9 @@ def backend_status() -> dict[str, Any]:
         processor = {"mode": "unknown"}
     return {
         "mode": mode,
-        "redis_configured": bool(url),
-        "channel": (_CHANNEL if url and not fanout else None),
+        "redis_configured": ready,
+        "redis_backend": redis_backend,
+        "channel": (_CHANNEL if ready and not fanout else None),
         "streams_fanout": fanout,
         "stream": stream,
         "processor": processor,

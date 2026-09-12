@@ -2870,6 +2870,45 @@ function wireRealtimeHealthRefresh() {
     clearTimeout(window.__securaiqRtHealthTimer);
     window.__securaiqRtHealthTimer = setTimeout(() => refreshRealtimeHealthPanel(), 1500);
   });
+  document.getElementById("rtHealthDlqListBtn")?.addEventListener("click", async () => {
+    try {
+      const res = await fetch("/api/admin/realtime/dlq?limit=20", { headers: authHeaders() });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.detail || body.message || `HTTP ${res.status}`);
+      const n = Number(body.count || (body.entries || []).length || 0);
+      const sample = (body.entries || [])
+        .slice(0, 5)
+        .map((e) => `${e.event_type || "event"} · ${e.error || "—"}`)
+        .join("\n");
+      if (typeof notifyUser === "function") {
+        notifyUser(`**DLQ** · ${n} shown (depth ${body.dlq_length ?? "—"})${sample ? `\n\n${sample}` : ""}`);
+      } else {
+        alert(`DLQ entries: ${n}`);
+      }
+    } catch (err) {
+      if (typeof notifyUser === "function") notifyUser(`**DLQ list failed:** ${err.message || err}`);
+      else alert(err.message || "DLQ list failed");
+    }
+  });
+  document.getElementById("rtHealthDlqReplayBtn")?.addEventListener("click", async () => {
+    if (!confirm("Replay up to 20 oldest DLQ events onto the main stream?")) return;
+    try {
+      const res = await fetch("/api/admin/realtime/dlq/replay", {
+        method: "POST",
+        headers: { ...authHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ limit: 20 }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.detail || body.reason || `HTTP ${res.status}`);
+      const msg = `**DLQ replay** · ${body.replayed || 0} requeued · ${body.deleted || 0} removed`;
+      if (typeof notifyUser === "function") notifyUser(msg);
+      else alert(msg);
+      refreshRealtimeHealthPanel();
+    } catch (err) {
+      if (typeof notifyUser === "function") notifyUser(`**DLQ replay failed:** ${err.message || err}`);
+      else alert(err.message || "DLQ replay failed");
+    }
+  });
 }
 
 function realtimeFeedUrl(opts) {

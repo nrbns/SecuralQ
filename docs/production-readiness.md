@@ -42,7 +42,7 @@ Status key: **done** · **partial** · **missing**
 | Evidence generation | **partial** | Evidence store stamps `org_id` and filters with `tenant_visibility_sql`; confirm/list/get fail closed. Not every product claim auto-records evidence yet. |
 | Immutable audit trail | **partial** | Append-only `audit_log` + SIEM forward option. SQLite rows are not WORM/object-lock immutable. |
 | PostgreSQL backup/restore | **partial** | SQLite scripts in `scripts/backup.*`. Postgres path documented (`pg_dump`) in `docs/backup-dr.md` — operator-owned, not a product HA test. |
-| Redis HA/recovery | **missing** | `REDIS_URL` enables Streams + default Streams fan-out (or transitional pub/sub via `REALTIME_STREAMS_FANOUT=false`). Soft chaos docs in `scripts/realtime_chaos_test.py --document-redis`. No Sentinel/Cluster failover test. |
+| Redis HA/recovery | **partial→lab stub** | Compose `--profile redis-ha` (primary+replica+sentinel) + `REDIS_SENTINEL_*` client path. Soft chaos docs remain. **Not** a measured Sentinel failover / Cluster certification. |
 | TLS | **partial** | Caddy/nginx scaffolding in `deploy/`; DNS and certs are operator steps. Agent `--insecure` is lab-only. |
 | Rate limiting | **done** | `RateLimitMiddleware` on the API (`RATE_LIMIT_*`). |
 | Secret management | **partial** | `.env` envelope encryption (`app/secrets_crypto.py`); agent raw key shown once. Optional Ed25519 key env vars (unused for live seal). No KMS/HSM. |

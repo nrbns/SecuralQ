@@ -139,7 +139,10 @@ When `REDIS_URL` is set, the `securaiq-workers` consumer:
 | DLQ | After max deliveries: `XADD` to `REDIS_STREAM_DLQ_KEY` (default `securaiq:events:dlq`) with original payload + error + `delivery_count` + `stream_id`, then `XACK` |
 | Reclaim | Periodic `XAUTOCLAIM` for idle pending older than `REDIS_STREAM_CLAIM_IDLE_MS` (default **60000**); claimed messages re-run `process_event` |
 | Soft backpressure | When stream `XLEN` ≥ `REDIS_STREAM_BACKPRESSURE_LEN` (default **8000**): flag + metric; **still XADD** (approx maxlen trim). Not a hard drop of security events. |
-| Realtime Health UI | Mission Control → Live security stream shows mode, events/sec, pending, DLQ, lag, SSE clients, dup drops |
+| Realtime Health UI | Mission Control → Live security stream shows mode, events/sec, pending, DLQ, lag, SSE clients, dup drops; admin **View DLQ** / **Replay DLQ** |
+| Redis client | `app/redis_client.py` — shared URL or **Sentinel** (`REDIS_SENTINEL_HOSTS` + `REDIS_SENTINEL_MASTER`); compose profile `redis-ha` is a **lab stub**, not HA certification |
+| DLQ ops API | Admin: `GET /api/admin/realtime/dlq`, `POST .../replay`, `POST .../purge` |
+| Fan-out reclaim | Per-process `securaiq-realtime-{pid}` groups also run periodic `XAUTOCLAIM` |
 | Lab | Without Redis, DLQ/reclaim are no-ops — `on_local_publish` path unchanged |
 
 Monitoring keys on `stream_status()` / `processor_status()` / health `realtime_bus` are best-effort and **never raise**.
@@ -419,7 +422,7 @@ Agent check-in payloads already include `firewall_status`, `defender_status`, an
 | **G** | Command lifecycle dual-write (`lifecycle` on bus) | **Partial** |
 | **J** / **RT-16** | mTLS / certificate rotation | **Planned** (missing) |
 | **J** / **RT-17** | Mandatory signed commands | **Partial→improved** (opt-in `AGENT_REQUIRE_COMMAND_SIGNATURE`; still not mTLS) |
-| **RT-18** | Redis HA | **Planned** (missing) |
+| **RT-18** | Redis HA | **Partial→lab stub** (compose `redis-ha` + Sentinel client; **not** failover-certified) |
 | **I** / **RT-19** | Automated chaos testing | **Partial** (soft harness; Redis kill manual) |
 | **H** / **RT-20** | 5K measured load test | **Partial** (ladder ≤1k; **do not claim 5k**) |
 

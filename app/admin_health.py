@@ -39,16 +39,29 @@ def collect_admin_health() -> dict[str, Any]:
 
     # Redis (optional) + Streams durability snapshot
     redis_url = (settings.redis_url or "").strip()
-    if not redis_url:
+    sentinel_hosts = (getattr(settings, "redis_sentinel_hosts", "") or "").strip()
+    if not redis_url and not sentinel_hosts:
         components["redis"] = _status(True, "not configured (in-process bus)", degraded=True)
         components["event_bus"] = _status(True, "mode=in_process", degraded=True)
     else:
         try:
-            import redis  # type: ignore
+            from app.redis_client import get_sync_redis, describe_backend
 
-            r = redis.from_url(redis_url, socket_connect_timeout=1.5)
-            r.ping()
-            components["redis"] = _status(True, "ping ok")
+            r = get_sync_redis(decode_responses=True, socket_connect_timeout=1.5, socket_timeout=1.5)
+            if r is None:
+                raise RuntimeError("redis client unavailable")
+            try:
+                r.ping()
+                backend = describe_backend()
+                detail = f"ping ok mode={backend.get('mode')}"
+                if backend.get("sentinel_hosts"):
+                    detail += f" master={backend.get('sentinel_master')}"
+                components["redis"] = _status(True, detail[:200])
+            finally:
+                try:
+                    r.close()
+                except Exception:
+                    pass
         except Exception as exc:
             components["redis"] = _status(False, str(exc)[:200])
         try:

@@ -65,7 +65,10 @@ Modules reinforce this loop. AI may recommend; it must not claim success unless 
 5. ~~Soft backpressure signal~~ (**done** — flag + metric near maxlen; still durable XADD)
 6. Acceptance harness for the end-to-end workflow below (lab green; Redis HA still missing)
 
-Remaining Phase 1 claim blockers: Redis HA/Sentinel + multi-worker production proof.
+Remaining Phase 1 claim blockers: **measured** Redis Sentinel failover + multi-worker production proof (lab Sentinel compose profile exists; not certified).
+
+Compose lab HA stub: `docker compose --profile redis-ha up -d` + `REDIS_SENTINEL_HOSTS=redis-sentinel:26379`.
+Admin DLQ ops: `GET/POST /api/admin/realtime/dlq` (list / replay / purge).
 
 Run `scripts/realtime_acceptance_demo.py` / `scripts/live_lab_smoke.py` on owned lab endpoints.
 

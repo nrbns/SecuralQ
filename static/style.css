@@ -8121,6 +8121,15 @@ html[data-theme="dark"] .sw-view-tab {
   font-size: 0.72rem;
   line-height: 1.35;
 }
+.rt-health-actions {
+  margin-top: 0.45rem;
+  gap: 0.35rem;
+}
+.rt-health-actions .btn-secondary {
+  font-size: 0.72rem;
+  padding: 0.28rem 0.55rem;
+  min-height: 1.75rem;
+}
 @media (max-width: 720px) {
   .rt-health-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));

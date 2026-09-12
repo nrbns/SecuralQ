@@ -28,4 +28,5 @@ def test_metrics_include_stream_gauges():
     assert "securaiq_stream_length" in text
     assert "securaiq_stream_dlq_length" in text
     assert "securaiq_stream_pending" in text
+    assert "securaiq_realtime_events_per_sec" in text
     assert "securaiq_agents_total" in text

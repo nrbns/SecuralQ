@@ -33,7 +33,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/style.css?v=164" />
+  <link rel="stylesheet" href="/style.css?v=165" />
   <script src="/vendor/marked.min.js"></script>
 </head>
 <body>
@@ -457,6 +457,10 @@
                   <div><dt>SSE clients</dt><dd id="rtHealthSubs">—</dd></div>
                   <div><dt>Dropped dup</dt><dd id="rtHealthDup">—</dd></div>
                 </dl>
+                <div class="rt-health-actions page-head-actions">
+                  <button type="button" class="btn-secondary" id="rtHealthDlqListBtn" title="Admin: list dead-lettered events">View DLQ</button>
+                  <button type="button" class="btn-secondary" id="rtHealthDlqReplayBtn" title="Admin: requeue oldest DLQ entries">Replay DLQ</button>
+                </div>
                 <p class="hint rt-health-note" id="rtHealthNote">Lab in-process bus until REDIS_URL is set.</p>
               </div>
               <ul id="ccLiveStream" class="wz-events" aria-live="polite"><li class="hint">Waiting for events…</li></ul>
@@ -2281,7 +2285,7 @@
     </div>
   </div>
 
-  <script src="/app.js?v=213"></script>
+  <script src="/app.js?v=214"></script>
   <script src="/workspace.js?v=206"></script>
 </body>
 </html>

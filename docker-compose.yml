@@ -81,6 +81,52 @@ services:
       timeout: 3s
       retries: 10
 
+  # Lab Redis HA stub (Sentinel) — not a production failover certification.
+  # docker compose --profile redis-ha up -d
+  # App: REDIS_SENTINEL_HOSTS=redis-sentinel:26379 REDIS_SENTINEL_MASTER=mymaster
+  redis-primary:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    expose:
+      - "6379"
+    networks:
+      - securaiq-internal
+    restart: unless-stopped
+    profiles: ["redis-ha"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis-replica:
+    image: redis:7-alpine
+    command: ["redis-server", "--replicaof", "redis-primary", "6379"]
+    depends_on:
+      redis-primary:
+        condition: service_healthy
+    expose:
+      - "6379"
+    networks:
+      - securaiq-internal
+    restart: unless-stopped
+    profiles: ["redis-ha"]
+
+  redis-sentinel:
+    image: redis:7-alpine
+    command: ["redis-sentinel", "/etc/redis/sentinel.conf"]
+    volumes:
+      - ./deploy/redis/sentinel.conf:/etc/redis/sentinel.conf:ro
+    depends_on:
+      redis-primary:
+        condition: service_healthy
+    expose:
+      - "26379"
+    networks:
+      - securaiq-internal
+    restart: unless-stopped
+    profiles: ["redis-ha"]
+
   # Optional: publish DB/Redis to localhost for debugging (never on public hosts).
   postgres-debug:
     image: postgres:16-alpine
