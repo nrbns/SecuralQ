@@ -108,6 +108,83 @@ def test_delete_vulnerability_removes_real_finding(tmp_path, monkeypatch):
     assert del_res2.status_code == 404
 
 
+def test_delete_vulnerability_clears_cloud_cache_row(tmp_path, monkeypatch):
+    client, token, uid = _client_and_token(tmp_path, monkeypatch, username="cloud_cascade")
+    from app.cloud_posture import import_findings, list_findings
+    from app.enterprise import create_vulnerability
+
+    row = create_vulnerability(
+        uid,
+        {"title": "Public bucket", "severity": "high", "source": "cloud_import"},
+    )
+    vid = row["id"]
+    import_findings(
+        uid,
+        [{"id": "cf-1", "title": "Public bucket", "severity": "high", "resource": "s3://lab"}],
+        vendor="cloud_import",
+    )
+    # Link cache row to vuln (import creates its own vuln; force link for cascade test)
+    from app.db import get_conn
+
+    get_conn().execute("UPDATE cloud_findings SET vuln_id = ? WHERE finding_id = ?", (vid, "cf-1"))
+    get_conn().commit()
+    assert any(f.get("vuln_id") == vid for f in list_findings(limit=20))
+
+    del_res = client.delete(f"/api/vulnerabilities/{vid}", headers=_auth(token))
+    assert del_res.status_code == 200
+    assert not any(f.get("vuln_id") == vid for f in list_findings(limit=50))
+
+
+def test_bulk_delete_vulnerabilities(tmp_path, monkeypatch):
+    client, token, uid = _client_and_token(tmp_path, monkeypatch, username="bulk_del")
+    from app.enterprise import create_vulnerability
+
+    a = create_vulnerability(uid, {"title": "A", "severity": "low", "source": "test"})
+    b = create_vulnerability(uid, {"title": "B", "severity": "medium", "source": "test"})
+    res = client.post(
+        "/api/vulnerabilities/bulk-delete",
+        headers=_auth(token),
+        json={"ids": [a["id"], b["id"]]},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["deleted"] == 2
+    assert a["id"] not in _vuln_ids(client, token)
+    assert b["id"] not in _vuln_ids(client, token)
+
+
+def test_cloud_clear_removes_cache(tmp_path, monkeypatch):
+    configure_isolated_settings(monkeypatch, tmp_path)
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from app.auth import login, register_user
+    from app.cloud_posture import import_findings, list_findings
+    from app.cloud_posture_api import router as cloud_router
+    from app.tenancy import ensure_tenant_schema
+
+    ensure_tenant_schema()
+    register_user("cloud_clr", "password123", role="admin")
+    u, token = login("cloud_clr", "password123")
+    mini = FastAPI()
+    mini.include_router(cloud_router)
+    client = TestClient(mini)
+
+    import_findings(
+        u.id,
+        [{"id": "clr-1", "title": "Lab clear me", "severity": "low"}],
+        vendor="cloud_import",
+    )
+    assert list_findings(limit=10)
+    res = client.post(
+        "/api/cloud/clear",
+        headers=_auth(token),
+        json={"delete_linked_vulns": True},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json().get("ok") is True
+    assert list_findings(limit=10) == []
+
+
 def test_delete_vulnerability_scoped_to_owning_user(tmp_path, monkeypatch):
     client, token_a, uid_a = _client_and_token(tmp_path, monkeypatch, username="vuln_owner_a")
     token_b, _uid_b = _register_and_login("vuln_owner_b")

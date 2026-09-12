@@ -1162,6 +1162,21 @@ async def vulns_delete(vuln_id: str, user: Annotated[AuthUser, Depends(require_u
     return {"ok": True}
 
 
+class VulnBulkDelete(BaseModel):
+    ids: list[str] = Field(default_factory=list)
+
+
+@router.post("/vulnerabilities/bulk-delete")
+async def vulns_bulk_delete(req: VulnBulkDelete, user: Annotated[AuthUser, Depends(require_user)]):
+    require_perm(user, "vuln.write")
+    from app.enterprise import delete_vulnerabilities as _bulk_delete
+
+    ids = [str(x).strip() for x in (req.ids or []) if str(x).strip()]
+    if not ids:
+        raise HTTPException(status_code=400, detail="ids required")
+    return _bulk_delete(user.id, ids)
+
+
 class VulnTriage(BaseModel):
     owner: str = "SecOps"
     create_jira: bool = False

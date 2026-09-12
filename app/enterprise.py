@@ -747,6 +747,11 @@ def delete_vulnerability(user_id: str, vuln_id: str) -> bool:
     if not get_vulnerability(user_id, vuln_id):
         return False
     cur = get_conn().execute("DELETE FROM vulnerabilities WHERE id = ?", (vuln_id,))
+    # Drop orphaned cloud posture cache rows that pointed at this finding.
+    try:
+        get_conn().execute("DELETE FROM cloud_findings WHERE vuln_id = ?", (vuln_id,))
+    except Exception:
+        pass
     get_conn().commit()
     if cur.rowcount:
         audit("vuln_delete", user_id, {"id": vuln_id})
@@ -754,10 +759,23 @@ def delete_vulnerability(user_id: str, vuln_id: str) -> bool:
             from app.realtime_bus import publish
 
             publish(type="vuln", id=vuln_id, user_id=user_id, action="delete")
+            publish(type="cloud", user_id=user_id, action="delete", vuln_id=vuln_id)
         except Exception:
             pass
         return True
     return False
+
+
+def delete_vulnerabilities(user_id: str, vuln_ids: list[str]) -> dict[str, Any]:
+    """Delete many findings (same tenant rules as delete_vulnerability)."""
+    deleted: list[str] = []
+    for vid in vuln_ids[:500]:
+        vid = str(vid or "").strip()
+        if not vid:
+            continue
+        if delete_vulnerability(user_id, vid):
+            deleted.append(vid)
+    return {"ok": True, "deleted": len(deleted), "ids": deleted}
 
 
 def list_vulnerabilities(

@@ -2261,33 +2261,35 @@
     });
     root?.querySelectorAll(".ws-close-vuln").forEach((btn) => {
       btn.addEventListener("click", async () => {
-        await fetch(`/api/vulnerabilities/${btn.getAttribute("data-id")}`, {
-          method: "PATCH",
-          headers: authHeaders({ "Content-Type": "application/json" }),
-          body: JSON.stringify({ status: "closed" }),
-        });
-        renderVulnsPage();
-      loadVulnSampleButtons();
-        if (typeof loadCommandCenter === "function") loadCommandCenter();
+        btn.disabled = true;
+        try {
+          const res = await fetch(`/api/vulnerabilities/${btn.getAttribute("data-id")}`, {
+            method: "PATCH",
+            headers: authHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify({ status: "closed" }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+          if (typeof notifyUser === "function") notifyUser("**Finding closed** — register updated live.");
+          await refreshVulnsAfterMutation({ quiet: true });
+        } catch (err) {
+          if (typeof notifyUser === "function") notifyUser(`**Close failed:** ${err.message || err}`);
+          else alert(err.message || "Close failed");
+        } finally {
+          btn.disabled = false;
+        }
       });
     });
     root?.querySelectorAll(".ws-del-vuln").forEach((btn) => {
       btn.addEventListener("click", async () => {
-        if (!confirm("Delete this finding? This cannot be undone.")) return;
-        const id = btn.getAttribute("data-id");
+        btn.disabled = true;
         try {
-          const res = await fetch(`/api/vulnerabilities/${id}`, { method: "DELETE", headers: authHeaders() });
-          if (!res.ok) {
-            const d = await res.json().catch(() => ({}));
-            throw new Error(d.detail || `HTTP ${res.status}`);
-          }
-          _vulnCache = _vulnCache.filter((v) => v.id !== id);
-          if (_vulnSelectedId === id) _vulnSelectedId = "";
-          paintVulnTable();
-          if (typeof loadCommandCenter === "function") loadCommandCenter();
+          await deleteVulnerabilityById(btn.getAttribute("data-id"));
         } catch (err) {
           if (typeof notifyUser === "function") notifyUser(`**Delete failed:** ${err.message || err}`);
           else alert(err.message || "Delete failed");
+        } finally {
+          btn.disabled = false;
         }
       });
     });
@@ -2341,6 +2343,9 @@
         }
         const ev = ((raw && (raw.evidence || raw.note)) || "").toString().slice(0, 80);
         return `<tr class="vuln-row${selected}" data-id="${escapeHtml(v.id)}" tabindex="0">
+        <td class="vuln-check-cell" onclick="event.stopPropagation()">
+          <input type="checkbox" class="vuln-row-check" data-id="${escapeHtml(v.id)}" aria-label="Select finding" />
+        </td>
         <td><strong>${escapeHtml(v.title || v.cve || "Finding")}</strong>${
           ev ? `<div class="hint">${escapeHtml(ev)}</div>` : ""
         }</td>
@@ -2349,6 +2354,9 @@
         <td>${assetCell}</td>
         <td>${escapeHtml(v.status)}</td>
         <td>${escapeHtml(srcLabel)}</td>
+        <td class="vuln-actions-cell" onclick="event.stopPropagation()">
+          <button type="button" class="btn-secondary ws-row-del-vuln" data-id="${escapeHtml(v.id)}">Delete</button>
+        </td>
       </tr>`;
       })
       .join("");
@@ -2363,12 +2371,17 @@
       return;
     }
     el.innerHTML = `
+      <div class="vuln-bulk-bar">
+        <button type="button" class="btn-secondary" id="vulnBulkDeleteBtn">Delete selected</button>
+        <span class="hint" id="vulnBulkHint">Select rows, then delete — register updates live.</span>
+      </div>
       <p class="hint">Live findings from scans on hosts you own — duplicates from earlier auto-scans are merged. Showing ${list.length} of ${_vulnCache.length}.</p>
       <div class="data-table-wrap">
         <table class="data-table vuln-table">
           <thead><tr>
+            <th class="vuln-check-cell"><input type="checkbox" id="vulnSelectAll" aria-label="Select all visible" /></th>
             <th>Finding</th><th>CVE</th><th>Severity</th><th>Asset</th>
-            <th>Status</th><th>Source</th>
+            <th>Status</th><th>Source</th><th></th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>
@@ -2381,7 +2394,7 @@
         renderVulnDetail(v || null);
       };
       row.addEventListener("click", (e) => {
-        if (e.target.closest?.("[data-workspace]")) return;
+        if (e.target.closest?.("[data-workspace], .ws-row-del-vuln, .vuln-row-check, .vuln-check-cell, .vuln-actions-cell")) return;
         open();
       });
       row.addEventListener("keydown", (e) => {
@@ -2390,6 +2403,57 @@
           open();
         }
       });
+    });
+    el.querySelectorAll(".ws-row-del-vuln").forEach((btn) => {
+      btn.addEventListener("click", async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        btn.disabled = true;
+        try {
+          await deleteVulnerabilityById(btn.getAttribute("data-id"));
+        } catch (err) {
+          if (typeof notifyUser === "function") notifyUser(`**Delete failed:** ${err.message || err}`);
+          else alert(err.message || "Delete failed");
+        } finally {
+          btn.disabled = false;
+        }
+      });
+    });
+    const selectAll = el.querySelector("#vulnSelectAll");
+    selectAll?.addEventListener("change", () => {
+      el.querySelectorAll(".vuln-row-check").forEach((cb) => {
+        cb.checked = !!selectAll.checked;
+      });
+    });
+    el.querySelector("#vulnBulkDeleteBtn")?.addEventListener("click", async () => {
+      const ids = [...el.querySelectorAll(".vuln-row-check:checked")].map((cb) => cb.getAttribute("data-id")).filter(Boolean);
+      if (!ids.length) {
+        if (typeof notifyUser === "function") notifyUser("**Select at least one finding** to delete.");
+        return;
+      }
+      if (!confirm(`Delete ${ids.length} finding(s)? This cannot be undone.`)) return;
+      try {
+        const res = await fetch("/api/vulnerabilities/bulk-delete", {
+          method: "POST",
+          headers: authHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify({ ids }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+        const gone = new Set(data.ids || ids);
+        _vulnCache = _vulnCache.filter((v) => !gone.has(v.id));
+        if (gone.has(_vulnSelectedId)) {
+          _vulnSelectedId = "";
+          renderVulnDetail(null);
+        }
+        await refreshVulnsAfterMutation({ quiet: true });
+        if (typeof notifyUser === "function") {
+          notifyUser(`**Deleted ${data.deleted ?? ids.length} finding(s)** — register updated live.`);
+        }
+      } catch (err) {
+        if (typeof notifyUser === "function") notifyUser(`**Bulk delete failed:** ${err.message || err}`);
+        else alert(err.message || "Bulk delete failed");
+      }
     });
     if (_vulnSelectedId) {
       const still = list.find((v) => v.id === _vulnSelectedId) || list[0];
@@ -2654,9 +2718,41 @@
     wireCloudSyncBtn();
     wireCloudImportBtn();
     wireCloudSampleBtn();
+    wireCloudClearBtn();
     wireSonarSyncBtns();
     wireCodeScanUi();
     wireHkVulnAuditBtn();
+  }
+
+  async function refreshVulnsAfterMutation(opts) {
+    const quiet = !!(opts && opts.quiet);
+    await renderVulnsPage({ quiet });
+    if (typeof loadVulnSampleButtons === "function") loadVulnSampleButtons();
+    if (typeof loadCommandCenter === "function") loadCommandCenter();
+  }
+
+  async function deleteVulnerabilityById(id, { confirmMsg } = {}) {
+    const vid = String(id || "").trim();
+    if (!vid) return false;
+    if (confirmMsg !== false) {
+      if (!confirm(confirmMsg || "Delete this finding? This cannot be undone.")) return false;
+    }
+    const res = await fetch(`/api/vulnerabilities/${encodeURIComponent(vid)}`, {
+      method: "DELETE",
+      headers: authHeaders(),
+    });
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      throw new Error(d.detail || `HTTP ${res.status}`);
+    }
+    _vulnCache = _vulnCache.filter((v) => v.id !== vid);
+    if (_vulnSelectedId === vid) {
+      _vulnSelectedId = "";
+      renderVulnDetail(null);
+    }
+    await refreshVulnsAfterMutation({ quiet: true });
+    if (typeof notifyUser === "function") notifyUser("**Finding deleted** — register updated live.");
+    return true;
   }
 
   async function renderSonarPanel() {
@@ -2774,28 +2870,39 @@
   async function runCodeFolderScan() {
     const pathEl = qs("codeScanPath");
     const authEl = qs("codeScanAuth");
+    const gitUrlEl = qs("codeScanGitUrl");
+    const gitRefEl = qs("codeScanGitRef");
     const btn = qs("codeScanRunBtn");
     const path = ((pathEl && pathEl.value) || "").trim();
+    const gitUrl = ((gitUrlEl && gitUrlEl.value) || "").trim();
+    const gitRef = ((gitRefEl && gitRefEl.value) || "").trim();
     const authorized = !!(authEl && authEl.checked);
-    if (!path) {
+    if (!path && !gitUrl) {
       if (typeof notifyUser === "function") {
-        notifyUser("**Set a local project path** in SecuraIQ Code (folder you own), then Scan folder.");
+        notifyUser("**Set a local project path or a git repo URL** in SecuraIQ Code, then Scan folder.");
       }
       pathEl?.focus();
       return;
     }
+    const tools = [];
+    if (qs("codeScanToolCore")?.checked !== false) tools.push("code_scan");
+    if (qs("codeScanToolSemgrep")?.checked) tools.push("semgrep");
+    if (qs("codeScanToolCodeql")?.checked) tools.push("codeql");
+    if (!tools.length) tools.push("code_scan");
     try {
-      localStorage.setItem("securaiq_code_scan_path", path);
+      if (path) localStorage.setItem("securaiq_code_scan_path", path);
     } catch {
       /* ignore */
     }
-    if (typeof window.setScanTarget === "function") {
-      window.setScanTarget(path, authorized);
-    } else {
-      const liveTarget = document.getElementById("scanTargetIp");
-      const liveAuth = document.getElementById("scanAuthorized");
-      if (liveTarget) liveTarget.value = path;
-      if (liveAuth) liveAuth.checked = authorized;
+    if (path) {
+      if (typeof window.setScanTarget === "function") {
+        window.setScanTarget(path, authorized);
+      } else {
+        const liveTarget = document.getElementById("scanTargetIp");
+        const liveAuth = document.getElementById("scanAuthorized");
+        if (liveTarget) liveTarget.value = path;
+        if (liveAuth) liveAuth.checked = authorized;
+      }
     }
     if (btn) {
       btn.disabled = true;
@@ -2804,7 +2911,7 @@
     setCodeScanLive("Starting code analysis…", true);
     setCodeScanProgress("active", 0, 0, 0);
     if (typeof setLiveState === "function") {
-      setLiveState("live-busy", "Code analysis…", path);
+      setLiveState("live-busy", "Code analysis…", path || gitUrl);
     }
     let lastScanned = 0;
     let lastTotal = 0;
@@ -2813,7 +2920,14 @@
       const res = await fetch("/api/code/scan/stream", {
         method: "POST",
         headers: authHeaders({ "Content-Type": "application/json" }),
-        body: JSON.stringify({ path, authorized, sync_engine: false }),
+        body: JSON.stringify({
+          path,
+          git_url: gitUrl,
+          git_ref: gitRef,
+          authorized,
+          sync_engine: false,
+          tools,
+        }),
       });
       if (!res.ok) {
         const errBody = await res.json().catch(() => ({}));
@@ -2860,8 +2974,15 @@
           } else if (ev.event === "tool_start") {
             setCodeScanLive(`Running ${ev.name || ev.tool}…`, true);
             setCodeScanProgress("active", 0, 0, 0);
+          } else if (ev.event === "git_clone_start") {
+            setCodeScanLive(`Cloning ${ev.url}${ev.ref ? ` (${ev.ref})` : ""}…`, true);
+            setCodeScanProgress("active", 0, 0, 0);
+          } else if (ev.event === "git_clone_done") {
+            setCodeScanLive(`Cloned — starting scan…`, true);
+          } else if (ev.event === "git_clone_failed") {
+            setCodeScanLive(`Git clone failed: ${ev.error || "see error"}`, true);
           } else if (ev.event === "done") {
-            data = ev.payload || {};
+            data = ev.payload || ev;
           }
         }
       }
@@ -2984,6 +3105,119 @@
       });
     });
   }
+  // Field spec per cloud vendor — keys match app.settings_api._WRITABLE
+  // exactly, so this form is a thin UI over an already-real, already-wired
+  // settings pipeline (persists to .env, updates the live settings object,
+  // no restart needed) rather than a new config path.
+  const _CLOUD_VENDOR_FIELDS = {
+    aws_security_hub: {
+      label: "AWS Security Hub",
+      fields: [
+        { key: "aws_access_key_id", label: "Access key ID", type: "text" },
+        { key: "aws_secret_access_key", label: "Secret access key", type: "password" },
+        { key: "aws_region", label: "Region", type: "text", placeholder: "us-east-1" },
+      ],
+    },
+    azure_defender: {
+      label: "Azure Defender",
+      fields: [
+        { key: "azure_tenant_id", label: "Tenant ID", type: "text" },
+        { key: "azure_client_id", label: "Client (app) ID", type: "text" },
+        { key: "azure_client_secret", label: "Client secret", type: "password" },
+        { key: "azure_subscription_id", label: "Subscription ID", type: "text" },
+      ],
+    },
+    gcp_scc: {
+      label: "GCP Security Command Center",
+      fields: [
+        { key: "gcp_project_id", label: "Project ID", type: "text" },
+        { key: "gcp_service_account_json", label: "Service account JSON (paste key file contents)", type: "textarea" },
+      ],
+    },
+  };
+  let _cloudConfigOpenVendor = "";
+
+  function _renderCloudConfigForm(vendorId) {
+    const spec = _CLOUD_VENDOR_FIELDS[vendorId];
+    if (!spec) return "";
+    const fieldsHtml = spec.fields
+      .map((f) => {
+        const id = `cloudCfg_${f.key}`;
+        if (f.type === "textarea") {
+          return `<label class="inline-form-col-label" for="${id}">${escapeHtml(f.label)}</label>
+            <textarea id="${id}" data-field="${f.key}" rows="4" placeholder="Leave blank to keep existing"></textarea>`;
+        }
+        return `<label class="inline-form-col-label" for="${id}">${escapeHtml(f.label)}</label>
+          <input type="${f.type}" id="${id}" data-field="${f.key}" placeholder="${escapeHtml(
+            f.placeholder || "Leave blank to keep existing"
+          )}" autocomplete="off" />`;
+      })
+      .join("");
+    return `
+      <form class="inline-form inline-form-col cloud-config-form" id="cloudConfigForm" data-vendor="${vendorId}">
+        <p class="hint">${escapeHtml(spec.label)} credentials — stored server-side, never shown back in plaintext. Blank fields keep whatever's already saved.</p>
+        ${fieldsHtml}
+        <div style="display:flex;gap:0.5rem">
+          <button type="submit" class="btn-primary-cc">Save</button>
+          <button type="button" class="btn-secondary" id="cloudConfigCancel">Cancel</button>
+        </div>
+      </form>`;
+  }
+
+  function _wireCloudConfigForm() {
+    const form = qs("cloudConfigForm");
+    if (!form) return;
+    qs("cloudConfigCancel")?.addEventListener("click", () => {
+      _cloudConfigOpenVendor = "";
+      renderCloudPosturePanel();
+    });
+    form.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const vendorId = form.getAttribute("data-vendor") || "";
+      const spec = _CLOUD_VENDOR_FIELDS[vendorId];
+      if (!spec) return;
+      const body = {};
+      let any = false;
+      for (const f of spec.fields) {
+        const input = form.querySelector(`[data-field="${f.key}"]`);
+        const val = (input && input.value ? input.value : "").trim();
+        if (val) {
+          body[f.key] = val;
+          any = true;
+        }
+      }
+      if (!any) {
+        if (typeof notifyUser === "function") notifyUser("Enter at least one field to save.");
+        return;
+      }
+      const submitBtn = form.querySelector('button[type="submit"]');
+      if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.textContent = "Saving…";
+      }
+      try {
+        const res = await fetch("/api/settings", {
+          method: "POST",
+          headers: authHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify(body),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+        if (typeof notifyUser === "function") {
+          notifyUser(`**${spec.label} settings saved.** Cloud posture will re-check the connection now.`);
+        }
+        _cloudConfigOpenVendor = "";
+        await renderCloudPosturePanel();
+      } catch (err) {
+        if (typeof notifyUser === "function") notifyUser(`**Save failed:** ${err.message || err}`);
+        if (submitBtn) {
+          submitBtn.disabled = false;
+          submitBtn.textContent = "Save";
+        }
+      }
+    });
+  }
+
   async function renderCloudPosturePanel() {
     const el = qs("cloudPosturePanelBody");
     if (!el) return;
@@ -3006,9 +3240,12 @@
           const p = ping[id] || {};
           const ok = v.configured && p.ok;
           const err = v.configured && !p.ok ? p.error : "";
+          const cfgBtn = _CLOUD_VENDOR_FIELDS[id]
+            ? `<button type="button" class="btn-secondary btn-xs cloud-cfg-btn" data-vendor="${id}">Configure</button>`
+            : "";
           return `<li class="${ok ? "ok" : v.configured ? "warn" : "muted"}"><span>${escapeHtml(
             vendorLabels[id] || id
-          )}</span><strong>${v.configured ? (ok ? "Connected" : err || "error") : "Not configured"}</strong></li>`;
+          )}</span><strong>${v.configured ? (ok ? "Connected" : err || "error") : "Not configured"}</strong>${cfgBtn}</li>`;
         })
         .join("")}</ul>`;
       const findings = findData.findings || [];
@@ -3037,13 +3274,23 @@
       }
       el.innerHTML = `
         ${vendorChips}
+        <div id="cloudConfigFormWrap">${
+          _cloudConfigOpenVendor ? _renderCloudConfigForm(_cloudConfigOpenVendor) : ""
+        }</div>
         <div class="vuln-cloud-kpis">
           <article class="cc-kpi"><span>Cached</span><strong>${st.findings_cached || 0}</strong></article>
           <article class="cc-kpi"><span>Vendors</span><strong>${st.configured_count || 0}</strong></article>
         </div>
         <p class="hint vuln-cloud-label">Recent cloud findings</p>
         <ul class="cc-list">${findingsHtml}</ul>
-        <p class="hint">Import JSON / Load sample for lab. Live Security Hub / Defender / SCC only when configured in Settings.</p>`;
+        <p class="hint">Import JSON / Load sample for lab, or Configure a vendor above to pull live findings.</p>`;
+      el.querySelectorAll(".cloud-cfg-btn").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          _cloudConfigOpenVendor = btn.getAttribute("data-vendor") || "";
+          renderCloudPosturePanel();
+        });
+      });
+      _wireCloudConfigForm();
     } catch (err) {
       el.innerHTML = `<p class="hint">Couldn't load cloud posture — try refreshing. <span class="hint-sub">(${escapeHtml(err.message)})</span></p>`;
     }
@@ -3164,6 +3411,44 @@
       } finally {
         btn.disabled = false;
         btn.textContent = "Load sample";
+      }
+    });
+  }
+
+  function wireCloudClearBtn() {
+    const btn = qs("cloudClearBtn");
+    if (!btn || btn.dataset.wired) return;
+    btn.dataset.wired = "1";
+    btn.addEventListener("click", async () => {
+      if (
+        !confirm(
+          "Clear cached cloud findings and remove linked register rows? Lab cache only — not a live CSPM disconnect."
+        )
+      ) {
+        return;
+      }
+      btn.disabled = true;
+      btn.textContent = "Clearing…";
+      try {
+        const res = await fetch("/api/cloud/clear", {
+          method: "POST",
+          headers: authHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify({ delete_linked_vulns: true }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+        if (typeof notifyUser === "function") {
+          notifyUser(
+            `**Cloud cache cleared** · ${data.cleared ?? 0} cached · ${data.vulns_deleted ?? 0} register row(s)`
+          );
+        }
+        await refreshVulnsAfterMutation({ quiet: true });
+      } catch (err) {
+        if (typeof notifyUser === "function") notifyUser(`**Clear failed:** ${err.message || err}`);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "Clear cached";
+        renderCloudPosturePanel();
       }
     });
   }
@@ -3953,6 +4238,7 @@
 
     const scanTable = (rows, empty, opts = {}) => {
       const canDelete = Boolean(opts.deletable);
+      const archived = Boolean(opts.archived);
       const head = `<tr><th>Target</th><th>Engine</th><th>Findings</th><th>When</th><th>Download</th>${
         canDelete ? "<th></th>" : ""
       }</tr>`;
@@ -3963,9 +4249,9 @@
               .map((s) => {
                 const p = parseScanTitle(s.title);
                 const delCell = canDelete
-                  ? `<td class="reports-dl-cell"><button type="button" class="btn-secondary reports-archive-del" data-scan-id="${escapeHtml(
+                  ? `<td class="reports-dl-cell"><button type="button" class="btn-secondary reports-scan-del" data-scan-id="${escapeHtml(
                       s.id || ""
-                    )}">Delete</button></td>`
+                    )}" data-archived="${archived ? "1" : "0"}">Delete</button></td>`
                   : "";
                 return `<tr>
                   <td><strong>${escapeHtml(p.target)}</strong></td>
@@ -4016,13 +4302,13 @@
             <h2>Scan reports</h2>
             <span class="hint">${liveScans.length} completed</span>
           </header>
-          ${scanTable(liveScans, "No completed scans yet — run New scan. Each scan appears once with Markdown + PDF.")}
+          ${scanTable(liveScans, "No completed scans yet — run New scan. Each scan appears once with Markdown + PDF.", { deletable: true })}
         </section>
         ${
           archives.length
             ? `<section class="reports-section">
                 <header class="reports-section-head"><h2>Archived</h2><span class="hint">${archives.length}</span></header>
-                ${scanTable(archives, "", { deletable: true })}
+                ${scanTable(archives, "", { deletable: true, archived: true })}
               </section>`
             : ""
         }
@@ -4097,22 +4383,25 @@
     body.querySelectorAll(".reports-dl").forEach((btn) => {
       btn.addEventListener("click", () => downloadReport(btn.getAttribute("data-href"), btn.getAttribute("data-kind") || ""));
     });
-    body.querySelectorAll(".reports-archive-del").forEach((btn) => {
+    body.querySelectorAll(".reports-scan-del").forEach((btn) => {
       btn.addEventListener("click", async () => {
         const scanId = btn.getAttribute("data-scan-id") || "";
+        const archived = btn.getAttribute("data-archived") === "1";
         if (!scanId) return;
         if (
           !confirm(
-            "Permanently delete this archived report (Markdown, PDF, and evidence)? This cannot be undone."
+            archived
+              ? "Permanently delete this archived report (Markdown, PDF, and evidence)? This cannot be undone."
+              : "Permanently delete this scan and its evidence? This cannot be undone."
           )
         )
           return;
         btn.disabled = true;
         try {
-          const res = await fetch(`/api/archive/scans/${encodeURIComponent(scanId)}`, {
-            method: "DELETE",
-            headers: authHeaders(),
-          });
+          const url = archived
+            ? `/api/archive/scans/${encodeURIComponent(scanId)}`
+            : `/api/scans/${encodeURIComponent(scanId)}`;
+          const res = await fetch(url, { method: "DELETE", headers: authHeaders() });
           const data = await res.json().catch(() => ({}));
           if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
           await renderReportsPage();
@@ -6738,7 +7027,10 @@
               <td>${escapeHtml(s.status || "")}</td>
               <td>${sum.findings_created ?? sum.findings ?? "—"}</td>
               <td class="hint">${escapeHtml(fmtWhen(s.created_at))}</td>
-              <td><button type="button" class="btn-secondary webscan-view" data-id="${escapeHtml(s.id)}">View</button></td>
+              <td class="reports-dl-cell">
+                <button type="button" class="btn-secondary webscan-view" data-id="${escapeHtml(s.id)}">View</button>
+                <button type="button" class="btn-secondary webscan-del" data-id="${escapeHtml(s.id)}">Delete</button>
+              </td>
             </tr>`;
           })
           .join("")}</tbody></table></div>`;
@@ -6755,6 +7047,26 @@
             qs("webscanResultPanel")?.scrollIntoView({ behavior: "smooth", block: "start" });
           } catch (err) {
             alert(err.message || "Could not load scan");
+          }
+        });
+      });
+      el.querySelectorAll(".webscan-del").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const id = btn.getAttribute("data-id");
+          if (!id) return;
+          if (!confirm("Permanently delete this scan and its evidence? This cannot be undone.")) return;
+          btn.disabled = true;
+          try {
+            const r = await fetch(`/api/scans/${encodeURIComponent(id)}`, {
+              method: "DELETE",
+              headers: authHeaders(),
+            });
+            const data = await r.json().catch(() => ({}));
+            if (!r.ok) throw new Error(data.detail || `HTTP ${r.status}`);
+            await refreshWebScanHistory();
+          } catch (err) {
+            alert(err.message || "Delete failed");
+            btn.disabled = false;
           }
         });
       });
@@ -7392,11 +7704,139 @@
       <p class="hint">Showing ${logs.length} event(s). Sources are shown as-is — never relabeled to look like they came from somewhere they didn't.</p>`;
   }
 
+  // Outbound SIEM forwarding config — Microsoft Sentinel via the real Azure
+  // Monitor Logs Ingestion API (app/connectors/azure_sentinel.py). Field
+  // keys match app.settings_api._WRITABLE exactly, same thin-UI-over-a-
+  // real-settings-pipeline pattern as the cloud posture Configure form.
+  let _siemAzureOpen = false;
+  const _SIEM_AZURE_FIELDS = [
+    { key: "siem_azure_dce_url", label: "Data Collection Endpoint URL", type: "text", placeholder: "https://xxx.eastus-1.ingest.monitor.azure.com" },
+    { key: "siem_azure_dcr_immutable_id", label: "Data Collection Rule immutable ID", type: "text", placeholder: "dcr-xxxxxxxxxxxxxxxx" },
+    { key: "siem_azure_stream_name", label: "Stream name", type: "text", placeholder: "Custom-SecuraIQEvents_CL" },
+    { key: "siem_azure_tenant_id", label: "Tenant ID (optional — falls back to Cloud posture's Azure app)", type: "text" },
+    { key: "siem_azure_client_id", label: "Client (app) ID (optional)", type: "text" },
+    { key: "siem_azure_client_secret", label: "Client secret (optional)", type: "password" },
+  ];
+
+  function _renderSiemAzureForm(cfg) {
+    const fieldsHtml = _SIEM_AZURE_FIELDS.map((f) => {
+      const id = `siemAzureCfg_${f.key}`;
+      const existing = f.type === "password" ? "" : cfg[f.key] || "";
+      return `<label class="inline-form-col-label" for="${id}">${escapeHtml(f.label)}</label>
+        <input type="${f.type}" id="${id}" data-field="${f.key}" value="${escapeHtml(existing)}" placeholder="${escapeHtml(
+          f.placeholder || "Leave blank to keep existing"
+        )}" autocomplete="off" />`;
+    }).join("");
+    return `
+      <form class="inline-form inline-form-col" id="siemAzureForm">
+        <p class="hint">Ships SecuraIQ's security/audit events to a Microsoft Sentinel workspace via the real Azure Monitor Logs Ingestion API. You provision the Data Collection Endpoint + Rule in Azure first (standard Sentinel onboarding) and grant the app "Monitoring Metrics Publisher" on it — this only authenticates and ships events, it doesn't create Azure resources.</p>
+        <label><input type="checkbox" id="siemAzureCfg_enabled" ${cfg.siem_azure_sentinel_enabled ? "checked" : ""} /> Enable forwarding</label>
+        ${fieldsHtml}
+        <div style="display:flex;gap:0.5rem">
+          <button type="submit" class="btn-primary-cc">Save</button>
+          <button type="button" class="btn-secondary" id="siemAzureTestBtn">Test connection</button>
+          <button type="button" class="btn-secondary" id="siemAzureCancel">Cancel</button>
+        </div>
+      </form>`;
+  }
+
+  function _wireSiemAzureForm() {
+    const form = qs("siemAzureForm");
+    if (!form) return;
+    qs("siemAzureCancel")?.addEventListener("click", () => {
+      _siemAzureOpen = false;
+      renderSiemForwardPanel();
+    });
+    qs("siemAzureTestBtn")?.addEventListener("click", async () => {
+      const statusEl = qs("siemAzureTestStatus");
+      if (statusEl) statusEl.textContent = "Testing — acquiring token and sending a heartbeat event…";
+      try {
+        const res = await fetch("/api/logs/siem/azure/test", { method: "POST", headers: authHeaders() });
+        const data = await res.json().catch(() => ({}));
+        if (statusEl) {
+          statusEl.textContent = data.ok
+            ? "Connected — heartbeat event accepted by Sentinel."
+            : `Failed: ${data.error || "unknown error"}`;
+        }
+      } catch (err) {
+        if (statusEl) statusEl.textContent = `Failed: ${err.message || err}`;
+      }
+    });
+    form.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const body = { siem_azure_sentinel_enabled: !!qs("siemAzureCfg_enabled")?.checked };
+      _SIEM_AZURE_FIELDS.forEach((f) => {
+        const input = form.querySelector(`[data-field="${f.key}"]`);
+        const val = (input && input.value ? input.value : "").trim();
+        if (val) body[f.key] = val;
+      });
+      const submitBtn = form.querySelector('button[type="submit"]');
+      if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.textContent = "Saving…";
+      }
+      try {
+        const res = await fetch("/api/settings", {
+          method: "POST",
+          headers: authHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify(body),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+        if (typeof notifyUser === "function") notifyUser("**Microsoft Sentinel settings saved.**");
+        _siemAzureOpen = false;
+        await renderSiemForwardPanel();
+      } catch (err) {
+        if (typeof notifyUser === "function") notifyUser(`**Save failed:** ${err.message || err}`);
+        if (submitBtn) {
+          submitBtn.disabled = false;
+          submitBtn.textContent = "Save";
+        }
+      }
+    });
+  }
+
+  async function renderSiemForwardPanel() {
+    const el = qs("siemForwardPanelBody");
+    if (!el) return;
+    let cfg = {};
+    let status = {};
+    try {
+      const [cfgRes, stRes] = await Promise.all([
+        fetch("/api/settings", { headers: authHeaders() }),
+        fetch("/api/logs/siem/status", { headers: authHeaders() }),
+      ]);
+      cfg = await cfgRes.json().catch(() => ({}));
+      status = await stRes.json().catch(() => ({}));
+    } catch (err) {
+      el.innerHTML = `<p class="hint">Could not load SIEM forwarding status: ${escapeHtml(err.message || String(err))}</p>`;
+      return;
+    }
+    const az = status.azure_sentinel || {};
+    const azOk = az.enabled && az.configured;
+    el.innerHTML = `
+      <ul class="integ-status-list">
+        <li class="${azOk ? "ok" : az.configured || az.enabled ? "warn" : "muted"}">
+          <span>Microsoft Sentinel</span>
+          <strong>${az.enabled ? (az.configured ? "Enabled &amp; configured" : "Enabled — missing fields") : "Disabled"}</strong>
+          <button type="button" class="btn-secondary btn-xs" id="siemAzureCfgBtn">${_siemAzureOpen ? "Close" : "Configure"}</button>
+        </li>
+      </ul>
+      <div id="siemAzureCfgWrap">${_siemAzureOpen ? _renderSiemAzureForm(cfg) : ""}</div>
+      <p class="hint" id="siemAzureTestStatus"></p>`;
+    qs("siemAzureCfgBtn")?.addEventListener("click", () => {
+      _siemAzureOpen = !_siemAzureOpen;
+      renderSiemForwardPanel();
+    });
+    _wireSiemAzureForm();
+  }
+
   async function renderLogsPage() {
     const body = qs("logsPageBody");
     if (!body) return;
     paintLogFilters();
     await renderLogsStatsBar();
+    await renderSiemForwardPanel();
     await paintLogTable();
     if (!qs("logsTestEventRow")) {
       const bar = qs("logsFilterBar");

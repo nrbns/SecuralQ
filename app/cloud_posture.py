@@ -180,6 +180,46 @@ def import_findings(user_id: str, findings: list[dict[str, Any]], vendor: str = 
     return out
 
 
+def clear_cached_findings(*, delete_linked_vulns: bool = True, user_id: str = "local") -> dict[str, Any]:
+    """Lab clear: wipe cloud_findings cache and optionally linked register rows."""
+    ensure_schema()
+    c = get_conn()
+    vuln_ids: list[str] = []
+    if delete_linked_vulns:
+        rows = c.execute(
+            "SELECT DISTINCT vuln_id FROM cloud_findings WHERE vuln_id != ''"
+        ).fetchall()
+        vuln_ids = [str(r["vuln_id"] if hasattr(r, "keys") else r[0]) for r in rows if r]
+    cur = c.execute("DELETE FROM cloud_findings")
+    cleared = int(cur.rowcount or 0)
+    c.commit()
+    vulns_deleted = 0
+    if delete_linked_vulns and vuln_ids:
+        try:
+            from app.enterprise import delete_vulnerability
+
+            for vid in vuln_ids:
+                if delete_vulnerability(user_id, vid):
+                    vulns_deleted += 1
+        except Exception:
+            pass
+    try:
+        from app.realtime_bus import publish
+
+        publish(
+            type="cloud",
+            action="clear",
+            cleared=cleared,
+            vulns_deleted=vulns_deleted,
+            user_id=user_id,
+        )
+        if vulns_deleted:
+            publish(type="vuln_batch", source="cloud", action="clear", count=vulns_deleted, user_id=user_id)
+    except Exception:
+        pass
+    return {"ok": True, "cleared": cleared, "vulns_deleted": vulns_deleted}
+
+
 def list_findings(limit: int = 50, vendor: str | None = None) -> list[dict[str, Any]]:
     ensure_schema()
     if vendor:

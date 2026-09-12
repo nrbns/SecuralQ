@@ -690,6 +690,18 @@
                     <input type="text" id="codeScanPath" placeholder="Local project path (e.g. E:\SecuralQ)" autocomplete="off" />
                     <label class="code-scan-auth"><input type="checkbox" id="codeScanAuth" checked /> Auth</label>
                   </div>
+                  <div class="code-scan-form code-scan-git-row">
+                    <label class="sr-only" for="codeScanGitUrl">Git repo URL</label>
+                    <input type="text" id="codeScanGitUrl" placeholder="or a git repo URL, e.g. https://github.com/org/repo.git" autocomplete="off" />
+                    <label class="sr-only" for="codeScanGitRef">Branch / tag</label>
+                    <input type="text" id="codeScanGitRef" placeholder="branch (optional)" autocomplete="off" style="max-width:9rem" />
+                  </div>
+                  <p class="hint">Give either a local path or a git URL (http/https only) — a git URL is shallow-cloned, scanned, then removed.</p>
+                  <div class="code-scan-tools" id="codeScanTools">
+                    <label><input type="checkbox" id="codeScanToolCore" checked /> SecuraIQ Code (built-in)</label>
+                    <label><input type="checkbox" id="codeScanToolSemgrep" /> Semgrep</label>
+                    <label><input type="checkbox" id="codeScanToolCodeql" /> CodeQL (CLI check)</label>
+                  </div>
                   <p class="hint code-scan-live" id="codeScanLive" hidden></p>
                   <div class="code-scan-progress" id="codeScanProgress" aria-live="polite">
                     <div class="code-scan-progress-track">
@@ -708,6 +720,7 @@
                     <div class="page-head-actions">
                       <button type="button" class="btn-secondary" id="cloudImportBtn">Import JSON</button>
                       <button type="button" class="btn-secondary" id="cloudSampleBtn" title="Load lab sample findings">Load sample</button>
+                      <button type="button" class="btn-secondary" id="cloudClearBtn" title="Clear cached cloud findings">Clear cached</button>
                       <button type="button" class="btn-secondary" id="cloudSyncBtn">Sync cloud</button>
                     </div>
                   </header>
@@ -809,6 +822,10 @@
             </div>
           </div>
           <div id="logsStatsBar" class="vuln-summary-bar" aria-live="polite"></div>
+          <section class="cc-panel" id="siemForwardPanel" style="margin-bottom:1rem">
+            <header><h2>Outbound SIEM forwarding</h2></header>
+            <div id="siemForwardPanelBody"><p class="hint">Loading…</p></div>
+          </section>
           <div id="logsFilterBar" class="filter-bar" aria-label="Log filters"></div>
           <div id="logsPageBody"><p class="hint">Loading…</p></div>
         </section>

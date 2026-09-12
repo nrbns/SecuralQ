@@ -2938,6 +2938,37 @@ html[data-theme="light"],
   resize: vertical;
   width: 100%;
 }
+.inline-form-col-label {
+  font-size: 0.8rem;
+  color: var(--muted, #8a93a3);
+  margin: 0.3rem 0 -0.15rem;
+}
+.btn-xs {
+  padding: 0.15rem 0.5rem;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  margin-left: 0.5rem;
+}
+#cloudConfigFormWrap:empty {
+  display: none;
+}
+#cloudConfigFormWrap {
+  margin: 0.5rem 0;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border, #2a3544);
+  border-radius: 8px;
+  background: var(--surface-2, #121820);
+}
+#siemAzureCfgWrap:empty {
+  display: none;
+}
+#siemAzureCfgWrap {
+  margin: 0.5rem 0;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border, #2a3544);
+  border-radius: 8px;
+  background: var(--surface-2, #121820);
+}
 /* Compliance document editor: section textareas live outside .inline-form
    (each is paired with its own heading/prompt label, not a flat field list),
    so they need the same real input styling on their own rather than via the
@@ -4768,6 +4799,26 @@ html[data-theme="dark"] .legal-badge {
 .vuln-table tbody tr.is-selected {
   background: var(--accent-soft);
 }
+.vuln-bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0 0 0.5rem;
+  flex-wrap: wrap;
+}
+.vuln-check-cell {
+  width: 2rem;
+  text-align: center;
+  vertical-align: middle;
+}
+.vuln-actions-cell {
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.vuln-actions-cell .btn-secondary {
+  font-size: 0.8rem;
+  padding: 0.2rem 0.55rem;
+}
 .entity-detail-panel {
   border: 1px solid var(--border);
   border-radius: 1rem;
@@ -5558,6 +5609,20 @@ html[data-theme="dark"] .main {
 #viewVulns .code-scan-live {
   margin: 0 0 0.5rem;
   font-variant-numeric: tabular-nums;
+}
+#viewVulns .code-scan-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.9rem;
+  margin: 0 0 0.5rem;
+  font-size: 0.85rem;
+}
+#viewVulns .code-scan-tools label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  white-space: nowrap;
 }
 .sr-only {
   position: absolute;

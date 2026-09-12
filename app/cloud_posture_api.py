@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.auth import AuthUser
-from app.cloud_posture import import_findings, list_findings, ping_all
+from app.cloud_posture import clear_cached_findings, import_findings, list_findings, ping_all
 from app.cloud_posture import status as cloud_status
 from app.commercial_api import require_user
 
@@ -19,6 +19,10 @@ router = APIRouter(prefix="/api/cloud", tags=["cloud-posture"])
 class CloudImportBody(BaseModel):
     vendor: str = "cloud_import"
     findings: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class CloudClearBody(BaseModel):
+    delete_linked_vulns: bool = True
 
 
 @router.get("/status")
@@ -50,6 +54,18 @@ async def get_findings(
     vendor: str | None = None,
 ):
     return {"findings": list_findings(limit=limit, vendor=vendor)}
+
+
+@router.post("/clear")
+async def clear_cloud_cache(
+    user: Annotated[AuthUser, Depends(require_user)],
+    req: CloudClearBody = CloudClearBody(),
+):
+    """Clear lab cloud cache (+ linked vulns by default). Not a live CSPM disconnect."""
+    return clear_cached_findings(
+        delete_linked_vulns=bool(req.delete_linked_vulns),
+        user_id=user.id,
+    )
 
 
 @router.get("/lab-sample")
