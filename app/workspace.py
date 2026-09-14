@@ -28,21 +28,27 @@ def create_engagement(
     scope_notes: str = "",
     status: str = "active",
     scope_json: str | list | None = None,
+    cmmc_enclave_architecture: str = "",
 ) -> dict[str, Any]:
     if status not in ENGAGEMENT_STATUSES:
         status = "active"
+    from app.commercial_ext import ensure_org_schema
+    from app.cmmc_enclave_architecture import normalize_enclave_architecture
     from app.services.tool_policy import scope_to_storage
 
+    ensure_org_schema()
     eid = new_id()
     t = now()
     scope_stored = scope_to_storage(scope_json)
+    enclave = normalize_enclave_architecture(cmmc_enclave_architecture)
     c = get_conn()
     c.execute(
         """
-        INSERT INTO engagements (id, user_id, name, scope_notes, scope_json, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO engagements
+        (id, user_id, name, scope_notes, scope_json, status, cmmc_enclave_architecture, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (eid, user_id, (name or "Engagement").strip(), scope_notes or "", scope_stored, status, t, t),
+        (eid, user_id, (name or "Engagement").strip(), scope_notes or "", scope_stored, status, enclave, t, t),
     )
     c.commit()
     audit("engagement_create", user_id, {"id": eid, "name": name, "status": status, "scope_size": len(json.loads(scope_stored or "[]"))})
@@ -107,26 +113,35 @@ def update_engagement(
     name: str | None = None,
     scope_notes: str | None = None,
     scope_json: str | list | None = None,
+    cmmc_enclave_architecture: str | None = None,
 ) -> dict[str, Any] | None:
+    from app.commercial_ext import ensure_org_schema
+
+    ensure_org_schema()
     eng = get_engagement(user_id, engagement_id)
     if not eng:
         return None
+    from app.cmmc_enclave_architecture import normalize_enclave_architecture
     from app.services.tool_policy import scope_to_storage
 
     next_scope = eng.get("scope_json") or "[]"
     if scope_json is not None:
         next_scope = scope_to_storage(scope_json)
+    next_enclave = eng.get("cmmc_enclave_architecture") or ""
+    if cmmc_enclave_architecture is not None:
+        next_enclave = normalize_enclave_architecture(cmmc_enclave_architecture)
     c = get_conn()
     c.execute(
         """
         UPDATE engagements
-        SET name = ?, scope_notes = ?, scope_json = ?, updated_at = ?
+        SET name = ?, scope_notes = ?, scope_json = ?, cmmc_enclave_architecture = ?, updated_at = ?
         WHERE id = ? AND user_id = ?
         """,
         (
             name if name is not None else eng["name"],
             scope_notes if scope_notes is not None else eng["scope_notes"],
             next_scope,
+            next_enclave,
             now(),
             engagement_id,
             user_id,

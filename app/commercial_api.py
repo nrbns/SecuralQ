@@ -94,6 +94,7 @@ class EngagementUpdate(BaseModel):
     name: str | None = None
     scope_notes: str | None = None
     scope_json: list[str] | str | None = None
+    cmmc_enclave_architecture: str | None = None
 
 
 class EngagementStatusUpdate(BaseModel):
@@ -412,6 +413,15 @@ async def eng_list(
     return {"engagements": list_engagements(user.id, status), "statuses": list(ENGAGEMENT_STATUSES)}
 
 
+@router.get("/engagements/enclave-architecture-types")
+async def eng_enclave_architecture_types(user: Annotated[AuthUser, Depends(require_user)]):
+    """The CMMC Secure Enclave architecture taxonomy an engagement can be tagged with --
+    see app.cmmc_enclave_architecture for the honesty/scope notes on this field."""
+    from app.cmmc_enclave_architecture import list_enclave_architecture_types
+
+    return {"types": list_enclave_architecture_types()}
+
+
 @router.post("/engagements")
 async def eng_create(req: EngagementCreate, user: Annotated[AuthUser, Depends(require_user)]):
     if req.status not in ENGAGEMENT_STATUSES:
@@ -421,7 +431,10 @@ async def eng_create(req: EngagementCreate, user: Annotated[AuthUser, Depends(re
 
 @router.patch("/engagements/{engagement_id}")
 async def eng_update(engagement_id: str, req: EngagementUpdate, user: Annotated[AuthUser, Depends(require_user)]):
-    out = update_engagement(user.id, engagement_id, req.name, req.scope_notes, scope_json=req.scope_json)
+    out = update_engagement(
+        user.id, engagement_id, req.name, req.scope_notes,
+        scope_json=req.scope_json, cmmc_enclave_architecture=req.cmmc_enclave_architecture,
+    )
     if not out:
         raise HTTPException(status_code=404, detail="Not found")
     return out

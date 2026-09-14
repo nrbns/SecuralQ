@@ -21,8 +21,12 @@ def create_engagement(
     scope_notes: str = "",
     status: str = "active",
     scope_json: str | list | None = None,
+    cmmc_enclave_architecture: str = "",
 ) -> dict[str, Any]:
-    return _create(user_id, name, scope_notes, status, scope_json=scope_json)
+    return _create(
+        user_id, name, scope_notes, status, scope_json=scope_json,
+        cmmc_enclave_architecture=cmmc_enclave_architecture,
+    )
 
 
 def list_engagements(user_id: str, status: str | None = None) -> list[dict[str, Any]]:
@@ -39,8 +43,12 @@ def update_engagement(
     name: str | None = None,
     scope_notes: str | None = None,
     scope_json: str | list | None = None,
+    cmmc_enclave_architecture: str | None = None,
 ) -> dict[str, Any] | None:
-    return _update(user_id, engagement_id, name, scope_notes, scope_json=scope_json)
+    return _update(
+        user_id, engagement_id, name, scope_notes, scope_json=scope_json,
+        cmmc_enclave_architecture=cmmc_enclave_architecture,
+    )
 
 
 def transition_engagement_status(user_id: str, engagement_id: str, new_status: str) -> dict[str, Any]:

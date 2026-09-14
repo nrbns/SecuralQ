@@ -129,6 +129,37 @@ def _disclaimer(caveat: str) -> str:
     )
 
 
+def _enclave_architecture_note(user_id: str, engagement_id: str | None) -> str | None:
+    """Surfaces the engagement's self-reported CMMC Secure Enclave architecture
+    type (app.cmmc_enclave_architecture) in the SSP's environment-scope section
+    -- only when an engagement is actually linked to the assessment and a type
+    has actually been set. Omitted entirely otherwise, never defaulted or
+    guessed."""
+    if not engagement_id:
+        return None
+    try:
+        from app.services.engagements import get_engagement
+        from app.cmmc_enclave_architecture import (
+            enclave_architecture_description,
+            enclave_architecture_label,
+            normalize_enclave_architecture,
+        )
+
+        eng = get_engagement(user_id, engagement_id)
+        raw = (eng or {}).get("cmmc_enclave_architecture") or ""
+        value = normalize_enclave_architecture(raw)
+        if not value:
+            return None
+        return (
+            f"**Enclave architecture (self-reported):** {enclave_architecture_label(value)}\n\n"
+            f"{enclave_architecture_description(value)}\n\n"
+            "This is a self-reported classification of the CUI-boundary architecture pattern "
+            "entered for this engagement -- not independently verified by SecuraIQ."
+        )
+    except Exception:
+        return None
+
+
 def generate_report_markdown(user_id: str, assessment_id: str) -> str:
     """The framework-appropriate implementation report (SSP / SoA / SRA /
     readiness report / generic control implementation report -- see
@@ -172,6 +203,10 @@ def generate_report_markdown(user_id: str, assessment_id: str) -> str:
         "formal submission or audit.",
         "",
     ]
+
+    enclave_note = _enclave_architecture_note(user_id, data.get("engagement_id"))
+    if enclave_note:
+        lines += [enclave_note, ""]
 
     section_num = 2
     if framework_id == "cmmc_l2":

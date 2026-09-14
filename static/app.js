@@ -1759,9 +1759,41 @@ async function renameEngagement() {
   const name = prompt("New engagement name:");
   if (!name?.trim()) return;
   const scope = prompt("Scope notes (leave blank to keep unchanged)") ?? "";
+
+  // CMMC "Secure Enclave" architecture type -- a self-reported, engagement-level
+  // setting (see app.cmmc_enclave_architecture) that feeds into the generated
+  // System Security Plan's environment-scope section. Optional: only relevant
+  // to engagements that actually have a CUI/CMMC boundary.
+  let archChoice = "";
+  try {
+    const archRes = await fetch("/api/engagements/enclave-architecture-types", { headers: authHeaders() });
+    if (archRes.ok) {
+      const archData = await archRes.json();
+      const types = archData.types || [];
+      const listText = types.map((t, i) => `${i + 1}. ${t.label}`).join("\n");
+      const raw = prompt(
+        "CMMC enclave architecture type -- only set this if this engagement has a CUI/CMMC boundary. " +
+          "This is self-reported and will appear in the generated SSP; SecuraIQ does not verify it.\n" +
+          "Enter a number, leave blank to keep unchanged, or type \"none\" to clear:\n" +
+          listText
+      ) ?? "";
+      const trimmed = raw.trim();
+      if (trimmed.toLowerCase() === "none") {
+        archChoice = "__clear__";
+      } else if (trimmed) {
+        const idx = parseInt(trimmed, 10);
+        if (!Number.isNaN(idx) && types[idx - 1]) archChoice = types[idx - 1].id;
+      }
+    }
+  } catch {
+    // Enclave architecture is an optional add-on to renaming -- never block the rename on it.
+  }
+
   try {
     const body = { name: name.trim() };
     if (scope.trim()) body.scope_notes = scope.trim();
+    if (archChoice === "__clear__") body.cmmc_enclave_architecture = "";
+    else if (archChoice) body.cmmc_enclave_architecture = archChoice;
     const res = await fetch(`/api/engagements/${id}`, {
       method: "PATCH",
       headers: authHeaders({ "Content-Type": "application/json" }),

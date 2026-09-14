@@ -59,6 +59,10 @@ def ensure_org_schema() -> None:
     cols = {r[1] for r in c.execute("PRAGMA table_info(engagements)").fetchall()}
     if "org_id" not in cols:
         c.execute("ALTER TABLE engagements ADD COLUMN org_id TEXT")
+    if "cmmc_enclave_architecture" not in cols:
+        c.execute(
+            "ALTER TABLE engagements ADD COLUMN cmmc_enclave_architecture TEXT NOT NULL DEFAULT ''"
+        )
     c.commit()
 
 
