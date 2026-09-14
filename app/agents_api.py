@@ -21,8 +21,10 @@ from app.agents import (
     agent_visible_to_user,
     checkin,
     create_campaign,
+    create_enroll_token,
     delete_agent,
     enroll_agent,
+    enroll_agent_with_token,
     get_agent,
     get_campaign,
     list_agents,
@@ -40,6 +42,7 @@ from app.agents import (
     request_enable_firewall_command,
     request_disable_ssh_root_command,
     revoke_agent,
+    revoke_enroll_token,
 )
 from app.auth import AuthUser
 from app.commercial_api import require_user
@@ -237,6 +240,88 @@ async def api_enroll_agent(
             f"  python3 securaiq_agent.py --server <this-server-url> --token {token}\n"
             "  Scripts: GET /api/agents/install-script/{windows|linux|macos}\n"
         ),
+    }
+
+
+class EnrollTokenRequest(BaseModel):
+    org_id: str | None = None
+    ttl_sec: int = Field(default=3600, ge=60, le=604800)
+    max_uses: int = Field(default=1, ge=1, le=500)
+    name_hint: str = ""
+
+
+class EnrollByTokenRequest(BaseModel):
+    token: str
+    hostname: str = ""
+    platform: str = ""
+    name: str = ""
+
+
+@router.post("/enroll-tokens")
+async def api_create_enroll_token(
+    req: EnrollTokenRequest,
+    user: Annotated[AuthUser, Depends(require_user)],
+    header_org: Annotated[str | None, Depends(optional_org_header)] = None,
+):
+    """Dashboard: issue a short-lived enrollment token (shown once)."""
+    oid = _org_for(user, req.org_id or header_org)
+    require_perm(user, "agent.write", org_id=oid)
+    try:
+        result = create_enroll_token(
+            user.id,
+            org_id=oid,
+            ttl_sec=req.ttl_sec,
+            max_uses=req.max_uses,
+            name_hint=req.name_hint,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    audit(
+        "agent_enroll_token_create",
+        user.id,
+        {"token_id": result["token_id"], "org_id": oid, "max_uses": req.max_uses},
+    )
+    return result
+
+
+@router.post("/enroll-tokens/{token_id}/revoke")
+async def api_revoke_enroll_token(
+    token_id: str,
+    user: Annotated[AuthUser, Depends(require_user)],
+):
+    require_perm(user, "agent.write")
+    if not revoke_enroll_token(user.id, token_id):
+        raise HTTPException(status_code=404, detail="Enrollment token not found")
+    audit("agent_enroll_token_revoke", user.id, {"token_id": token_id})
+    return {"ok": True}
+
+
+@router.post("/enroll-by-token")
+async def api_enroll_by_token(req: EnrollByTokenRequest):
+    """Agent/installer path: consume enrollment token → agent_id + agent_key once."""
+    try:
+        result = enroll_agent_with_token(
+            req.token,
+            hostname=req.hostname,
+            platform=req.platform,
+            name=req.name,
+        )
+    except ValueError as exc:
+        msg = str(exc)
+        code = 409 if "limit" in msg.lower() or "quota" in msg.lower() else 400
+        raise HTTPException(status_code=code, detail=msg) from exc
+    token = f"{result['agent_id']}.{result['agent_key']}"
+    audit(
+        "agent_enroll_by_token",
+        result.get("org_id") or "system",
+        {"agent_id": result["agent_id"], "hostname": req.hostname, "platform": req.platform},
+    )
+    return {
+        "agent_id": result["agent_id"],
+        "agent_token": token,
+        "org_id": result.get("org_id"),
+        "hostname": result.get("hostname"),
+        "platform": result.get("platform"),
     }
 
 

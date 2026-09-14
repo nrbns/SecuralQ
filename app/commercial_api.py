@@ -243,15 +243,17 @@ async def auth_register(req: RegisterRequest):
 
 
 @router.post("/auth/login")
-async def auth_login(req: LoginRequest):
+async def auth_login(req: LoginRequest, request: Request):
     if not settings.auth_enabled:
         raise HTTPException(status_code=400, detail="Auth disabled — set AUTH_ENABLED=true")
+    client_ip = request.client.host if request.client else ""
     try:
         result = login(
             req.username,
             req.password,
             totp=req.totp,
             recovery_code=req.recovery_code,
+            ip=client_ip,
         )
         if isinstance(result, dict):
             return result
@@ -283,16 +285,18 @@ async def auth_password_reset_confirm(req: PasswordResetConfirm):
 
 
 @router.post("/auth/mfa/verify")
-async def auth_mfa_verify(req: MfaVerifyRequest):
+async def auth_mfa_verify(req: MfaVerifyRequest, request: Request):
     if not settings.auth_enabled:
         raise HTTPException(status_code=400, detail="Auth disabled")
     if not (req.totp or "").strip() and not (req.recovery_code or "").strip():
         raise HTTPException(status_code=400, detail="Provide totp or recovery_code")
+    client_ip = request.client.host if request.client else ""
     try:
         user, token = complete_mfa_login(
             req.mfa_token,
             req.totp,
             recovery_code=req.recovery_code,
+            ip=client_ip,
         )
         body = {"user": {"id": user.id, "username": user.username, "role": user.role}, "token": token}
         resp = JSONResponse(body)

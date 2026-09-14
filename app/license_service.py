@@ -516,3 +516,50 @@ def has_feature(user_id: str, feature: str, *, org_id: str | None = None) -> boo
     ent = effective_entitlements(user_id, org_id=org_id)
     feats = {str(f).lower() for f in (ent.get("features") or [])}
     return feature.lower() in feats
+
+
+def revoke_license(user_id: str, license_id: str) -> dict[str, Any] | None:
+    """Mark a license revoked. Existing agents keep credentials until gateway rejects
+    only if policy requires — enrollment is blocked immediately via status."""
+    ensure_schema()
+    lic = get_license(user_id, license_id)
+    if not lic:
+        # Allow global admin path via get by id
+        row = get_conn().execute(
+            "SELECT * FROM securaiq_licenses WHERE id = ?", (license_id,)
+        ).fetchone()
+        if not row:
+            return None
+        lic = _row_to_dict(row)
+    ts = now()
+    c = get_conn()
+    c.execute(
+        "UPDATE securaiq_licenses SET status = 'revoked', revoked_at = ?, updated_at = ? WHERE id = ?",
+        (ts, ts, license_id),
+    )
+    c.commit()
+    out = get_conn().execute(
+        "SELECT * FROM securaiq_licenses WHERE id = ?", (license_id,)
+    ).fetchone()
+    return _row_to_dict(out) if out else None
+
+
+def check_feature(
+    user_id: str,
+    feature: str,
+    *,
+    org_id: str | None = None,
+) -> dict[str, Any]:
+    ent = effective_entitlements(user_id, org_id=org_id)
+    allowed = has_feature(user_id, feature, org_id=org_id)
+    # If license status not ok and enforcement on, deny features too.
+    if license_enforcement_enabled() and not ent.get("status_ok"):
+        allowed = False
+    return {
+        "feature": feature,
+        "allowed": allowed,
+        "plan": ent.get("plan"),
+        "status_ok": ent.get("status_ok"),
+        "status_reason": ent.get("status_reason"),
+        "enforcement_enabled": license_enforcement_enabled(),
+    }

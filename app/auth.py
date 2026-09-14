@@ -188,22 +188,23 @@ def login(
     *,
     totp: str | None = None,
     recovery_code: str | None = None,
+    ip: str = "",
 ) -> tuple[AuthUser, str] | dict[str, Any]:
     """Return (user, token) or {mfa_required, mfa_token} when MFA step-up needed."""
+    from app.login_attempts import assert_not_locked, record_login_attempt
     from app.mfa import create_mfa_pending, verify_mfa_factor
+
+    uname = (username or "").strip().lower()
+    assert_not_locked(uname)
 
     c = get_conn()
     row = c.execute(
         "SELECT * FROM users WHERE username = ?",
-        ((username or "").strip().lower(),),
+        (uname,),
     ).fetchone()
     if not row or not verify_password(password, row["password_hash"]):
-        # Audited even when the username doesn't exist -- log_management's
-        # repeated-auth-failure correlation rule groups by this actor string,
-        # and a brute-force attempt against a nonexistent account is exactly
-        # the pattern that rule needs to catch, not just failures on real
-        # accounts. Never reveals in the response whether the username exists.
-        audit("login_failed", row["id"] if row else f"unknown:{(username or '').strip().lower()}", {})
+        record_login_attempt(uname, ip=ip, success=False, mfa_stage=0)
+        audit("login_failed", row["id"] if row else f"unknown:{uname}", {"ip": ip})
         raise ValueError("Invalid username or password")
 
     mfa_on = bool(row["mfa_enabled"])
@@ -214,6 +215,7 @@ def login(
         try:
             verify_mfa_factor(row["id"], totp=totp, recovery_code=recovery_code)
         except ValueError as exc:
+            record_login_attempt(uname, ip=ip, success=False, mfa_stage=1)
             raise ValueError(str(exc)) from exc
 
     token = secrets.token_urlsafe(32)
@@ -223,7 +225,8 @@ def login(
         (hash_token(token), row["id"], expires, now()),
     )
     c.commit()
-    audit("login", row["id"], {"username": row["username"]})
+    record_login_attempt(uname, ip=ip, success=True, mfa_stage=1 if mfa_on else 0)
+    audit("login", row["id"], {"username": row["username"], "ip": ip})
     return AuthUser(id=row["id"], username=row["username"], role=row["role"]), token
 
 
@@ -232,7 +235,9 @@ def complete_mfa_login(
     totp: str | None = None,
     *,
     recovery_code: str | None = None,
+    ip: str = "",
 ) -> tuple[AuthUser, str]:
+    from app.login_attempts import assert_not_locked, record_login_attempt
     from app.mfa import consume_mfa_pending, verify_mfa_factor
 
     user_id = consume_mfa_pending(mfa_token)
@@ -241,7 +246,13 @@ def complete_mfa_login(
     row = get_conn().execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
     if not row:
         raise ValueError("User not found")
-    kind = verify_mfa_factor(user_id, totp=totp, recovery_code=recovery_code)
+    uname = row["username"]
+    assert_not_locked(uname)
+    try:
+        kind = verify_mfa_factor(user_id, totp=totp, recovery_code=recovery_code)
+    except ValueError as exc:
+        record_login_attempt(uname, ip=ip, success=False, mfa_stage=1)
+        raise ValueError(str(exc)) from exc
     token = secrets.token_urlsafe(32)
     expires = now() + _session_ttl_days() * 86400
     c = get_conn()
@@ -250,7 +261,8 @@ def complete_mfa_login(
         (hash_token(token), row["id"], expires, now()),
     )
     c.commit()
-    audit("login", row["id"], {"username": row["username"], "mfa": True, "mfa_kind": kind})
+    record_login_attempt(uname, ip=ip, success=True, mfa_stage=1)
+    audit("login", row["id"], {"username": row["username"], "mfa": True, "mfa_kind": kind, "ip": ip})
     return AuthUser(id=row["id"], username=row["username"], role=row["role"]), token
 
 

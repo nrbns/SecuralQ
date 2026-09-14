@@ -12,19 +12,23 @@ from app.commercial_api import require_user
 from app.db import audit
 from app.license_service import (
     check_agent_enrollment_allowed,
+    check_feature,
     effective_entitlements,
     issue_license,
     plan_catalog,
+    revoke_license,
 )
 from app.rbac import require_perm
 from app.tenancy import optional_org_header, resolve_request_org
 
 router = APIRouter(prefix="/api/licenses", tags=["licenses"])
+entitlements_router = APIRouter(prefix="/api/entitlements", tags=["entitlements"])
+admin_licenses_router = APIRouter(prefix="/api/admin/licenses", tags=["admin-licenses"])
 
 
 def _org_for(user: AuthUser, org_id: str | None) -> str | None:
     try:
-        return resolve_request_org(user, org_id)
+        return resolve_request_org(user, org_id=org_id)
     except Exception:
         return (org_id or "").strip() or None
 
@@ -113,3 +117,30 @@ async def licenses_issue(
         {"license_id": lic.get("id"), "plan": plan, "org_id": oid, "max_agents": lic.get("max_agents")},
     )
     return {"license": lic, "entitlements": effective_entitlements(user.id, org_id=oid)}
+
+
+@entitlements_router.get("/check")
+async def entitlements_check(
+    feature: str,
+    user: Annotated[AuthUser, Depends(require_user)],
+    header_org: Annotated[str | None, Depends(optional_org_header)] = None,
+    org_id: str | None = None,
+):
+    """Fast feature-gate check for UI/API (upgrade messaging)."""
+    if not (feature or "").strip():
+        raise HTTPException(status_code=400, detail="feature query param required")
+    oid = _org_for(user, org_id or header_org)
+    return check_feature(user.id, feature.strip(), org_id=oid)
+
+
+@admin_licenses_router.post("/{license_id}/revoke")
+async def admin_license_revoke(
+    license_id: str,
+    user: Annotated[AuthUser, Depends(require_user)],
+):
+    _require_license_admin(user, None)
+    lic = revoke_license(user.id, license_id)
+    if not lic:
+        raise HTTPException(status_code=404, detail="License not found")
+    audit("license_revoke", user.id, {"license_id": license_id})
+    return {"ok": True, "license": lic}

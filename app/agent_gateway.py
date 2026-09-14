@@ -71,6 +71,53 @@ def _unregister_waiter(agent_id: str, ev: asyncio.Event) -> None:
             _waiters.pop(agent_id, None)
 
 
+def force_disconnect_agent(agent_id: str, *, code: int = 4001, reason: str = "revoked") -> None:
+    """Sync entrypoint: close any live WebSocket for this agent immediately."""
+    aid = (agent_id or "").strip()
+    if not aid:
+        return
+    loop = _loop
+    if loop is None or not loop.is_running():
+        try:
+            loop = asyncio.get_running_loop()
+            bind_loop(loop)
+        except RuntimeError:
+            # No event loop — drop connection map entry if present (best effort).
+            _connections.pop(aid, None)
+            try:
+                mark_agent_ws(aid, connected=False)
+            except Exception:
+                pass
+            return
+    try:
+        asyncio.run_coroutine_threadsafe(_force_disconnect(aid, code=code, reason=reason), loop)
+    except Exception:
+        pass
+
+
+async def _force_disconnect(agent_id: str, *, code: int = 4001, reason: str = "revoked") -> None:
+    async with _lock:
+        ws = _connections.pop(agent_id, None)
+    if ws is None:
+        try:
+            mark_agent_ws(agent_id, connected=False)
+        except Exception:
+            pass
+        return
+    try:
+        await ws.send_json({"type": "revoke", "reason": reason})
+    except Exception:
+        pass
+    try:
+        await ws.close(code=code)
+    except Exception:
+        pass
+    try:
+        mark_agent_ws(agent_id, connected=False)
+    except Exception:
+        pass
+
+
 def notify_agent(agent_id: str) -> None:
     """Wake long-poll waiters and schedule a WebSocket push."""
     aid = (agent_id or "").strip()

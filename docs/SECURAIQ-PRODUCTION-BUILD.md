@@ -1,174 +1,134 @@
-# SecuraIQ — Production SaaS Build Spec
+# SecuraIQ Production Build Specification
 
-**Status:** Active commercial control-plane roadmap (no rewrite).  
-**Principle:** Extend the existing FastAPI + Agent Gateway + Evidence Store + Streams bus.  
-**Related:** [production-hardening.md](./production-hardening.md) · [production-readiness.md](./production-readiness.md) · [realtime-v1.md](./realtime-v1.md) · [realtime-controls-evidence-spec.md](./realtime-controls-evidence-spec.md) · [master-build-plan.md](./master-build-plan.md)
+**Purpose.** Single actionable spec for turning SecuraIQ into a commercial SaaS control plane customers can sign up for, pay for, and connect real Windows/Linux/macOS machines to. It consolidates ~34 docs under `docs/`, corrects assumptions that don't match code, and turns gaps into schemas, endpoints, and a P0→P1→P2 checklist.
+
+**Related:** [production-readiness.md](./production-readiness.md) · [securaiq-architecture.md](./securaiq-architecture.md) · [postgres-migration.md](./postgres-migration.md) · [realtime-v1.md](./realtime-v1.md) · [realtime-controls-evidence-spec.md](./realtime-controls-evidence-spec.md) · [rbac-matrix.md](./rbac-matrix.md) · [agent-protocol-v1.md](./agent-protocol-v1.md)
+
+**Rule:** Do **not** rebuild anything Section 0 marks as already real.
 
 ---
 
-## Architecture (keep this)
+## 0. Do-not-rebuild list — what's already real
+
+| Area | Already real (verified in code) |
+|------|----------------------------------|
+| MFA TOTP | RFC 6238 in `app/mfa.py`, `mfa_enabled`/`mfa_secret`, `mfa_pending` step-up |
+| MFA recovery codes | **Shipped** — `mfa_recovery_codes` (hashed), confirm issues 10 codes, login/verify accept recovery; regenerate via `/api/auth/mfa/recovery/regenerate` |
+| MFA mandatory | `MFA_REQUIRED` (all users) + `MFA_REQUIRED_FOR_ADMIN`; `require_user` blocks until enrolled |
+| Password security | PBKDF2-HMAC-SHA256 (180k) + **Argon2id when `argon2-cffi` installed** (`app/auth.py`). Opportunistic rehash on login = P2 polish |
+| Sessions / password reset | Real tables; hashed tokens; email when SMTP set |
+| RBAC / tenancy | `app/rbac.py` + `tenant_visibility_sql()` on high-value tables |
+| Agent bearer/HMAC/replay + opt Ed25519 | Real in `app/agent_auth.py` / `app/agent_security.py`. **Gap:** mTLS certs |
+| Realtime bus | Streams + DLQ + XAUTOCLAIM + metrics. **Gap:** event-scoped control recompute |
+| Evidence freshness | TTL + freshness + confirm. Deduped by fingerprint (not broken — see §8) |
+| Secrets at rest | Fernet envelope (`app/secrets_crypto.py`). **Gap:** KMS/HSM |
+| Postgres guardrail | Production refuses SQLite unless override. **Gap:** Alembic + export tool + CI matrix |
+| Billing | Stripe checkout/webhook wired; inert without keys |
+| License service | **Shipped foundations** — Ed25519-signed `securaiq_licenses`, plans/entitlements, soft enroll quota (`LICENSE_ENFORCEMENT_ENABLED`), Stripe → `issue_license`. **Still open:** separate `entitlements` rows, admin revoke API, checkin grace degrade, offline activation |
+
+**Still genuinely missing (build these):** persistent `login_attempts` lockout, Redis-backed distributed auth rate limit, one-time enroll-token flow, immediate WSS terminate on revoke, mTLS, MSI/deb/rpm + signing, signed agent auto-update+rollback, event-driven control recompute, `control_results` history, object storage artifacts, Alembic + SQLite→Postgres export, `/api/v1` versioning.
+
+---
+
+## 1. Architecture — confirmed, not changed
 
 ```text
-CDN / TLS → FastAPI control plane
-              ├── PostgreSQL (SoT in production)
-              ├── Redis Streams (realtime; not evidence SoT)
-              └── Object storage (artifacts) — planned
-Web Dashboard · Agent Gateway (WSS/HTTPS) · AI SecOps
-Windows / Linux / macOS agents
+CDN/TLS → FastAPI (app/main.py)
+            ├── PostgreSQL (SoT in SaaS)
+            ├── Redis Streams (+ DLQ)
+            └── Object storage (artifact gap)
+Web Dashboard · Agent Gateway · AI SecOps
+Agents: Windows / Linux / macOS (PyInstaller today; MSI/deb/rpm = gap)
 ```
 
-Do **not** invent a second server. Lab may keep SQLite; commercial SaaS requires Postgres (`DEPLOYMENT_MODE=production`).
+No second server. Logical split of API/worker/gateway later is scaling, not a P0 rewrite.
 
 ---
 
-## Already in repo (honest)
+## 2. Auth hardening — remaining gaps
 
-| Area | Status |
-|------|--------|
-| TOTP MFA enroll/confirm/verify | **Improved** — recovery codes (hashed), `MFA_REQUIRED` / admin mandatory enforcement, MFA attempt limits |
-| Stripe → signed license | **Partial→improved** — `checkout.session.completed` refreshes plan + `issue_license` |
-| Sessions + password reset paths | **Partial** |
-| Stripe billing scaffold + message quotas | **Partial** (`app/billing.py`, soft `BILLING_ENFORCEMENT_ENABLED`) |
-| Tenancy / RBAC / org header | **Partial→improved** |
-| Agent enroll + revoke + bearer/HMAC + opt-in Ed25519 | **Partial** — mTLS missing |
-| Redis Streams + DLQ + XAUTOCLAIM + fan-out | **Near-done (lab)** |
-| Evidence Store + TTL/freshness | **Partial→improved** |
-| Package install/remove/update events | **Partial→improved** |
-| Host control FAIL→rem→verify loops | **Partial→improved** (lab harness) |
-| Signed org licenses + agent quotas | **This slice** (`app/license_service.py`) |
-| Windows MSI / Authenticode / deb/rpm | **Missing** |
-| mTLS / cert rotation / signed agent updates | **Missing / Partial** |
-| Full SSO/SCIM | **Partial** (OIDC/SCIM scaffolds; not enterprise-complete) |
+### 2.1 Recovery codes — **done** (see §0)
 
----
+### 2.2 Persistent login lockout — **P0**
 
-## P0 before real customers (ordered)
-
-### P0-1 Authentication
-- [x] TOTP foundations  
-- [x] MFA mandatory for commercial (`MFA_REQUIRED` all users; `MFA_REQUIRED_FOR_ADMIN` retained)  
-- [x] Hashed recovery codes, MFA rate limits, Argon2id when `argon2-cffi` installed (PBKDF2 fallback)  
-- [ ] Session revocation UI + audit (API logout exists; richer UI still open)  
-
-### P0-2 License service ← **current implementation slice**
-- [x] Plan catalog with `max_agents` + feature entitlements  
-- [x] Org/user signed license payload (Ed25519; private key never in agent)  
-- [x] Server-side enrollment quota gate (soft unless `LICENSE_ENFORCEMENT_ENABLED`)  
-- [x] Grace policy for expired licenses (block new enroll; do not brick agents)  
-- [x] Stripe webhook → issue/refresh signed license (`checkout.session.completed`)  
-- [ ] Downloads portal org-aware packaging  
-- [ ] Stripe `customer.subscription.*` renew/cancel → license expiry sync 
-### P0-3 Multi-tenancy / RBAC
-- [x] Org membership + permission helpers  
-- [ ] Consistent `require_perm` on every sensitive route  
-- [ ] Cross-tenant regression suite expansion  
-
-### P0-4 Realtime
-- [x] Streams default, DLQ, reclaim, metrics, Realtime Health  
-- [ ] Event-driven control resolver (only affected controls)  
-- [ ] Eliminate remaining soft-poll panels  
-
-### P0-5 Agent security
-- [x] Enroll / revoke / replay headers / optional Ed25519 seals  
-- [ ] mTLS + short-lived certs + rotation  
-- [ ] Signed updates + rollback  
-
-### P0-6 Commercial agent packages
-- [ ] MSI + Authenticode  
-- [ ] deb/rpm + systemd  
-- [ ] Org-aware download UI  
-
-### P0-7–10 Controls / Evidence / Compliance / Closed-loop
-See [realtime-controls-evidence-spec.md](./realtime-controls-evidence-spec.md) and RT-10/11 acceptance.
-
----
-
-## License format (v1)
-
-Unsigned logical record (JSON canonical):
-
-```json
-{
-  "license_id": "lic_…",
-  "organization_id": "org_…",
-  "plan": "pro",
-  "status": "active",
-  "max_agents": 100,
-  "features": ["agent", "compliance", "remediation", "ai", "realtime"],
-  "issued_at": 0,
-  "expires_at": 0,
-  "grace_days": 14
-}
+```sql
+CREATE TABLE login_attempts (
+    id TEXT PRIMARY KEY,
+    username TEXT NOT NULL,
+    ip TEXT NOT NULL,
+    success INTEGER NOT NULL DEFAULT 0,
+    mfa_stage INTEGER NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL
+);
 ```
 
-Signed blob:
+Lock after N failures / rolling window (default 8/15min). Survives restarts. Audit lockout start/clear.
 
-```json
-{
-  "payload": { … },
-  "alg": "ed25519",
-  "signature": "<base64url>",
-  "kid": "license-v1"
-}
-```
+### 2.3 Distributed rate limiting — **P0 when multi-replica**
 
-- **Private key:** `LICENSE_ED25519_PRIVATE_KEY` (or lab-generated ephemeral; never shipped to agents).  
-- **Public key:** `LICENSE_ED25519_PUBLIC_KEY` for verify.  
-- Enforcement is **server-side** on enroll / feature gates. Agents do not trust local license files as authority.
+Move login/MFA limiter onto Redis `INCR`+`EXPIRE`; fall back to in-memory when Redis unset.
 
-### Plans (defaults)
-
-| Plan | max_agents | Notes |
-|------|------------|--------|
-| `free` / Community | 5 | Lab-friendly |
-| `pro` / Professional | 100 | Realtime + compliance + rem + AI |
-| `team` / Business | 500 | Multi-seat |
-| `enterprise` | unlimited (`null`) | Soft ceiling only when enforced |
+### 2.4 Enterprise SSO — after TOTP/lockout; don't market until SAML+SCIM complete
 
 ---
 
-## Commercial enrollment flow (target UX)
+## 3. License & entitlement — foundations shipped; finish product surface
 
-```text
-Dashboard → Add endpoint → enroll API (quota check)
-  → one-time agent token → download package
-  → agent check-in / WS → revoke anytime
-```
+See `app/license_service.py`, `/api/licenses/*`. Remaining:
 
-Enrollment tokens that auto-expire after first use remain a follow-on (current API returns long-lived agent key once).
+- `GET /api/entitlements/check?feature=`
+- `POST /api/admin/licenses/{id}/revoke`
+- Check-in grace: expired beyond grace → heartbeat-only (no new commands)
+- Optional `entitlements` child table / stripe_subscription_id column
 
----
+Plans: Community 5 · Professional 100 · Enterprise unlimited soft · MSSP later.
 
-## Killer commercial acceptance (do not claim until green)
-
-```text
-Install package on owned Windows/Linux lab host
-  → software.installed → CVE/control/evidence/risk/compliance
-  → SSE dashboard updates without hard refresh
-  → approved remediation → verify → evidence PASS
-```
-
-Harness today: `scripts/realtime_acceptance_demo.py --local` (synthetic). Owned-host proof is still operator-owned.
+Grace: never brick agents on license lapse; block new enroll in grace; degrade after grace.
 
 ---
 
-## Explicit non-claims
+## 4–6. Agent mTLS / packages / enroll tokens
 
-- Not CMMC/SPRS certification  
-- Not enterprise SSO-complete  
-- Not 5k-agent load-proven  
-- Not MSI/Authenticode-complete  
-- Signed licenses ≠ payment processed until Stripe live  
+- **mTLS:** additive to bearer+HMAC (P1)
+- **MSI/deb/rpm + signed updates:** P1
+- **Enroll tokens:** P0 — `agent_enroll_tokens` in front of existing `enroll_agent`
+- **Revoke:** must close live WSS immediately (P0)
 
 ---
 
-## Implementation map
+## 7–11. Realtime controls, evidence history, object storage, Postgres, `/api/v1`
 
-| Spec piece | Code |
-|------------|------|
-| License service | `app/license_service.py` |
-| License API | `app/license_api.py` → `/api/licenses/*` |
-| Enroll gate | `app/agents.py` `enroll_agent` + `agents_api` |
-| MFA | `app/mfa.py` |
-| Billing soft quotas | `app/billing.py` |
-| Evidence SoT | `app/services/evidence.py` |
+As in the engineering brief: affected-controls-only recompute (P1/#172); `control_results` append-only (P1); S3-compatible artifacts (P1); Alembic+export (P0); `/api/v1` alongside `/api` (P1).
+
+---
+
+## 12. RBAC matrix
+
+Document `client` org role. Production must keep `AUTH_ENABLED=true` (already enforced by `DEPLOYMENT_MODE=production`).
+
+---
+
+## 14. Checklist (live status)
+
+**P0**
+
+1. [x] License foundations (sign/quota/grace enroll / Stripe issue / entitlements check / admin revoke)
+2. [x] MFA recovery codes + mandatory MFA
+3. [x] Persistent `login_attempts` lockout
+4. [x] Agent enroll-token flow (`/enroll-tokens`, `/enroll-by-token`)
+5. [x] Revoke terminates live WSS (`force_disconnect_agent`)
+6. [x] Production refuses `AUTH_ENABLED=false` (guardrail exists — keep asserted in deploy docs)
+7. [ ] Alembic + SQLite→Postgres export
+8. [x] Redis-backed auth rate limit (falls back to in-memory when Redis unset)
+
+**P1** — MSI/deb, mTLS, signed updates, event-driven controls, `control_results`, object storage, CI Postgres, `/api/v1`, rbac-matrix `client` row **[doc fixed]**
+
+**P1** — MSI/deb, mTLS, signed updates, event-driven controls, `control_results`, object storage, CI Postgres, `/api/v1`, rbac-matrix `client` row
+
+**P2** — Argon2 rehash-on-login, WebAuthn/SAML/SCIM, KMS, macOS notarization, MSSP
+
+---
+
+## 15. Acceptance test
+
+Windows/Linux package install → inventory → CVE → **affected-only** control recompute → evidence + `control_results` → compliance/risk → SSE live; then approved rem → verify → PASS trail. Must pass on Postgres+Redis with licensed multi-tenant agents — not lab-only.

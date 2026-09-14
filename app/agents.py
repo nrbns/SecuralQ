@@ -275,6 +275,160 @@ def ensure_schema() -> None:
     c.commit()
 
 
+def ensure_enroll_token_schema() -> None:
+    c = get_conn()
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS agent_enroll_tokens (
+            id TEXT PRIMARY KEY,
+            organization_id TEXT,
+            user_id TEXT NOT NULL,
+            token_hash TEXT NOT NULL,
+            max_uses INTEGER NOT NULL DEFAULT 1,
+            used_count INTEGER NOT NULL DEFAULT 0,
+            expires_at REAL NOT NULL,
+            created_by TEXT NOT NULL,
+            created_at REAL NOT NULL,
+            revoked_at REAL,
+            name_hint TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_enroll_tokens_org ON agent_enroll_tokens(organization_id, expires_at)"
+    )
+    c.commit()
+
+
+def create_enroll_token(
+    user_id: str,
+    *,
+    org_id: str | None = None,
+    ttl_sec: int = 3600,
+    max_uses: int = 1,
+    name_hint: str = "",
+) -> dict[str, Any]:
+    """Issue a short-lived enrollment token (plaintext returned once)."""
+    ensure_enroll_token_schema()
+    try:
+        from app.license_service import check_agent_enrollment_allowed
+
+        allowed, reason, ent = check_agent_enrollment_allowed(user_id, org_id=org_id)
+        if not allowed:
+            raise ValueError(
+                f"Cannot issue enroll token ({reason}): "
+                f"plan={ent.get('plan')} agents={ent.get('agents_current')}/{ent.get('max_agents')}"
+            )
+    except ValueError:
+        raise
+    except Exception:
+        pass
+    raw = "enr_" + secrets.token_urlsafe(24)
+    tid = new_id()
+    ttl = max(60, min(int(ttl_sec), 7 * 86400))
+    uses = max(1, min(int(max_uses), 500))
+    exp = now() + ttl
+    c = get_conn()
+    c.execute(
+        """
+        INSERT INTO agent_enroll_tokens
+        (id, organization_id, user_id, token_hash, max_uses, used_count, expires_at,
+         created_by, created_at, revoked_at, name_hint)
+        VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, NULL, ?)
+        """,
+        (
+            tid,
+            (org_id or "").strip() or None,
+            user_id,
+            _hash_key(raw),
+            uses,
+            exp,
+            user_id,
+            now(),
+            (name_hint or "")[:120],
+        ),
+    )
+    c.commit()
+    return {
+        "token_id": tid,
+        "enrollment_token": raw,
+        "org_id": (org_id or "").strip() or None,
+        "expires_at": exp,
+        "max_uses": uses,
+        "name_hint": name_hint or "",
+    }
+
+
+def enroll_agent_with_token(
+    enrollment_token: str,
+    *,
+    hostname: str = "",
+    platform: str = "",
+    name: str = "",
+) -> dict[str, Any]:
+    """Public/agent-side enrollment: consume enroll token → create agent identity."""
+    ensure_enroll_token_schema()
+    ensure_schema()
+    th = _hash_key((enrollment_token or "").strip())
+    c = get_conn()
+    row = c.execute(
+        "SELECT * FROM agent_enroll_tokens WHERE token_hash = ?",
+        (th,),
+    ).fetchone()
+    if not row:
+        raise ValueError("Invalid enrollment token")
+    if row["revoked_at"]:
+        raise ValueError("Enrollment token revoked")
+    if float(row["expires_at"]) < now():
+        raise ValueError("Enrollment token expired")
+    if int(row["used_count"] or 0) >= int(row["max_uses"] or 1):
+        raise ValueError("Enrollment token already used")
+
+    owner = row["user_id"]
+    oid = row["organization_id"]
+    hint = (name or row["name_hint"] or hostname or platform or "").strip()
+    token_row_id = row["id"]
+    result = enroll_agent(owner, name=hint, org_id=oid)
+    c = get_conn()
+    if hostname or platform:
+        c.execute(
+            "UPDATE securaiq_agents SET hostname = ?, os = ? WHERE id = ?",
+            ((hostname or "")[:200], (platform or "")[:80], result["agent_id"]),
+        )
+    c.execute(
+        "UPDATE agent_enroll_tokens SET used_count = used_count + 1 WHERE id = ?",
+        (token_row_id,),
+    )
+    c.commit()
+    result["enroll_token_id"] = token_row_id
+    result["hostname"] = hostname or ""
+    result["platform"] = platform or ""
+    return result
+
+
+def revoke_enroll_token(user_id: str, token_id: str) -> bool:
+    ensure_enroll_token_schema()
+    c = get_conn()
+    row = c.execute("SELECT * FROM agent_enroll_tokens WHERE id = ?", (token_id,)).fetchone()
+    if not row:
+        return False
+    if row["user_id"] != user_id and user_id != "local":
+        try:
+            from app.tenancy import user_org_ids
+
+            orgs = set(user_org_ids(user_id) or [])
+            if not row["organization_id"] or row["organization_id"] not in orgs:
+                return False
+        except Exception:
+            return False
+    c.execute(
+        "UPDATE agent_enroll_tokens SET revoked_at = ? WHERE id = ?",
+        (now(), token_id),
+    )
+    c.commit()
+    return True
+
+
 def enroll_agent(user_id: str, *, name: str = "", org_id: str | None = None) -> dict[str, Any]:
     """Create a new agent identity. Returns the raw key ONCE — never stored.
 
@@ -1271,6 +1425,13 @@ def revoke_agent(user_id: str, agent_id: str) -> bool:
     c = get_conn()
     c.execute("UPDATE securaiq_agents SET revoked = 1 WHERE id = ?", (agent_id,))
     c.commit()
+    # Immediately drop live gateway sockets (don't wait for next check-in).
+    try:
+        from app.agent_gateway import force_disconnect_agent
+
+        force_disconnect_agent(agent_id, code=4001, reason="revoked")
+    except Exception:
+        pass
     return True
 
 

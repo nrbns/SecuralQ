@@ -139,6 +139,8 @@ class Settings(BaseSettings):
     servicenow_username: str = ""
     servicenow_password: str = ""
     urlhaus_api_key: str = ""  # abuse.ch Auth-Key
+    login_lockout_max_failures: int = 8
+    login_lockout_window_sec: int = 900
     # MFA / SSO (beta enterprise)
     mfa_required_for_admin: bool = False
     mfa_required: bool = False  # when True, all authenticated users must enroll MFA
