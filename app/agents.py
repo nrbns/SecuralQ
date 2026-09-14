@@ -276,8 +276,25 @@ def ensure_schema() -> None:
 
 
 def enroll_agent(user_id: str, *, name: str = "", org_id: str | None = None) -> dict[str, Any]:
-    """Create a new agent identity. Returns the raw key ONCE — never stored."""
+    """Create a new agent identity. Returns the raw key ONCE — never stored.
+
+    When LICENSE_ENFORCEMENT_ENABLED=true, refuses enrollment if the org/user
+    is over max_agents or the signed license is expired (grace blocks new only).
+    """
     ensure_schema()
+    try:
+        from app.license_service import check_agent_enrollment_allowed
+
+        allowed, reason, ent = check_agent_enrollment_allowed(user_id, org_id=org_id)
+        if not allowed:
+            raise ValueError(
+                f"Agent enrollment blocked ({reason}): "
+                f"plan={ent.get('plan')} agents={ent.get('agents_current')}/{ent.get('max_agents')}"
+            )
+    except ValueError:
+        raise
+    except Exception:
+        pass  # license schema/crypto must never hard-break lab enroll when soft
     raw_key = secrets.token_urlsafe(32)
     aid = new_id()
     oid = (org_id or "").strip() or None

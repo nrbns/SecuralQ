@@ -77,6 +77,7 @@ from app.archive_api import router as archive_router
 from app.commercial_ext_api import router as commercial_ext_router
 from app.platform_api import router as platform_router
 from app.billing_api import router as billing_router
+from app.license_api import router as license_router
 from app.xdr_api import router as xdr_router
 from app.agents_api import router as agents_router
 from app.agent_gateway import router as agent_gateway_router
@@ -363,6 +364,7 @@ app.include_router(archive_router)
 app.include_router(commercial_ext_router)
 app.include_router(platform_router)
 app.include_router(billing_router)
+app.include_router(license_router)
 app.include_router(xdr_router)
 app.include_router(wazuh_router, prefix="/api/siem")
 app.include_router(wazuh_router, prefix="/api/wazuh")  # compat alias

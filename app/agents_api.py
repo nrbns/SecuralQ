@@ -94,6 +94,19 @@ class ThreatReport(BaseModel):
     detections: list[ThreatDetection] = Field(default_factory=list)
 
 
+class LogEventIn(BaseModel):
+    host: str = ""
+    actor: str = ""
+    severity: str = "info"
+    event_type: str = ""
+    message: str = ""
+    raw: dict[str, Any] = Field(default_factory=dict)
+
+
+class LogReport(BaseModel):
+    events: list[LogEventIn] = Field(default_factory=list)
+
+
 class CommandCreate(BaseModel):
     # patch_package payload shape: {"manager": "apt|winget|brew|pip",
     # "package": "<name>", "target_version": "<optional>"}
@@ -212,7 +225,10 @@ async def api_enroll_agent(
     """Create a new agent identity. Returns the install one-liner + raw key ONCE."""
     oid = _org_for(user, req.org_id or header_org)
     require_perm(user, "agent.write", org_id=oid)
-    result = enroll_agent(user.id, name=req.name, org_id=oid)
+    try:
+        result = enroll_agent(user.id, name=req.name, org_id=oid)
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     audit("agent_enroll", user.id, {"agent_id": result["agent_id"], "name": req.name, "org_id": oid})
     token = f"{result['agent_id']}.{result['agent_key']}"
     return {
@@ -663,6 +679,31 @@ async def api_agent_threat(
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("error") or "Threat report failed")
     return result
+
+
+@router.post("/logs")
+async def api_agent_logs(
+    payload: LogReport,
+    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
+):
+    """Real OS-level log events from an installed agent (auth attempts,
+    process starts, service changes, etc.) -- the same log-management pipeline
+    a manual /api/logs/ingest push or a syslog bridge uses, just authenticated
+    as an agent instead of a user session. Feeds the same correlation rules,
+    so a brute-force pattern on a monitored host creates a real incident the
+    same way a brute-force pattern against SecuraIQ's own login does."""
+    agent = _authenticate_agent_request(
+        authorization, body=payload.model_dump_json().encode("utf-8")
+    )
+    from app.services.log_management import ingest_logs_bulk
+
+    result = ingest_logs_bulk(
+        str(agent["user_id"]),
+        source="agent",
+        source_id=str(agent["id"]),
+        events=[e.model_dump() for e in payload.events],
+    )
+    return {"ok": True, **result}
 
 
 @router.get("/{agent_id}/threats")

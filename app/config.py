@@ -210,6 +210,10 @@ class Settings(BaseSettings):
     stripe_webhook_secret: str = ""
     stripe_price_pro: str = ""
     stripe_price_team: str = ""
+    # Signed org licenses (agent quotas / entitlements) — soft by default
+    license_enforcement_enabled: bool = False
+    license_ed25519_private_key: str = ""  # never ship to agents
+    license_ed25519_public_key: str = ""
     # Error reporting / monitoring (optional)
     sentry_dsn: str = ""
     sentry_traces_sample_rate: float = 0.1

@@ -10,7 +10,8 @@ Related: [master-build-plan.md](./master-build-plan.md) ·
 [launch-readiness.md](./launch-readiness.md) ·
 [security-baseline.md](./security-baseline.md) ·
 [backup-dr.md](./backup-dr.md) ·
-[realtime-v1.md](./realtime-v1.md)
+[realtime-v1.md](./realtime-v1.md) ·
+[SECURAIQ-PRODUCTION-BUILD.md](./SECURAIQ-PRODUCTION-BUILD.md)
 
 **Agent Platform v1 scope:** multi-tenant native agents + persistent Agent
 Gateway (WebSocket) + HTTP check-in fallback. Dashboard SSE stays. Do not
@@ -46,6 +47,7 @@ Status key: **done** · **partial** · **missing**
 | TLS | **partial** | Caddy/nginx scaffolding in `deploy/`; DNS and certs are operator steps. Agent `--insecure` is lab-only. |
 | Rate limiting | **done** | `RateLimitMiddleware` on the API (`RATE_LIMIT_*`). |
 | Secret management | **partial** | `.env` envelope encryption (`app/secrets_crypto.py`); agent raw key shown once. Optional Ed25519 key env vars (unused for live seal). No KMS/HSM. |
+| Signed org licenses | **partial→improved** | `app/license_service.py` Ed25519-signed payloads + plan entitlements + soft enroll quota (`LICENSE_ENFORCEMENT_ENABLED`). Stripe→license refresh and downloads portal still open. |
 | Signed agent updates | **partial** | `agent_upgrade` carries `expected_sha256` of the server script. Not a code-signing cert / Authenticode / notarization. |
 | Windows installer | **partial** | Packaged `SecuraIQ-Agent-*-windows-x64.exe` + Scheduled Task installer. No signed MSI / Authenticode yet. |
 | Linux packages | **partial** | `*-linux-x64.tar.gz` (native binary on Linux/CI) + systemd `install.sh`. No `.deb` / `.rpm`. |

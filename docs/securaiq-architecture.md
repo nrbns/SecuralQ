@@ -4,7 +4,8 @@
 **Rule:** Extend this repository’s control plane. Do **not** start a second SecuraIQ.
 
 Related: [agent-platform.md](./agent-platform.md) · [agent-protocol-v1.md](./agent-protocol-v1.md) ·
-[realtime-v1.md](./realtime-v1.md) · [master-build-plan.md](./master-build-plan.md)
+[realtime-v1.md](./realtime-v1.md) · [master-build-plan.md](./master-build-plan.md) ·
+[SECURAIQ-PRODUCTION-BUILD.md](./SECURAIQ-PRODUCTION-BUILD.md)
 
 ---
 
