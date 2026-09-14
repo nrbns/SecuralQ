@@ -5642,13 +5642,14 @@
         <div class="agents-os-grid">${cards}</div>
         ${allScripts ? `<details class="agents-dev-fallback" style="margin-top:0.75rem"><summary class="hint">Developer fallback — all platforms</summary><div class="agents-pkg-actions" style="margin-top:0.35rem">${allScripts}</div></details>` : ""}
         <div class="agents-enroll-steps" style="margin-top:1rem">
-          <h4 style="margin:0 0 0.35rem">Install after enroll</h4>
+          <h4 style="margin:0 0 0.35rem">One-click style deploy</h4>
           <ol class="hint" style="margin:0;padding-left:1.2rem">
-            <li>Click <strong>Enroll new agent</strong> and copy the one-time token (<code>agent_id.agent_key</code>).</li>
-            <li>Download the <strong>package</strong> for the host OS (.exe / .zip / .tar.gz) — not the raw scripts.</li>
-            <li>Run the exe, or unzip and use the embedded <code>install.ps1</code> / <code>install.sh</code> with your token.</li>
-            <li>Status should flip to <strong>online</strong> within ~60s; Mission Control SSE emits <code>agent</code> events.</li>
+            <li>Click <strong>Generate bootstrap token</strong> (short-lived; not a permanent org secret).</li>
+            <li>Download the OS package (.exe / .zip / .tar.gz). MSI/DEB/RPM are on the commercial roadmap.</li>
+            <li>Installer calls <code>POST /api/agents/enroll-by-token</code> once → receives permanent <code>agent_id.agent_key</code>.</li>
+            <li>Agent validates license via <code>POST /api/licenses/validate</code> and caches status locally (registry/config = cache only).</li>
           </ol>
+          ${data.deploy?.bootstrap_note ? `<p class="hint" style="margin:0.5rem 0 0">${escapeHtml(data.deploy.bootstrap_note)}</p>` : ""}
         </div>
         ${notes ? `<ul class="hint agents-pkg-notes" style="margin:0.75rem 0 0;padding-left:1.2rem">${notes}</ul>` : ""}
       `;
@@ -5657,6 +5658,48 @@
     }
   }
   window.renderAgentPackagesHub = renderAgentPackagesHub;
+
+  async function renderAgentsLicensePanel() {
+    const el = qs("agentsLicenseBody");
+    if (!el) return;
+    try {
+      const res = await fetch("/api/licenses/validate", {
+        method: "POST",
+        headers: authHeaders({ "Content-Type": "application/json" }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+      const mode = data.mode || "none";
+      const days = data.days_remaining != null ? Number(data.days_remaining) : null;
+      const exp =
+        data.expires_at != null
+          ? new Date(Number(data.expires_at) * 1000).toLocaleDateString()
+          : "—";
+      const agentsCur = data.agents_current != null ? data.agents_current : "—";
+      const maxA = data.max_agents == null ? "∞" : data.max_agents;
+      const chip =
+        mode === "active"
+          ? "status-done"
+          : mode === "warning" || mode === "grace"
+          ? "status-planned"
+          : mode === "restricted" || mode === "revoked" || mode === "critical"
+          ? "status-error"
+          : "status-planned";
+      el.innerHTML = `
+        <div class="cc-kpi-grid" style="margin:0">
+          <article class="cc-kpi"><span>Plan</span><strong>${escapeHtml(data.plan_label || data.plan || "—")}</strong></article>
+          <article class="cc-kpi"><span>Status</span><strong><span class="auto-job-status ${chip}">${escapeHtml(mode)}</span></strong></article>
+          <article class="cc-kpi"><span>Expires</span><strong>${escapeHtml(exp)}</strong></article>
+          <article class="cc-kpi"><span>Days left</span><strong>${days == null ? "—" : escapeHtml(String(days))}</strong></article>
+          <article class="cc-kpi"><span>Agents</span><strong>${escapeHtml(String(agentsCur))} / ${escapeHtml(String(maxA))}</strong></article>
+        </div>
+        <p class="hint" style="margin:0.65rem 0 0">${escapeHtml(data.message || "")}</p>
+        <p class="hint" style="margin:0.35rem 0 0">Local activation cache is state only — server validation is authoritative. Private signing keys never leave the license service.</p>`;
+    } catch (err) {
+      el.innerHTML = `<p class="hint">Couldn't validate license. <span class="hint-sub">(${escapeHtml(err.message || String(err))})</span></p>`;
+    }
+  }
+  window.renderAgentsLicensePanel = renderAgentsLicensePanel;
 
   function _agentFmtWhen(ts) {
     if (!ts) return "never";
@@ -6312,9 +6355,47 @@
   function wireAgentsControls(cfg) {
     cfg = cfg || {};
     const enrollBtn = typeof cfg.enrollBtn === "string" ? qs(cfg.enrollBtn) : cfg.enrollBtn;
+    const bootstrapBtn = typeof cfg.bootstrapBtn === "string" ? qs(cfg.bootstrapBtn) : cfg.bootstrapBtn;
     const campaignBtn = typeof cfg.campaignBtn === "string" ? qs(cfg.campaignBtn) : cfg.campaignBtn;
     const resultEl = typeof cfg.resultEl === "string" ? qs(cfg.resultEl) : cfg.resultEl;
     const formEl = typeof cfg.formEl === "string" ? qs(cfg.formEl) : cfg.formEl;
+    if (bootstrapBtn && !bootstrapBtn.dataset.wired) {
+      bootstrapBtn.dataset.wired = "1";
+      bootstrapBtn.addEventListener("click", async () => {
+        bootstrapBtn.disabled = true;
+        const prev = bootstrapBtn.textContent;
+        bootstrapBtn.textContent = "Generating…";
+        try {
+          const res = await fetch("/api/agents/enroll-tokens", {
+            method: "POST",
+            headers: authHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify({ ttl_sec: 3600, max_uses: 1, name_hint: "bootstrap" }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+          if (resultEl) {
+            resultEl.innerHTML = `
+              <div class="cc-panel" style="margin:0.75rem 0;background:var(--panel-2,rgba(255,255,255,0.03))">
+                <p class="hint"><strong>Bootstrap enrollment token</strong> (shown once · expires in 1h · single use)</p>
+                <textarea readonly rows="2" style="width:100%;font-family:ui-monospace,monospace;font-size:0.82rem" onclick="this.select()">${escapeHtml(
+                  data.enrollment_token || ""
+                )}</textarea>
+                <p class="hint" style="margin:0.5rem 0 0">Installer: <code>POST /api/agents/enroll-by-token</code> with this token → permanent agent credentials. Do not embed this token in public scripts permanently.</p>
+                <button type="button" class="btn-secondary agents-enroll-dismiss" style="margin-top:0.5rem">Dismiss</button>
+              </div>`;
+            resultEl.querySelector(".agents-enroll-dismiss")?.addEventListener("click", () => {
+              resultEl.innerHTML = "";
+            });
+          }
+        } catch (err) {
+          if (typeof notifyUser === "function") notifyUser(`**Bootstrap token failed:** ${err.message || err}`);
+          else alert(err.message || "Bootstrap failed");
+        } finally {
+          bootstrapBtn.disabled = false;
+          bootstrapBtn.textContent = prev || "Generate bootstrap token";
+        }
+      });
+    }
     if (enrollBtn && !enrollBtn.dataset.wired) {
       enrollBtn.dataset.wired = "1";
       enrollBtn.addEventListener("click", async () => {
@@ -6446,12 +6527,16 @@
     const already = body.dataset.agentsRendered === "1";
     if (!quiet || !already) {
       body.innerHTML = `
-        <section class="cc-panel agents-rt-strip" id="agentsRealtimePanel">
+        <section class="cc-panel" id="agentsLicensePanel">
+          <header><h2>License</h2><button type="button" class="btn-secondary" id="agentsLicenseRefreshBtn">Validate</button></header>
+          <div id="agentsLicenseBody"><p class="hint">Loading…</p></div>
+        </section>
+        <section class="cc-panel agents-rt-strip" id="agentsRealtimePanel" style="margin-top:1rem">
           <header><h2>Realtime status</h2><button type="button" class="btn-secondary" id="agentsPageRefreshBtn">Refresh</button></header>
           <div id="agentsRealtimeBody"><p class="hint">Loading…</p></div>
         </section>
         <section class="cc-panel" id="agentsPackagesPanel" style="margin-top:1rem">
-          <header><h2>Packages by OS</h2></header>
+          <header><h2>Deploy SecuraIQ</h2></header>
           <div id="agentsPackagesBody"><p class="hint">Loading…</p></div>
         </section>
         <section class="cc-panel" id="agentsFleetPanel" style="margin-top:1rem">
@@ -6463,13 +6548,16 @@
       body.dataset.agentsRendered = "1";
       wireAgentsControls({
         enrollBtn: "agentsPageEnrollBtn",
+        bootstrapBtn: "agentsPageBootstrapBtn",
         campaignBtn: "agentsPageCampaignBtn",
         resultEl: "agentsPageEnrollResult",
         formEl: "agentsPageCampaignForm",
       });
       qs("agentsPageRefreshBtn")?.addEventListener("click", () => renderAgentsPage());
+      qs("agentsLicenseRefreshBtn")?.addEventListener("click", () => renderAgentsLicensePanel());
     }
     await Promise.all([
+      renderAgentsLicensePanel(),
       renderAgentPackagesHub(qs("agentsPackagesBody")),
       renderAgentsPanel(),
     ]);

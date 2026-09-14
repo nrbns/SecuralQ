@@ -15,8 +15,10 @@ from app.license_service import (
     check_feature,
     effective_entitlements,
     issue_license,
+    issue_trial_license,
     plan_catalog,
     revoke_license,
+    validate_license,
 )
 from app.rbac import require_perm
 from app.tenancy import optional_org_header, resolve_request_org
@@ -77,6 +79,50 @@ async def licenses_current(
 ):
     """Alias for entitlements + enroll gate (dashboard-friendly)."""
     return await licenses_entitlements(user, header_org=header_org, org_id=org_id)
+
+
+@router.post("/validate")
+@router.get("/validate")
+async def licenses_validate(
+    user: Annotated[AuthUser, Depends(require_user)],
+    header_org: Annotated[str | None, Depends(optional_org_header)] = None,
+    org_id: str | None = None,
+):
+    """Online license validation — cache locally, never trust local cache as SoT.
+
+    Agents and dashboards should call this periodically (e.g. every 24h). Offline
+    grace is returned in the payload; do not brick agents on transient outages.
+    """
+    oid = _org_for(user, org_id or header_org)
+    result = validate_license(user.id, org_id=oid)
+    audit("license_validate", user.id, {"org_id": oid, "mode": result.get("mode"), "valid": result.get("valid")})
+    return result
+
+
+class TrialLicenseRequest(BaseModel):
+    plan: str = "pro"
+    org_id: str | None = None
+    days: int = Field(default=30, ge=1, le=365)
+
+
+@router.post("/trial")
+async def licenses_trial(
+    req: TrialLicenseRequest,
+    user: Annotated[AuthUser, Depends(require_user)],
+    header_org: Annotated[str | None, Depends(optional_org_header)] = None,
+):
+    """Issue a signed N-day trial (default 30 days)."""
+    oid = _org_for(user, req.org_id or header_org)
+    _require_license_admin(user, oid)
+    plan = (req.plan or "pro").strip().lower()
+    if plan not in plan_catalog() or plan == "free":
+        raise HTTPException(status_code=400, detail="trial plan must be a paid catalog plan")
+    lic = issue_trial_license(user.id, org_id=oid, plan=plan, days=req.days)
+    audit("license_trial", user.id, {"license_id": lic.get("id"), "plan": plan, "days": req.days, "org_id": oid})
+    return {
+        "license": lic,
+        "validation": validate_license(user.id, org_id=oid),
+    }
 
 
 class IssueLicenseRequest(BaseModel):

@@ -26,7 +26,9 @@
 | Billing | Stripe checkout/webhook wired; inert without keys |
 | License service | **Shipped foundations** — Ed25519-signed `securaiq_licenses`, plans/entitlements, soft enroll quota (`LICENSE_ENFORCEMENT_ENABLED`), Stripe → `issue_license`. **Still open:** separate `entitlements` rows, admin revoke API, checkin grace degrade, offline activation |
 
-**Still genuinely missing (build these):** persistent `login_attempts` lockout, Redis-backed distributed auth rate limit, one-time enroll-token flow, immediate WSS terminate on revoke, mTLS, MSI/deb/rpm + signing, signed agent auto-update+rollback, event-driven control recompute, `control_results` history, object storage artifacts, Alembic + SQLite→Postgres export, `/api/v1` versioning.
+**Still genuinely missing (build these):** MSI/Authenticode, deb/rpm + package signing, signed agent auto-update+rollback, event-driven control recompute, `control_results` history, object storage artifacts, Alembic + SQLite→Postgres export, `/api/v1` versioning, mTLS certs.
+
+**Shipped commercial activation slice:** signed licenses + online `POST /api/licenses/validate` + local activation cache payload (state only) + restricted mode on expiry (no agent brick) + bootstrap enroll tokens + Deploy UI on Agents page + 30-day trial issue.
 
 ---
 

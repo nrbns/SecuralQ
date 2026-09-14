@@ -854,9 +854,10 @@
           <div class="page-head">
             <div>
               <h1>Agents &amp; packages</h1>
-              <p class="page-intro hint" style="margin:0.35rem 0 0">Download packaged agents (.exe / .zip / .tar.gz), enroll once, and watch fleet check-ins over realtime SSE + Agent Gateway. Install scripts are developer fallback only.</p>
+              <p class="page-intro hint" style="margin:0.35rem 0 0">Deploy SecuraIQ: download packages, generate a short-lived bootstrap token, auto-enroll — license validation is server-signed (local cache is state only).</p>
             </div>
             <div class="page-head-actions" style="display:flex;gap:0.5rem;flex-wrap:wrap">
+              <button type="button" class="btn-secondary" id="agentsPageBootstrapBtn">Generate bootstrap token</button>
               <button type="button" class="btn-secondary" id="agentsPageCampaignBtn">New patch campaign</button>
               <button type="button" class="btn-primary-cc" id="agentsPageEnrollBtn">Enroll new agent</button>
             </div>

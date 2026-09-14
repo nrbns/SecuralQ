@@ -517,6 +517,35 @@ async def api_agent_packages(user: Annotated[AuthUser, Depends(require_user)]):
             "fleet_total": total,
         },
         "notes": notes,
+        "roadmap_packages": {
+            "windows": [
+                {"kind": "msi", "label": "Windows MSI (enterprise) — coming soon", "built": False},
+                {"kind": "exe", "label": "Windows EXE bootstrapper", "built": any(p.get("kind") == "exe" for p in packages)},
+            ],
+            "linux": [
+                {"kind": "deb", "label": "Debian/Ubuntu .deb — coming soon", "built": False},
+                {"kind": "rpm", "label": "RHEL/Fedora .rpm — coming soon", "built": False},
+                {"kind": "tar", "label": "Universal .tar.gz", "built": any(p.get("kind") == "tar" and p.get("os") == "linux" for p in packages)},
+            ],
+            "macos": [
+                {"kind": "pkg", "label": "macOS .pkg — coming soon", "built": False},
+                {"kind": "dmg", "label": "macOS .dmg", "built": dmg_available},
+            ],
+        },
+        "deploy": {
+            "enroll_token_url": "/api/agents/enroll-tokens",
+            "enroll_by_token_url": "/api/agents/enroll-by-token",
+            "license_validate_url": "/api/licenses/validate",
+            "bootstrap_note": (
+                "Generate a short-lived enrollment token (not a permanent org secret). "
+                "Installer calls enroll-by-token once; permanent agent_id.agent_key is issued; "
+                "discard the bootstrap token after use."
+            ),
+            "activation_note": (
+                "Local registry/config caches activation state only. "
+                "Re-validate via POST /api/licenses/validate — never trust a local license file as SoT."
+            ),
+        },
     }
 
 
@@ -597,6 +626,12 @@ async def api_create_campaign(
     are approved (individually or via /campaigns/{id}/approve)."""
     oid = _org_for(user, header_org)
     require_perm(user, "agent.command", org_id=oid)
+    try:
+        from app.license_service import require_premium_feature
+
+        require_premium_feature(user.id, "remediation", org_id=oid)
+    except ValueError as exc:
+        raise HTTPException(status_code=402, detail=str(exc)) from exc
     try:
         result = create_campaign(
             user.id,

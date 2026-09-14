@@ -87,6 +87,15 @@ LICENSE_PLANS: dict[str, dict[str, Any]] = {
 
 _DEFAULT_GRACE_DAYS = 14
 
+# Features that remain usable in restricted (post-grace expiry) mode.
+# Spec: login + visibility + evidence export; no premium write/AI/remediation.
+_RESTRICTED_KEEP_FEATURES = frozenset(
+    {"agent", "inventory", "vulnerability", "compliance", "evidence"}
+)
+_PREMIUM_WRITE_FEATURES = frozenset(
+    {"remediation", "ai", "realtime", "integrations", "sso", "scim", "audit"}
+)
+
 # Lab-only ephemeral keypair when LICENSE_ED25519_* unset (same process only).
 _EPHEMERAL_KEYS: dict[str, str] | None = None
 
@@ -393,8 +402,12 @@ def effective_entitlements(user_id: str, *, org_id: str | None = None) -> dict[s
     """Resolve entitlements from active signed license, else billing plan defaults."""
     lic = get_active_license(user_id, org_id=org_id)
     if lic:
-        ok, reason = evaluate_license_status(lic)
+        mode = license_operational_mode(lic)
         payload = lic.get("payload") or {}
+        raw_features = list(payload.get("features") or lic.get("features") or [])
+        features, blocked = _apply_mode_to_features(raw_features, mode)
+        # status_ok True only while fully active (not grace/restricted) for enroll gates
+        status_ok = mode["mode"] in ("active", "warning", "critical") and mode["status_reason"] == "active"
         return {
             "source": "signed_license",
             "license_id": lic.get("id"),
@@ -403,11 +416,20 @@ def effective_entitlements(user_id: str, *, org_id: str | None = None) -> dict[s
                 "label", lic.get("plan")
             ),
             "max_agents": payload.get("max_agents", lic.get("max_agents")),
-            "features": list(payload.get("features") or lic.get("features") or []),
-            "status_ok": ok,
-            "status_reason": reason,
-            "expires_at": payload.get("expires_at") or lic.get("expires_at"),
+            "features": features,
+            "features_blocked": blocked,
+            "features_licensed": raw_features,
+            "status_ok": status_ok,
+            "status_reason": mode["status_reason"],
+            "mode": mode["mode"],
+            "warning_level": mode["warning_level"],
+            "days_remaining": mode["days_remaining"],
+            "expires_at": mode.get("expires_at") or payload.get("expires_at") or lic.get("expires_at"),
+            "grace_until": mode.get("grace_until"),
             "grace_days": payload.get("grace_days") or lic.get("grace_days"),
+            "allow_new_enrollment": mode["allow_new_enrollment"],
+            "allow_premium_writes": mode["allow_premium_writes"],
+            "allow_agent_checkin": mode["allow_agent_checkin"],
             "enforcement_enabled": license_enforcement_enabled(),
             "signed": lic.get("signed"),
         }
@@ -426,44 +448,244 @@ def effective_entitlements(user_id: str, *, org_id: str | None = None) -> dict[s
         "plan_label": ent["plan_label"],
         "max_agents": ent["max_agents"],
         "features": ent["features"],
+        "features_blocked": [],
+        "features_licensed": ent["features"],
         "status_ok": True,
         "status_reason": "plan_default",
+        "mode": "active",
+        "warning_level": "none",
+        "days_remaining": None,
         "expires_at": None,
+        "grace_until": None,
         "grace_days": _DEFAULT_GRACE_DAYS,
+        "allow_new_enrollment": True,
+        "allow_premium_writes": True,
+        "allow_agent_checkin": True,
         "enforcement_enabled": license_enforcement_enabled(),
         "signed": None,
     }
 
 
+def validate_license(user_id: str, *, org_id: str | None = None) -> dict[str, Any]:
+    """Online validation response for dashboard / agent periodic check.
+
+    Local registry/config may cache this payload — never trust local cache as SoT.
+    """
+    from app.activation_cache import build_activation_cache_payload
+
+    ent = effective_entitlements(user_id, org_id=org_id)
+    agents = count_active_agents(user_id, org_id=org_id)
+    valid = ent.get("mode") not in ("revoked",) and (
+        ent.get("allow_agent_checkin", True) or not license_enforcement_enabled()
+    )
+    # Soft: when enforcement off, always valid for continuity.
+    if not license_enforcement_enabled():
+        valid = True
+    cache = build_activation_cache_payload(ent, agents_current=agents, org_id=org_id)
+    return {
+        "valid": valid,
+        "validated_at": now(),
+        "revalidate_after_sec": 86400,
+        "offline_grace_sec": int((ent.get("grace_days") or _DEFAULT_GRACE_DAYS) * 86400),
+        **ent,
+        "agents_current": agents,
+        "activation_cache": cache,
+        "message": _validate_message(ent),
+    }
+
+
+def _validate_message(ent: dict[str, Any]) -> str:
+    mode = ent.get("mode") or "none"
+    if mode == "revoked":
+        return "License revoked — agent authentication rejected."
+    if mode == "restricted":
+        return (
+            "License expired — restricted mode: visibility and evidence export remain; "
+            "new premium scans, remediation, and AI are disabled. Renew to restore full entitlements."
+        )
+    if mode == "grace":
+        return "License expired but inside grace window — renew soon; new agent enrollment is blocked."
+    if mode in ("warning", "critical"):
+        days = ent.get("days_remaining")
+        return f"License active — {days} day(s) remaining. Renew before expiry."
+    return "License active."
+
+
+def issue_trial_license(
+    user_id: str,
+    *,
+    org_id: str | None = None,
+    plan: str = "pro",
+    days: int = 30,
+) -> dict[str, Any]:
+    """Issue a signed N-day trial (default 30) — commercial activation experience."""
+    days = max(1, min(int(days), 365))
+    return issue_license(
+        user_id,
+        org_id=org_id,
+        plan=plan,
+        expires_at=now() + days * 86400,
+        grace_days=_DEFAULT_GRACE_DAYS,
+    )
+
+
+def require_premium_feature(user_id: str, feature: str, *, org_id: str | None = None) -> None:
+    """Raise ValueError with upgrade-oriented message when feature blocked."""
+    if not license_enforcement_enabled():
+        return
+    ent = effective_entitlements(user_id, org_id=org_id)
+    if not ent.get("allow_premium_writes") and feature.lower() in _PREMIUM_WRITE_FEATURES:
+        raise ValueError(
+            f"License restricted ({ent.get('mode')}): feature `{feature}` unavailable. "
+            "Renew your subscription to restore premium capabilities."
+        )
+    if feature.lower() not in {str(f).lower() for f in (ent.get("features") or [])}:
+        if ent.get("mode") in ("restricted", "revoked", "grace") and feature.lower() in _PREMIUM_WRITE_FEATURES:
+            raise ValueError(
+                f"License {ent.get('mode')}: feature `{feature}` unavailable. Upgrade or renew."
+            )
+
+
 def evaluate_license_status(lic: dict[str, Any], *, at: float | None = None) -> tuple[bool, str]:
     """Return (ok_for_new_enroll, reason). Expired+grace → ok False for new enroll."""
+    mode = license_operational_mode(lic, at=at)
+    reason = mode["status_reason"]
+    return bool(mode["allow_new_enrollment"]), reason
+
+
+def license_operational_mode(lic: dict[str, Any] | None, *, at: float | None = None) -> dict[str, Any]:
+    """Classify license lifecycle for UI + enforcement (never brick agents on soft expiry).
+
+    Modes:
+      active | warning | critical | grace | restricted | revoked | none
+    """
     ts = float(at if at is not None else now())
+    out: dict[str, Any] = {
+        "mode": "none",
+        "status_reason": "none",
+        "days_remaining": None,
+        "expires_at": None,
+        "grace_until": None,
+        "allow_new_enrollment": True,
+        "allow_premium_writes": True,
+        "allow_agent_checkin": True,
+        "warning_level": "none",  # none|warning|critical
+    }
+    if not lic:
+        return out
+
     status = (lic.get("status") or "").lower()
-    if status in ("revoked", "superseded"):
-        return False, status
-    if lic.get("revoked_at"):
-        return False, "revoked"
-    # Prefer verifying signature when present
+    if status in ("revoked", "superseded") or lic.get("revoked_at"):
+        out.update(
+            {
+                "mode": "revoked",
+                "status_reason": status if status in ("revoked", "superseded") else "revoked",
+                "allow_new_enrollment": False,
+                "allow_premium_writes": False,
+                "allow_agent_checkin": False,
+                "warning_level": "critical",
+            }
+        )
+        return out
+
     signed = lic.get("signed")
     if isinstance(signed, dict) and signed.get("signature"):
         ok, reason = verify_signed_license(signed)
         if not ok and license_enforcement_enabled():
-            return False, reason
+            out.update(
+                {
+                    "mode": "revoked",
+                    "status_reason": reason,
+                    "allow_new_enrollment": False,
+                    "allow_premium_writes": False,
+                    "allow_agent_checkin": False,
+                    "warning_level": "critical",
+                }
+            )
+            return out
+
     payload = lic.get("payload") if isinstance(lic.get("payload"), dict) else lic
     exp = payload.get("expires_at") if isinstance(payload, dict) else lic.get("expires_at")
+    grace_days = int(
+        (payload.get("grace_days") if isinstance(payload, dict) else None)
+        or lic.get("grace_days")
+        or _DEFAULT_GRACE_DAYS
+    )
     if exp is None or exp == "":
-        return True, "active"
+        out.update({"mode": "active", "status_reason": "active", "warning_level": "none"})
+        return out
     try:
         exp_f = float(exp)
     except (TypeError, ValueError):
-        return True, "active"
+        out.update({"mode": "active", "status_reason": "active"})
+        return out
+
+    out["expires_at"] = exp_f
+    grace_until = exp_f + grace_days * 86400
+    out["grace_until"] = grace_until
+    days_left = (exp_f - ts) / 86400.0
+    out["days_remaining"] = round(days_left, 2)
+
     if ts <= exp_f:
-        return True, "active"
-    grace = int(payload.get("grace_days") if isinstance(payload, dict) else lic.get("grace_days") or 0)
-    if ts <= exp_f + grace * 86400:
-        # Grace: existing agents continue; new enrollment blocked by caller.
-        return False, "expired_grace"
-    return False, "expired"
+        warning = "none"
+        if days_left <= 3:
+            warning = "critical"
+        elif days_left <= 14:
+            warning = "warning"
+        mode = "critical" if warning == "critical" else ("warning" if warning == "warning" else "active")
+        out.update(
+            {
+                "mode": mode,
+                "status_reason": "active",
+                "warning_level": warning,
+                "allow_new_enrollment": True,
+                "allow_premium_writes": True,
+                "allow_agent_checkin": True,
+            }
+        )
+        return out
+
+    if ts <= grace_until:
+        # Grace: existing agents continue; block new enrollment; premium still on.
+        out.update(
+            {
+                "mode": "grace",
+                "status_reason": "expired_grace",
+                "days_remaining": round((grace_until - ts) / 86400.0, 2),
+                "warning_level": "critical",
+                "allow_new_enrollment": False,
+                "allow_premium_writes": True,
+                "allow_agent_checkin": True,
+            }
+        )
+        return out
+
+    # Past grace: restricted visibility — do NOT stop agents / revoke check-ins.
+    out.update(
+        {
+            "mode": "restricted",
+            "status_reason": "expired",
+            "days_remaining": round((exp_f - ts) / 86400.0, 2),
+            "warning_level": "critical",
+            "allow_new_enrollment": False,
+            "allow_premium_writes": False,
+            "allow_agent_checkin": True,
+        }
+    )
+    return out
+
+
+def _apply_mode_to_features(features: list[str], mode: dict[str, Any]) -> tuple[list[str], list[str]]:
+    feats = [str(f) for f in (features or [])]
+    if mode.get("mode") == "revoked":
+        return [], feats
+    if mode.get("mode") == "restricted" or not mode.get("allow_premium_writes", True):
+        allowed = [f for f in feats if f.lower() in _RESTRICTED_KEEP_FEATURES]
+        blocked = [f for f in feats if f.lower() not in _RESTRICTED_KEEP_FEATURES]
+        if not allowed:
+            allowed = sorted(_RESTRICTED_KEEP_FEATURES)
+        return allowed, blocked
+    return feats, []
 
 
 def count_active_agents(user_id: str, *, org_id: str | None = None) -> int:
@@ -499,8 +721,8 @@ def check_agent_enrollment_allowed(
     max_a = ent.get("max_agents")
     if not license_enforcement_enabled():
         return True, "enforcement_off", ent
-    if not ent.get("status_ok"):
-        return False, f"license_{ent.get('status_reason') or 'invalid'}", ent
+    if not ent.get("allow_new_enrollment", ent.get("status_ok")):
+        return False, f"license_{ent.get('status_reason') or ent.get('mode') or 'invalid'}", ent
     if max_a is None:
         return True, "unlimited", ent
     try:
@@ -516,6 +738,33 @@ def has_feature(user_id: str, feature: str, *, org_id: str | None = None) -> boo
     ent = effective_entitlements(user_id, org_id=org_id)
     feats = {str(f).lower() for f in (ent.get("features") or [])}
     return feature.lower() in feats
+
+
+def check_feature(
+    user_id: str,
+    feature: str,
+    *,
+    org_id: str | None = None,
+) -> dict[str, Any]:
+    ent = effective_entitlements(user_id, org_id=org_id)
+    allowed = has_feature(user_id, feature, org_id=org_id)
+    if license_enforcement_enabled() and not ent.get("allow_premium_writes"):
+        if feature.lower() in _PREMIUM_WRITE_FEATURES:
+            allowed = False
+    if license_enforcement_enabled() and ent.get("mode") == "revoked":
+        allowed = False
+    return {
+        "feature": feature,
+        "allowed": allowed,
+        "plan": ent.get("plan"),
+        "mode": ent.get("mode"),
+        "status_ok": ent.get("status_ok"),
+        "status_reason": ent.get("status_reason"),
+        "enforcement_enabled": license_enforcement_enabled(),
+        "message": None
+        if allowed
+        else f"Feature `{feature}` unavailable in mode={ent.get('mode')} ({ent.get('status_reason')})",
+    }
 
 
 def revoke_license(user_id: str, license_id: str) -> dict[str, Any] | None:
@@ -542,24 +791,3 @@ def revoke_license(user_id: str, license_id: str) -> dict[str, Any] | None:
         "SELECT * FROM securaiq_licenses WHERE id = ?", (license_id,)
     ).fetchone()
     return _row_to_dict(out) if out else None
-
-
-def check_feature(
-    user_id: str,
-    feature: str,
-    *,
-    org_id: str | None = None,
-) -> dict[str, Any]:
-    ent = effective_entitlements(user_id, org_id=org_id)
-    allowed = has_feature(user_id, feature, org_id=org_id)
-    # If license status not ok and enforcement on, deny features too.
-    if license_enforcement_enabled() and not ent.get("status_ok"):
-        allowed = False
-    return {
-        "feature": feature,
-        "allowed": allowed,
-        "plan": ent.get("plan"),
-        "status_ok": ent.get("status_ok"),
-        "status_reason": ent.get("status_reason"),
-        "enforcement_enabled": license_enforcement_enabled(),
-    }
