@@ -121,9 +121,7 @@ Document `client` org role. Production must keep `AUTH_ENABLED=true` (already en
 7. [ ] Alembic + SQLite→Postgres export
 8. [x] Redis-backed auth rate limit (falls back to in-memory when Redis unset)
 
-**P1** — MSI/deb, mTLS, signed updates, event-driven controls, `control_results`, object storage, CI Postgres, `/api/v1`, rbac-matrix `client` row **[doc fixed]**
-
-**P1** — MSI/deb, mTLS, signed updates, event-driven controls, `control_results`, object storage, CI Postgres, `/api/v1`, rbac-matrix `client` row
+**P1** — MSI/deb, mTLS, signed updates, event-driven controls, `control_results`, object storage, CI Postgres, `/api/v1` (`rbac-matrix` `client` row documented)
 
 **P2** — Argon2 rehash-on-login, WebAuthn/SAML/SCIM, KMS, macOS notarization, MSSP
 
