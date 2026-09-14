@@ -66,6 +66,6 @@ def build_activation_cache_payload(
         "paths": LOCAL_ACTIVATION_PATHS,
         "note": (
             "Cache/state only. Re-validate with POST /api/licenses/validate. "
-            "Never store LICENSE_ED25519_PRIVATE_KEY or agent signing secrets here."
+            "Never store license signing secrets or agent credentials in this file."
         ),
     }

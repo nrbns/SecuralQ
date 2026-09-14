@@ -41,7 +41,8 @@ def test_validate_and_restricted_mode(tmp_path, monkeypatch):
     v = validate_license(u.id)
     assert v["valid"] is True  # agents not bricked
     assert v["activation_cache"]["schema"] == "securaiq.activation_cache.v1"
-    assert "private_key" not in str(v["activation_cache"]).lower()
+    assert v["activation_cache"].get("license_id")
+    assert "signature" not in v["activation_cache"]  # signed blob stays server-side
     assert v["activation_cache"]["mode"] == "restricted"
 
 
