@@ -2019,7 +2019,10 @@ def execute_patch_package(payload: dict) -> dict:
 def execute_agent_upgrade(payload: dict, *, server: str, insecure: bool = False) -> dict:
     """Download and verify the server's agent script, then atomically
     replace this file with it. Always returns a result dict -- never
-    raises."""
+    raises. When signature + public key are present and cryptography is
+    installed, verifies Ed25519 over canonical update metadata. Keeps a
+    .bak for rollback if post-write integrity fails.
+    """
     expected = str(payload.get("expected_sha256") or "").strip().lower()
     if not expected:
         return {
@@ -2027,7 +2030,69 @@ def execute_agent_upgrade(payload: dict, *, server: str, insecure: bool = False)
             "error": "No expected_sha256 in command payload -- refusing to self-upgrade without a "
             "server-declared checksum to verify against",
         }
-    url = server.rstrip("/") + "/api/agents/install-script"
+    rel = str(payload.get("download_url") or "/api/agents/install-script").strip() or "/api/agents/install-script"
+    if rel.startswith("http://") or rel.startswith("https://"):
+        url = rel
+    else:
+        url = server.rstrip("/") + (rel if rel.startswith("/") else "/" + rel)
+
+    sig = str(payload.get("signature") or "").strip()
+    pub = str(
+        os.environ.get("SECURAIQ_AGENT_ED25519_PUBLIC_KEY")
+        or payload.get("signing_public_key")
+        or ""
+    ).strip()
+    require_sig = os.environ.get("SECURAIQ_REQUIRE_UPDATE_SIG", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    if sig:
+        meta = {
+            "version": str(payload.get("version") or ""),
+            "platform": str(payload.get("platform") or "all"),
+            "download_url": "/api/agents/install-script",
+            "sha256": expected,
+            "previous_sha256": str(payload.get("previous_sha256") or ""),
+        }
+        if rel.startswith("/") and not rel.startswith("http"):
+            meta["download_url"] = rel
+        body = json.dumps(meta, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        if not pub:
+            if require_sig:
+                return {"ok": False, "error": "Update signature present but no public key pinned"}
+            print(
+                "[securaiq-agent] update signature present but no SECURAIQ_AGENT_ED25519_PUBLIC_KEY — "
+                "sha256-only verify",
+                file=sys.stderr,
+            )
+        else:
+            try:
+                from cryptography.exceptions import InvalidSignature
+                from cryptography.hazmat.primitives import serialization
+                from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+                if "BEGIN" in pub:
+                    key = serialization.load_pem_public_key(pub.encode("utf-8"))
+                else:
+                    key = Ed25519PublicKey.from_public_bytes(_b64url_decode_agent(pub))
+                try:
+                    key.verify(_b64url_decode_agent(sig), body)
+                except (InvalidSignature, ValueError, TypeError) as exc:
+                    return {"ok": False, "error": f"Update signature verification failed: {exc}"}
+            except ImportError:
+                if require_sig:
+                    return {"ok": False, "error": "cryptography required for update signature verify"}
+                print(
+                    "[securaiq-agent] update signature present but cryptography not installed — "
+                    "sha256-only verify",
+                    file=sys.stderr,
+                )
+            except Exception as exc:
+                return {"ok": False, "error": f"Update signature verification failed: {exc}"}
+    elif require_sig:
+        return {"ok": False, "error": "SECURAIQ_REQUIRE_UPDATE_SIG=1 but payload has no signature"}
+
     req = urllib.request.Request(url, headers={"User-Agent": f"SecuraIQ-Agent/{AGENT_VERSION}"})
     ctx = None
     if url.startswith("https://") and insecure:
@@ -2057,20 +2122,45 @@ def execute_agent_upgrade(payload: dict, *, server: str, insecure: bool = False)
             "actual_sha256": actual,
         }
     this_file = os.path.abspath(__file__)
+    bak_path = this_file + ".bak"
     tmp_path = this_file + ".new"
     try:
+        if os.path.isfile(this_file):
+            with open(this_file, "rb") as fh:
+                old = fh.read()
+            with open(bak_path, "wb") as fh:
+                fh.write(old)
         with open(tmp_path, "wb") as fh:
             fh.write(new_content)
         os.replace(tmp_path, this_file)
+        # Post-write integrity: if read-back mismatches, restore .bak
+        with open(this_file, "rb") as fh:
+            written = fh.read()
+        if hashlib.sha256(written).hexdigest() != expected:
+            if os.path.isfile(bak_path):
+                os.replace(bak_path, this_file)
+            return {
+                "ok": False,
+                "error": "Post-write checksum failed — restored .bak",
+                "expected_sha256": expected,
+            }
     except Exception as exc:
         try:
             os.remove(tmp_path)
         except Exception:
             pass
+        if os.path.isfile(bak_path):
+            try:
+                os.replace(bak_path, this_file)
+            except Exception:
+                pass
         return {"ok": False, "error": f"Could not write new agent script: {exc}"}
     return {
         "ok": True,
         "sha256": actual,
+        "version": str(payload.get("version") or ""),
+        "bak": bak_path if os.path.isfile(bak_path) else "",
+        "previous_sha256": str(payload.get("previous_sha256") or ""),
         "note": "Script replaced -- process will exit so the service supervisor restarts it with the new code",
     }
 
@@ -2378,6 +2468,123 @@ def _replay_headers(token: str, body: bytes) -> dict:
             agent_key.encode("utf-8"), msg, hashlib.sha256
         ).hexdigest()
     return headers
+
+
+LICENSE_VALIDATE_INTERVAL_SEC = 86400  # 24h
+
+
+def _activation_state_dir() -> str:
+    """Writable local cache dir (state only — never SoT). Prefer user home for non-root."""
+    override = (os.environ.get("SECURAIQ_ACTIVATION_DIR") or "").strip()
+    if override:
+        return override
+    system = platform.system().lower()
+    if system == "windows":
+        base = os.environ.get("PROGRAMDATA") or os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        return os.path.join(base, "SecuraIQ")
+    if system == "darwin":
+        return os.path.join(os.path.expanduser("~"), "Library", "Application Support", "SecuraIQ")
+    # Linux: prefer /etc when writable, else ~/.securaiq
+    etc = "/etc/securaiq"
+    if os.path.isdir(etc) and os.access(etc, os.W_OK):
+        return etc
+    return os.path.join(os.path.expanduser("~"), ".securaiq")
+
+
+def _activation_cache_path() -> str:
+    return os.path.join(_activation_state_dir(), "license.json")
+
+
+def save_activation_cache(payload: dict) -> str | None:
+    """Persist activation_cache blob. Never stores agent credentials or signing keys."""
+    cache = payload.get("activation_cache") if isinstance(payload, dict) else None
+    if not isinstance(cache, dict):
+        cache = payload if isinstance(payload, dict) else {}
+    safe = {k: v for k, v in cache.items() if k not in ("paths",)}
+    safe["cached_at"] = time.time()
+    path = _activation_cache_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(safe, fh, indent=2, sort_keys=True)
+        os.replace(tmp, path)
+        return path
+    except Exception as exc:
+        print(f"[securaiq-agent] could not write activation cache: {exc}", file=sys.stderr)
+        return None
+
+
+def load_activation_cache() -> dict:
+    path = _activation_cache_path()
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def validate_license_online(server: str, token: str, *, insecure: bool = False) -> dict:
+    """POST /api/agents/license/validate — server remains source of truth."""
+    url = server.rstrip("/") + "/api/agents/license/validate"
+    data = b""
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "User-Agent": f"SecuraIQ-Agent/{AGENT_VERSION}",
+        "Content-Type": "application/json",
+        "Content-Length": "0",
+    }
+    headers.update(_replay_headers(token, data))
+    req = urllib.request.Request(url, data=data, method="POST", headers=headers)
+    ctx = None
+    if url.startswith("https://") and insecure:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def maybe_validate_license(
+    server: str,
+    token: str,
+    *,
+    insecure: bool = False,
+    force: bool = False,
+    last_ok_at: float = 0.0,
+) -> tuple[float, dict | None]:
+    """Periodic validate. Returns (last_ok_at, result_or_None). Does not brick on failure."""
+    now = time.time()
+    if not force and last_ok_at and (now - last_ok_at) < LICENSE_VALIDATE_INTERVAL_SEC:
+        return last_ok_at, None
+    try:
+        result = validate_license_online(server, token, insecure=insecure)
+        path = save_activation_cache(result)
+        mode = result.get("mode") or "?"
+        print(
+            f"[securaiq-agent] license validate mode={mode} valid={result.get('valid')} "
+            f"cache={path or 'n/a'}"
+        )
+        if result.get("mode") == "revoked":
+            print(
+                "[securaiq-agent] license revoked — check-ins may be rejected; contact your admin",
+                file=sys.stderr,
+            )
+        return now, result
+    except Exception as exc:
+        cached = load_activation_cache()
+        print(
+            f"[securaiq-agent] license validate FAILED (using local cache if any): {exc}",
+            file=sys.stderr,
+        )
+        if cached:
+            print(
+                f"[securaiq-agent] cached activation mode={cached.get('mode') or cached.get('activation_status')} "
+                f"(state only — not SoT)",
+                file=sys.stderr,
+            )
+        return last_ok_at, None
 
 
 def send_checkin(server: str, token: str, payload: dict, *, insecure: bool = False, timeout: float = 15.0) -> dict:
@@ -2716,6 +2923,11 @@ def main() -> int:
         action="store_true",
         help="Disable local offline telemetry buffer (no enqueue/flush on check-in failure)",
     )
+    ap.add_argument(
+        "--no-license-validate",
+        action="store_true",
+        help="Skip periodic POST /api/agents/license/validate (activation cache)",
+    )
     args = ap.parse_args()
 
     if args.token_file:
@@ -2756,7 +2968,21 @@ def main() -> int:
         if offline_buf.pending_count:
             print(f"[securaiq-agent] offline buffer pending={offline_buf.pending_count} path={offline_buf.path}")
 
+    last_license_ok_at = 0.0
+    if not args.no_license_validate:
+        last_license_ok_at, _ = maybe_validate_license(
+            args.server, args.token, insecure=args.insecure, force=True
+        )
+
     def _tick() -> bool:
+        nonlocal last_license_ok_at
+        if not args.no_license_validate:
+            last_license_ok_at, _ = maybe_validate_license(
+                args.server,
+                args.token,
+                insecure=args.insecure,
+                last_ok_at=last_license_ok_at,
+            )
         snapshot = collect_snapshot()
         payload = dict(snapshot)
         if offline_buf is not None:

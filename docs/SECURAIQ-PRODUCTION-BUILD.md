@@ -18,17 +18,21 @@
 | Password security | PBKDF2-HMAC-SHA256 (180k) + **Argon2id when `argon2-cffi` installed** (`app/auth.py`). Opportunistic rehash on login = P2 polish |
 | Sessions / password reset | Real tables; hashed tokens; email when SMTP set |
 | RBAC / tenancy | `app/rbac.py` + `tenant_visibility_sql()` on high-value tables |
-| Agent bearer/HMAC/replay + opt Ed25519 | Real in `app/agent_auth.py` / `app/agent_security.py`. **Gap:** mTLS certs |
+| Agent bearer/HMAC/replay + opt Ed25519 | Real in `app/agent_auth.py` / `app/agent_security.py`. **mTLS stub:** `AGENT_MTLS_ENABLED` issues lab self-signed client certs on enroll (`app/agent_certs.py`) — reverse-proxy client auth is still an ops step |
 | Realtime bus | Streams + DLQ + XAUTOCLAIM + metrics. **Gap:** event-scoped control recompute |
 | Evidence freshness | TTL + freshness + confirm. Deduped by fingerprint (not broken — see §8) |
 | Secrets at rest | Fernet envelope (`app/secrets_crypto.py`). **Gap:** KMS/HSM |
 | Postgres guardrail | Production refuses SQLite unless override. **Gap:** Alembic + export tool + CI matrix |
 | Billing | Stripe checkout/webhook wired; inert without keys |
-| License service | **Shipped foundations** — Ed25519-signed `securaiq_licenses`, plans/entitlements, soft enroll quota (`LICENSE_ENFORCEMENT_ENABLED`), Stripe → `issue_license`. **Still open:** separate `entitlements` rows, admin revoke API, checkin grace degrade, offline activation |
+| License service | **Shipped** — Ed25519-signed `securaiq_licenses`, plans/entitlements, soft enroll quota, Stripe → `issue_license`, online validate + restricted mode, agent `POST /api/agents/license/validate` + local activation cache (state only) |
 
-**Still genuinely missing (build these):** MSI/Authenticode, deb/rpm + package signing, signed agent auto-update+rollback, event-driven control recompute, `control_results` history, object storage artifacts, Alembic + SQLite→Postgres export, `/api/v1` versioning, mTLS certs.
+**Still genuinely missing (build these):** Authenticode/EV MSI signing, deb/rpm package signing + notarization, event-driven control recompute, `control_results` history, object storage artifacts, Alembic + SQLite→Postgres export, production mTLS at the proxy (cert material is stubbed).
 
-**Shipped commercial activation slice:** signed licenses + online `POST /api/licenses/validate` + local activation cache payload (state only) + restricted mode on expiry (no agent brick) + bootstrap enroll tokens + Deploy UI on Agents page + 30-day trial issue.
+**Shipped packaging / updates / versioning scaffolds (not production-complete signing):**
+- WiX MSI / deb / rpm wrappers under `scripts/packaging/` (tooling-gated; Authenticode ≠ done)
+- Signed update metadata + rollback-aware script upgrade (`app/agent_updates.py`, agent `.bak`)
+- `/api/v1/*` → `/api/*` alias middleware (`app/api_v1.py`)
+- Commercial activation: validate APIs + Deploy UI + enroll tokens + 30-day trial
 
 ---
 
@@ -40,7 +44,7 @@ CDN/TLS → FastAPI (app/main.py)
             ├── Redis Streams (+ DLQ)
             └── Object storage (artifact gap)
 Web Dashboard · Agent Gateway · AI SecOps
-Agents: Windows / Linux / macOS (PyInstaller today; MSI/deb/rpm = gap)
+Agents: Windows / Linux / macOS (PyInstaller + optional MSI/deb/rpm scaffolds; Authenticode/notarization = CI)
 ```
 
 No second server. Logical split of API/worker/gateway later is scaling, not a P0 rewrite.
@@ -91,16 +95,17 @@ Grace: never brick agents on license lapse; block new enroll in grace; degrade a
 
 ## 4–6. Agent mTLS / packages / enroll tokens
 
-- **mTLS:** additive to bearer+HMAC (P1)
-- **MSI/deb/rpm + signed updates:** P1
-- **Enroll tokens:** P0 — `agent_enroll_tokens` in front of existing `enroll_agent`
-- **Revoke:** must close live WSS immediately (P0)
+- **mTLS:** lab cert issuance when `AGENT_MTLS_ENABLED=true` (additive to bearer+HMAC); terminate client auth at nginx/Caddy in prod
+- **MSI/deb/rpm scaffolds:** `scripts/packaging/build_msi.ps1`, `build_deb.sh`, `build_rpm.sh` (+ `--msi/--deb/--rpm` on `build_agent_packages.py`). Package signing = CI
+- **Signed script updates:** `GET/POST /api/agents/updates/*` + upgrade payload with Ed25519 + `.bak` rollback on script agents
+- **Enroll tokens:** P0 done — `agent_enroll_tokens` in front of existing `enroll_agent`
+- **Revoke:** closes live WSS immediately (P0 done)
 
 ---
 
 ## 7–11. Realtime controls, evidence history, object storage, Postgres, `/api/v1`
 
-As in the engineering brief: affected-controls-only recompute (P1/#172); `control_results` append-only (P1); S3-compatible artifacts (P1); Alembic+export (P0); `/api/v1` alongside `/api` (P1).
+As in the engineering brief: affected-controls-only recompute (P1/#172); `control_results` append-only (P1); S3-compatible artifacts (P1); Alembic+export (P0). **`/api/v1` alias middleware shipped** (rewrites to `/api`; bare `/api` remains canonical for the UI).
 
 ---
 
@@ -123,7 +128,12 @@ Document `client` org role. Production must keep `AUTH_ENABLED=true` (already en
 7. [ ] Alembic + SQLite→Postgres export
 8. [x] Redis-backed auth rate limit (falls back to in-memory when Redis unset)
 
-**P1** — MSI/deb, mTLS, signed updates, event-driven controls, `control_results`, object storage, CI Postgres, `/api/v1` (`rbac-matrix` `client` row documented)
+**P1**
+- [x] MSI/deb/rpm **scaffolds** (WiX / dpkg-deb / fpm) — Authenticode & package signing still CI
+- [x] mTLS **cert issuance stub** (`AGENT_MTLS_ENABLED`) — proxy client-auth still ops
+- [x] Signed update metadata + rollback-aware script upgrade
+- [x] `/api/v1` alias middleware
+- [ ] Event-driven control recompute, `control_results`, object storage, CI Postgres
 
 **P2** — Argon2 rehash-on-login, WebAuthn/SAML/SCIM, KMS, macOS notarization, MSSP
 

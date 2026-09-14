@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- WiX 3.x/4.x fragment for SecuraIQ Agent MSI.
+     Build: scripts/packaging/build_msi.ps1 (requires WiX Toolset + a built .exe).
+     Authenticode signing is a separate CI step with a real code-signing certificate —
+     this package does NOT embed any signing private keys. -->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*"
+           Name="SecuraIQ Agent"
+           Language="1033"
+           Version="$(var.AgentVersion)"
+           Manufacturer="SecuraIQ"
+           UpgradeCode="A1B2C3D4-E5F6-4789-A012-3456789ABCDE">
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine"
+             Description="SecuraIQ endpoint agent for authorized labs and owned hosts" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of SecuraIQ Agent is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Feature Id="ProductFeature" Title="SecuraIQ Agent" Level="1">
+      <ComponentGroupRef Id="ProductComponents" />
+    </Feature>
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="CompanyFolder" Name="SecuraIQ">
+          <Directory Id="INSTALLFOLDER" Name="Agent" />
+        </Directory>
+      </Directory>
+      <Directory Id="CommonAppDataFolder">
+        <Directory Id="SecuraIQDataRoot" Name="SecuraIQ">
+          <Directory Id="AgentDataFolder" Name="Agent" />
+        </Directory>
+      </Directory>
+    </Directory>
+
+    <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
+      <Component Id="AgentExe" Guid="*">
+        <File Id="AgentBinary" Source="$(var.AgentExe)" KeyPath="yes" />
+        <ServiceInstall Id="SecuraIQAgentService"
+                        Type="ownProcess"
+                        Name="SecuraIQAgent"
+                        DisplayName="SecuraIQ Agent"
+                        Description="SecuraIQ endpoint agent — inventory, controls, telemetry"
+                        Start="auto"
+                        ErrorControl="normal"
+                        Account="LocalSystem">
+          <ServiceConfig DelayedAutoStart="yes" OnInstall="yes" OnReinstall="yes" />
+        </ServiceInstall>
+        <ServiceControl Id="StartSecuraIQAgent" Name="SecuraIQAgent"
+                        Start="install" Stop="both" Remove="uninstall" Wait="yes" />
+      </Component>
+      <Component Id="AgentEnvExample" Guid="*" Directory="AgentDataFolder">
+        <File Id="AgentEnvExampleFile" Source="$(var.AgentEnvExample)" Name="agent.env.example" />
+        <CreateFolder />
+      </Component>
+    </ComponentGroup>
+
+    <Property Id="SECURAIQ_SERVER" Secure="yes" />
+    <Property Id="SECURAIQ_TOKEN" Secure="yes" />
+    <!-- Pass via msiexec: SECURAIQ_SERVER=https://... SECURAIQ_TOKEN=enr_... or agent_id.key -->
+  </Product>
+</Wix>

@@ -83,9 +83,9 @@ def _python() -> Path:
     return Path(sys.executable)
 
 
-def _run(cmd: list[str], *, cwd: Path | None = None) -> None:
+def _run(cmd: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None) -> None:
     print("+", " ".join(cmd))
-    subprocess.check_call(cmd, cwd=str(cwd or ROOT))
+    subprocess.check_call(cmd, cwd=str(cwd or ROOT), env=env)
 
 
 def ensure_pyinstaller(py: Path) -> None:
@@ -288,6 +288,62 @@ def try_macos_dmg(version: str) -> list[Path]:
     return [dmg] if dmg.is_file() else []
 
 
+def try_wrap_msi(out_dir: Path) -> list[Path]:
+    """Optional WiX MSI wrap — soft-fail if candle/light missing."""
+    script = PACKAGING / "build_msi.ps1"
+    if not script.is_file():
+        return []
+    print("Trying WiX MSI wrap (Authenticode not included)...")
+    try:
+        _run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(script),
+                "-OutDir",
+                str(out_dir),
+            ]
+        )
+    except Exception as exc:
+        print(f"MSI wrap skipped: {exc}")
+        return []
+    found = sorted(out_dir.glob("*.msi"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return [found[0]] if found else []
+
+
+def try_wrap_deb(out_dir: Path) -> list[Path]:
+    script = PACKAGING / "build_deb.sh"
+    if not script.is_file():
+        return []
+    print("Trying .deb wrap...")
+    env = {**os.environ, "OUT_DIR": str(out_dir)}
+    try:
+        _run(["bash", str(script)], env=env)
+    except Exception as exc:
+        print(f".deb wrap skipped: {exc}")
+        return []
+    found = sorted(out_dir.glob("*.deb"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return [found[0]] if found else []
+
+
+def try_wrap_rpm(out_dir: Path) -> list[Path]:
+    script = PACKAGING / "build_rpm.sh"
+    if not script.is_file():
+        return []
+    print("Trying .rpm wrap (fpm)...")
+    env = {**os.environ, "OUT_DIR": str(out_dir)}
+    try:
+        _run(["bash", str(script)], env=env)
+    except Exception as exc:
+        print(f".rpm wrap skipped: {exc}")
+        return []
+    found = sorted(out_dir.glob("*.rpm"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return [found[0]] if found else []
+
+
 def smoke_test_binary(binary: Path) -> None:
     print(f"Smoke-testing {binary} …")
     for args in (["--help"], ["--version"]):
@@ -323,6 +379,21 @@ def main() -> int:
         "--skip-pyinstaller",
         action="store_true",
         help="Skip native binary; still produce portable script packages",
+    )
+    ap.add_argument(
+        "--msi",
+        action="store_true",
+        help="Also try WiX MSI wrap (Windows; requires candle/light)",
+    )
+    ap.add_argument(
+        "--deb",
+        action="store_true",
+        help="Also try .deb wrap (Linux; requires dpkg-deb)",
+    )
+    ap.add_argument(
+        "--rpm",
+        action="store_true",
+        help="Also try .rpm wrap (Linux; requires fpm)",
     )
     ap.add_argument(
         "--rust",
@@ -382,6 +453,14 @@ def main() -> int:
         )
         if host == "macos" and not args.skip_pyinstaller and not args.rust:
             artifacts.extend(try_macos_dmg(version))
+
+    # Optional installer wraps (exit quietly if tooling missing).
+    if args.msi and host == "windows":
+        artifacts.extend(try_wrap_msi(OUT))
+    if args.deb and host == "linux":
+        artifacts.extend(try_wrap_deb(OUT))
+    if args.rpm and host == "linux":
+        artifacts.extend(try_wrap_rpm(OUT))
 
     manifest = OUT / "MANIFEST.txt"
     lines = [f"SecuraIQ-Agent {version}", f"engine={engine}", f"host={host}-{_host_arch()}", ""]

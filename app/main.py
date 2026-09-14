@@ -40,6 +40,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from app.config import cors_origin_list, settings
 from app.rate_limit import RateLimitMiddleware
+from app.api_v1 import ApiV1AliasMiddleware
 from app.guardrails import check_request
 from app.model_client import model_client
 from app.prompts import (
@@ -297,6 +298,8 @@ app.add_middleware(
     auth_per_minute=settings.rate_limit_auth_per_minute,
     chat_per_minute=settings.rate_limit_chat_per_minute,
 )
+# Added last → runs first: rewrite /api/v1/* → /api/* before routing/rate-limit path keys.
+app.add_middleware(ApiV1AliasMiddleware)
 
 
 @app.middleware("http")

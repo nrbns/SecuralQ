@@ -70,7 +70,7 @@ _INSTALLER_PATHS = {
     "windows": (_SCRIPTS_DIR / "install_agent_windows.ps1", "text/plain", "install_agent_windows.ps1"),
 }
 _PACKAGE_DIR = project_root() / "dist" / "agent-packages"
-_PACKAGE_SUFFIXES = (".exe", ".zip", ".tar.gz", ".dmg", ".tgz")
+_PACKAGE_SUFFIXES = (".exe", ".zip", ".tar.gz", ".dmg", ".tgz", ".msi", ".deb", ".rpm")
 
 def _org_for(user: AuthUser, header_org: str | None) -> str | None:
     try:
@@ -240,6 +240,7 @@ async def api_enroll_agent(
             f"  python3 securaiq_agent.py --server <this-server-url> --token {token}\n"
             "  Scripts: GET /api/agents/install-script/{windows|linux|macos}\n"
         ),
+        **({"mtls": result["mtls"]} if result.get("mtls") else {}),
     }
 
 
@@ -322,6 +323,7 @@ async def api_enroll_by_token(req: EnrollByTokenRequest):
         "org_id": result.get("org_id"),
         "hostname": result.get("hostname"),
         "platform": result.get("platform"),
+        **({"mtls": result["mtls"]} if result.get("mtls") else {}),
     }
 
 
@@ -371,6 +373,15 @@ def _classify_package(name: str) -> dict[str, str]:
         os_name = "macos"
     if lower.endswith(".exe"):
         kind = "exe"
+    elif lower.endswith(".msi"):
+        kind = "msi"
+        os_name = "windows"
+    elif lower.endswith(".deb"):
+        kind = "deb"
+        os_name = "linux"
+    elif lower.endswith(".rpm"):
+        kind = "rpm"
+        os_name = "linux"
     elif lower.endswith(".dmg"):
         kind = "dmg"
     elif lower.endswith(".tar.gz") or lower.endswith(".tgz"):
@@ -397,8 +408,14 @@ def _list_built_packages() -> list[dict[str, Any]]:
         label = name
         if kind == "exe":
             label = f"Windows agent (.exe) — {name}"
+        elif kind == "msi":
+            label = f"Windows MSI (WiX scaffold) — {name}"
         elif kind == "zip":
             label = f"Windows package (.zip + install.ps1) — {name}"
+        elif kind == "deb":
+            label = f"Debian/Ubuntu .deb — {name}"
+        elif kind == "rpm":
+            label = f"RHEL/Fedora .rpm — {name}"
         elif kind == "tar":
             label = f"{meta['os'].title()} package (.tar.gz) — {name}"
         elif kind == "dmg":
@@ -519,12 +536,27 @@ async def api_agent_packages(user: Annotated[AuthUser, Depends(require_user)]):
         "notes": notes,
         "roadmap_packages": {
             "windows": [
-                {"kind": "msi", "label": "Windows MSI (enterprise) — coming soon", "built": False},
+                {
+                    "kind": "msi",
+                    "label": "Windows MSI (WiX scaffold; Authenticode = CI)",
+                    "built": any(p.get("kind") == "msi" for p in packages),
+                    "build_hint": "scripts/packaging/build_msi.ps1",
+                },
                 {"kind": "exe", "label": "Windows EXE bootstrapper", "built": any(p.get("kind") == "exe" for p in packages)},
             ],
             "linux": [
-                {"kind": "deb", "label": "Debian/Ubuntu .deb — coming soon", "built": False},
-                {"kind": "rpm", "label": "RHEL/Fedora .rpm — coming soon", "built": False},
+                {
+                    "kind": "deb",
+                    "label": "Debian/Ubuntu .deb scaffold",
+                    "built": any(p.get("kind") == "deb" for p in packages),
+                    "build_hint": "scripts/packaging/build_deb.sh",
+                },
+                {
+                    "kind": "rpm",
+                    "label": "RHEL/Fedora .rpm scaffold (fpm)",
+                    "built": any(p.get("kind") == "rpm" for p in packages),
+                    "build_hint": "scripts/packaging/build_rpm.sh",
+                },
                 {"kind": "tar", "label": "Universal .tar.gz", "built": any(p.get("kind") == "tar" and p.get("os") == "linux" for p in packages)},
             ],
             "macos": [
@@ -536,6 +568,8 @@ async def api_agent_packages(user: Annotated[AuthUser, Depends(require_user)]):
             "enroll_token_url": "/api/agents/enroll-tokens",
             "enroll_by_token_url": "/api/agents/enroll-by-token",
             "license_validate_url": "/api/licenses/validate",
+            "agent_license_validate_url": "/api/agents/license/validate",
+            "updates_latest_url": "/api/agents/updates/latest",
             "bootstrap_note": (
                 "Generate a short-lived enrollment token (not a permanent org secret). "
                 "Installer calls enroll-by-token once; permanent agent_id.agent_key is issued; "
@@ -543,7 +577,8 @@ async def api_agent_packages(user: Annotated[AuthUser, Depends(require_user)]):
             ),
             "activation_note": (
                 "Local registry/config caches activation state only. "
-                "Re-validate via POST /api/licenses/validate — never trust a local license file as SoT."
+                "Agents re-validate via POST /api/agents/license/validate; "
+                "dashboards use POST /api/licenses/validate — never trust a local license file as SoT."
             ),
         },
     }
@@ -570,6 +605,12 @@ async def api_agent_package_download(filename: str):
     media = "application/octet-stream"
     if safe.lower().endswith(".exe"):
         media = "application/vnd.microsoft.portable-executable"
+    elif safe.lower().endswith(".msi"):
+        media = "application/x-msi"
+    elif safe.lower().endswith(".deb"):
+        media = "application/vnd.debian.binary-package"
+    elif safe.lower().endswith(".rpm"):
+        media = "application/x-rpm"
     elif safe.lower().endswith(".zip"):
         media = "application/zip"
     elif safe.lower().endswith(".dmg"):
@@ -577,6 +618,91 @@ async def api_agent_package_download(filename: str):
     elif safe.lower().endswith(".tar.gz") or safe.lower().endswith(".tgz"):
         media = "application/gzip"
     return FileResponse(path, media_type=media, filename=safe)
+
+
+@router.get("/updates/latest")
+async def api_agents_updates_latest(
+    user: Annotated[AuthUser, Depends(require_user)],
+    platform: str = "all",
+):
+    """Signed agent update metadata (sha256 + optional Ed25519 + previous_sha256)."""
+    require_perm(user, "agent.read")
+    from app.agent_updates import get_latest_update
+
+    latest = get_latest_update(platform=(platform or "all").strip().lower() or "all")
+    if not latest:
+        raise HTTPException(status_code=404, detail="No update metadata available")
+    return {"update": latest}
+
+
+class PublishUpdateRequest(BaseModel):
+    version: str = ""
+    notes: str = ""
+    previous_sha256: str = ""
+    platform: str = "all"
+
+
+@router.post("/updates/publish")
+async def api_agents_updates_publish(
+    req: PublishUpdateRequest,
+    user: Annotated[AuthUser, Depends(require_user)],
+):
+    """Publish current scripts/securaiq_agent.py as a signed update record (admin)."""
+    require_perm(user, "agent.write")
+    from app.agent_updates import publish_script_release
+    from app.config import settings as _settings
+
+    version = (req.version or "").strip()
+    if not version:
+        import re
+        from app.paths import resource_root
+
+        text = (resource_root() / "scripts" / "securaiq_agent.py").read_text(encoding="utf-8")
+        m = re.search(r'AGENT_VERSION\s*=\s*"([^"]+)"', text)
+        version = m.group(1) if m else "unknown"
+    try:
+        row = publish_script_release(
+            version=version,
+            notes=req.notes,
+            previous_sha256=req.previous_sha256,
+            platform=(req.platform or "all").strip().lower() or "all",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    audit("agent_update_publish", user.id, {"version": version, "id": row.get("id")})
+    pub = (getattr(_settings, "agent_ed25519_public_key", "") or "").strip()
+    if not pub:
+        pub = (getattr(_settings, "license_ed25519_public_key", "") or "").strip()
+    return {"update": row, "signing_public_key": pub or None}
+
+
+@router.post("/license/validate")
+async def api_agent_license_validate(
+    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
+    x_securaiq_ts: Annotated[str | None, Header(alias="X-SecuraIQ-Ts")] = None,
+    x_securaiq_nonce: Annotated[str | None, Header(alias="X-SecuraIQ-Nonce")] = None,
+    x_securaiq_sig: Annotated[str | None, Header(alias="X-SecuraIQ-Sig")] = None,
+):
+    """Agent-authenticated license validation (state cache only; server remains SoT)."""
+    agent = _authenticate_agent_request(
+        authorization,
+        body=b"",
+        ts=x_securaiq_ts,
+        nonce=x_securaiq_nonce,
+        sig=x_securaiq_sig,
+    )
+    from app.license_service import validate_license
+
+    result = validate_license(agent.get("user_id") or "local", org_id=agent.get("org_id"))
+    cache = dict(result.get("activation_cache") or {})
+    cache["agent_id"] = agent.get("id")
+    result = {**result, "activation_cache": cache, "agent_id": agent.get("id")}
+    audit(
+        "agent_license_validate",
+        agent.get("user_id") or "local",
+        {"agent_id": agent.get("id"), "mode": result.get("mode"), "valid": result.get("valid")},
+    )
+    return result
 
 
 @router.get("")

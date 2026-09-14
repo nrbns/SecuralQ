@@ -194,6 +194,9 @@ class Settings(BaseSettings):
     # PEM or raw base64url; empty = helpers generate ephemeral keys for tests only.
     agent_ed25519_private_key: str = ""
     agent_ed25519_public_key: str = ""
+    # Optional mTLS client cert issuance on enroll (lab self-signed; proxy terminates TLS)
+    agent_mtls_enabled: bool = False
+    agent_mtls_cert_days: int = 60
     # production / DEPLOYMENT_MODE=production requires PostgreSQL (never SQLite for SaaS)
     require_postgres_in_production: bool = True
     # Security hardening

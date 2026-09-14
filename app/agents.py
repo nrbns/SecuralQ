@@ -272,6 +272,18 @@ def ensure_schema() -> None:
         ensure_security_schema()
     except Exception:
         pass
+    try:
+        from app.agent_certs import ensure_cert_columns
+
+        ensure_cert_columns()
+    except Exception:
+        pass
+    try:
+        from app.agent_updates import ensure_schema as ensure_agent_updates_schema
+
+        ensure_agent_updates_schema()
+    except Exception:
+        pass
     c.commit()
 
 
@@ -469,7 +481,24 @@ def enroll_agent(user_id: str, *, name: str = "", org_id: str | None = None) -> 
         (aid, user_id, oid, name or "", _hash_key(raw_key), key_enc, now()),
     )
     c.commit()
-    return {"agent_id": aid, "agent_key": raw_key, "org_id": oid}
+    out: dict[str, Any] = {"agent_id": aid, "agent_key": raw_key, "org_id": oid}
+    try:
+        from app.agent_certs import issue_agent_client_certificate, mtls_enabled
+        from app.config import settings as _settings
+
+        if mtls_enabled():
+            days = int(getattr(_settings, "agent_mtls_cert_days", 60) or 60)
+            cert = issue_agent_client_certificate(aid, days=days)
+            out["mtls"] = {
+                "certificate_pem": cert.get("certificate_pem"),
+                "private_key_pem": cert.get("private_key_pem"),
+                "fingerprint": cert.get("fingerprint"),
+                "expires_at": cert.get("expires_at"),
+                "note": cert.get("note"),
+            }
+    except Exception:
+        pass
+    return out
 
 
 def agent_visible_to_user(user_id: str, agent: dict[str, Any] | None) -> bool:
@@ -1835,27 +1864,19 @@ def request_agent_upgrade(user_id: str, agent_id: str, *, requested_by: str = ""
     """Request a self-upgrade command for one agent. Rides the exact same
     approval-gated lifecycle as any other command (pending_approval ->
     approve_command() -> queued -> dispatched on next check-in) -- never
-    auto-executed. The payload carries expected_sha256, the sha256 of THIS
-    server's current scripts/securaiq_agent.py at request time, so the
-    agent verifies the file it downloads at execution time still matches
-    what a human approved, not just "whatever the server serves right now".
-    Never turns the agent into a remote shell: the agent only ever fetches
-    and checksum-verifies this one server-declared file, exactly the same
-    trust model as the existing patch_package command kind."""
-    import hashlib
+    auto-executed. Payload includes expected_sha256 plus optional Ed25519
+    signature and previous_sha256 for rollback-aware script agents.
+    """
+    from app.agent_updates import upgrade_payload_from_latest
 
-    from app.paths import resource_root
-
-    script_path = resource_root() / "scripts" / "securaiq_agent.py"
-    if not script_path.is_file():
-        raise ValueError("Agent script not found on this server -- cannot compute an upgrade checksum")
-    content = script_path.read_bytes()
-    expected_sha256 = hashlib.sha256(content).hexdigest()
+    agent = get_agent(agent_id)
+    platform = (agent or {}).get("os") or "all"
+    payload = upgrade_payload_from_latest(platform=str(platform).lower() if platform else "all")
     return request_command(
         user_id,
         agent_id,
         kind="agent_upgrade",
-        payload={"expected_sha256": expected_sha256},
+        payload=payload,
         requested_by=requested_by,
     )
 
