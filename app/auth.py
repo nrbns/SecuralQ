@@ -91,12 +91,33 @@ def session_cookie_kwargs() -> dict[str, Any]:
 
 
 def hash_password(password: str) -> str:
-    salt = secrets.token_hex(16)
-    dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 180_000)
-    return f"pbkdf2${salt}${dk.hex()}"
+    """Prefer Argon2id when argon2-cffi is installed; else PBKDF2-HMAC-SHA256."""
+    try:
+        from argon2 import PasswordHasher
+
+        # time_cost/memory tuned for interactive login (not offline KDF max).
+        return PasswordHasher(time_cost=3, memory_cost=65536, parallelism=2).hash(password)
+    except ImportError:
+        salt = secrets.token_hex(16)
+        dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 180_000)
+        return f"pbkdf2${salt}${dk.hex()}"
 
 
 def verify_password(password: str, stored: str) -> bool:
+    stored = stored or ""
+    if stored.startswith("$argon2"):
+        try:
+            from argon2 import PasswordHasher
+            from argon2.exceptions import InvalidHash, VerifyMismatchError
+
+            try:
+                return bool(PasswordHasher().verify(stored, password))
+            except VerifyMismatchError:
+                return False
+            except InvalidHash:
+                return False
+        except ImportError:
+            return False
     try:
         algo, salt, hexdigest = stored.split("$", 2)
         if algo != "pbkdf2":
@@ -161,9 +182,15 @@ def register_user(
     return AuthUser(id=uid, username=username, role=role)
 
 
-def login(username: str, password: str, *, totp: str | None = None) -> tuple[AuthUser, str] | dict[str, Any]:
+def login(
+    username: str,
+    password: str,
+    *,
+    totp: str | None = None,
+    recovery_code: str | None = None,
+) -> tuple[AuthUser, str] | dict[str, Any]:
     """Return (user, token) or {mfa_required, mfa_token} when MFA step-up needed."""
-    from app.mfa import create_mfa_pending, verify_totp
+    from app.mfa import create_mfa_pending, verify_mfa_factor
 
     c = get_conn()
     row = c.execute(
@@ -171,15 +198,23 @@ def login(username: str, password: str, *, totp: str | None = None) -> tuple[Aut
         ((username or "").strip().lower(),),
     ).fetchone()
     if not row or not verify_password(password, row["password_hash"]):
+        # Audited even when the username doesn't exist -- log_management's
+        # repeated-auth-failure correlation rule groups by this actor string,
+        # and a brute-force attempt against a nonexistent account is exactly
+        # the pattern that rule needs to catch, not just failures on real
+        # accounts. Never reveals in the response whether the username exists.
+        audit("login_failed", row["id"] if row else f"unknown:{(username or '').strip().lower()}", {})
         raise ValueError("Invalid username or password")
 
     mfa_on = bool(row["mfa_enabled"])
     if mfa_on:
-        if not totp:
+        if not totp and not recovery_code:
             pending = create_mfa_pending(row["id"])
-            return {"mfa_required": True, "mfa_token": pending}
-        if not verify_totp(row["mfa_secret"] or "", totp):
-            raise ValueError("Invalid authenticator code")
+            return {"mfa_required": True, "mfa_token": pending, "recovery_codes_accepted": True}
+        try:
+            verify_mfa_factor(row["id"], totp=totp, recovery_code=recovery_code)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
 
     token = secrets.token_urlsafe(32)
     expires = now() + _session_ttl_days() * 86400
@@ -192,8 +227,13 @@ def login(username: str, password: str, *, totp: str | None = None) -> tuple[Aut
     return AuthUser(id=row["id"], username=row["username"], role=row["role"]), token
 
 
-def complete_mfa_login(mfa_token: str, totp: str) -> tuple[AuthUser, str]:
-    from app.mfa import consume_mfa_pending, verify_totp
+def complete_mfa_login(
+    mfa_token: str,
+    totp: str | None = None,
+    *,
+    recovery_code: str | None = None,
+) -> tuple[AuthUser, str]:
+    from app.mfa import consume_mfa_pending, verify_mfa_factor
 
     user_id = consume_mfa_pending(mfa_token)
     if not user_id:
@@ -201,8 +241,7 @@ def complete_mfa_login(mfa_token: str, totp: str) -> tuple[AuthUser, str]:
     row = get_conn().execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
     if not row:
         raise ValueError("User not found")
-    if not verify_totp(row["mfa_secret"] or "", totp):
-        raise ValueError("Invalid authenticator code")
+    kind = verify_mfa_factor(user_id, totp=totp, recovery_code=recovery_code)
     token = secrets.token_urlsafe(32)
     expires = now() + _session_ttl_days() * 86400
     c = get_conn()
@@ -211,7 +250,7 @@ def complete_mfa_login(mfa_token: str, totp: str) -> tuple[AuthUser, str]:
         (hash_token(token), row["id"], expires, now()),
     )
     c.commit()
-    audit("login", row["id"], {"username": row["username"], "mfa": True})
+    audit("login", row["id"], {"username": row["username"], "mfa": True, "mfa_kind": kind})
     return AuthUser(id=row["id"], username=row["username"], role=row["role"]), token
 
 

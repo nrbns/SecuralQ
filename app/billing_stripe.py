@@ -39,7 +39,13 @@ def is_configured() -> bool:
 
 
 async def create_checkout_session(
-    *, plan: str, customer_email: str, success_url: str, cancel_url: str
+    *,
+    plan: str,
+    customer_email: str,
+    success_url: str,
+    cancel_url: str,
+    user_id: str | None = None,
+    org_id: str | None = None,
 ) -> dict[str, Any]:
     if not is_configured():
         raise RuntimeError(
@@ -60,6 +66,11 @@ async def create_checkout_session(
         "customer_email": customer_email,
         "metadata[plan]": plan,
     }
+    if user_id:
+        data["metadata[user_id]"] = user_id
+        data["client_reference_id"] = user_id
+    if org_id:
+        data["metadata[org_id]"] = org_id
     async with httpx.AsyncClient(timeout=20.0) as client:
         resp = await client.post(
             f"{STRIPE_API}/checkout/sessions",
@@ -71,6 +82,51 @@ async def create_checkout_session(
     session = resp.json()
     return {"checkout_url": session.get("url"), "session_id": session.get("id")}
 
+
+def apply_checkout_completed(session: dict[str, Any]) -> dict[str, Any]:
+    """Map Stripe checkout.session.completed → plan + signed license refresh."""
+    from app.billing import set_user_plan
+    from app.db import get_conn
+    from app.license_service import issue_license
+
+    meta = session.get("metadata") or {}
+    plan = (meta.get("plan") or "").strip().lower()
+    user_id = (meta.get("user_id") or session.get("client_reference_id") or "").strip()
+    org_id = (meta.get("org_id") or "").strip() or None
+    email = (
+        session.get("customer_email")
+        or (session.get("customer_details") or {}).get("email")
+        or ""
+    )
+    email = str(email).strip().lower()
+
+    if not plan:
+        return {"ok": False, "reason": "missing_plan"}
+
+    row = None
+    c = get_conn()
+    if user_id:
+        row = c.execute("SELECT id, email, username FROM users WHERE id = ?", (user_id,)).fetchone()
+    if not row and email:
+        row = c.execute(
+            "SELECT id, email, username FROM users WHERE lower(username) = ? OR lower(email) = ?",
+            (email, email),
+        ).fetchone()
+    if not row:
+        return {"ok": False, "reason": "user_not_found", "email": email or None}
+
+    uid = row["id"]
+    set_user_plan(uid, plan)
+    # ~1 year subscription window; Stripe subscription.updated can refresh later.
+    expires_at = time.time() + 365 * 86400
+    lic = issue_license(uid, org_id=org_id, plan=plan, expires_at=expires_at, grace_days=14)
+    return {
+        "ok": True,
+        "user_id": uid,
+        "plan": plan,
+        "org_id": org_id,
+        "license_id": lic.get("id"),
+    }
 
 def verify_webhook_signature(payload: bytes, sig_header: str, tolerance_sec: int = 300) -> bool:
     """Verify Stripe's `Stripe-Signature` header per their documented scheme

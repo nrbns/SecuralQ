@@ -1630,7 +1630,11 @@ async function refreshAuthStatus() {
     if (hint) {
       if (!authEnabled) hint.textContent = "Auth disabled (open local mode). Enable AUTH_ENABLED for team use.";
       else if (data.user) {
-        const mfaNote = data.mfa?.enabled ? " · MFA on" : data.mfa_enrollment_required ? " · enroll MFA (admin)" : "";
+        const mfaNote = data.mfa?.enabled
+          ? " · MFA on"
+          : data.mfa_enrollment_required
+            ? " · enroll MFA required"
+            : "";
         hint.textContent = `Signed in as ${data.user.username} (${data.user.role})${mfaNote}`;
       } else hint.textContent = data.oidc_enabled ? "Auth required — login, SSO, or register." : "Auth required — login or register.";
     }
@@ -9357,22 +9361,25 @@ on(authForm, "submit", async (e) => {
   e.preventDefault();
   const username = document.getElementById("authUser")?.value?.trim();
   const password = document.getElementById("authPass")?.value || "";
-  const totp = document.getElementById("authMfa")?.value?.trim() || "";
+  const mfaInput = document.getElementById("authMfa")?.value?.trim() || "";
   const mfaToken = document.getElementById("authMfaToken")?.value?.trim() || "";
   const mfaWrap = document.getElementById("authMfaWrap");
+  const looksRecovery = /[A-Za-z-]/.test(mfaInput) && mfaInput.includes("-");
+  const totp = looksRecovery ? undefined : (mfaInput || undefined);
+  const recovery_code = looksRecovery ? mfaInput : undefined;
   try {
     let res;
-    if (mfaToken && totp) {
+    if (mfaToken && (totp || recovery_code)) {
       res = await fetch("/api/auth/mfa/verify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mfa_token: mfaToken, totp }),
+        body: JSON.stringify({ mfa_token: mfaToken, totp, recovery_code }),
       });
     } else {
       res = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, password, totp: totp || undefined }),
+        body: JSON.stringify({ username, password, totp, recovery_code }),
       });
     }
     const data = await res.json();
@@ -9381,7 +9388,7 @@ on(authForm, "submit", async (e) => {
       if (mfaWrap) mfaWrap.classList.remove("hidden");
       const tokEl = document.getElementById("authMfaToken");
       if (tokEl) tokEl.value = data.mfa_token || "";
-      appendMessage("assistant", renderMarkdown("**MFA required** — enter your authenticator code and submit again."), true);
+      appendMessage("assistant", renderMarkdown("**MFA required** — enter your authenticator code or a recovery code and submit again."), true);
       return;
     }
     authToken = data.token;
@@ -9447,7 +9454,19 @@ on(document.getElementById("mfaConfirmBtn"), "click", async () => {
     document.getElementById("mfaConfirmCode").value = "";
     document.getElementById("mfaEnrollBlock")?.classList.add("hidden");
     await refreshAuthStatus();
-    appendMessage("assistant", renderMarkdown("**MFA enabled** on your account."), true);
+    const codes = Array.isArray(data.recovery_codes) ? data.recovery_codes : [];
+    if (codes.length) {
+      appendMessage(
+        "assistant",
+        renderMarkdown(
+          "**MFA enabled.** Save these recovery codes offline (shown once):\n\n" +
+            codes.map((c) => `- \`${c}\``).join("\n")
+        ),
+        true
+      );
+    } else {
+      appendMessage("assistant", renderMarkdown("**MFA enabled** on your account."), true);
+    }
   } catch (err) {
     appendMessage("assistant", renderMarkdown(`**MFA confirm failed:** ${err.message}`), true);
   }

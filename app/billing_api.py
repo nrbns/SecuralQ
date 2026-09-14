@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from app.auth import AuthUser
-from app.billing import PLANS, set_user_plan, usage_snapshot
+from app.billing import PLANS, usage_snapshot
 from app.commercial_api import require_user
 
 router = APIRouter(prefix="/api/billing", tags=["billing"])
@@ -45,11 +45,13 @@ async def billing_checkout(req: CheckoutRequest, user: Annotated[AuthUser, Depen
     if req.plan not in PLANS or req.plan == "free":
         raise HTTPException(status_code=400, detail=f"plan must be a paid plan: {[p for p in PLANS if p != 'free']}")
     try:
+        email = user.username if "@" in user.username else f"{user.username}@localhost"
         return await create_checkout_session(
             plan=req.plan,
-            customer_email=user.username if "@" in user.username else f"{user.username}@localhost",
+            customer_email=email,
             success_url=req.success_url,
             cancel_url=req.cancel_url,
+            user_id=user.id,
         )
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -57,7 +59,7 @@ async def billing_checkout(req: CheckoutRequest, user: Annotated[AuthUser, Depen
 
 @router.post("/webhook")
 async def billing_webhook(request: Request):
-    from app.billing_stripe import verify_webhook_signature
+    from app.billing_stripe import apply_checkout_completed, verify_webhook_signature
 
     body = await request.body()
     sig = request.headers.get("stripe-signature", "")
@@ -69,12 +71,6 @@ async def billing_webhook(request: Request):
     event = json.loads(body)
     if event.get("type") == "checkout.session.completed":
         session = event.get("data", {}).get("object", {})
-        plan = (session.get("metadata") or {}).get("plan")
-        email = session.get("customer_email") or session.get("customer_details", {}).get("email")
-        if plan and email:
-            from app.db import get_conn
-
-            row = get_conn().execute("SELECT id FROM users WHERE username = ?", (email.lower(),)).fetchone()
-            if row:
-                set_user_plan(row["id"], plan)
+        result = apply_checkout_completed(session if isinstance(session, dict) else {})
+        return {"received": True, "license": result}
     return {"received": True}

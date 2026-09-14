@@ -141,6 +141,7 @@ class Settings(BaseSettings):
     urlhaus_api_key: str = ""  # abuse.ch Auth-Key
     # MFA / SSO (beta enterprise)
     mfa_required_for_admin: bool = False
+    mfa_required: bool = False  # when True, all authenticated users must enroll MFA
     oidc_enabled: bool = False
     oidc_issuer: str = ""
     oidc_client_id: str = ""

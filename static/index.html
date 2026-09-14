@@ -1945,8 +1945,8 @@
         <label>Email (optional — needed for password reset)
           <input type="email" id="authEmail" autocomplete="email" />
         </label>
-        <label id="authMfaWrap" class="hidden">Authenticator code
-          <input type="text" id="authMfa" inputmode="numeric" autocomplete="one-time-code" placeholder="6-digit code" maxlength="8" />
+        <label id="authMfaWrap" class="hidden">Authenticator or recovery code
+          <input type="text" id="authMfa" autocomplete="one-time-code" placeholder="6-digit or XXXX-XXXX-XXXX" maxlength="32" />
         </label>
         <input type="hidden" id="authMfaToken" value="" />
         <div class="settings-row">

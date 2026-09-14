@@ -25,7 +25,8 @@ Do **not** invent a second server. Lab may keep SQLite; commercial SaaS requires
 
 | Area | Status |
 |------|--------|
-| TOTP MFA enroll/confirm/verify | **Partial→done foundations** (`app/mfa.py`, `/api/auth/mfa/*`); admin MFA optional via `MFA_REQUIRED_FOR_ADMIN` |
+| TOTP MFA enroll/confirm/verify | **Improved** — recovery codes (hashed), `MFA_REQUIRED` / admin mandatory enforcement, MFA attempt limits |
+| Stripe → signed license | **Partial→improved** — `checkout.session.completed` refreshes plan + `issue_license` |
 | Sessions + password reset paths | **Partial** |
 | Stripe billing scaffold + message quotas | **Partial** (`app/billing.py`, soft `BILLING_ENFORCEMENT_ENABLED`) |
 | Tenancy / RBAC / org header | **Partial→improved** |
@@ -45,18 +46,18 @@ Do **not** invent a second server. Lab may keep SQLite; commercial SaaS requires
 
 ### P0-1 Authentication
 - [x] TOTP foundations  
-- [ ] MFA mandatory for commercial (`MFA_REQUIRED_FOR_ADMIN` → org-policy / all users)  
-- [ ] Hashed recovery codes, MFA rate limits, Argon2id password hash audit  
-- [ ] Session revocation UI + audit  
+- [x] MFA mandatory for commercial (`MFA_REQUIRED` all users; `MFA_REQUIRED_FOR_ADMIN` retained)  
+- [x] Hashed recovery codes, MFA rate limits, Argon2id when `argon2-cffi` installed (PBKDF2 fallback)  
+- [ ] Session revocation UI + audit (API logout exists; richer UI still open)  
 
 ### P0-2 License service ← **current implementation slice**
 - [x] Plan catalog with `max_agents` + feature entitlements  
 - [x] Org/user signed license payload (Ed25519; private key never in agent)  
 - [x] Server-side enrollment quota gate (soft unless `LICENSE_ENFORCEMENT_ENABLED`)  
 - [x] Grace policy for expired licenses (block new enroll; do not brick agents)  
-- [ ] Stripe webhook → issue/refresh signed license  
+- [x] Stripe webhook → issue/refresh signed license (`checkout.session.completed`)  
 - [ ] Downloads portal org-aware packaging  
-
+- [ ] Stripe `customer.subscription.*` renew/cancel → license expiry sync 
 ### P0-3 Multi-tenancy / RBAC
 - [x] Org membership + permission helpers  
 - [ ] Consistent `require_perm` on every sensitive route  

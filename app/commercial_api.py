@@ -53,11 +53,13 @@ class LoginRequest(BaseModel):
     username: str
     password: str
     totp: str | None = None
+    recovery_code: str | None = None
 
 
 class MfaVerifyRequest(BaseModel):
     mfa_token: str
-    totp: str
+    totp: str | None = None
+    recovery_code: str | None = None
 
 
 class MfaConfirmRequest(BaseModel):
@@ -66,6 +68,10 @@ class MfaConfirmRequest(BaseModel):
 
 class MfaDisableRequest(BaseModel):
     code: str
+
+
+class MfaRecoveryRegenRequest(BaseModel):
+    code: str  # current TOTP to authorize regeneration
 
 
 class RegisterRequest(BaseModel):
@@ -154,6 +160,7 @@ _MFA_ENFORCEMENT_EXEMPT_PATHS = {
     "/api/auth/mfa/enroll",
     "/api/auth/mfa/confirm",
     "/api/auth/mfa/disable",
+    "/api/auth/mfa/recovery/regenerate",
 }
 
 
@@ -169,22 +176,18 @@ def require_user(
     if not user:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    # Operational gap fix: MFA_REQUIRED_FOR_ADMIN was only ever surfaced as a
-    # UI hint (auth_status.mfa_enrollment_required) — nothing actually blocked
-    # API access for an admin who ignored the prompt. Enforce it server-side,
-    # exempting the handful of endpoints an admin needs to complete enrollment.
+    # Enforce MFA enrollment when MFA_REQUIRED (all users) or MFA_REQUIRED_FOR_ADMIN.
+    from app.mfa import mfa_is_mandatory_for, mfa_status
+
     if (
-        settings.mfa_required_for_admin
-        and user.role == "admin"
+        mfa_is_mandatory_for(role=user.role, user_id=user.id)
         and request.url.path not in _MFA_ENFORCEMENT_EXEMPT_PATHS
     ):
-        from app.mfa import mfa_status
-
         if not mfa_status(user.id).get("enabled"):
             raise HTTPException(
                 status_code=403,
                 detail=(
-                    "MFA enrollment required for admin accounts before continuing. "
+                    "MFA enrollment required before continuing. "
                     "Enroll via POST /api/auth/mfa/enroll, confirm via POST /api/auth/mfa/confirm."
                 ),
             )
@@ -194,16 +197,15 @@ def require_user(
 
 @router.get("/auth/status")
 async def auth_status(user: Annotated[AuthUser | None, Depends(current_user)]):
-    from app.mfa import mfa_status
+    from app.mfa import mfa_is_mandatory_for, mfa_status
     from app.oidc import oidc_configured
 
     mfa = mfa_status(user.id) if user and user.id != "local" else {"enabled": False, "enrolled": False}
-    admin_must_mfa = (
-        settings.mfa_required_for_admin
-        and user
-        and user.role == "admin"
-        and not mfa.get("enabled")
+    must_mfa = bool(
+        user
         and settings.auth_enabled
+        and mfa_is_mandatory_for(role=user.role, user_id=user.id)
+        and not mfa.get("enabled")
     )
     return {
         "auth_enabled": settings.auth_enabled,
@@ -211,7 +213,9 @@ async def auth_status(user: Annotated[AuthUser | None, Depends(current_user)]):
         "authenticated": bool(user) or not settings.auth_enabled,
         "oidc_enabled": oidc_configured(),
         "mfa": mfa,
-        "mfa_enrollment_required": admin_must_mfa,
+        "mfa_enrollment_required": must_mfa,
+        "mfa_required": bool(getattr(settings, "mfa_required", False)),
+        "mfa_required_for_admin": bool(settings.mfa_required_for_admin),
         "user": {"id": user.id, "username": user.username, "role": user.role} if user else (
             {"id": "local", "username": "local", "role": "admin"} if not settings.auth_enabled else None
         ),
@@ -243,7 +247,12 @@ async def auth_login(req: LoginRequest):
     if not settings.auth_enabled:
         raise HTTPException(status_code=400, detail="Auth disabled — set AUTH_ENABLED=true")
     try:
-        result = login(req.username, req.password, totp=req.totp)
+        result = login(
+            req.username,
+            req.password,
+            totp=req.totp,
+            recovery_code=req.recovery_code,
+        )
         if isinstance(result, dict):
             return result
         user, token = result
@@ -277,8 +286,14 @@ async def auth_password_reset_confirm(req: PasswordResetConfirm):
 async def auth_mfa_verify(req: MfaVerifyRequest):
     if not settings.auth_enabled:
         raise HTTPException(status_code=400, detail="Auth disabled")
+    if not (req.totp or "").strip() and not (req.recovery_code or "").strip():
+        raise HTTPException(status_code=400, detail="Provide totp or recovery_code")
     try:
-        user, token = complete_mfa_login(req.mfa_token, req.totp)
+        user, token = complete_mfa_login(
+            req.mfa_token,
+            req.totp,
+            recovery_code=req.recovery_code,
+        )
         body = {"user": {"id": user.id, "username": user.username, "role": user.role}, "token": token}
         resp = JSONResponse(body)
         _attach_session_cookie(resp, token)
@@ -301,8 +316,7 @@ async def auth_mfa_confirm(req: MfaConfirmRequest, user: Annotated[AuthUser, Dep
     from app.mfa import mfa_enroll_confirm
 
     try:
-        mfa_enroll_confirm(user.id, req.code)
-        return {"ok": True, "mfa_enabled": True}
+        return mfa_enroll_confirm(user.id, req.code)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -312,8 +326,21 @@ async def auth_mfa_disable(req: MfaDisableRequest, user: Annotated[AuthUser, Dep
     from app.mfa import mfa_disable
 
     try:
-        mfa_disable(user.id, req.code)
+        mfa_disable(user.id, req.code, role=user.role)
         return {"ok": True, "mfa_enabled": False}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/auth/mfa/recovery/regenerate")
+async def auth_mfa_recovery_regenerate(
+    req: MfaRecoveryRegenRequest,
+    user: Annotated[AuthUser, Depends(require_user)],
+):
+    from app.mfa import mfa_regenerate_recovery_codes
+
+    try:
+        return mfa_regenerate_recovery_codes(user.id, totp=req.code)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
