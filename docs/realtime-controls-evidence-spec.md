@@ -2,7 +2,7 @@
 
 **Status:** Active build phase after Phase 1 realtime durability.  
 **Source:** Product engineering specification (Realtime Controls & Evidence).  
-**Related:** [control-config-engine.md](./control-config-engine.md) · [realtime-v1.md](./realtime-v1.md) · [master-build-plan.md](./master-build-plan.md) · [compliance-platform.md](./compliance-platform.md)
+**Related:** [control-config-engine.md](./control-config-engine.md) · [realtime-v1.md](./realtime-v1.md) · [master-build-plan.md](./master-build-plan.md) · [compliance-platform.md](./compliance-platform.md) · [SECURAIQ-REALTIME-PRODUCTION.md](./SECURAIQ-REALTIME-PRODUCTION.md)
 
 ---
 

@@ -2,7 +2,7 @@
 
 **Purpose.** Single actionable spec for turning SecuraIQ into a commercial SaaS control plane customers can sign up for, pay for, and connect real Windows/Linux/macOS machines to. It consolidates ~34 docs under `docs/`, corrects assumptions that don't match code, and turns gaps into schemas, endpoints, and a P0→P1→P2 checklist.
 
-**Related:** [production-readiness.md](./production-readiness.md) · [securaiq-architecture.md](./securaiq-architecture.md) · [postgres-migration.md](./postgres-migration.md) · [realtime-v1.md](./realtime-v1.md) · [realtime-controls-evidence-spec.md](./realtime-controls-evidence-spec.md) · [rbac-matrix.md](./rbac-matrix.md) · [agent-protocol-v1.md](./agent-protocol-v1.md)
+**Related:** [production-readiness.md](./production-readiness.md) · [securaiq-architecture.md](./securaiq-architecture.md) · [postgres-migration.md](./postgres-migration.md) · [realtime-v1.md](./realtime-v1.md) · [realtime-controls-evidence-spec.md](./realtime-controls-evidence-spec.md) · [SECURAIQ-REALTIME-PRODUCTION.md](./SECURAIQ-REALTIME-PRODUCTION.md) · [rbac-matrix.md](./rbac-matrix.md) · [agent-protocol-v1.md](./agent-protocol-v1.md)
 
 **Rule:** Do **not** rebuild anything Section 0 marks as already real.
 
