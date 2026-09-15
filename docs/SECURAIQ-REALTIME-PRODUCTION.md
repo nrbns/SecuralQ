@@ -127,8 +127,8 @@ firewall_status.enabled=false on check-in
 | Agent action | **Live** | allowlisted `enable_firewall` |
 | Verify on check-in | **Live** | PASS closes rem |
 | UI panel refresh | **Partial** | types in `REALTIME_LIVE_TYPES`; not every panel is subscriber-driven |
-| Affected-controls-only recompute | **Gap** | still curated / check-in scoped |
-| Append-only `control_results` history | **Gap** | called out in production build doc |
+| Affected-controls-only recompute | **Live (P1)** | `app/controls/recompute.py` on `software.*` / `configuration.*` |
+| Append-only `control_results` history | **Live (P1)** | `app/controls/history.py` + `GET /api/controls/results/history` |
 
 **Harness (must stay green):**
 
@@ -276,11 +276,11 @@ Packaging scaffolds may ship for **lab/owned hosts**; commercial “signed enter
 
 ### P1 — Make the chain complete product-wise (Sprint 2–4; do not expand scanners first)
 
-9. Affected-controls-only recompute on package/config events.
-10. `control_results` history table + API read for timeline.
-11. Timeline UI for one agent (SSE-fed).
-12. Production profile: `AGENT_REQUIRE_COMMAND_SIGNATURE=true`, replay protection on, mTLS device certs/rotation (Sprint 2).
-13. Automatic evidence on every control/remediation state change (Sprint 3).
+9. [x] Affected-controls-only recompute on package/config events (`app/controls/recompute.py`).
+10. [x] `control_results` history table + API (`app/controls/history.py`, `GET /api/controls/results/history`).
+11. [x] Timeline UI for one agent (`GET /api/agents/{id}/timeline` + Agents detail Timeline tab, SSE refresh).
+12. [x] Production profile helper (`app/production_profile.py`, `GET /api/controls/production-profile`) — lab defaults remain off; enable flags for commercial.
+13. [x] Automatic evidence on control/remediation state change (Sprint 3 foundations).
 
 ### P2 — After acceptance greens
 
@@ -308,6 +308,10 @@ Packaging scaffolds may ship for **lab/owned hosts**; commercial “signed enter
 | Rust agent | `securaiq-agent/` |
 | UI realtime | `static/app.js` (`RealtimeManager`, `REALTIME_LIVE_TYPES`) |
 | Acceptance | `scripts/realtime_acceptance_demo.py` |
+| Control results history | `app/controls/history.py` |
+| Affected recompute | `app/controls/recompute.py` |
+| Agent timeline | `app/agent_timeline.py`, `GET /api/agents/{id}/timeline` |
+| Production profile | `app/production_profile.py` |
 | Chaos / load / multiworker | `scripts/realtime_*.py` |
 
 ---

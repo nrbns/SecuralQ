@@ -47,11 +47,15 @@ HOOK_EVENT_TYPES: frozenset[str] = frozenset(
         "inventory",
         "software_inventory",
         "software.inventory.updated",
+        "software.installed",
+        "software.removed",
+        "software.updated",
         "remediation",
         "agent_command",
         "incident",
         "gap",
         "configuration.drift_detected",
+        "configuration.changed",
         "control.failed",
     }
 )
@@ -732,6 +736,29 @@ def _handle_inventory(event: dict[str, Any]) -> None:
         return
     et = str(event.get("event_type") or event.get("type") or "inventory").strip()
     _maybe_publish_org_risk(user_id, reason=et or "inventory")
+    try:
+        from app.controls.recompute import recompute_affected_controls
+
+        recompute_affected_controls(user_id, event)
+    except Exception:
+        pass
+
+
+def _handle_software_change(event: dict[str, Any]) -> None:
+    """software.installed|removed|updated → affected patch/vuln/inventory recompute."""
+    user_id = _resolve_user_id(event)
+    if not user_id:
+        return
+    try:
+        from app.controls.recompute import recompute_affected_controls
+
+        recompute_affected_controls(user_id, event)
+    except Exception:
+        pass
+    _maybe_publish_org_risk(
+        user_id,
+        reason=str(event.get("event_type") or event.get("type") or "software"),
+    )
 
 
 def _handle_remediation_or_command(event: dict[str, Any]) -> None:
@@ -871,6 +898,12 @@ def _handle_configuration_drift(event: dict[str, Any]) -> None:
     except Exception:
         pass
     _maybe_publish_org_risk(user_id, reason=et or "configuration.drift_detected")
+    try:
+        from app.controls.recompute import recompute_affected_controls
+
+        recompute_affected_controls(user_id, event)
+    except Exception:
+        pass
 
 
 def _handle_control_failed(event: dict[str, Any]) -> None:
@@ -1030,11 +1063,15 @@ HANDLERS: dict[str, Handler] = {
     "inventory": _handle_inventory,
     "software_inventory": _handle_inventory,
     "software.inventory.updated": _handle_inventory,
+    "software.installed": _handle_software_change,
+    "software.removed": _handle_software_change,
+    "software.updated": _handle_software_change,
     "remediation": _handle_remediation_or_command,
     "agent_command": _handle_remediation_or_command,
     "incident": lambda e: _handle_light_evidence(e, entity_type="incident"),
     "gap": lambda e: _handle_light_evidence(e, entity_type="gap"),
     "configuration.drift_detected": _handle_configuration_drift,
+    "configuration.changed": _handle_configuration_drift,
     "control.failed": _handle_control_failed,
 }
 

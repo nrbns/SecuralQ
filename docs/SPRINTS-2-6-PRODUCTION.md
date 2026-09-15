@@ -67,6 +67,15 @@ UI: `static/workspace.js` `_agentCommandLifecycle` aligned.
 | Tenant isolation tests | `tests/test_cross_tenant_isolation.py` etc. | Done |
 | Backups / restore / chaos | scripts + docs | Partial — runbook only |
 | Load / capacity measurement | `scripts/realtime_load_test.py` | Lab tool — not a published SLO |
+| Production profile status API | `app/production_profile.py` + `/api/controls/production-profile` | Done |
+
+## P1 product chain (after Sprint 1 gate)
+
+| Capability | Path | Status |
+|------------|------|--------|
+| Append-only `control_results` | `app/controls/history.py` | Done |
+| Affected-controls recompute | `app/controls/recompute.py` | Done |
+| Agent timeline API + UI | `app/agent_timeline.py` + Agents Timeline tab | Done |
 
 ## Freeze reminder
 
@@ -79,5 +88,5 @@ Do **not** expand cloud/EDR/AI/frameworks until:
 ## Tests
 
 ```bash
-pytest -v tests/test_sprints_2_6_foundations.py tests/test_realtime_acceptance_local.py
+pytest -v tests/test_sprints_2_6_foundations.py tests/test_realtime_acceptance_local.py tests/test_p1_control_history_timeline.py
 ```

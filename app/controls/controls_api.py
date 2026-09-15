@@ -90,3 +90,32 @@ async def api_verifiability(
     """machine | partial | human | unknown per control based on live-test map."""
     _ensure_framework(framework_id)
     return verifiability_map(framework_id)
+
+
+@router.get("/results/history")
+async def api_control_results_history(
+    user: Annotated[AuthUser, Depends(require_user)],
+    framework_id: str | None = Query(default=None),
+    control_id: str | None = Query(default=None),
+    agent_id: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+):
+    """Append-only control_results history (PASS/FAIL trail)."""
+    from app.controls.history import list_control_results
+
+    rows = list_control_results(
+        user.id,
+        framework_id=framework_id,
+        control_id=control_id,
+        agent_id=agent_id,
+        limit=limit,
+    )
+    return {"ok": True, "count": len(rows), "results": rows}
+
+
+@router.get("/production-profile")
+async def api_controls_production_profile(_user: Annotated[AuthUser, Depends(require_user)]):
+    """Agent-security production toggles (read-only status)."""
+    from app.production_profile import production_profile_status
+
+    return production_profile_status()

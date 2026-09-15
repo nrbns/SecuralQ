@@ -6115,20 +6115,135 @@
         <p class="hint" style="margin:0.65rem 0 0">Approve/reject only applies to pending items. Live updates via Mission Control SSE.</p>`;
     }
 
-    const events = (commands || [])
-      .slice(0, 30)
-      .map(
-        (cmd) => `<li>
-          <span class="hint">${escapeHtml(_agentFmtWhen(cmd.created_at))}</span>
-          · ${_agentCommandKindLabel(cmd)}
-          · ${_agentStatusChip(cmd.status)}
-          ${_agentLifecycleChip(_agentCommandLifecycle(cmd))}
-        </li>`
-      )
+    if (tab === "timeline") {
+      return `
+        <p class="hint" style="margin:0 0 0.5rem">
+          Merged commands · control results · evidence. Seeded from
+          <code>GET /api/agents/{id}/timeline</code>; live refresh via SSE
+          (<code>agent_command</code> / <code>control.*</code> / <code>evidence.*</code>).
+        </p>
+        <ul class="cc-list" id="agentDetailTimeline" style="margin:0">
+          <li class="hint">Loading timeline…</li>
+        </ul>
+        <p class="hint" style="margin:0.65rem 0 0" id="agentDetailTimelineNote"></p>`;
+    }
+
+    return `<p class="hint">Unknown tab.</p>`;
+  }
+
+  function _agentTimelineKindChip(kind) {
+    const k = String(kind || "").toLowerCase();
+    if (k === "control") return `<span class="auto-job-status status-planned">control</span>`;
+    if (k === "evidence") return `<span class="auto-job-status status-done">evidence</span>`;
+    return `<span class="auto-job-status status-queued">command</span>`;
+  }
+
+  function _renderAgentTimelineEvents(events) {
+    const list = qs("agentDetailTimeline");
+    if (!list) return;
+    const rows = (events || [])
+      .map((ev) => {
+        const label = escapeHtml(ev.label || ev.kind || "event");
+        const detail = escapeHtml((ev.detail || "").toString().slice(0, 160));
+        const when = escapeHtml(_agentFmtWhen(ev.ts));
+        const life = ev.lifecycle
+          ? _agentLifecycleChip(ev.lifecycle)
+          : ev.result
+          ? `<span class="auto-job-status ${
+              String(ev.result).toLowerCase() === "pass" || String(ev.result).toLowerCase() === "passed"
+                ? "status-done"
+                : String(ev.result).toLowerCase() === "fail" || String(ev.result).toLowerCase() === "failed"
+                ? "status-error"
+                : "status-planned"
+            }">${escapeHtml(String(ev.result).toUpperCase())}</span>`
+          : "";
+        return `<li>
+          <span class="hint">${when}</span>
+          · ${_agentTimelineKindChip(ev.kind)}
+          · <strong>${label}</strong>
+          ${life}
+          ${detail ? `<span class="hint"> — ${detail}</span>` : ""}
+        </li>`;
+      })
       .join("");
-    return `
-      <p class="hint" style="margin:0 0 0.5rem">Recent commands for this agent. Live updates arrive via Mission Control SSE (<code>agent</code> / <code>agent_command</code>).</p>
-      <ul class="cc-list" style="margin:0">${events || `<li class="hint">No timeline events yet.</li>`}</ul>`;
+    list.innerHTML = rows || `<li class="hint">No timeline events yet for this agent.</li>`;
+  }
+
+  async function _loadAgentTimeline(agentId) {
+    const note = qs("agentDetailTimelineNote");
+    if (!qs("agentDetailTimeline") || !agentId) return;
+    try {
+      const r = await fetch(
+        `/api/agents/${encodeURIComponent(agentId)}/timeline?limit=80`,
+        { headers: authHeaders() }
+      );
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.detail || d.error || `HTTP ${r.status}`);
+      _renderAgentTimelineEvents(d.events || []);
+      if (note) {
+        note.textContent = d.disclaimer || `${d.count || 0} events · SSE refreshes this list`;
+      }
+    } catch (err) {
+      const list = qs("agentDetailTimeline");
+      if (list) {
+        list.innerHTML = `<li class="hint">Couldn't load timeline (${escapeHtml(
+          err.message || String(err)
+        )})</li>`;
+      }
+    }
+  }
+
+  function _wireAgentTimelineRealtime(agentId) {
+    if (typeof window.__securaiqAgentTimelineUnsub === "function") {
+      try {
+        window.__securaiqAgentTimelineUnsub();
+      } catch {
+        /* ignore */
+      }
+      window.__securaiqAgentTimelineUnsub = null;
+    }
+    const rt = window.RealtimeManager;
+    if (!rt || typeof rt.subscribe !== "function" || !agentId) return;
+    let t = null;
+    const refresh = () => {
+      if (t) clearTimeout(t);
+      t = setTimeout(() => {
+        if (window.__securaiqAgentDetailTab === "timeline" && window.__securaiqSelectedAgentId === agentId) {
+          _loadAgentTimeline(agentId);
+        }
+      }, 400);
+    };
+    const onPush = (msg) => {
+      const push = (msg && msg.push) || msg || {};
+      if (!push || typeof push !== "object") return;
+      const aid = String(push.agent_id || (push.data && push.data.agent_id) || "");
+      const typ = String(
+        (msg && msg.type) || push.type || push.event_type || ""
+      );
+      if (aid && aid !== agentId) return;
+      if (
+        !aid &&
+        !(
+          typ.startsWith("control.") ||
+          typ.startsWith("evidence") ||
+          typ === "agent_command" ||
+          typ.startsWith("command.") ||
+          typ.startsWith("agent")
+        )
+      ) {
+        return;
+      }
+      refresh();
+    };
+    const u1 = rt.subscribe("*", (push) => onPush(push));
+    window.__securaiqAgentTimelineUnsub = () => {
+      if (t) clearTimeout(t);
+      try {
+        u1();
+      } catch {
+        /* ignore */
+      }
+    };
   }
 
   async function renderAgentDetailPage(agentId, opts) {
@@ -6261,6 +6376,18 @@
           renderAgentDetailPage(id, { quiet: true });
         });
       });
+
+      if (tab === "timeline") {
+        _loadAgentTimeline(id);
+        _wireAgentTimelineRealtime(id);
+      } else if (typeof window.__securaiqAgentTimelineUnsub === "function") {
+        try {
+          window.__securaiqAgentTimelineUnsub();
+        } catch {
+          /* ignore */
+        }
+        window.__securaiqAgentTimelineUnsub = null;
+      }
 
       const runCertAction = async (path, opts) => {
         opts = opts || {};

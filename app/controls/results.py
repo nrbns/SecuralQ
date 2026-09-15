@@ -95,6 +95,26 @@ def record_test_result(
             ),
         )
     c.commit()
+    # Append-only history trail (P1) — does not replace last-result upsert above.
+    try:
+        from app.controls.history import append_control_result
+
+        append_control_result(
+            user_id,
+            framework_id=framework_id,
+            control_id=control_id,
+            test_name=test_name,
+            result=st,
+            summary=summary or "",
+            detail=detail or {},
+            agent_id=str((detail or {}).get("agent_id") or ""),
+            asset_id=str((detail or {}).get("asset_id") or ""),
+            evidence_id=str((detail or {}).get("evidence_id") or ""),
+            event_id=str((detail or {}).get("event_id") or ""),
+            observed_at=ts,
+        )
+    except Exception:
+        pass
     return {
         "id": rid,
         "user_id": user_id,

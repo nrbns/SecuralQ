@@ -939,6 +939,22 @@ async def api_agent_certificate_summary(
     return agent_cert_summary(agent) or {"has_certificate": False}
 
 
+@router.get("/{agent_id}/timeline")
+async def api_agent_timeline(
+    agent_id: str,
+    user: Annotated[AuthUser, Depends(require_user)],
+    limit: int = 80,
+):
+    """SSE-friendly merged timeline: commands + control_results + evidence."""
+    from app.agent_timeline import build_agent_timeline
+
+    agent = get_agent(agent_id)
+    if not agent_visible_to_user(user.id, agent):
+        raise HTTPException(status_code=404, detail="Agent not found")
+    require_perm(user, "agent.read", org_id=agent.get("org_id") if agent else None)
+    return build_agent_timeline(user.id, agent_id, limit=limit)
+
+
 @router.post("/{agent_id}/certificate/issue")
 async def api_agent_certificate_issue(
     agent_id: str,

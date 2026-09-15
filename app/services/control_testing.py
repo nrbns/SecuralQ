@@ -1042,11 +1042,14 @@ def evaluate_agent_host_controls(
     payload: dict[str, Any],
     *,
     asset_id: str = "",
+    only_tests: set[str] | frozenset[str] | None = None,
 ) -> dict[str, Any]:
     """RT-10/11 — run host firewall / Defender / SSH / disk encryption for one agent.
 
     Publishes compliance (+ optional risk) events and records observed evidence
     on FAIL/PASS transitions. Never raises to callers (check-in must stay up).
+
+    ``only_tests`` — when set, only those test names run (affected-controls recompute).
     """
     out: dict[str, Any] = {"ok": True, "results": [], "evidence_ids": [], "events": []}
     if not user_id or not agent_id:
@@ -1074,6 +1077,8 @@ def evaluate_agent_host_controls(
         )
 
         for test_name, fn in evaluators:
+            if only_tests is not None and test_name not in only_tests:
+                continue
             try:
                 prev = _last_agent_host_status(user_id, agent_id, test_name)
                 result = fn()
