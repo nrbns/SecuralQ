@@ -186,6 +186,16 @@ def _visible_agent(user: AuthUser, agent_id: str, *, org_id: str | None = None) 
     return agent
 
 
+def _ssl_client_headers(request: Request | None) -> tuple[str | None, str | None]:
+    if request is None:
+        return None, None
+    verify = request.headers.get("X-SSL-Client-Verify") or request.headers.get("x-ssl-client-verify")
+    fp = request.headers.get("X-SSL-Client-Fingerprint") or request.headers.get(
+        "x-ssl-client-fingerprint"
+    )
+    return verify, fp
+
+
 def _authenticate_agent_request(
     authorization: str | None,
     *,
@@ -193,6 +203,9 @@ def _authenticate_agent_request(
     ts: str | None = None,
     nonce: str | None = None,
     sig: str | None = None,
+    request: Request | None = None,
+    ssl_client_verify: str | None = None,
+    ssl_client_fingerprint: str | None = None,
 ) -> dict[str, Any]:
     agent_id, raw_key = parse_agent_bearer(authorization)
     if not agent_id or not raw_key:
@@ -203,6 +216,22 @@ def _authenticate_agent_request(
     err = verify_replay_and_signature(agent, ts_header=ts, nonce=nonce, sig=sig, body=body)
     if err:
         raise HTTPException(status_code=401, detail=err)
+    if ssl_client_verify is None and ssl_client_fingerprint is None and request is not None:
+        ssl_client_verify, ssl_client_fingerprint = _ssl_client_headers(request)
+    try:
+        from app.agent_certs import verify_proxy_client_cert
+
+        mtls_err = verify_proxy_client_cert(
+            agent,
+            client_verify=ssl_client_verify,
+            client_fingerprint=ssl_client_fingerprint,
+        )
+        if mtls_err:
+            raise HTTPException(status_code=401, detail=mtls_err)
+    except HTTPException:
+        raise
+    except Exception:
+        pass
     return agent
 
 
@@ -640,6 +669,8 @@ class PublishUpdateRequest(BaseModel):
     notes: str = ""
     previous_sha256: str = ""
     platform: str = "all"
+    # When set, publish a built package from dist/agent-packages/ instead of the script.
+    filename: str = ""
 
 
 @router.post("/updates/publish")
@@ -647,9 +678,9 @@ async def api_agents_updates_publish(
     req: PublishUpdateRequest,
     user: Annotated[AuthUser, Depends(require_user)],
 ):
-    """Publish current scripts/securaiq_agent.py as a signed update record (admin)."""
+    """Publish signed update metadata (script or package artifact)."""
     require_perm(user, "agent.write")
-    from app.agent_updates import publish_script_release
+    from app.agent_updates import publish_package_release, publish_script_release
     from app.config import settings as _settings
 
     version = (req.version or "").strip()
@@ -660,16 +691,39 @@ async def api_agents_updates_publish(
         text = (resource_root() / "scripts" / "securaiq_agent.py").read_text(encoding="utf-8")
         m = re.search(r'AGENT_VERSION\s*=\s*"([^"]+)"', text)
         version = m.group(1) if m else "unknown"
+    platform = (req.platform or "all").strip().lower() or "all"
     try:
-        row = publish_script_release(
-            version=version,
-            notes=req.notes,
-            previous_sha256=req.previous_sha256,
-            platform=(req.platform or "all").strip().lower() or "all",
-        )
+        if (req.filename or "").strip():
+            fn = req.filename.strip().lower()
+            inferred = platform
+            if platform == "all":
+                if "linux" in fn or fn.endswith((".deb", ".rpm")):
+                    inferred = "linux"
+                elif "macos" in fn or "darwin" in fn or fn.endswith(".dmg"):
+                    inferred = "macos"
+                else:
+                    inferred = "windows"
+            row = publish_package_release(
+                filename=req.filename.strip(),
+                version=version,
+                platform=inferred,
+                notes=req.notes,
+                previous_sha256=req.previous_sha256,
+            )
+        else:
+            row = publish_script_release(
+                version=version,
+                notes=req.notes,
+                previous_sha256=req.previous_sha256,
+                platform=platform,
+            )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    audit("agent_update_publish", user.id, {"version": version, "id": row.get("id")})
+    audit(
+        "agent_update_publish",
+        user.id,
+        {"version": version, "id": row.get("id"), "filename": req.filename or None},
+    )
     pub = (getattr(_settings, "agent_ed25519_public_key", "") or "").strip()
     if not pub:
         pub = (getattr(_settings, "license_ed25519_public_key", "") or "").strip()
@@ -678,6 +732,7 @@ async def api_agents_updates_publish(
 
 @router.post("/license/validate")
 async def api_agent_license_validate(
+    request: Request,
     authorization: Annotated[str | None, Header(alias="Authorization")] = None,
     x_securaiq_ts: Annotated[str | None, Header(alias="X-SecuraIQ-Ts")] = None,
     x_securaiq_nonce: Annotated[str | None, Header(alias="X-SecuraIQ-Nonce")] = None,
@@ -690,6 +745,7 @@ async def api_agent_license_validate(
         ts=x_securaiq_ts,
         nonce=x_securaiq_nonce,
         sig=x_securaiq_sig,
+        request=request,
     )
     from app.license_service import validate_license
 
@@ -889,7 +945,12 @@ async def api_agent_checkin(
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=exc.errors()) from exc
     agent = _authenticate_agent_request(
-        authorization, body=body, ts=x_securaiq_ts, nonce=x_securaiq_nonce, sig=x_securaiq_sig
+        authorization,
+        body=body,
+        ts=x_securaiq_ts,
+        nonce=x_securaiq_nonce,
+        sig=x_securaiq_sig,
+        request=request,
     )
     result = checkin(str(agent["id"]), payload.model_dump())
     if not result.get("ok"):
@@ -899,6 +960,7 @@ async def api_agent_checkin(
 
 @router.post("/threat")
 async def api_agent_threat(
+    request: Request,
     payload: ThreatReport,
     authorization: Annotated[str | None, Header(alias="Authorization")] = None,
 ):
@@ -906,7 +968,9 @@ async def api_agent_threat(
     watcher — a live push, not a check-in field, so it reaches the SOC and
     creates a finding/incident the moment it's ingested."""
     agent = _authenticate_agent_request(
-        authorization, body=payload.model_dump_json().encode("utf-8")
+        authorization,
+        body=payload.model_dump_json().encode("utf-8"),
+        request=request,
     )
     result = record_threat_detections(str(agent["id"]), [d.model_dump() for d in payload.detections])
     if not result.get("ok"):
@@ -1133,7 +1197,12 @@ async def api_report_command_result(
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=exc.errors()) from exc
     agent = _authenticate_agent_request(
-        authorization, body=body, ts=x_securaiq_ts, nonce=x_securaiq_nonce, sig=x_securaiq_sig
+        authorization,
+        body=body,
+        ts=x_securaiq_ts,
+        nonce=x_securaiq_nonce,
+        sig=x_securaiq_sig,
+        request=request,
     )
     result = report_command_result(str(agent["id"]), command_id, status=req.status, result=req.result)
     if not result.get("ok"):
@@ -1152,7 +1221,12 @@ async def api_ack_command(
 ):
     body = await request.body()
     agent = _authenticate_agent_request(
-        authorization, body=body, ts=x_securaiq_ts, nonce=x_securaiq_nonce, sig=x_securaiq_sig
+        authorization,
+        body=body,
+        ts=x_securaiq_ts,
+        nonce=x_securaiq_nonce,
+        sig=x_securaiq_sig,
+        request=request,
     )
     result = ack_command(str(agent["id"]), command_id)
     if not result.get("ok"):

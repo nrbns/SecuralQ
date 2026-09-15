@@ -26,12 +26,14 @@
 | Billing | Stripe checkout/webhook wired; inert without keys |
 | License service | **Shipped** — Ed25519-signed `securaiq_licenses`, plans/entitlements, soft enroll quota, Stripe → `issue_license`, online validate + restricted mode, agent `POST /api/agents/license/validate` + local activation cache (state only) |
 
-**Still genuinely missing (build these):** Authenticode/EV MSI signing, deb/rpm package signing + notarization, event-driven control recompute, `control_results` history, object storage artifacts, Alembic + SQLite→Postgres export, production mTLS at the proxy (cert material is stubbed).
+**Still genuinely missing (build these):** event-driven control recompute, `control_results` history, object storage artifacts, Alembic + SQLite→Postgres export. **Signing/notarization** require your org secrets in CI (scaffolds ship; certs do not).
 
-**Shipped packaging / updates / versioning scaffolds (not production-complete signing):**
-- WiX MSI / deb / rpm wrappers under `scripts/packaging/` (tooling-gated; Authenticode ≠ done)
-- Signed update metadata + rollback-aware script upgrade (`app/agent_updates.py`, agent `.bak`)
+**Shipped packaging / updates / versioning / mTLS edge:**
+- WiX MSI / deb / rpm wrappers under `scripts/packaging/` (tooling-gated)
+- CI secrets-gated Authenticode (`sign_windows.ps1`), dpkg-sig (`sign_deb.sh`), Apple notarization (`notarize_macos.sh`) in `.github/workflows/agent-packages.yml`
+- Signed update metadata + script **and** frozen-binary self-upgrade (`.bak` / staged MSI|DEB when `SECURAIQ_ALLOW_PACKAGE_INSTALL=1`)
 - `/api/v1/*` → `/api/*` alias middleware (`app/api_v1.py`)
+- Proxy mTLS examples: `deploy/nginx-mtls.conf.example`, `deploy/Caddyfile.mtls` + `AGENT_MTLS_PROXY_VERIFY`
 - Commercial activation: validate APIs + Deploy UI + enroll tokens + 30-day trial
 
 ---
@@ -95,9 +97,9 @@ Grace: never brick agents on license lapse; block new enroll in grace; degrade a
 
 ## 4–6. Agent mTLS / packages / enroll tokens
 
-- **mTLS:** lab cert issuance when `AGENT_MTLS_ENABLED=true` (additive to bearer+HMAC); terminate client auth at nginx/Caddy in prod
-- **MSI/deb/rpm scaffolds:** `scripts/packaging/build_msi.ps1`, `build_deb.sh`, `build_rpm.sh` (+ `--msi/--deb/--rpm` on `build_agent_packages.py`). Package signing = CI
-- **Signed script updates:** `GET/POST /api/agents/updates/*` + upgrade payload with Ed25519 + `.bak` rollback on script agents
+- **mTLS:** lab cert issuance when `AGENT_MTLS_ENABLED=true`; proxy examples in `deploy/*mtls*`; enforce with `AGENT_MTLS_PROXY_VERIFY=true`
+- **MSI/deb/rpm scaffolds + CI signing hooks:** `scripts/packaging/sign_*.ps1|sh`, `notarize_macos.sh` (secrets-gated in `agent-packages.yml`)
+- **Signed updates:** script + package publish; frozen binary in-place swap (MSI/DEB need `SECURAIQ_ALLOW_PACKAGE_INSTALL=1`)
 - **Enroll tokens:** P0 done — `agent_enroll_tokens` in front of existing `enroll_agent`
 - **Revoke:** closes live WSS immediately (P0 done)
 
@@ -129,13 +131,14 @@ Document `client` org role. Production must keep `AUTH_ENABLED=true` (already en
 8. [x] Redis-backed auth rate limit (falls back to in-memory when Redis unset)
 
 **P1**
-- [x] MSI/deb/rpm **scaffolds** (WiX / dpkg-deb / fpm) — Authenticode & package signing still CI
-- [x] mTLS **cert issuance stub** (`AGENT_MTLS_ENABLED`) — proxy client-auth still ops
-- [x] Signed update metadata + rollback-aware script upgrade
+- [x] MSI/deb/rpm **scaffolds** (WiX / dpkg-deb / fpm)
+- [x] CI secrets-gated Authenticode / dpkg-sig / Apple notarization scaffolds (need org secrets)
+- [x] mTLS cert issuance + **proxy verify** (`AGENT_MTLS_PROXY_VERIFY` + nginx/Caddy examples)
+- [x] Signed update metadata + script **and** frozen-binary self-upgrade
 - [x] `/api/v1` alias middleware
 - [ ] Event-driven control recompute, `control_results`, object storage, CI Postgres
 
-**P2** — Argon2 rehash-on-login, WebAuthn/SAML/SCIM, KMS, macOS notarization, MSSP
+**P2** — Argon2 rehash-on-login, WebAuthn/SAML/SCIM, KMS, MSSP
 
 ---
 

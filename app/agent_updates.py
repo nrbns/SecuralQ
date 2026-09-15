@@ -108,6 +108,89 @@ def publish_script_release(
     return get_latest_update(platform=platform) or {}
 
 
+def _package_dir():
+    from app.paths import project_root
+
+    return project_root() / "dist" / "agent-packages"
+
+
+def publish_package_release(
+    *,
+    filename: str,
+    version: str,
+    platform: str,
+    notes: str = "",
+    previous_sha256: str = "",
+) -> dict[str, Any]:
+    """Publish a built artifact from dist/agent-packages/ as a signed update."""
+    ensure_schema()
+    safe = (filename or "").strip().replace("\\", "/").split("/")[-1]
+    if not safe or ".." in safe:
+        raise ValueError("Invalid package filename")
+    path = (_package_dir() / safe).resolve()
+    try:
+        path.relative_to(_package_dir().resolve())
+    except ValueError as exc:
+        raise ValueError("Invalid package path") from exc
+    if not path.is_file():
+        raise ValueError(f"Package not found: {safe}")
+    sha = hashlib.sha256(path.read_bytes()).hexdigest()
+    download_url = f"/api/agents/packages/{safe}"
+    plat = (platform or "all").strip().lower() or "all"
+    meta = {
+        "version": version,
+        "platform": plat,
+        "download_url": download_url,
+        "sha256": sha,
+        "previous_sha256": previous_sha256 or "",
+    }
+    sig = _sign_release(meta)
+    rid = new_id()
+    ts = now()
+    c = get_conn()
+    c.execute(
+        """
+        INSERT INTO agent_updates
+        (id, version, platform, download_url, sha256, signature, previous_sha256, notes, published_at, revoked_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+        """,
+        (
+            rid,
+            version,
+            plat,
+            download_url,
+            sha,
+            sig,
+            previous_sha256 or "",
+            notes or f"package:{safe}",
+            ts,
+        ),
+    )
+    c.commit()
+    return get_latest_update(platform=plat) or {}
+
+
+def infer_artifact_kind(download_url: str) -> str:
+    u = (download_url or "").lower()
+    if u.endswith(".msi"):
+        return "msi"
+    if u.endswith(".exe"):
+        return "exe"
+    if u.endswith(".deb"):
+        return "deb"
+    if u.endswith(".rpm"):
+        return "rpm"
+    if u.endswith(".dmg"):
+        return "dmg"
+    if u.endswith(".zip"):
+        return "zip"
+    if u.endswith(".tar.gz") or u.endswith(".tgz"):
+        return "tar"
+    if "install-script" in u or u.endswith(".py"):
+        return "script"
+    return "blob"
+
+
 def _live_agent_version() -> str:
     import re
 
@@ -164,13 +247,15 @@ def upgrade_payload_from_latest(*, platform: str = "all") -> dict[str, Any]:
     if not pub:
         pub = (getattr(settings, "license_ed25519_public_key", "") or "").strip()
     plat = latest.get("platform") or platform or "all"
+    download_url = latest.get("download_url") or "/api/agents/install-script"
     return {
         "expected_sha256": latest.get("sha256") or _script_sha256(),
-        "download_url": latest.get("download_url") or "/api/agents/install-script",
+        "download_url": download_url,
         "version": latest.get("version") or "",
         "platform": plat,
         "signature": latest.get("signature") or "",
         "previous_sha256": latest.get("previous_sha256") or "",
         "alg": "ed25519" if latest.get("signature") else "",
         "signing_public_key": pub,
+        "artifact_kind": infer_artifact_kind(download_url),
     }

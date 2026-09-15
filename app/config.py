@@ -197,6 +197,11 @@ class Settings(BaseSettings):
     # Optional mTLS client cert issuance on enroll (lab self-signed; proxy terminates TLS)
     agent_mtls_enabled: bool = False
     agent_mtls_cert_days: int = 60
+    # When true, agent API requires X-SSL-Client-Verify=SUCCESS from reverse proxy
+    # (bind app to localhost; never expose this mode without a trusted proxy).
+    agent_mtls_proxy_verify: bool = False
+    # If true and agent has certificate_fingerprint, require header match.
+    agent_mtls_require_fingerprint_match: bool = False
     # production / DEPLOYMENT_MODE=production requires PostgreSQL (never SQLite for SaaS)
     require_postgres_in_production: bool = True
     # Security hardening

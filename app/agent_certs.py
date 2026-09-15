@@ -20,6 +20,40 @@ def mtls_enabled() -> bool:
     return bool(getattr(settings, "agent_mtls_enabled", False))
 
 
+def mtls_proxy_verify_enabled() -> bool:
+    return bool(getattr(settings, "agent_mtls_proxy_verify", False))
+
+
+def verify_proxy_client_cert(
+    agent: dict[str, Any],
+    *,
+    client_verify: str | None,
+    client_fingerprint: str | None,
+) -> str | None:
+    """Return error string if proxy mTLS headers fail when enforcement is on.
+
+    Expects nginx/Caddy to set X-SSL-Client-Verify and X-SSL-Client-Fingerprint
+    after terminating client TLS. App must only be reachable via that proxy.
+    """
+    if not mtls_proxy_verify_enabled():
+        return None
+    verify = (client_verify or "").strip().upper()
+    # nginx: SUCCESS; Caddy may send "true" / "1" / "SUCCESS"
+    ok_values = {"SUCCESS", "TRUE", "1", "OK", "YES"}
+    if verify not in ok_values:
+        return "Client certificate required (proxy mTLS verify failed)"
+    if not getattr(settings, "agent_mtls_require_fingerprint_match", False):
+        return None
+    expected = (agent.get("certificate_fingerprint") or "").strip().lower().replace(":", "")
+    if not expected:
+        # Enrolled without cert — allow during rollout unless fingerprint required globally
+        return None
+    got = (client_fingerprint or "").strip().lower().replace(":", "")
+    if not got or got != expected:
+        return "Client certificate fingerprint mismatch"
+    return None
+
+
 def ensure_cert_columns() -> None:
     from app.db import table_columns
 

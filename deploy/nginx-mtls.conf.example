@@ -1,0 +1,68 @@
+# SecuraIQ — nginx with optional agent mTLS (client certificate auth).
+#
+# Use alongside deploy/nginx.conf.example. Terminate TLS + client certs here;
+# forward identity headers to FastAPI. Bearer/HMAC remains valid during rollout.
+#
+# Prep (ops):
+#   1. Create an internal CA (or use SecuraIQ AGENT_MTLS_ENABLED enroll PEMs + your CA).
+#   2. Place CA cert at /etc/securaiq/mtls/ca.crt
+#   3. Agents present client certs issued at enroll (or your MDM).
+#   4. Set AGENT_MTLS_PROXY_VERIFY=true on the app so it trusts X-SSL-Client-* headers
+#      only from this proxy (bind app to 127.0.0.1).
+
+upstream securaiq_app {
+    server 127.0.0.1:8080;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name securaiq.yourdomain.com;
+
+    ssl_certificate     /etc/letsencrypt/live/securaiq.yourdomain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/securaiq.yourdomain.com/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    # Client certificate auth for agent paths (optional verify — start with optional)
+    ssl_client_certificate /etc/securaiq/mtls/ca.crt;
+    ssl_verify_client optional;  # use "on" once fleet is fully enrolled with certs
+
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    # Agent API + WebSocket — pass client cert status to the app
+    location ~ ^/api/(agents|v1/agents) {
+        proxy_pass http://securaiq_app;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        proxy_set_header X-SSL-Client-Verify $ssl_client_verify;
+        proxy_set_header X-SSL-Client-Fingerprint $ssl_client_fingerprint;
+        proxy_set_header X-SSL-Client-DN $ssl_client_s_dn;
+        proxy_set_header X-SSL-Client-Serial $ssl_client_serial;
+
+        proxy_read_timeout 3600s;
+    }
+
+    location / {
+        proxy_pass http://securaiq_app;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location ~ ^/api/(chat|realtime|tools/run/stream) {
+        proxy_pass http://securaiq_app;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 3600s;
+    }
+}

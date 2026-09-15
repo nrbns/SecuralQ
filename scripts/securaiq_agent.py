@@ -2016,6 +2016,249 @@ def execute_patch_package(payload: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _artifact_kind_from_url(url: str, payload: dict | None = None) -> str:
+    kind = str((payload or {}).get("artifact_kind") or "").strip().lower()
+    if kind:
+        return kind
+    u = (url or "").lower().split("?", 1)[0]
+    for suf, k in (
+        (".msi", "msi"),
+        (".exe", "exe"),
+        (".deb", "deb"),
+        (".rpm", "rpm"),
+        (".dmg", "dmg"),
+        (".zip", "zip"),
+        (".tar.gz", "tar"),
+        (".tgz", "tar"),
+        (".py", "script"),
+    ):
+        if u.endswith(suf):
+            return k
+    if "install-script" in u:
+        return "script"
+    return "blob"
+
+
+def _extract_agent_binary_from_archive(archive_path: str, dest_dir: str) -> str | None:
+    """Extract SecuraIQ-Agent(.exe) from zip/tar into dest_dir; return path or None."""
+    import tarfile
+    import zipfile
+
+    names: list[str] = []
+    lower = archive_path.lower()
+    try:
+        if lower.endswith(".zip"):
+            with zipfile.ZipFile(archive_path, "r") as zf:
+                names = zf.namelist()
+                candidates = [
+                    n
+                    for n in names
+                    if n.replace("\\", "/").rstrip("/").split("/")[-1].lower()
+                    in ("securaiq-agent.exe", "securaiq-agent")
+                ]
+                if not candidates:
+                    return None
+                member = candidates[0]
+                zf.extract(member, dest_dir)
+                return os.path.join(dest_dir, member.replace("/", os.sep))
+        if lower.endswith(".tar.gz") or lower.endswith(".tgz") or lower.endswith(".tar"):
+            with tarfile.open(archive_path, "r:*") as tf:
+                for m in tf.getmembers():
+                    base = os.path.basename(m.name).lower()
+                    if base in ("securaiq-agent", "securaiq-agent.exe") and m.isfile():
+                        tf.extract(m, dest_dir)
+                        return os.path.join(dest_dir, m.name.replace("/", os.sep))
+    except Exception:
+        return None
+    return None
+
+
+def _execute_binary_upgrade(
+    new_content: bytes,
+    *,
+    expected_sha256: str,
+    download_url: str,
+    payload: dict,
+) -> dict:
+    """Replace packaged agent binary (or stage MSI/DEB for elevated install).
+
+    Onefile .exe / native binary: atomic replace next to sys.executable + .bak.
+    zip/tar.gz: extract SecuraIQ-Agent and replace.
+    MSI/DEB/RPM: write package beside binary; run installer only when
+    SECURAIQ_ALLOW_PACKAGE_INSTALL=1 (needs elevation).
+    """
+    kind = _artifact_kind_from_url(download_url, payload)
+    if kind == "script":
+        return {
+            "ok": False,
+            "error": "Frozen binary cannot apply a .py script upgrade — publish an exe/tar package update",
+            "expected_sha256": expected_sha256,
+        }
+
+    home = _agent_home()
+    exe_path = os.path.abspath(sys.executable)
+    stage_dir = os.path.join(home, "_upgrade_stage")
+    try:
+        os.makedirs(stage_dir, exist_ok=True)
+    except Exception as exc:
+        return {"ok": False, "error": f"Could not create upgrade stage dir: {exc}"}
+
+    allow_pkg = os.environ.get("SECURAIQ_ALLOW_PACKAGE_INSTALL", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    ext_map = {
+        "exe": ".exe",
+        "msi": ".msi",
+        "deb": ".deb",
+        "rpm": ".rpm",
+        "dmg": ".dmg",
+        "zip": ".zip",
+        "tar": ".tar.gz",
+        "blob": ".bin",
+    }
+    # Prefer extension from URL when present
+    url_path = (download_url or "").split("?", 1)[0]
+    suffix = ext_map.get(kind, ".bin")
+    for s in (".tar.gz", ".tgz", ".msi", ".exe", ".deb", ".rpm", ".dmg", ".zip"):
+        if url_path.lower().endswith(s):
+            suffix = s
+            break
+    staged = os.path.join(stage_dir, f"SecuraIQ-Agent-update{suffix}")
+    try:
+        with open(staged, "wb") as fh:
+            fh.write(new_content)
+    except Exception as exc:
+        return {"ok": False, "error": f"Could not write staged package: {exc}"}
+
+    if hashlib.sha256(open(staged, "rb").read()).hexdigest() != expected_sha256:
+        try:
+            os.remove(staged)
+        except Exception:
+            pass
+        return {"ok": False, "error": "Staged package checksum mismatch"}
+
+    # Package installers (elevated)
+    if kind in ("msi", "deb", "rpm", "dmg"):
+        if not allow_pkg:
+            return {
+                "ok": False,
+                "error": (
+                    f"Packaged {kind} upgrade staged at {staged}. "
+                    "Set SECURAIQ_ALLOW_PACKAGE_INSTALL=1 (elevated service) to apply, "
+                    "or install manually. Prefer publishing a standalone .exe / .tar.gz for in-place swap."
+                ),
+                "staged_path": staged,
+                "expected_sha256": expected_sha256,
+            }
+        try:
+            if kind == "msi" and platform.system().lower() == "windows":
+                ok, out = _run(
+                    ["msiexec", "/i", staged, "/qn", "/norestart"],
+                    timeout=300,
+                )
+                if not ok:
+                    return {"ok": False, "error": f"msiexec failed: {out}", "staged_path": staged}
+                return {
+                    "ok": True,
+                    "artifact_kind": kind,
+                    "staged_path": staged,
+                    "note": "MSI installed — service supervisor should restart the agent",
+                    "sha256": expected_sha256,
+                }
+            if kind == "deb" and platform.system().lower() == "linux":
+                ok, out = _run(["dpkg", "-i", staged], timeout=300)
+                if not ok:
+                    return {"ok": False, "error": f"dpkg -i failed: {out}", "staged_path": staged}
+                return {
+                    "ok": True,
+                    "artifact_kind": kind,
+                    "note": "deb installed — restart agent service",
+                    "sha256": expected_sha256,
+                }
+            if kind == "rpm" and platform.system().lower() == "linux":
+                ok, out = _run(["rpm", "-Uvh", staged], timeout=300)
+                if not ok:
+                    return {"ok": False, "error": f"rpm -Uvh failed: {out}", "staged_path": staged}
+                return {
+                    "ok": True,
+                    "artifact_kind": kind,
+                    "note": "rpm installed — restart agent service",
+                    "sha256": expected_sha256,
+                }
+            return {
+                "ok": False,
+                "error": f"Automatic {kind} install not supported on this OS — package at {staged}",
+                "staged_path": staged,
+            }
+        except Exception as exc:
+            return {"ok": False, "error": f"Package install failed: {exc}", "staged_path": staged}
+
+    # Resolve replacement binary bytes/path
+    new_bin_path = staged
+    if kind in ("zip", "tar"):
+        extracted = _extract_agent_binary_from_archive(staged, stage_dir)
+        if not extracted or not os.path.isfile(extracted):
+            return {
+                "ok": False,
+                "error": "Archive did not contain SecuraIQ-Agent binary",
+                "staged_path": staged,
+            }
+        new_bin_path = extracted
+
+    bak_path = exe_path + ".bak"
+    tmp_path = exe_path + ".new"
+    try:
+        if os.path.isfile(exe_path):
+            with open(exe_path, "rb") as fh:
+                old = fh.read()
+            with open(bak_path, "wb") as fh:
+                fh.write(old)
+        # Copy staged binary into place via .new then replace
+        with open(new_bin_path, "rb") as src, open(tmp_path, "wb") as dst:
+            dst.write(src.read())
+        try:
+            os.chmod(tmp_path, 0o755)
+        except Exception:
+            pass
+        os.replace(tmp_path, exe_path)
+        # Integrity of onefile exe: hash of file may differ from package hash when
+        # artifact was zip/tar — only recheck when kind is exe/blob.
+        if kind in ("exe", "blob"):
+            with open(exe_path, "rb") as fh:
+                written_hash = hashlib.sha256(fh.read()).hexdigest()
+            if written_hash != expected_sha256:
+                if os.path.isfile(bak_path):
+                    os.replace(bak_path, exe_path)
+                return {
+                    "ok": False,
+                    "error": "Post-write binary checksum failed — restored .bak",
+                    "expected_sha256": expected_sha256,
+                }
+    except Exception as exc:
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+        if os.path.isfile(bak_path):
+            try:
+                os.replace(bak_path, exe_path)
+            except Exception:
+                pass
+        return {"ok": False, "error": f"Could not replace agent binary: {exc}"}
+
+    return {
+        "ok": True,
+        "sha256": expected_sha256,
+        "artifact_kind": kind,
+        "bak": bak_path if os.path.isfile(bak_path) else "",
+        "version": str(payload.get("version") or ""),
+        "previous_sha256": str(payload.get("previous_sha256") or ""),
+        "note": "Binary replaced — process will exit so the service supervisor restarts it",
+    }
+
+
 def execute_agent_upgrade(payload: dict, *, server: str, insecure: bool = False) -> dict:
     """Download and verify the server's agent script, then atomically
     replace this file with it. Always returns a result dict -- never
@@ -2100,7 +2343,7 @@ def execute_agent_upgrade(payload: dict, *, server: str, insecure: bool = False)
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
     try:
-        with urllib.request.urlopen(req, timeout=30, context=ctx) as resp:
+        with urllib.request.urlopen(req, timeout=120, context=ctx) as resp:
             new_content = resp.read()
     except Exception as exc:
         return {"ok": False, "error": f"Could not download install script: {exc}"}
@@ -2114,13 +2357,12 @@ def execute_agent_upgrade(payload: dict, *, server: str, insecure: bool = False)
             "actual_sha256": actual,
         }
     if _is_frozen():
-        return {
-            "ok": False,
-            "error": "Packaged binary agents cannot self-upgrade in place. "
-            "Download a new SecuraIQ-Agent package from your server / release and reinstall.",
-            "expected_sha256": expected,
-            "actual_sha256": actual,
-        }
+        return _execute_binary_upgrade(
+            new_content,
+            expected_sha256=expected,
+            download_url=rel,
+            payload=payload,
+        )
     this_file = os.path.abspath(__file__)
     bak_path = this_file + ".bak"
     tmp_path = this_file + ".new"

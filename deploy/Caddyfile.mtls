@@ -1,0 +1,42 @@
+# SecuraIQ — Caddy with optional agent mTLS (client certificate auth).
+# Pair with AGENT_MTLS_ENABLED on the app + AGENT_MTLS_PROXY_VERIFY=true.
+# Replace domain and CA path. App must listen on 127.0.0.1 only.
+
+securaiq.yourdomain.com {
+	tls {
+		client_auth {
+			mode require  # use "request" during rollout
+			trust_pool file /etc/securaiq/mtls/ca.crt
+		}
+	}
+
+	encode gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+	}
+
+	# Pass client cert metadata (Caddy v2.7+ placeholders)
+	@agents path /api/agents* /api/v1/agents*
+	handle @agents {
+		reverse_proxy 127.0.0.1:8080 {
+			header_up X-SSL-Client-Verify {tls_client.certificate_verified}
+			header_up X-SSL-Client-Fingerprint {tls_client.certificate_sha256_fingerprint}
+			header_up X-SSL-Client-DN {tls_client.subject}
+			flush_interval -1
+		}
+	}
+
+	@sse path /api/chat /api/realtime /api/tools/run/stream
+	handle @sse {
+		reverse_proxy 127.0.0.1:8080 {
+			flush_interval -1
+		}
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:8080
+	}
+}
