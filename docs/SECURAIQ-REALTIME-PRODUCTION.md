@@ -265,20 +265,22 @@ Packaging scaffolds may ship for **lab/owned hosts**; commercial “signed enter
 
 ### P0 — Prove and harden the existing loop
 
-1. Keep `scripts/realtime_acceptance_demo.py --local` green in CI (or documented nightly).
-2. Document runbook: Redis URL vs in-process; Sentinel compose profile; DLQ admin.
+1. [x] Keep `scripts/realtime_acceptance_demo.py --local` green in CI (`phase1-realtime-gate`).
+2. [x] Document runbook: Redis URL vs in-process; Sentinel compose profile; DLQ admin (`deploy/redis/README.md`, `scripts/realtime_phase1_proof.py --document`).
 3. [x] Emit missing dotted aliases on existing publish sites (`control.passed`, `evidence.created`, command lifecycle, `agent.online`) without breaking flat `type` — `publish_aliased` in `app/realtime_events.py`.
 4. [x] RealtimeManager: `subscribe` / `deduplicate` / `invalidate` for Agents + Controls + Evidence + Risk (`static/app.js`).
 5. [x] Publish `license.updated` on issue/validate/revoke; `agent.update.available` on update publish.
 6. [x] Live security stream shows human labels + event type badges for the full closed-loop vocabulary.
+7. [x] CI once-only / XAUTOCLAIM / SSE replay proofs (`tests/test_realtime_phase1_proof.py`, `app/realtime/`).
+8. [ ] Ops: record a **measured** Sentinel failover timing note after `docker compose stop redis-primary` (lab stub only — not Cluster cert).
 
-### P1 — Make the chain complete product-wise
+### P1 — Make the chain complete product-wise (Sprint 2–4; do not expand scanners first)
 
-6. Affected-controls-only recompute on package/config events.
-7. `control_results` history table + API read for timeline.
-8. Timeline UI for one agent (SSE-fed).
-9. Multi-worker + Sentinel measured proof; publish results in ops notes (not marketing).
-10. Production profile: `AGENT_REQUIRE_COMMAND_SIGNATURE=true`, replay protection on, mTLS proxy verify when fleet-ready.
+9. Affected-controls-only recompute on package/config events.
+10. `control_results` history table + API read for timeline.
+11. Timeline UI for one agent (SSE-fed).
+12. Production profile: `AGENT_REQUIRE_COMMAND_SIGNATURE=true`, replay protection on, mTLS device certs/rotation (Sprint 2).
+13. Automatic evidence on every control/remediation state change (Sprint 3).
 
 ### P2 — After acceptance greens
 

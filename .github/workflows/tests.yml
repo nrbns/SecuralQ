@@ -28,7 +28,7 @@ jobs:
         # Deliberately not the full requirements.txt — the test suite is
         # scoped to avoid the heavy chromadb/sentence-transformers chain so
         # CI stays fast. Add packages here only if a new test needs them.
-        run: pip install pydantic pydantic-settings httpx pytest pytest-asyncio
+        run: pip install pydantic pydantic-settings httpx pytest pytest-asyncio cryptography argon2-cffi
       - name: Run test suite
         # test_siem_api.py imports app.wazuh_api -> app.commercial_api ->
         # app.uploads -> app.rag, which pulls in chromadb + sentence-transformers
@@ -36,3 +36,30 @@ jobs:
         # this job installs above. Skip it here; run the full suite (including
         # it) locally with `pip install -r requirements.txt -r requirements-dev.txt`.
         run: pytest -v --ignore=tests/test_siem_api.py
+
+  # Sprint 1 / Phase 1 — release gate: closed-loop acceptance + once-only /
+  # XAUTOCLAIM / DLQ / SSE replay. Fail this job ⇒ do not claim realtime P0 done.
+  phase1-realtime-gate:
+    name: Phase 1 realtime release gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install gate dependencies
+        run: pip install pydantic pydantic-settings httpx pytest pytest-asyncio cryptography argon2-cffi
+      - name: Phase 1 gate (acceptance + durability + once-only)
+        run: >
+          pytest -v
+          tests/test_realtime_acceptance_local.py
+          tests/test_realtime_phase1_proof.py
+          tests/test_stream_durability.py
+          tests/test_redis_dlq_ops.py
+          tests/test_realtime_bus.py
+          tests/test_realtime_rt02_rt06.py
+          tests/test_realtime_p0_ui_events.py
+      - name: Acceptance demo --local
+        run: python scripts/realtime_acceptance_demo.py --local
+      - name: Phase 1 simulate once-only
+        run: python scripts/realtime_phase1_proof.py --simulate

@@ -94,7 +94,7 @@ def _client_cache_key() -> str:
 
 
 def reset_clients_for_tests() -> None:
-    """Drop cached sync client (tests / settings reload)."""
+    """Drop cached sync client (tests / settings reload / post-failover)."""
     global _sync_client, _sync_client_key
     if _sync_client is not None:
         try:
@@ -103,6 +103,26 @@ def reset_clients_for_tests() -> None:
             pass
     _sync_client = None
     _sync_client_key = None
+
+
+def reconnect_after_failover(
+    *,
+    decode_responses: bool = True,
+    socket_connect_timeout: float = 2.0,
+    socket_timeout: float = 2.0,
+) -> Any | None:
+    """Invalidate cache and open a fresh master connection (Sentinel or URL).
+
+    Call after a Redis master failover so long-lived processes do not keep a
+    dead socket. Lab HA stub only — not a Cluster / multi-AZ certification.
+    """
+    reset_clients_for_tests()
+    return get_sync_redis(
+        decode_responses=decode_responses,
+        socket_connect_timeout=socket_connect_timeout,
+        socket_timeout=socket_timeout,
+        cached=True,
+    )
 
 
 def get_sync_redis(

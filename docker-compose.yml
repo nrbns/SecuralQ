@@ -83,12 +83,16 @@ services:
 
   # Lab Redis HA stub (Sentinel) — not a production failover certification.
   # docker compose --profile redis-ha up -d
-  # App: REDIS_SENTINEL_HOSTS=redis-sentinel:26379 REDIS_SENTINEL_MASTER=mymaster
+  # From app container: REDIS_SENTINEL_HOSTS=redis-sentinel:26379 REDIS_SENTINEL_MASTER=mymaster
+  # From host (measured proof): REDIS_SENTINEL_HOSTS=127.0.0.1:26379 REDIS_SENTINEL_MASTER=mymaster
+  #   python scripts/realtime_phase1_proof.py --check-sentinel
   redis-primary:
     image: redis:7-alpine
     command: ["redis-server", "--appendonly", "yes"]
     expose:
       - "6379"
+    ports:
+      - "127.0.0.1:6380:6379"
     networks:
       - securaiq-internal
     restart: unless-stopped
@@ -122,6 +126,8 @@ services:
         condition: service_healthy
     expose:
       - "26379"
+    ports:
+      - "127.0.0.1:26379:26379"
     networks:
       - securaiq-internal
     restart: unless-stopped

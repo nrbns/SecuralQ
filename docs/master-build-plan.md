@@ -57,21 +57,25 @@ Modules reinforce this loop. AI may recommend; it must not claim success unless 
 
 **Priority: prove firewall closed loop (`realtime_acceptance_demo.py`) before Phase 22+ / full OS config trees.**
 
-**Next only: complete Phase 1 remaining** (Realtime Foundation):
+**Sprint order (do not skip ahead):** 1 Realtime foundation → 2 Agent security (mTLS) → 3 Controls+Evidence → 4 Closed-loop remediation depth → 5 Commercial (MFA/licensing/signed installers) → 6 Production ops. Freeze Phase 22+ until Sprint 1–4 closed loop is reliable.
+
+**Phase 1 remaining** (Realtime Foundation):
 
 1. ~~Dead-letter queue~~ (**done** when `REDIS_URL` set)
 2. ~~Pending reclaim / XAUTOCLAIM~~ (**done**)
 3. ~~Stream metrics~~ (**done** — `stream_monitor_snapshot` / health / Realtime Health UI)
 4. ~~Default Streams fan-out~~ (**done** — `REALTIME_STREAMS_FANOUT=true` default)
 5. ~~Soft backpressure signal~~ (**done** — flag + metric near maxlen; still durable XADD)
-6. Acceptance harness for the end-to-end workflow below (lab green; Redis HA still missing)
+6. ~~Acceptance harness~~ (**done** — `realtime_acceptance_demo.py --local` + CI `phase1-realtime-gate`)
+7. ~~Once-only multi-worker / reclaim proof (CI)~~ (**done** — `tests/test_realtime_phase1_proof.py`, `app/realtime/`)
+8. Redis Sentinel **measured** failover (ops) — lab compose + `scripts/realtime_phase1_proof.py --document`; **not** Cluster certification
 
-Remaining Phase 1 claim blockers: **measured** Redis Sentinel failover + multi-worker production proof (lab Sentinel compose profile exists; not certified).
+CI release gate: `.github/workflows/tests.yml` job `phase1-realtime-gate` (acceptance + durability + once-only + `--simulate`).
 
-Compose lab HA stub: `docker compose --profile redis-ha up -d` + `REDIS_SENTINEL_HOSTS=redis-sentinel:26379`.
+Compose lab HA stub: `docker compose --profile redis-ha up -d` + `REDIS_SENTINEL_HOSTS=127.0.0.1:26379` (see `deploy/redis/README.md`).
 Admin DLQ ops: `GET/POST /api/admin/realtime/dlq` (list / replay / purge).
 
-Run `scripts/realtime_acceptance_demo.py` / `scripts/live_lab_smoke.py` on owned lab endpoints.
+Run `scripts/realtime_acceptance_demo.py` / `scripts/realtime_phase1_proof.py` on owned lab endpoints.
 
 **Freeze Phase 22+** (cloud / container / AppSec / identity / data / TPRM / malware depth / AI SecOps expansions) until the acceptance workflow works reliably on lab endpoints you own.
 
@@ -91,11 +95,12 @@ Legend by track: **🔴** foundation / production · **🟠** domain expansion �
 - Deduplication (one security action per `event_id`)
 - Bounded offline agent queue → reconnect → ACK
 
-**Status: Near-done (lab)** — event schema, Streams `XADD`, processor, offline
+**Status: Near-done (lab) → CI-gated** — event schema, Streams `XADD`, processor, offline
 buffer, ordering, DLQ + XAUTOCLAIM + stream metrics, **default Streams fan-out**
-(when `REDIS_URL` set). Remaining for full Phase 1 claim: Redis HA/Sentinel
-(multi-worker production). Lab without Redis: in-process SSE bus is the supported
-realtime path.
+(when `REDIS_URL` set), acceptance + once-only proofs in CI. Remaining for full
+Phase 1 **ops** claim: **measured** Redis Sentinel failover on the lab compose
+profile (`deploy/redis/README.md`). Lab without Redis: in-process SSE bus is the
+supported realtime path.
 
 ---
 
