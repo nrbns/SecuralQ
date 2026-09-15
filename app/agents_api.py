@@ -896,6 +896,15 @@ async def api_get_agent(agent_id: str, user: Annotated[AuthUser, Depends(require
     view = dict(agent)
     view.pop("key_hash", None)
     view.pop("key_enc", None)
+    # Keep fingerprint/expiry for UI; drop bulky PEM from default GET
+    view.pop("certificate_pem", None)
+    view.pop("certificate_public_key_pem", None)
+    try:
+        from app.agent_certs import agent_cert_summary
+
+        view["mtls"] = agent_cert_summary(agent)
+    except Exception:
+        view["mtls"] = None
     return view
 
 

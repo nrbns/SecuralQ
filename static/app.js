@@ -3530,6 +3530,17 @@ function describeRealtimeEvent(type, push) {
     "command.sent": "Command sent to agent",
     "command.ack": "Agent acknowledged command",
     "command.completed": status === "error" ? "Command failed" : "Command completed",
+    "command.recommended": "Remediation recommended",
+    "command.signed": "Command signed",
+    "command.executing": "Command executing",
+    "command.executed": "Command executed",
+    "command.verifying": "Verification in progress",
+    "command.verified": "Command verified",
+    "command.rejected": "Command rejected",
+    "command.expired": "Command expired",
+    "command.timeout": "Command timed out",
+    "command.failed": "Command failed",
+    "command.rollback": "Command rollback",
     "control.failed": `Control FAIL${test ? `: ${test}` : ""}`,
     "control.passed": `Control PASS${test ? `: ${test}` : ""}`,
     "control.test.completed": `Control tested${test ? `: ${test}` : ""}`,
@@ -3555,9 +3566,13 @@ function describeRealtimeEvent(type, push) {
     job: `Job ${p.kind || status || "update"}`,
   };
   let label = labels[t] || t.replace(/[._]/g, " ");
+  if (t === "agent_command" && status) {
+    const lc = String(status).toUpperCase();
+    label = `Command ${lc}`;
+  }
   let detail =
     summary ||
-    [aid && `agent ${aid}`, p.asset_id && `asset ${String(p.asset_id).slice(0, 8)}`, p.plan, p.mode, p.version, p.kind]
+    [aid && `agent ${aid}`, p.asset_id && `asset ${String(p.asset_id).slice(0, 8)}`, p.plan, p.mode, p.version, p.kind, p.lifecycle]
       .filter(Boolean)
       .join(" · ");
   let sev = "";
@@ -6627,26 +6642,30 @@ function paintCcLiveStream() {
   if (pulse && events.length) {
     pulse.textContent = `SSE · ${new Date().toLocaleTimeString()}`;
   }
-  if (!el) return;
-  if (!events.length) {
-    el.innerHTML = `<li class="hint">No recent events — scans, agents, remediations, and findings will appear here.</li>`;
-    return;
-  }
-  el.innerHTML = events
-    .slice(0, 14)
-    .map((e) => {
-      const when = e.when || "—";
-      const typeBadge = e.type
-        ? `<code class="wz-event-type" title="${escapeHtml(e.type)}">${escapeHtml(e.type)}</code>`
-        : "";
-      return `<li class="wz-event-row${e.sev ? ` sev-${escapeHtml(e.sev)}` : ""}">
+  const rowHtml = (list) => {
+    if (!list.length) {
+      return `<li class="hint">No recent events — scans, agents, remediations, and findings will appear here.</li>`;
+    }
+    return list
+      .slice(0, 14)
+      .map((e) => {
+        const when = e.when || "—";
+        const typeBadge = e.type
+          ? `<code class="wz-event-type" title="${escapeHtml(e.type)}">${escapeHtml(e.type)}</code>`
+          : "";
+        return `<li class="wz-event-row${e.sev ? ` sev-${escapeHtml(e.sev)}` : ""}">
         <span class="wz-event-time">${escapeHtml(when)}</span>
         <span class="wz-event-body"><strong>${escapeHtml(e.label || "")}</strong>
         ${typeBadge}
         <span class="hint">${escapeHtml(e.detail || "")}</span></span></li>`;
-    })
-    .join("");
+      })
+      .join("");
+  };
+  if (el) el.innerHTML = rowHtml(events);
+  const mirror = document.getElementById("agentsLiveStreamMirror");
+  if (mirror) mirror.innerHTML = rowHtml(events.slice(0, 8));
 }
+window.paintCcLiveStream = paintCcLiveStream;
 
 function renderCcLiveStream(timeline, data) {
   const pulse = document.getElementById("sqStreamPulse");

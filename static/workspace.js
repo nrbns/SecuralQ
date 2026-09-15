@@ -5719,6 +5719,28 @@
     return `<span class="auto-job-status ${cls}">${escapeHtml(st || "—")}</span>`;
   }
 
+  function _agentLifecycleChip(lifecycle) {
+    const lc = String(lifecycle || "—").toUpperCase();
+    let cls = "lc-neutral";
+    if (["VERIFIED", "EXECUTED", "COMPLETED", "PASS"].includes(lc)) cls = "lc-ok";
+    else if (["FAILED", "REJECTED", "EXPIRED", "TIMEOUT", "ROLLBACK"].includes(lc)) cls = "lc-bad";
+    else if (["PENDING_APPROVAL", "RECOMMENDED", "VERIFYING", "VERIFICATION"].includes(lc)) cls = "lc-warn";
+    else if (["APPROVED", "SIGNED", "SENT", "ACK", "ACKNOWLEDGED", "EXECUTING", "DISPATCHED", "DELIVERED"].includes(lc))
+      cls = "lc-prog";
+    return `<span class="agent-lifecycle-chip ${cls}" title="Command lifecycle">${escapeHtml(lc)}</span>`;
+  }
+
+  function _agentMtlsSummary(agent) {
+    const m = (agent && agent.mtls) || {};
+    if (m.has_certificate) {
+      const fp = String(m.fingerprint || "").slice(0, 12);
+      const exp = m.expires_at ? _agentFmtWhen(m.expires_at) : "—";
+      return { ok: true, label: `cert ${fp}…`, detail: `expires ${exp}`, fingerprint: m.fingerprint };
+    }
+    if (m.revoked) return { ok: false, label: "cert revoked", detail: "re-issue required", fingerprint: "" };
+    return { ok: null, label: "no device cert", detail: "enable AGENT_MTLS_ENABLED to issue", fingerprint: "" };
+  }
+
   function _agentCommandKindLabel(cmd) {
     const kind = (cmd && cmd.kind) || "";
     const p = (cmd && cmd.payload) || {};
@@ -5826,15 +5848,52 @@
         _agentSecChip("SSH", _agentSshOk(ssh), "PermitRootLogin"),
         _agentSecChip("Disk encryption", _agentDiskOk(disk), disk.backend || ""),
       ].join(" ");
+      const mtls = _agentMtlsSummary(agent);
+      const mtlsChip =
+        mtls.ok === true
+          ? `<span class="auto-job-status status-done">mTLS</span>`
+          : mtls.ok === false
+          ? `<span class="auto-job-status status-error">mTLS</span>`
+          : `<span class="auto-job-status status-planned">mTLS</span>`;
       return `
         <div class="cc-kpi-grid" style="margin:0 0 0.75rem">
           <article class="cc-kpi"><span>Hostname</span><strong>${escapeHtml(payload.hostname || agent.hostname || "—")}</strong></article>
           <article class="cc-kpi"><span>IP</span><strong>${escapeHtml(payload.ip || agent.ip || "—")}</strong></article>
           <article class="cc-kpi"><span>OS</span><strong>${escapeHtml((payload.os || agent.os || "—") + (agent.os_version ? ` ${agent.os_version}` : ""))}</strong></article>
           <article class="cc-kpi"><span>Check-ins</span><strong>${escapeHtml(String(agent.checkin_count || 0))}</strong></article>
+          <article class="cc-kpi"><span>Device cert</span><strong>${mtlsChip} ${escapeHtml(mtls.label)}</strong><em class="hint">${escapeHtml(mtls.detail)}</em></article>
         </div>
-        <p class="hint" style="margin:0 0 0.5rem">Security posture (from last check-in payload)</p>
+        <p class="hint" style="margin:0 0 0.5rem">Security posture (from last check-in payload) · open <strong>Security</strong> tab for cert rotate/revoke</p>
         <div class="agent-detail-chips" style="display:flex;flex-wrap:wrap;gap:0.4rem">${chips}</div>`;
+    }
+
+    if (tab === "security") {
+      const mtls = _agentMtlsSummary(agent);
+      const fpFull = (agent.mtls && agent.mtls.fingerprint) || agent.certificate_fingerprint || "";
+      const exp = (agent.mtls && agent.mtls.expires_at) || agent.certificate_expires_at;
+      const issued = (agent.mtls && agent.mtls.issued_at) || agent.certificate_issued_at;
+      const serial = (agent.mtls && agent.mtls.serial) || agent.certificate_serial || "";
+      const revokedAt = (agent.mtls && agent.mtls.revoked_at) || agent.certificate_revoked_at;
+      return `
+        <section class="cc-panel agent-mtls-panel" style="margin:0">
+          <header><h2>Device certificate (mTLS)</h2></header>
+          <p class="hint" style="margin:0 0 0.75rem">Lab self-signed client certs when <code>AGENT_MTLS_ENABLED</code>. Proxy terminates TLS; bearer/HMAC still work during rollout.</p>
+          <div class="cc-kpi-grid" style="margin:0 0 0.75rem">
+            <article class="cc-kpi"><span>Status</span><strong>${escapeHtml(mtls.label)}</strong></article>
+            <article class="cc-kpi"><span>Fingerprint</span><strong><code class="hint">${escapeHtml(fpFull ? String(fpFull).slice(0, 24) + "…" : "—")}</code></strong></article>
+            <article class="cc-kpi"><span>Issued</span><strong>${escapeHtml(_agentFmtWhen(issued))}</strong></article>
+            <article class="cc-kpi"><span>Expires</span><strong>${escapeHtml(_agentFmtWhen(exp))}</strong></article>
+            <article class="cc-kpi"><span>Serial</span><strong class="hint">${escapeHtml(serial || "—")}</strong></article>
+            <article class="cc-kpi"><span>Revoked</span><strong>${escapeHtml(revokedAt ? _agentFmtWhen(revokedAt) : "no")}</strong></article>
+          </div>
+          <div class="page-head-actions" style="display:flex;flex-wrap:wrap;gap:0.5rem">
+            <button type="button" class="btn-secondary" id="agentCertIssueBtn" ${agent.status === "revoked" ? "disabled" : ""}>Issue / re-issue</button>
+            <button type="button" class="btn-secondary" id="agentCertRotateBtn" ${agent.status === "revoked" ? "disabled" : ""}>Rotate</button>
+            <button type="button" class="btn-secondary" id="agentCertRenewBtn" ${agent.status === "revoked" ? "disabled" : ""}>Renew</button>
+            <button type="button" class="btn-secondary" id="agentCertRevokeBtn" ${!fpFull || agent.status === "revoked" ? "disabled" : ""}>Revoke cert</button>
+          </div>
+          <p class="hint" style="margin:0.75rem 0 0" id="agentCertActionNote">Private key is returned only at issue/rotate time — store it on the agent host.</p>
+        </section>`;
     }
 
     if (tab === "inventory") {
@@ -6032,7 +6091,7 @@
           return `<tr>
             <td>${_agentCommandKindLabel(cmd)}</td>
             <td>${_agentStatusChip(cmd.status)}</td>
-            <td class="hint"><code>${escapeHtml(_agentCommandLifecycle(cmd))}</code></td>
+            <td>${_agentLifecycleChip(_agentCommandLifecycle(cmd))}</td>
             <td class="hint">${escapeHtml(_agentFmtWhen(cmd.created_at))}</td>
             <td class="reports-dl-cell">
               ${
@@ -6046,11 +6105,14 @@
         })
         .join("");
       return `
+        <p class="agent-lifecycle-legend hint" style="margin:0 0 0.65rem">
+          Closed loop: <code>RECOMMENDED</code> → <code>PENDING_APPROVAL</code> → <code>APPROVED</code> → <code>SENT</code> → <code>ACK</code> → <code>EXECUTED</code> → <code>VERIFYING</code> → <code>VERIFIED</code>
+        </p>
         <div class="data-table-wrap"><table class="data-table">
           <thead><tr><th>Command</th><th>Status</th><th>Lifecycle</th><th>Created</th><th></th></tr></thead>
           <tbody>${rows || `<tr><td colspan="5" class="hint">No commands yet for this agent.</td></tr>`}</tbody>
         </table></div>
-        <p class="hint" style="margin:0.65rem 0 0">Approve/reject only applies to pending items. Firewall/Defender enable and upgrades stay pending until approved.</p>`;
+        <p class="hint" style="margin:0.65rem 0 0">Approve/reject only applies to pending items. Live updates via Mission Control SSE.</p>`;
     }
 
     const events = (commands || [])
@@ -6060,7 +6122,7 @@
           <span class="hint">${escapeHtml(_agentFmtWhen(cmd.created_at))}</span>
           · ${_agentCommandKindLabel(cmd)}
           · ${_agentStatusChip(cmd.status)}
-          <code class="hint">${escapeHtml(_agentCommandLifecycle(cmd))}</code>
+          ${_agentLifecycleChip(_agentCommandLifecycle(cmd))}
         </li>`
       )
       .join("");
@@ -6097,10 +6159,18 @@
       const host = agent.hostname || agent.name || id.slice(0, 8);
       if (titleEl) titleEl.textContent = host;
       if (subEl) {
+        const mtls = _agentMtlsSummary(agent);
         subEl.innerHTML = `${_agentStatusChip(agent.status)}
           · ${escapeHtml(agent.os || "—")}${agent.os_version ? ` ${escapeHtml(agent.os_version)}` : ""}
           · last check-in ${escapeHtml(_agentFmtWhen(agent.last_checkin))}
           · agent ${escapeHtml(agent.agent_version || "—")}
+          · ${
+            mtls.ok === true
+              ? `<span class="auto-job-status status-done">mTLS</span>`
+              : mtls.ok === false
+              ? `<span class="auto-job-status status-error">mTLS revoked</span>`
+              : `<span class="auto-job-status status-planned">no cert</span>`
+          }
           · asset <code>${escapeHtml(agent.asset_id || "—")}</code>`;
       }
 
@@ -6148,6 +6218,7 @@
 
       const tabs = [
         ["overview", "Overview"],
+        ["security", "Security"],
         ["inventory", "Inventory"],
         ["configuration", "Configuration"],
         ["commands", "Commands"],
@@ -6190,6 +6261,56 @@
           renderAgentDetailPage(id, { quiet: true });
         });
       });
+
+      const runCertAction = async (path, opts) => {
+        opts = opts || {};
+        if (opts.confirmMsg && !confirm(opts.confirmMsg)) return;
+        const note = qs("agentCertActionNote");
+        if (note) note.textContent = "Working…";
+        try {
+          const r = await fetch(`/api/agents/${encodeURIComponent(id)}/certificate/${path}`, {
+            method: "POST",
+            headers: authHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify(opts.force ? { force: true } : {}),
+          });
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(d.detail || d.error || `HTTP ${r.status}`);
+          const pem = (d.mtls && d.mtls.private_key_pem) || d.private_key_pem;
+          if (pem && typeof notifyUser === "function") {
+            notifyUser(
+              `**Device cert ${path}** — fingerprint \`${(d.mtls && d.mtls.fingerprint) || d.fingerprint || ""}\`. Private key returned once; install on the agent host.`
+            );
+          } else if (typeof notifyUser === "function") {
+            notifyUser(`**Device cert ${path}** completed.`);
+          }
+          window.__securaiqAgentDetailTab = "security";
+          renderAgentDetailPage(id, { quiet: true });
+        } catch (err) {
+          if (note) note.textContent = err.message || "Cert action failed";
+          alert(err.message || "Cert action failed");
+        }
+      };
+      qs("agentCertIssueBtn")?.addEventListener("click", () =>
+        runCertAction("issue", {
+          confirmMsg: "Issue a new lab client certificate? Previous cert will be overwritten.",
+        })
+      );
+      qs("agentCertRotateBtn")?.addEventListener("click", () =>
+        runCertAction("rotate", {
+          confirmMsg: "Rotate device certificate? Old fingerprint will be revoked.",
+        })
+      );
+      qs("agentCertRenewBtn")?.addEventListener("click", () =>
+        runCertAction("renew", {
+          confirmMsg: "Force renew device certificate now?",
+          force: true,
+        })
+      );
+      qs("agentCertRevokeBtn")?.addEventListener("click", () =>
+        runCertAction("revoke", {
+          confirmMsg: "Revoke this agent's device certificate?",
+        })
+      );
 
       qs("agentDetailEnableFw")?.addEventListener("click", async (ev) => {
         const btn = ev.currentTarget;
@@ -6583,7 +6704,10 @@
           <article class="cc-kpi"><span>UI SSE <code>/api/realtime</code></span><strong>${escapeHtml(esState)}</strong></article>
           <article class="cc-kpi"><span>Agent WS</span><strong><code>/api/agents/ws</code></strong></article>
         </div>
-        <p class="hint" style="margin:0.5rem 0 0">Fleet list and package cards refresh on <code>agent</code> / <code>agent_command</code> realtime events.</p>`;
+        <p class="hint" style="margin:0.5rem 0 0.35rem">Live security stream (same SSE as Mission Control)</p>
+        <ul id="agentsLiveStreamMirror" class="wz-events agents-live-mirror" aria-live="polite"></ul>
+        <p class="hint" style="margin:0.5rem 0 0">Fleet list refreshes on <code>agent</code> / <code>agent_command</code> events. Click topbar LIVE ticker to jump to Mission Control stream.</p>`;
+      if (typeof window.paintCcLiveStream === "function") window.paintCcLiveStream();
     }
   }
   window.renderAgentsPage = renderAgentsPage;
@@ -6672,15 +6796,28 @@
         return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString();
       };
       el.innerHTML = `<div class="data-table-wrap"><table class="data-table">
-        <thead><tr><th>Host</th><th>Status</th><th>OS</th><th>Ports</th><th>Packages</th><th>Sentinel</th><th>Last check-in</th><th></th></tr></thead>
+        <thead><tr><th>Host</th><th>Status</th><th>mTLS</th><th>OS</th><th>Ports</th><th>Packages</th><th>Sentinel</th><th>Last check-in</th><th></th></tr></thead>
         <tbody>${agents
           .map((a) => {
             const payload = a.last_payload || {};
             const canUpgrade = a.status !== "revoked" && a.status !== "upgrading";
             const hostLabel = a.hostname || a.name || a.id.slice(0, 8);
+            const mtls = _agentMtlsSummary({
+              mtls: a.mtls,
+              certificate_fingerprint: a.certificate_fingerprint,
+              certificate_expires_at: a.certificate_expires_at,
+              certificate_revoked_at: a.certificate_revoked_at,
+            });
+            const mtlsChip =
+              mtls.ok === true
+                ? `<span class="auto-job-status status-done" title="${escapeHtml(mtls.detail)}">cert</span>`
+                : mtls.ok === false
+                ? `<span class="auto-job-status status-error" title="${escapeHtml(mtls.detail)}">revoked</span>`
+                : `<span class="auto-job-status status-planned" title="${escapeHtml(mtls.detail)}">none</span>`;
             return `<tr class="agents-fleet-row" data-agent-id="${escapeHtml(a.id)}" style="cursor:pointer">
               <td><button type="button" class="btn-ghost agents-open-detail" data-id="${escapeHtml(a.id)}" style="padding:0;font-weight:600;text-align:left">${escapeHtml(hostLabel)}</button>${a.ip ? `<div class="hint">${escapeHtml(a.ip)}</div>` : ""}</td>
               <td>${statusChip(a.status)}</td>
+              <td>${mtlsChip}</td>
               <td class="hint">${escapeHtml(a.os || "—")} ${escapeHtml(a.os_version || "")}</td>
               <td>${(payload.listening_ports || []).length}</td>
               <td>${(payload.packages || []).length}</td>
@@ -6694,7 +6831,7 @@
                 <button type="button" class="btn-secondary agents-delete" data-id="${escapeHtml(a.id)}">Delete</button>
               </td>
             </tr>
-            <tr class="agents-telemetry-row hidden" data-telemetry-for="${escapeHtml(a.id)}"><td colspan="8">${telemetryDetail(payload)}</td></tr>`;
+            <tr class="agents-telemetry-row hidden" data-telemetry-for="${escapeHtml(a.id)}"><td colspan="9">${telemetryDetail(payload)}</td></tr>`;
           })
           .join("")}</tbody></table></div>
         ${
