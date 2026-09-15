@@ -33,7 +33,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/style.css?v=168" />
+  <link rel="stylesheet" href="/style.css?v=169" />
   <script src="/vendor/marked.min.js"></script>
 </head>
 <body>
@@ -386,6 +386,12 @@
               <em class="mc-trend" id="ccCompTrend"></em>
               <span class="sq-stat-sub" id="ccComplianceSub">not assessed</span>
             </button>
+            <button type="button" class="sq-stat sq-stat-live" data-workspace="compliance_center" title="Live operating-effectiveness from agent control PASS/FAIL — not blended into gap %">
+              <span class="sq-stat-label">Live controls</span>
+              <strong id="ccLivePercent">—</strong>
+              <em class="mc-trend" id="ccLiveTrend"></em>
+              <span class="sq-stat-sub" id="ccLiveSub">no results yet</span>
+            </button>
             <button type="button" class="sq-stat sq-stat-impact" data-workspace="impact" title="Canonical controls implemented across every framework they genuinely map to — real cross-framework impact, not a theoretical claim">
               <span class="sq-stat-label">Cross-framework impact</span>
               <strong id="ccImpactValue">—</strong>
@@ -404,6 +410,7 @@
               <span class="sq-stat-sub" id="ccFindingsHint">findings</span>
             </button>
           </div>
+          <p class="mc-prod-profile hint" id="mcProdProfileBanner" style="margin:0.5rem 0 0.75rem">Checking production profile…</p>
           <!-- Hidden legacy KPI targets kept for SSE / trend helpers -->
           <span id="ccAssets" class="hidden" hidden aria-hidden="true">0</span>
           <span id="sqHighCount" class="hidden" hidden aria-hidden="true">0</span>
@@ -413,6 +420,7 @@
           <span id="ccRisks" class="hidden" hidden aria-hidden="true">0</span>
           <span id="ccRems" class="hidden" hidden aria-hidden="true">0</span>
           <span id="ccComplianceBar" class="hidden" hidden aria-hidden="true" style="width:0"></span>
+          <span id="ccProdProfileHint" class="hidden" hidden aria-hidden="true"></span>
           <span id="ccAssetTrend" class="hidden" hidden aria-hidden="true"></span>
           <span id="ccFindingsTrend" class="hidden" hidden aria-hidden="true"></span>
           <span id="ccIncidentTrend" class="hidden" hidden aria-hidden="true"></span>
@@ -1713,6 +1721,7 @@
           <p class="hint" id="taxiiHint">Optional — poll from Threat Intel → STIX / TAXII</p>
           <div id="mfaAccountPanel">
             <p class="hint" id="mfaAccountHint">Sign in (Account) to manage two-factor authentication.</p>
+            <div id="mfaIdentityV1" class="hint" style="margin:0.5rem 0"></div>
             <button type="button" id="mfaEnrollBtn" class="btn-secondary hidden">Set up authenticator</button>
             <div id="mfaEnrollBlock" class="hidden">
               <p class="hint" id="mfaEnrollSecret">Add this secret to your authenticator app, then enter a code.</p>
@@ -2292,7 +2301,7 @@
     </div>
   </div>
 
-  <script src="/app.js?v=218"></script>
-  <script src="/workspace.js?v=211"></script>
+  <script src="/app.js?v=219"></script>
+  <script src="/workspace.js?v=212"></script>
 </body>
 </html>

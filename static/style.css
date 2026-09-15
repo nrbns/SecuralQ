@@ -9026,3 +9026,17 @@ a.agents-pkg-dl {
 @media (max-width: 900px) {
   .impact-summary-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+/* Phase A/B UI — production profile banner + live controls KPI */
+.mc-prod-profile {
+  padding: 0.55rem 0.75rem;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--border, #334) 80%, transparent);
+  background: color-mix(in srgb, var(--panel, #1a1f2e) 92%, transparent);
+}
+.mc-prod-profile.is-ready {
+  border-color: color-mix(in srgb, #2ecc71 45%, transparent);
+}
+.sq-stat-live strong {
+  letter-spacing: -0.02em;
+}

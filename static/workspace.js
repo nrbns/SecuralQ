@@ -5663,20 +5663,39 @@
     const el = qs("agentsLicenseBody");
     if (!el) return;
     try {
-      const res = await fetch("/api/licenses/validate", {
-        method: "POST",
-        headers: authHeaders({ "Content-Type": "application/json" }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+      const [valRes, comRes, prodRes] = await Promise.all([
+        fetch("/api/licenses/validate", {
+          method: "POST",
+          headers: authHeaders({ "Content-Type": "application/json" }),
+        }),
+        fetch("/api/licenses/commercial-status", { headers: authHeaders() }).catch(() => null),
+        fetch("/api/controls/production-profile", { headers: authHeaders() }).catch(() => null),
+      ]);
+      const data = await valRes.json().catch(() => ({}));
+      if (!valRes.ok) throw new Error(data.detail || `HTTP ${valRes.status}`);
+      const commercial =
+        comRes && comRes.ok ? await comRes.json().catch(() => ({})) : {};
+      const prod =
+        prodRes && prodRes.ok ? await prodRes.json().catch(() => ({})) : {};
+      const usage = (commercial.usage || {});
       const mode = data.mode || "none";
       const days = data.days_remaining != null ? Number(data.days_remaining) : null;
       const exp =
         data.expires_at != null
           ? new Date(Number(data.expires_at) * 1000).toLocaleDateString()
           : "—";
-      const agentsCur = data.agents_current != null ? data.agents_current : "—";
-      const maxA = data.max_agents == null ? "∞" : data.max_agents;
+      const agentsCur =
+        usage.agents_current != null
+          ? usage.agents_current
+          : data.agents_current != null
+          ? data.agents_current
+          : "—";
+      const maxA =
+        usage.max_agents != null
+          ? usage.max_agents
+          : data.max_agents == null
+          ? "∞"
+          : data.max_agents;
       const chip =
         mode === "active"
           ? "status-done"
@@ -5685,6 +5704,8 @@
           : mode === "restricted" || mode === "revoked" || mode === "critical"
           ? "status-error"
           : "status-planned";
+      const enroll = usage.enrollment || {};
+      const prodReady = !!prod.production_ready_agent_security;
       el.innerHTML = `
         <div class="cc-kpi-grid" style="margin:0">
           <article class="cc-kpi"><span>Plan</span><strong>${escapeHtml(data.plan_label || data.plan || "—")}</strong></article>
@@ -5692,9 +5713,62 @@
           <article class="cc-kpi"><span>Expires</span><strong>${escapeHtml(exp)}</strong></article>
           <article class="cc-kpi"><span>Days left</span><strong>${days == null ? "—" : escapeHtml(String(days))}</strong></article>
           <article class="cc-kpi"><span>Agents</span><strong>${escapeHtml(String(agentsCur))} / ${escapeHtml(String(maxA))}</strong></article>
+          <article class="cc-kpi"><span>Enrollment</span><strong>${
+            enroll.allowed === false
+              ? `<span class="auto-job-status status-error">blocked</span>`
+              : `<span class="auto-job-status status-done">allowed</span>`
+          }</strong><em class="hint">${escapeHtml(enroll.reason || "")}</em></article>
+          <article class="cc-kpi"><span>Agent security profile</span><strong>${
+            prodReady
+              ? `<span class="auto-job-status status-done">production</span>`
+              : `<span class="auto-job-status status-planned">lab</span>`
+          }</strong></article>
         </div>
         <p class="hint" style="margin:0.65rem 0 0">${escapeHtml(data.message || "")}</p>
-        <p class="hint" style="margin:0.35rem 0 0">Local activation cache is state only — server validation is authoritative. Private signing keys never leave the license service.</p>`;
+        <p class="hint" style="margin:0.35rem 0 0">${escapeHtml(
+          usage.disclaimer ||
+            "Local activation cache is state only — server validation is authoritative."
+        )}</p>
+        <div class="page-head-actions" style="display:flex;flex-wrap:wrap;gap:0.5rem;margin-top:0.75rem">
+          <button type="button" class="btn-secondary" id="agentsLicenseTrialBtn">Start 14-day trial</button>
+          <button type="button" class="btn-secondary" id="agentsLicenseRenewBtn">Renew signed license</button>
+        </div>
+        <p class="hint" id="agentsLicenseActionNote" style="margin:0.5rem 0 0"></p>`;
+      const note = qs("agentsLicenseActionNote");
+      qs("agentsLicenseTrialBtn")?.addEventListener("click", async () => {
+        if (!confirm("Issue a signed 14-day Pro trial for this workspace?")) return;
+        if (note) note.textContent = "Issuing trial…";
+        try {
+          const r = await fetch("/api/licenses/trial", {
+            method: "POST",
+            headers: authHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify({ plan: "pro", days: 14 }),
+          });
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+          if (typeof notifyUser === "function") notifyUser("**Trial license issued** — server entitlement is authoritative.");
+          renderAgentsLicensePanel();
+        } catch (err) {
+          if (note) note.textContent = err.message || "Trial failed";
+        }
+      });
+      qs("agentsLicenseRenewBtn")?.addEventListener("click", async () => {
+        if (!confirm("Renew by issuing a new signed license (supersedes the active one)?")) return;
+        if (note) note.textContent = "Renewing…";
+        try {
+          const r = await fetch("/api/licenses/renew", {
+            method: "POST",
+            headers: authHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify({ days: 365 }),
+          });
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+          if (typeof notifyUser === "function") notifyUser("**License renewed** — previous active entitlement superseded.");
+          renderAgentsLicensePanel();
+        } catch (err) {
+          if (note) note.textContent = err.message || "Renew failed";
+        }
+      });
     } catch (err) {
       el.innerHTML = `<p class="hint">Couldn't validate license. <span class="hint-sub">(${escapeHtml(err.message || String(err))})</span></p>`;
     }
@@ -10148,6 +10222,7 @@
           <li><span>Partial</span><strong>${continuous.partial || 0}</strong></li>
           <li><span>Failing</span><strong>${continuous.failing || 0}</strong></li>
         </ul>
+        <p class="hint" id="ccProdProfileNote" style="margin:0.35rem 0 0.65rem">Loading production profile…</p>
         ${
           liveFails.length
             ? `<div class="data-table-wrap"><table class="data-table"><thead><tr>
@@ -10348,6 +10423,19 @@
         btn?.getAttribute("data-rem")
       );
     });
+    (async () => {
+      const note = qs("ccProdProfileNote");
+      if (!note) return;
+      try {
+        const r = await fetch("/api/controls/production-profile", { headers: authHeaders() });
+        const p = r.ok ? await r.json() : {};
+        note.textContent = p.production_ready_agent_security
+          ? "Production agent-security flags enabled (mTLS + signed commands + replay)."
+          : "Lab profile: production agent-security flags are off by default — enable via env before commercial claims.";
+      } catch {
+        note.textContent = "";
+      }
+    })();
     qs("ccRunLiveTests")?.addEventListener("click", async () => {
       const btn = qs("ccRunLiveTests");
       if (btn) btn.disabled = true;
@@ -11842,13 +11930,15 @@
     // "Community" plan) that look identical to a genuinely empty/local
     // workspace. Track failure explicitly and say so instead.
     let loadFailed = false;
+    let licCommercial = {};
     try {
-      const [dRes, healthRes, platRes, usageRes, plansRes] = await Promise.all([
+      const [dRes, healthRes, platRes, usageRes, plansRes, licRes] = await Promise.all([
         fetch("/api/dashboard", { headers: authHeaders() }),
         fetch("/api/health").catch(() => null),
         fetch("/api/platform/status", { headers: authHeaders() }).catch(() => null),
         fetch("/api/billing/usage", { headers: authHeaders() }).catch(() => null),
         fetch("/api/billing/plans").catch(() => null),
+        fetch("/api/licenses/commercial-status", { headers: authHeaders() }).catch(() => null),
       ]);
       if (!dRes.ok) loadFailed = true;
       dash = await dRes.json().catch(() => ({}));
@@ -11858,9 +11948,14 @@
       usage = usageRes && usageRes.ok ? await usageRes.json().catch(() => ({})) : {};
       const plansData = plansRes && plansRes.ok ? await plansRes.json().catch(() => ({})) : {};
       plans = Object.entries(plansData.plans || {}).map(([id, p]) => ({ id, ...p }));
+      licCommercial = licRes && licRes.ok ? await licRes.json().catch(() => ({})) : {};
     } catch (err) {
       loadFailed = true;
     }
+    const licAct = licCommercial.activation || {};
+    const licUsage = licCommercial.usage || {};
+    const live = dash.live_compliance || {};
+    const prod = dash.production_profile || {};
     const limit = usage.messages_limit == null ? "unlimited" : usage.messages_limit;
     const planCards = plans.length
       ? plans
@@ -11888,7 +11983,40 @@
       }
       <div class="billing-grid">
         <section class="cc-panel">
-          <header><h2>Subscription</h2></header>
+          <header><h2>Signed license (authoritative)</h2></header>
+          <ul class="cc-list">
+            <li>Plan — <strong>${escapeHtml(licAct.plan || usage.plan || "none")}</strong></li>
+            <li>Status — <strong>${escapeHtml(licAct.status || licAct.mode || "none")}</strong></li>
+            <li>Agents — <strong>${escapeHtml(String(licUsage.agents_current ?? "—"))} / ${escapeHtml(
+              String(licUsage.max_agents == null ? "∞" : licUsage.max_agents)
+            )}</strong></li>
+            <li>Enrollment — <strong>${
+              (licUsage.enrollment || {}).allowed === false ? "blocked" : "allowed"
+            }</strong>
+              <span class="hint">${escapeHtml((licUsage.enrollment || {}).reason || "")}</span></li>
+            <li>Enforcement — <strong>${licUsage.enforcement_enabled ? "on" : "off (lab)"}</strong></li>
+          </ul>
+          <p class="hint" style="margin:0.5rem 0 0">${escapeHtml(
+            licUsage.disclaimer || "Server signed entitlement is license truth; local cache is state only."
+          )}</p>
+          <p class="hint"><button type="button" class="btn-secondary" data-workspace="agents">Manage on Agents →</button></p>
+        </section>
+        <section class="cc-panel">
+          <header><h2>Live posture</h2></header>
+          <ul class="cc-list">
+            <li>Live controls — <strong>${
+              live.live_percent != null ? `${escapeHtml(String(live.live_percent))}%` : "—"
+            }</strong>
+              <span class="hint">${escapeHtml(String(live.passing || 0))} pass / ${escapeHtml(
+                String(live.failing || 0)
+              )} fail</span></li>
+            <li>Agent security profile — <strong>${
+              prod.production_ready_agent_security ? "production-ready flags" : "lab defaults"
+            }</strong></li>
+          </ul>
+        </section>
+        <section class="cc-panel">
+          <header><h2>Subscription (messages)</h2></header>
           <p><strong>${escapeHtml(usage.plan_label || usage.plan || "Community")}</strong></p>
           <p class="hint">${usage.messages_used_this_month ?? 0} / ${escapeHtml(String(limit))} messages this month
             ${usage.enforcement_enabled ? "" : " (soft limit)"}</p>

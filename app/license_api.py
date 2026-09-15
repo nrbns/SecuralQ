@@ -81,6 +81,41 @@ async def licenses_current(
     return await licenses_entitlements(user, header_org=header_org, org_id=org_id)
 
 
+@router.get("/commercial-status")
+async def licenses_commercial_status(
+    user: Annotated[AuthUser, Depends(require_user)],
+    header_org: Annotated[str | None, Depends(optional_org_header)] = None,
+    org_id: str | None = None,
+):
+    """Phase B UI: activation + usage + validation (server is license truth)."""
+    from app import licensing
+
+    oid = _org_for(user, org_id or header_org)
+    return licensing.commercial_licensing_status(user.id, org_id=oid)
+
+
+class RenewLicenseRequest(BaseModel):
+    plan: str | None = None
+    org_id: str | None = None
+    days: int = Field(default=365, ge=1, le=1095)
+
+
+@router.post("/renew")
+async def licenses_renew(
+    req: RenewLicenseRequest,
+    user: Annotated[AuthUser, Depends(require_user)],
+    header_org: Annotated[str | None, Depends(optional_org_header)] = None,
+):
+    """Renew by issuing a new signed entitlement (supersedes prior active)."""
+    from app import licensing
+
+    oid = _org_for(user, req.org_id or header_org)
+    _require_license_admin(user, oid)
+    out = licensing.renew_subscription(user.id, org_id=oid, plan=req.plan, days=req.days)
+    audit("license_renew", user.id, {"org_id": oid, "plan": req.plan, "days": req.days})
+    return out
+
+
 @router.post("/validate")
 @router.get("/validate")
 async def licenses_validate(

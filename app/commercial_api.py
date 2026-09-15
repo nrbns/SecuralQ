@@ -156,6 +156,7 @@ def current_user(
 
 _MFA_ENFORCEMENT_EXEMPT_PATHS = {
     "/api/auth/status",
+    "/api/auth/identity-v1",
     "/api/auth/logout",
     "/api/auth/mfa/enroll",
     "/api/auth/mfa/confirm",
@@ -220,6 +221,14 @@ async def auth_status(user: Annotated[AuthUser | None, Depends(current_user)]):
             {"id": "local", "username": "local", "role": "admin"} if not settings.auth_enabled else None
         ),
     }
+
+
+@router.get("/auth/identity-v1")
+async def auth_identity_v1(user: Annotated[AuthUser, Depends(require_user)]):
+    """Phase B identity checklist for Account / Trust UI."""
+    from app import auth_commercial
+
+    return auth_commercial.identity_v1_status(user.id)
 
 
 @router.post("/auth/register")

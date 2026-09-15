@@ -1650,6 +1650,7 @@ async function refreshMfaAccountPanel(cached) {
   const enrollBtn = document.getElementById("mfaEnrollBtn");
   const disableBtn = document.getElementById("mfaDisableBtn");
   const enrollBlock = document.getElementById("mfaEnrollBlock");
+  const idBox = document.getElementById("mfaIdentityV1");
   if (!hint) return;
   try {
     const data = cached || (await fetch("/api/auth/status", { headers: authHeaders() }).then((r) => r.json()));
@@ -1658,6 +1659,7 @@ async function refreshMfaAccountPanel(cached) {
       enrollBtn?.classList.add("hidden");
       disableBtn?.classList.add("hidden");
       enrollBlock?.classList.add("hidden");
+      if (idBox) idBox.textContent = "Identity V1 requires auth.";
       return;
     }
     if (!data.user) {
@@ -1665,6 +1667,7 @@ async function refreshMfaAccountPanel(cached) {
       enrollBtn?.classList.add("hidden");
       disableBtn?.classList.add("hidden");
       enrollBlock?.classList.add("hidden");
+      if (idBox) idBox.textContent = "";
       return;
     }
     if (data.mfa?.enabled) {
@@ -1682,6 +1685,22 @@ async function refreshMfaAccountPanel(cached) {
       enrollBtn?.classList.remove("hidden");
       disableBtn?.classList.add("hidden");
       enrollBlock?.classList.add("hidden");
+    }
+    if (idBox) {
+      try {
+        const idRes = await fetch("/api/auth/identity-v1", { headers: authHeaders() });
+        const id = idRes.ok ? await idRes.json() : {};
+        const totp = id.totp_mfa || {};
+        const rbacN = (id.rbac && id.rbac.actions && id.rbac.actions.length) || 0;
+        idBox.innerHTML = `
+          <strong>Identity V1</strong> —
+          password ✓ ·
+          TOTP ${totp.enabled ? "on" : "off"}${totp.mandatory ? " (mandatory)" : ""} ·
+          RBAC ${rbacN} actions ·
+          <span class="hint">V2 deferred: ${(id.v2_deferred || []).join(", ") || "—"}</span>`;
+      } catch {
+        idBox.textContent = "";
+      }
     }
   } catch {
     /* ignore */
@@ -5157,6 +5176,38 @@ async function loadCommandCenter() {
         assessedPct == null
           ? "not assessed"
           : `${nAssessed}/${nTotal || "?"} assessed · evidence, not cert`;
+    }
+    const live = data.live_compliance || {};
+    const liveEl = document.getElementById("ccLivePercent");
+    const liveSub = document.getElementById("ccLiveSub");
+    if (liveEl) {
+      liveEl.textContent =
+        live.live_percent != null && live.live_percent !== ""
+          ? `${Math.round(Number(live.live_percent))}%`
+          : "—";
+    }
+    if (liveSub) {
+      const p = Number(live.passing || 0);
+      const f = Number(live.failing || 0);
+      liveSub.textContent =
+        live.live_percent == null
+          ? "no control results yet"
+          : `${p} pass · ${f} fail · not cert`;
+    }
+    const prod = data.production_profile || {};
+    const prodBanner = document.getElementById("mcProdProfileBanner");
+    if (prodBanner) {
+      const ready = !!prod.production_ready_agent_security;
+      const flags = prod.flags || {};
+      const on = Object.entries(flags)
+        .filter(([, v]) => v)
+        .map(([k]) => k.replace(/^agent_/, "").replace(/_/g, " "));
+      prodBanner.classList.toggle("is-ready", ready);
+      prodBanner.innerHTML = ready
+        ? `<strong>Production agent security</strong> — core flags enabled (${escapeHtml(on.slice(0, 4).join(", ") || "ready")}).`
+        : `<strong>Lab profile</strong> — mTLS / signed commands / replay protection off by default.
+           <button type="button" class="btn-secondary" data-workspace="agents" style="margin-left:0.5rem">Agents &amp; license</button>
+           <span class="hint">See GET /api/controls/production-profile</span>`;
     }
     const orgRisk = data.org_risk || {};
     const orgRiskEl = document.getElementById("ccOrgRisk");

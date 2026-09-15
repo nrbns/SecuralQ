@@ -1877,11 +1877,29 @@ def enterprise_dashboard(user_id: str) -> dict[str, Any]:
         except Exception:
             fix_first = []
 
+    live_compliance: dict[str, Any] = {}
+    try:
+        from app.controls.live_compliance import compute_live_compliance
+
+        live_compliance = compute_live_compliance(user_id)
+    except Exception:
+        live_compliance = {"ok": False, "live_percent": None}
+
+    production_profile: dict[str, Any] = {}
+    try:
+        from app.production_profile import production_profile_status
+
+        production_profile = production_profile_status()
+    except Exception:
+        production_profile = {"ok": False, "production_ready_agent_security": False}
+
     return {
         **gap,
         "is_empty": is_empty,
         "security_index": security_index,
         "compliance_posture": compliance_posture,
+        "live_compliance": live_compliance,
+        "production_profile": production_profile,
         "agents_fleet": agents_fleet,
         "org_risk": org_risk,
         "fix_first": fix_first,
