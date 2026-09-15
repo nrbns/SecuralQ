@@ -343,7 +343,7 @@ def _maybe_publish_org_risk(user_id: str, *, reason: str = "") -> None:
     previous: float | None = _last_org_risk_score.get(user_id)
     _last_org_risk_score[user_id] = new_score
     payload: dict[str, Any] = {
-        "type": "risk",
+        "type": "risk.changed",
         "event_type": "risk.changed",
         "user_id": user_id,
         "score": new_score,
@@ -356,6 +356,9 @@ def _maybe_publish_org_risk(user_id: str, *, reason: str = "") -> None:
         payload["previous_score"] = previous
         payload["score_delta"] = round(new_score - previous, 4)
     _safe_publish(**payload)
+    # Dual-write flat risk for older UI subscribers
+    flat = {**payload, "type": "risk", "event_type": "risk", "alias_of": "risk.changed"}
+    _safe_publish(**flat)
 
 
 def _terminal_kind(event: dict[str, Any]) -> str | None:
@@ -990,6 +993,119 @@ def _handle_control_failed(event: dict[str, Any]) -> None:
     except Exception:
         pass
     _maybe_publish_org_risk(user_id, reason=et or "control.failed")
+    try:
+        from app.controls.live_compliance import publish_live_compliance_update
+
+        publish_live_compliance_update(
+            user_id,
+            reason=et or "control.failed",
+            agent_id=agent_id,
+            asset_id=asset_id,
+            test=test_name,
+            status="fail",
+        )
+    except Exception:
+        pass
+
+
+def _handle_control_passed(event: dict[str, Any]) -> None:
+    """control.passed → evidence + org risk reduction + live compliance refresh."""
+    user_id = _resolve_user_id(event)
+    if not user_id:
+        return
+    et = str(event.get("event_type") or event.get("type") or "control.passed").strip()
+    test_name = str(event.get("test") or event.get("test_name") or "").strip()
+    control_id = str(event.get("control_id") or "").strip()
+    framework_id = str(event.get("framework_id") or "").strip()
+    agent_id = str(event.get("agent_id") or "").strip()
+    asset_id = str(event.get("asset_id") or "").strip()
+    entity_id = _entity_id(
+        event.get("id"),
+        f"{agent_id}:{test_name}" if agent_id and test_name else "",
+        f"{framework_id}:{control_id}" if framework_id and control_id else "",
+        test_name,
+        control_id,
+    )
+    title = _event_title(event, default=f"Control passed: {test_name or control_id or 'live test'}")
+    if entity_id:
+        evidence = _safe_record_evidence(
+            user_id,
+            entity_type="control_test",
+            entity_id=entity_id[:120],
+            source="observed" if test_name.startswith("host_") else "derived",
+            summary=title[:500],
+            detail={
+                "event_id": event.get("event_id"),
+                "test": test_name,
+                "control_id": control_id or None,
+                "framework_id": framework_id or None,
+                "status": "pass",
+                "agent_id": agent_id or None,
+                "asset_id": asset_id or None,
+                "event_type": et,
+            },
+            confidence=0.85,
+        )
+        _publish_evidence_hint(
+            user_id,
+            evidence=evidence,
+            entity_type="control_test",
+            entity_id=entity_id[:120],
+            summary=title,
+        )
+        try:
+            from app.controls.auto_evidence import record_control_result_evidence
+
+            record_control_result_evidence(
+                user_id,
+                control_id=control_id or test_name or entity_id,
+                result="pass",
+                framework_id=framework_id,
+                check_id=test_name,
+                event_id=str(event.get("event_id") or ""),
+                organization_id=str(event.get("org_id") or event.get("organization_id") or ""),
+                asset_id=asset_id,
+                agent_id=agent_id,
+                previous_evidence_id=str((evidence or {}).get("id") or ""),
+                summary=title[:500],
+            )
+        except Exception:
+            pass
+    try:
+        from app.realtime_bus import publish
+
+        publish(
+            type="risk",
+            event_type="risk",
+            user_id=user_id,
+            severity="info",
+            title=title[:200],
+            summary=str(event.get("summary") or title)[:400],
+            reason="control_passed",
+            risk_hint="reduction",
+            test=test_name or None,
+            control_id=control_id or None,
+            framework_id=framework_id or None,
+            agent_id=agent_id or None,
+            asset_id=asset_id or None,
+            _from_processor=True,
+        )
+    except Exception:
+        pass
+    _maybe_publish_org_risk(user_id, reason=et or "control.passed")
+    try:
+        from app.controls.live_compliance import publish_live_compliance_update
+
+        publish_live_compliance_update(
+            user_id,
+            reason=et or "control.passed",
+            agent_id=agent_id,
+            asset_id=asset_id,
+            test=test_name,
+            status="pass",
+        )
+    except Exception:
+        pass
 
 
 def process_event(event: dict[str, Any] | None) -> bool:
@@ -1073,6 +1189,7 @@ HANDLERS: dict[str, Handler] = {
     "configuration.drift_detected": _handle_configuration_drift,
     "configuration.changed": _handle_configuration_drift,
     "control.failed": _handle_control_failed,
+    "control.passed": _handle_control_passed,
 }
 
 
@@ -1586,3 +1703,9 @@ def reset_processor_for_tests() -> None:
     _processor_task = None
     _in_handler = False
     _last_org_risk_score.clear()
+    try:
+        from app.controls.live_compliance import clear_live_compliance_cache
+
+        clear_live_compliance_cache()
+    except Exception:
+        pass

@@ -1161,6 +1161,31 @@ def evaluate_agent_host_controls(
                 except Exception:
                     pass
 
+                # Live operating-effectiveness % (not gap pasted-evidence %)
+                if status in ("fail", "pass"):
+                    try:
+                        from app.controls.live_compliance import publish_live_compliance_update
+
+                        snap = publish_live_compliance_update(
+                            user_id,
+                            reason=f"host_control:{test_name}:{status}",
+                            agent_id=agent_id,
+                            asset_id=asset,
+                            test=test_name,
+                            status=status,
+                        )
+                        if snap:
+                            out["live_compliance"] = snap
+                            out["events"].append(
+                                {
+                                    "type": "compliance.live",
+                                    "live_percent": snap.get("live_percent"),
+                                    "test": test_name,
+                                }
+                            )
+                    except Exception:
+                        pass
+
                 # Dual-write dotted control.* for Control Center / event_processor
                 if status in ("fail", "pass"):
                     status_event = "control.failed" if status == "fail" else "control.passed"

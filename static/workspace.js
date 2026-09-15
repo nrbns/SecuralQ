@@ -10138,6 +10138,11 @@
         )}</p>
         <ul class="fw-hero-stats" style="margin:0.5rem 0">
           <li><span>Last evaluated</span><strong>${escapeHtml(liveEvalLabel)}</strong></li>
+          <li><span>Live effectiveness</span><strong>${
+            continuous.live_percent != null && continuous.live_percent !== ""
+              ? `${escapeHtml(String(continuous.live_percent))}%`
+              : "—"
+          }</strong></li>
           <li><span>Tests run</span><strong>${continuous.tests_run || 0}</strong></li>
           <li><span>Passing</span><strong>${continuous.passing || 0}</strong></li>
           <li><span>Partial</span><strong>${continuous.partial || 0}</strong></li>

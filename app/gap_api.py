@@ -215,6 +215,18 @@ async def compliance_overview_route(
     return compliance_overview(user.id, org_id=org_id)
 
 
+@router.get("/compliance/live-score")
+async def compliance_live_score(user: Annotated[AuthUser, Depends(require_user)]):
+    """Live operating-effectiveness % from control last-results (Phase A).
+
+    Not blended into gap-analysis ``compliance_percent``. Recalculates on every
+    control PASS/FAIL via the event bus — no manual editing.
+    """
+    from app.controls.live_compliance import compute_live_compliance
+
+    return compute_live_compliance(user.id)
+
+
 @router.get("/compliance/live-failures")
 async def compliance_live_failures(
     user: Annotated[AuthUser, Depends(require_user)],

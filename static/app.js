@@ -2925,6 +2925,9 @@ window.RealtimeManager = {
       compliance: () =>
         typeof window.renderComplianceCenterPage === "function" &&
         window.renderComplianceCenterPage({ quiet: true }),
+      compliance_center: () =>
+        typeof window.renderComplianceCenterPage === "function" &&
+        window.renderComplianceCenterPage({ quiet: true }),
       command: () => typeof loadCommandCenter === "function" && loadCommandCenter(),
       license: () => typeof window.renderAgentsLicensePanel === "function" && window.renderAgentsLicensePanel(),
     };
@@ -2947,7 +2950,12 @@ window.RealtimeManager = {
         this.invalidate(p, { pushType: t, push });
       } else if (view === p.replace("_center", "") || view === p) {
         this.invalidate(p, { pushType: t, push });
-      } else if (["control_center", "evidence", "risks", "remediations", "compliance", "license"].includes(p) && view === p) {
+      } else if (
+        ["control_center", "evidence", "risks", "remediations", "compliance", "compliance_center", "license"].includes(
+          p
+        ) &&
+        (view === p || (p === "compliance" && view === "compliance_center"))
+      ) {
         this.invalidate(p, { pushType: t, push });
       }
     });
@@ -2963,6 +2971,12 @@ window.RealtimeManager = {
       if (view === "agents") this.invalidate("agents");
       if (view === "agent_detail") this.invalidate("agent_detail");
       if (t === "license.updated" || t === "agent.update.available") this.invalidate("license");
+    }
+    // Golden loop: compliance/risk always refresh Mission Control stream KPIs
+    if (t.startsWith("compliance") || t.startsWith("control.") || t.startsWith("risk")) {
+      this.invalidate("command");
+      if (view === "compliance_center") this.invalidate("compliance_center");
+      if (view === "risks") this.invalidate("risks");
     }
   },
   reconnect() {
@@ -3546,9 +3560,17 @@ function describeRealtimeEvent(type, push) {
     "control.test.completed": `Control tested${test ? `: ${test}` : ""}`,
     "evidence.created": "Evidence recorded",
     evidence: "Evidence update",
-    "compliance.updated": "Compliance updated",
+    "compliance.updated": p.live_percent != null
+      ? `Live compliance ${p.live_percent}%${
+          p.percent_delta != null ? ` (${p.percent_delta > 0 ? "+" : ""}${p.percent_delta})` : ""
+        }`
+      : "Compliance updated",
     compliance: "Compliance signal",
-    "risk.changed": "Risk score changed",
+    "risk.changed": p.score != null
+      ? `Risk ${p.score}${
+          p.score_delta != null ? ` (${p.score_delta > 0 ? "+" : ""}${p.score_delta})` : ""
+        }`
+      : "Risk score changed",
     risk: "Risk update",
     "remediation.recommended": "Remediation recommended",
     "remediation.created": "Remediation created",
@@ -3600,9 +3622,13 @@ function realtimePanelsForType(type) {
   if (t.startsWith("control.") || t.startsWith("compliance") || t.startsWith("configuration")) {
     panels.add("control_center");
     panels.add("compliance");
+    panels.add("compliance_center");
   }
   if (t.startsWith("evidence")) panels.add("evidence");
-  if (t.startsWith("risk")) panels.add("risks");
+  if (t.startsWith("risk")) {
+    panels.add("risks");
+    panels.add("command");
+  }
   if (t.startsWith("remediation") || t.startsWith("command.") || t.startsWith("verification")) {
     panels.add("remediations");
     panels.add("agents_panel");

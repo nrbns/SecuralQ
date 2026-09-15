@@ -281,6 +281,11 @@ Packaging scaffolds may ship for **lab/owned hosts**; commercial “signed enter
 11. [x] Timeline UI for one agent (`GET /api/agents/{id}/timeline` + Agents detail Timeline tab, SSE refresh).
 12. [x] Production profile helper (`app/production_profile.py`, `GET /api/controls/production-profile`) — lab defaults remain off; enable flags for commercial.
 13. [x] Automatic evidence on control/remediation state change (Sprint 3 foundations).
+14. [x] Live compliance recalculation (`app/controls/live_compliance.py`, `continuous.live_percent`, `GET /api/compliance/live-score`).
+15. [x] Risk reduction on verified PASS (`control.passed` handler + `risk.changed` score_delta).
+16. [x] Compliance Center / Mission Control SSE invalidation for compliance + risk.
+
+See also [PHASE-A-GOLDEN-LOOP.md](./PHASE-A-GOLDEN-LOOP.md).
 
 ### P2 — After acceptance greens
 

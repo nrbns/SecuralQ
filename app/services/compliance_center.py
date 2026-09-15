@@ -191,29 +191,47 @@ def compliance_overview(user_id: str, *, org_id: str | None = None) -> dict[str,
         "passing": 0,
         "partial": 0,
         "failing": 0,
+        "live_percent": None,
         "not_tested_mapped_controls": 0,
         "live_failures": [],
         "disclaimer": (
-            "Live tests re-check curated controls from product telemetry whenever you open "
-            "this view or call Run live tests — separate from the pasted-evidence posture %."
+            "Live operating-effectiveness is recomputed from control last-results on every "
+            "PASS/FAIL (no manual score edit). Separate from pasted-evidence posture %."
         ),
     }
     try:
+        from app.controls.live_compliance import compute_live_compliance
         from app.services.control_testing import list_live_control_failures
+
+        stored = compute_live_compliance(user_id)
+        continuous["live_percent"] = stored.get("live_percent")
+        continuous["passing"] = stored.get("passing") or 0
+        continuous["failing"] = stored.get("failing") or 0
+        continuous["last_evaluated"] = stored.get("last_test")
+        continuous["frameworks_with_results"] = [
+            f.get("framework_id") for f in (stored.get("frameworks") or [])
+        ]
 
         live = list_live_control_failures(user_id, record_evidence=False, include_partial=True)
         continuous.update(
             {
-                "last_evaluated": live.get("evaluated_at"),
-                "tests_run": live.get("tests_run") or 0,
-                "passing": live.get("passing") or 0,
+                "tests_run": live.get("tests_run")
+                or (int(continuous.get("passing") or 0) + int(continuous.get("failing") or 0)),
                 "partial": live.get("partial") or 0,
-                "failing": live.get("failing") or 0,
-                "not_tested_mapped_controls": 0,
                 "live_failures": (live.get("failures") or [])[:10],
                 "frameworks_tested": live.get("frameworks_tested") or 0,
             }
         )
+        if continuous.get("last_evaluated") is None:
+            continuous["last_evaluated"] = live.get("evaluated_at")
+        if continuous.get("live_percent") is None:
+            # Fall back to on-demand curated re-check counts when no stored rows yet
+            p = int(live.get("passing") or 0)
+            f = int(live.get("failing") or 0)
+            if p + f:
+                continuous["live_percent"] = round(100.0 * p / (p + f), 1)
+                continuous["passing"] = p
+                continuous["failing"] = f
     except Exception:
         continuous["enabled"] = False
 
@@ -247,9 +265,11 @@ def compliance_overview(user_id: str, *, org_id: str | None = None) -> dict[str,
         "methodology": (
             "compliance_percent per framework is the pasted-evidence gap-analysis score "
             "(see app.gap_analysis.SCORING_METHODOLOGY, a keyword heuristic -- not an audit "
-            "or certification). Live control tests are a separate telemetry signal and are "
-            "not blended into this percentage. Only assessed frameworks count toward the "
-            "overall percentage; frameworks never assessed are listed with assessed=false "
+            "or certification). continuous.live_percent is operating-effectiveness from "
+            "securaiq_control_test_results (PASS/FAIL last-results) and recalculates on "
+            "every control event — never manually edited and never blended into "
+            "compliance_percent. Only assessed frameworks count toward the overall "
+            "gap percentage; frameworks never assessed are listed with assessed=false "
             "and excluded from it."
         ),
     }
