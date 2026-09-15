@@ -2815,15 +2815,16 @@ function stripLiveMarkers(text) {
 /**
  * RealtimeManager — single frontend realtime hub (extends existing EventSource path).
  * connect / subscribe / lastEventId / reconnect / replay / deduplicate / invalidate
+ * Always overwrite so cache-busted app.js picks up new methods (do not short-circuit with ||).
  */
-window.RealtimeManager = window.RealtimeManager || {
-  state: "offline", // connected | reconnecting | reconnected | failed | offline
-  lastEventId: "",
-  _hadOpen: false,
-  _failCount: 0,
-  _subs: Object.create(null), // type -> Set<fn>
-  _seenIds: Object.create(null),
-  _seenOrder: [],
+window.RealtimeManager = {
+  state: (window.RealtimeManager && window.RealtimeManager.state) || "offline",
+  lastEventId: (window.RealtimeManager && window.RealtimeManager.lastEventId) || "",
+  _hadOpen: !!(window.RealtimeManager && window.RealtimeManager._hadOpen),
+  _failCount: (window.RealtimeManager && window.RealtimeManager._failCount) || 0,
+  _subs: (window.RealtimeManager && window.RealtimeManager._subs) || Object.create(null),
+  _seenIds: (window.RealtimeManager && window.RealtimeManager._seenIds) || Object.create(null),
+  _seenOrder: (window.RealtimeManager && window.RealtimeManager._seenOrder) || [],
   _seenCap: 400,
   setConnState(state, phase, activity) {
     this.state = state;
@@ -3143,6 +3144,16 @@ function startRealtimeFeed(opts) {
         }
       } else if (!streaming) {
         setLiveState("live-on", "Live", "");
+      }
+      if (!window.__securaiqRtSeeded && typeof pushCcLiveEvent === "function") {
+        window.__securaiqRtSeeded = true;
+        pushCcLiveEvent({
+          when: new Date().toLocaleTimeString(),
+          label: "Realtime connected",
+          detail: "Listening for agent · control · evidence · command · license events",
+          type: "sse.connected",
+          sev: "",
+        });
       }
     };
     es.onmessage = (ev) => {
@@ -6600,8 +6611,23 @@ function pushCcLiveEvent(evt) {
 
 function paintCcLiveStream() {
   const el = document.getElementById("ccLiveStream");
-  if (!el) return;
   const events = window.__securaiqCcLiveEvents || [];
+  const tick = document.getElementById("tickerLastEvent");
+  if (tick) {
+    const top = events[0];
+    if (top && top.label) {
+      tick.textContent = top.label;
+      tick.title = [top.label, top.detail, top.type].filter(Boolean).join(" — ");
+    } else {
+      tick.textContent = "No events yet";
+      tick.title = "Last realtime event";
+    }
+  }
+  const pulse = document.getElementById("sqStreamPulse");
+  if (pulse && events.length) {
+    pulse.textContent = `SSE · ${new Date().toLocaleTimeString()}`;
+  }
+  if (!el) return;
   if (!events.length) {
     el.innerHTML = `<li class="hint">No recent events — scans, agents, remediations, and findings will appear here.</li>`;
     return;
@@ -7227,6 +7253,17 @@ function initWzDashboardChrome() {
   const root = document.getElementById("mcLiveDashboard") || document.getElementById("viewCommand");
   if (!root || root.dataset.wzChromeBound === "1") return;
   root.dataset.wzChromeBound = "1";
+  const goLiveStream = () => {
+    const view = document.getElementById("viewCommand");
+    if (view && typeof window.showWorkspace === "function") {
+      try {
+        window.showWorkspace("command");
+      } catch {
+        /* ignore */
+      }
+    }
+    document.getElementById("sqLiveStream")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
   root.querySelectorAll("[data-wz-tab]").forEach((tab) => {
     tab.addEventListener("click", () => {
       root.querySelectorAll("[data-wz-tab]").forEach((t) => {
@@ -7235,7 +7272,7 @@ function initWzDashboardChrome() {
       });
       const key = tab.getAttribute("data-wz-tab");
       if (key === "events") {
-        document.getElementById("sqLiveStream")?.scrollIntoView({ behavior: "smooth", block: "start" });
+        goLiveStream();
       } else if (key === "dashboard") {
         document.getElementById("ccKpis")?.scrollIntoView({ behavior: "smooth", block: "start" });
       }
@@ -7253,6 +7290,17 @@ function initWzDashboardChrome() {
         row.hidden = !(row.textContent || "").toLowerCase().includes(q);
       });
     });
+  }
+  const ticker = document.getElementById("liveTicker");
+  if (ticker && ticker.dataset.rtJumpBound !== "1") {
+    ticker.dataset.rtJumpBound = "1";
+    const jump = (ev) => {
+      if (ev.type === "keydown" && ev.key !== "Enter" && ev.key !== " ") return;
+      ev.preventDefault?.();
+      goLiveStream();
+    };
+    ticker.addEventListener("click", jump);
+    ticker.addEventListener("keydown", jump);
   }
 }
 window.initWzDashboardChrome = initWzDashboardChrome;

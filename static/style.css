@@ -4192,10 +4192,27 @@ button.integ-chip:hover {
   border-color: var(--accent-border);
 }
 
-/* Empty MC: hide live chrome */
+/* Empty MC: hide live chrome — but keep #sqLiveStream (moved outside dashboard) visible */
 #viewCommand.mc-is-empty .mc-live-dashboard,
 .mc-live-dashboard[hidden] {
   display: none !important;
+}
+#viewCommand .sq-live-stream.rt-always-on {
+  display: block;
+  margin: 0.75rem 0 1rem;
+  max-width: min(100%, 52rem);
+}
+#viewCommand.mc-is-empty .sq-live-stream.rt-always-on {
+  margin-left: auto;
+  margin-right: auto;
+  width: min(100%, 40rem);
+}
+.ticker-last-event {
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
 }
 #viewCommand.mc-is-empty .mc-context {
   width: min(100%, 40rem);

@@ -33,7 +33,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/style.css?v=165" />
+  <link rel="stylesheet" href="/style.css?v=166" />
   <script src="/vendor/marked.min.js"></script>
 </head>
 <body>
@@ -207,11 +207,12 @@
           <div id="searchResults" class="search-results hidden" role="listbox" aria-label="Search results"></div>
         </div>
         <div class="topbar-util" aria-label="Status and account">
-          <div class="live-ticker" id="liveTicker" data-state="live-off" title="Realtime control feed">
+          <div class="live-ticker" id="liveTicker" data-state="live-off" title="Realtime control feed — click to open live stream" role="button" tabindex="0">
             <span class="live-dot" aria-hidden="true"></span>
             <span class="ticker-state" id="tickerState">HOLD</span>
             <span class="ticker-chip" id="tickerFindings" title="Open findings">— vulns</span>
             <span class="ticker-chip" id="tickerJobs" title="Background jobs">0 jobs</span>
+            <span class="ticker-chip ticker-last-event" id="tickerLastEvent" title="Last realtime event">No events yet</span>
           </div>
           <div id="lanShareBar" class="lan-share-bar" hidden title="Share URL for phones on your LAN">
             <span class="lan-share-label" aria-hidden="true">LAN</span>
@@ -295,6 +296,36 @@
               <li data-step="report"><button type="button" class="mc-check-btn" data-workspace="reports"><span>6</span> Reports</button></li>
               <li data-step="integrations"><button type="button" class="mc-check-btn" data-workspace="integrations"><span>7</span> Connect tools</button></li>
             </ol>
+          </section>
+
+          <!-- Always visible (even when Mission Control is empty) so realtime changes are not hidden -->
+          <section class="sq-card sq-live-stream rt-always-on" id="sqLiveStream">
+            <header class="sq-card-head"><h3>Live security stream</h3>
+              <span class="hint" id="sqStreamPulse">SSE</span>
+            </header>
+            <p class="hint" id="sqStreamLegend" style="margin:0 0 0.5rem">
+              Realtime timeline: agent · control · evidence · compliance · risk · remediation · command · verification · license
+            </p>
+            <div class="rt-health" id="rtHealthPanel" aria-label="Realtime health">
+              <header class="rt-health-head">
+                <h4>Realtime health</h4>
+                <span class="hint" id="rtHealthMode">—</span>
+              </header>
+              <dl class="rt-health-grid">
+                <div><dt>Events/sec</dt><dd id="rtHealthEps">—</dd></div>
+                <div><dt>Pending</dt><dd id="rtHealthPending">—</dd></div>
+                <div><dt>DLQ</dt><dd id="rtHealthDlq">—</dd></div>
+                <div><dt>Lag</dt><dd id="rtHealthLag">—</dd></div>
+                <div><dt>SSE clients</dt><dd id="rtHealthSubs">—</dd></div>
+                <div><dt>Dropped dup</dt><dd id="rtHealthDup">—</dd></div>
+              </dl>
+              <div class="rt-health-actions page-head-actions">
+                <button type="button" class="btn-secondary" id="rtHealthDlqListBtn" title="Admin: list dead-lettered events">View DLQ</button>
+                <button type="button" class="btn-secondary" id="rtHealthDlqReplayBtn" title="Admin: requeue oldest DLQ entries">Replay DLQ</button>
+              </div>
+              <p class="hint rt-health-note" id="rtHealthNote">Lab in-process bus until REDIS_URL is set.</p>
+            </div>
+            <ul id="ccLiveStream" class="wz-events" aria-live="polite"><li class="hint">Waiting for events…</li></ul>
           </section>
 
           <div id="mcLiveDashboard" class="mc-live-dashboard sq-dashboard wz-skin" hidden>
@@ -439,34 +470,6 @@
                 <div class="sq-pbar"><span>Compliance</span><i style="width:0%" id="sqBarCompliance"></i><em id="sqBarComplianceVal">—</em></div>
               </div>
               <p class="hint" id="sqPostureNote" style="margin:0.5rem 0 0">Summary → ranked actions → evidence → verify.</p>
-            </section>
-            <section class="sq-card sq-live-stream" id="sqLiveStream">
-              <header class="sq-card-head"><h3>Live security stream</h3>
-                <span class="hint" id="sqStreamPulse">SSE</span>
-              </header>
-              <p class="hint" id="sqStreamLegend" style="margin:0 0 0.5rem">
-                Realtime timeline: agent · control · evidence · compliance · risk · remediation · command · verification · license
-              </p>
-              <div class="rt-health" id="rtHealthPanel" aria-label="Realtime health">
-                <header class="rt-health-head">
-                  <h4>Realtime health</h4>
-                  <span class="hint" id="rtHealthMode">—</span>
-                </header>
-                <dl class="rt-health-grid">
-                  <div><dt>Events/sec</dt><dd id="rtHealthEps">—</dd></div>
-                  <div><dt>Pending</dt><dd id="rtHealthPending">—</dd></div>
-                  <div><dt>DLQ</dt><dd id="rtHealthDlq">—</dd></div>
-                  <div><dt>Lag</dt><dd id="rtHealthLag">—</dd></div>
-                  <div><dt>SSE clients</dt><dd id="rtHealthSubs">—</dd></div>
-                  <div><dt>Dropped dup</dt><dd id="rtHealthDup">—</dd></div>
-                </dl>
-                <div class="rt-health-actions page-head-actions">
-                  <button type="button" class="btn-secondary" id="rtHealthDlqListBtn" title="Admin: list dead-lettered events">View DLQ</button>
-                  <button type="button" class="btn-secondary" id="rtHealthDlqReplayBtn" title="Admin: requeue oldest DLQ entries">Replay DLQ</button>
-                </div>
-                <p class="hint rt-health-note" id="rtHealthNote">Lab in-process bus until REDIS_URL is set.</p>
-              </div>
-              <ul id="ccLiveStream" class="wz-events" aria-live="polite"><li class="hint">Waiting for events…</li></ul>
             </section>
           </div>
 
@@ -2289,7 +2292,7 @@
     </div>
   </div>
 
-  <script src="/app.js?v=215"></script>
-  <script src="/workspace.js?v=206"></script>
+  <script src="/app.js?v=216"></script>
+  <script src="/workspace.js?v=207"></script>
 </body>
 </html>
