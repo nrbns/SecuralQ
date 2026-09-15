@@ -354,7 +354,14 @@ def issue_license(
         ),
     )
     c.commit()
-    return get_license(user_id, lid) or {}
+    lic = get_license(user_id, lid) or {}
+    _publish_license_updated(
+        user_id,
+        org_id=org_id,
+        action="issue",
+        payload={**lic, "license_id": lic.get("id"), "mode": "active"},
+    )
+    return lic
 
 
 def get_license(user_id: str, license_id: str) -> dict[str, Any] | None:
@@ -482,7 +489,7 @@ def validate_license(user_id: str, *, org_id: str | None = None) -> dict[str, An
     if not license_enforcement_enabled():
         valid = True
     cache = build_activation_cache_payload(ent, agents_current=agents, org_id=org_id)
-    return {
+    out = {
         "valid": valid,
         "validated_at": now(),
         "revalidate_after_sec": 86400,
@@ -492,6 +499,35 @@ def validate_license(user_id: str, *, org_id: str | None = None) -> dict[str, An
         "activation_cache": cache,
         "message": _validate_message(ent),
     }
+    _publish_license_updated(user_id, org_id=org_id, action="validate", payload=out)
+    return out
+
+
+def _publish_license_updated(
+    user_id: str,
+    *,
+    org_id: str | None = None,
+    action: str = "updated",
+    payload: dict[str, Any] | None = None,
+) -> None:
+    try:
+        from app.realtime_bus import publish
+
+        body = payload or {}
+        publish(
+            type="license.updated",
+            event_type="license.updated",
+            user_id=user_id,
+            org_id=org_id,
+            action=action,
+            mode=body.get("mode"),
+            plan=body.get("plan"),
+            license_id=body.get("license_id") or body.get("id"),
+            valid=body.get("valid"),
+            days_remaining=body.get("days_remaining"),
+        )
+    except Exception:
+        pass
 
 
 def _validate_message(ent: dict[str, Any]) -> str:
@@ -790,4 +826,12 @@ def revoke_license(user_id: str, license_id: str) -> dict[str, Any] | None:
     out = get_conn().execute(
         "SELECT * FROM securaiq_licenses WHERE id = ?", (license_id,)
     ).fetchone()
-    return _row_to_dict(out) if out else None
+    d = _row_to_dict(out) if out else None
+    if d:
+        _publish_license_updated(
+            user_id,
+            org_id=d.get("org_id"),
+            action="revoke",
+            payload={**d, "license_id": d.get("id"), "mode": "revoked", "valid": False},
+        )
+    return d

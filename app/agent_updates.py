@@ -105,7 +105,9 @@ def publish_script_release(
         ),
     )
     c.commit()
-    return get_latest_update(platform=platform) or {}
+    row = get_latest_update(platform=platform) or {}
+    _publish_agent_update_available(row)
+    return row
 
 
 def _package_dir():
@@ -167,7 +169,27 @@ def publish_package_release(
         ),
     )
     c.commit()
-    return get_latest_update(platform=plat) or {}
+    row = get_latest_update(platform=plat) or {}
+    _publish_agent_update_available(row)
+    return row
+
+
+def _publish_agent_update_available(row: dict[str, Any]) -> None:
+    try:
+        from app.realtime_bus import publish
+
+        publish(
+            type="agent.update.available",
+            event_type="agent.update.available",
+            version=row.get("version"),
+            platform=row.get("platform"),
+            download_url=row.get("download_url"),
+            sha256=row.get("sha256"),
+            id=row.get("id"),
+            notes=row.get("notes") or "",
+        )
+    except Exception:
+        pass
 
 
 def infer_artifact_kind(download_url: str) -> str:

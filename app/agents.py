@@ -765,11 +765,13 @@ def checkin(agent_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     )
     c.commit()
     try:
-        from app.realtime_bus import publish
+        from app.realtime_events import publish_aliased
 
-        publish(
-            type="agent",
+        publish_aliased(
+            "agent",
+            aliases=["agent.connected", "agent.online"],
             id=agent_id,
+            agent_id=agent_id,
             status="online",
             asset_id=asset_id,
             sequence=new_last_seq or None,
@@ -780,9 +782,12 @@ def checkin(agent_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         if seq_recovery.get("missing_from") is not None or (
             isinstance(seq_recovery.get("gap"), dict) and seq_recovery["gap"].get("detected")
         ):
+            from app.realtime_bus import publish
+
             publish(
                 type="agent",
                 id=agent_id,
+                agent_id=agent_id,
                 status="sequence_gap",
                 asset_id=asset_id,
                 user_id=agent.get("user_id"),
@@ -1700,9 +1705,9 @@ def _publish_agent_command(
     phase: str = "",
     **extra: Any,
 ) -> None:
-    """Publish agent_command with dual-written status + lifecycle."""
+    """Publish agent_command with dual-written status + lifecycle + dotted aliases."""
     try:
-        from app.realtime_bus import publish
+        from app.realtime_events import command_status_event_type, publish_aliased
 
         lifecycle = command_lifecycle(
             status,
@@ -1711,7 +1716,6 @@ def _publish_agent_command(
             phase=phase,
         )
         payload = {
-            "type": "agent_command",
             "agent_id": agent_id,
             "id": command_id,
             "status": status,
@@ -1720,7 +1724,17 @@ def _publish_agent_command(
         }
         if verification_status:
             payload["verification_status"] = verification_status
-        publish(**payload)
+        if error:
+            payload["error"] = error
+        dotted = command_status_event_type(status, verification_status="")
+        verify_evt = command_status_event_type(status, verification_status=verification_status)
+        aliases = []
+        if dotted:
+            aliases.append(dotted)
+        if verify_evt and verify_evt.startswith("verification.") and verify_evt not in aliases:
+            aliases.append(verify_evt)
+        # Always keep flat agent_command for existing panels.
+        publish_aliased("agent_command", aliases=aliases, **payload)
     except Exception:
         pass
 

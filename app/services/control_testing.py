@@ -1134,7 +1134,25 @@ def evaluate_agent_host_controls(
                         summary=result.get("summary") or "",
                         source="securaiq_agent",
                     )
+                    # Product timeline alias
+                    publish(
+                        type="compliance.updated",
+                        event_type="compliance.updated",
+                        status=status,
+                        test=test_name,
+                        control_ids=control_ids,
+                        control_id=primary[1] if primary else None,
+                        framework_id=primary[0] if primary else None,
+                        evidence_ids=evidence_ids,
+                        agent_id=agent_id,
+                        asset_id=asset,
+                        user_id=user_id,
+                        summary=result.get("summary") or "",
+                        source="securaiq_agent",
+                        alias_of="compliance",
+                    )
                     out["events"].append({"type": "compliance", "status": status, "test": test_name})
+                    out["events"].append({"type": "compliance.updated", "status": status, "test": test_name})
                 except Exception:
                     pass
 

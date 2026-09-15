@@ -267,9 +267,10 @@ Packaging scaffolds may ship for **lab/owned hosts**; commercial “signed enter
 
 1. Keep `scripts/realtime_acceptance_demo.py --local` green in CI (or documented nightly).
 2. Document runbook: Redis URL vs in-process; Sentinel compose profile; DLQ admin.
-3. Emit missing dotted aliases on existing publish sites (`control.passed`, `evidence.created`, command lifecycle) without breaking flat `type`.
-4. RealtimeManager: `subscribe` / `deduplicate` / `invalidate` for Agents + Controls + Evidence + Risk.
-5. Publish `license.updated` on issue/validate/revoke; `agent.update.available` on update publish.
+3. [x] Emit missing dotted aliases on existing publish sites (`control.passed`, `evidence.created`, command lifecycle, `agent.online`) without breaking flat `type` — `publish_aliased` in `app/realtime_events.py`.
+4. [x] RealtimeManager: `subscribe` / `deduplicate` / `invalidate` for Agents + Controls + Evidence + Risk (`static/app.js`).
+5. [x] Publish `license.updated` on issue/validate/revoke; `agent.update.available` on update publish.
+6. [x] Live security stream shows human labels + event type badges for the full closed-loop vocabulary.
 
 ### P1 — Make the chain complete product-wise
 

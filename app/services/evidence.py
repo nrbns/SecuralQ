@@ -216,7 +216,27 @@ def record_evidence(
         ),
     )
     c.commit()
-    return get_evidence(user_id, eid)
+    row = get_evidence(user_id, eid)
+    try:
+        from app.realtime_events import publish_aliased
+
+        publish_aliased(
+            "evidence",
+            aliases=["evidence.created"],
+            id=eid,
+            evidence_id=eid,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            source=source,
+            summary=(summary or "")[:200],
+            user_id=user_id,
+            org_id=oid,
+            agent_id=(detail or {}).get("agent_id") if isinstance(detail, dict) else None,
+            asset_id=(detail or {}).get("asset_id") if isinstance(detail, dict) else None,
+        )
+    except Exception:
+        pass
+    return row
 
 
 def confirm_evidence(user_id: str, evidence_id: str, *, confirmed_by: str) -> dict[str, Any] | None:

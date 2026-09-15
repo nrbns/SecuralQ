@@ -2813,15 +2813,18 @@ function stripLiveMarkers(text) {
 }
 
 /**
- * RealtimeManager — light connection-state + Last-Event-ID tracker.
- * Native EventSource auto-reconnect to the same URL sends Last-Event-ID.
- * Query ``last_event_id`` is only for manual reopen / future polyfills.
+ * RealtimeManager — single frontend realtime hub (extends existing EventSource path).
+ * connect / subscribe / lastEventId / reconnect / replay / deduplicate / invalidate
  */
 window.RealtimeManager = window.RealtimeManager || {
   state: "offline", // connected | reconnecting | reconnected | failed | offline
   lastEventId: "",
   _hadOpen: false,
   _failCount: 0,
+  _subs: Object.create(null), // type -> Set<fn>
+  _seenIds: Object.create(null),
+  _seenOrder: [],
+  _seenCap: 400,
   setConnState(state, phase, activity) {
     this.state = state;
     window.__securaiqRtConnState = state;
@@ -2838,14 +2841,141 @@ window.RealtimeManager = window.RealtimeManager || {
     const eid = String(id || "").trim();
     if (eid) this.lastEventId = eid;
   },
+  lastEventIdFn() {
+    return this.lastEventId || "";
+  },
+  subscribe(type, fn) {
+    const key = String(type || "*").trim() || "*";
+    if (typeof fn !== "function") return () => {};
+    if (!this._subs[key]) this._subs[key] = new Set();
+    this._subs[key].add(fn);
+    return () => {
+      try {
+        this._subs[key] && this._subs[key].delete(fn);
+      } catch {
+        /* ignore */
+      }
+    };
+  },
+  /** @returns {boolean} true if this event_id is new (should apply) */
+  deduplicate(eventId) {
+    const eid = String(eventId || "").trim();
+    if (!eid) return true;
+    if (this._seenIds[eid]) return false;
+    this._seenIds[eid] = 1;
+    this._seenOrder.push(eid);
+    while (this._seenOrder.length > this._seenCap) {
+      const old = this._seenOrder.shift();
+      if (old) delete this._seenIds[old];
+    }
+    return true;
+  },
   route(detail) {
-    // Hook for lightweight subscribers; primary path remains securaiq:realtime.
     try {
       window.dispatchEvent(new CustomEvent("securaiq:realtime:routed", { detail: detail || {} }));
     } catch {
       /* ignore */
     }
+    const push = (detail && detail.push) || null;
+    const pushType = (detail && detail.pushType) || (push && push.type) || "";
+    if (push && push.event_id && !this.deduplicate(push.event_id)) {
+      return;
+    }
+    this._emit(pushType, push, detail);
+    this._emit("*", push, detail);
+    if (pushType && typeof describeRealtimeEvent === "function") {
+      const push = (detail && detail.push) || {};
+      // Alias dual-writes (agent.online beside agent) — skip duplicates in the stream UI
+      if (push.alias_of) {
+        /* still invalidate panels below */
+      } else {
+        const described = describeRealtimeEvent(pushType, push);
+        if (described && typeof pushCcLiveEvent === "function") {
+          pushCcLiveEvent(described);
+        }
+      }
+    }
+    this.invalidateForType(pushType, push);
   },
+  _emit(type, push, detail) {
+    const set = this._subs[type];
+    if (!set || !set.size) return;
+    set.forEach((fn) => {
+      try {
+        fn({ type, push, detail });
+      } catch {
+        /* ignore */
+      }
+    });
+  },
+  invalidate(panel, opts) {
+    const runners = {
+      agents: () => typeof window.renderAgentsPage === "function" && window.renderAgentsPage({ quiet: true, ...(opts || {}) }),
+      agents_panel: () => typeof window.renderAgentsPanel === "function" && window.renderAgentsPanel(),
+      agent_detail: () =>
+        window.__securaiqSelectedAgentId &&
+        typeof window.renderAgentDetailPage === "function" &&
+        window.renderAgentDetailPage(window.__securaiqSelectedAgentId, { quiet: true, ...(opts || {}) }),
+      control_center: () =>
+        typeof window.renderControlCenterPage === "function" && window.renderControlCenterPage({ quiet: true }),
+      evidence: () => typeof window.renderEvidencePage === "function" && window.renderEvidencePage({ quiet: true }),
+      risks: () => typeof window.renderRisksPage === "function" && window.renderRisksPage({ quiet: true }),
+      remediations: () => typeof window.renderRemsPage === "function" && window.renderRemsPage({ quiet: true }),
+      compliance: () =>
+        typeof window.renderComplianceCenterPage === "function" &&
+        window.renderComplianceCenterPage({ quiet: true }),
+      command: () => typeof loadCommandCenter === "function" && loadCommandCenter(),
+      license: () => typeof window.renderAgentsLicensePanel === "function" && window.renderAgentsLicensePanel(),
+    };
+    const fn = runners[panel];
+    if (fn) {
+      try {
+        fn();
+      } catch {
+        /* ignore */
+      }
+    }
+  },
+  invalidateForType(pushType, push) {
+    const t = String(pushType || "");
+    const view = window.__securaiqWorkspaceView || "";
+    const panels = realtimePanelsForType(t);
+    panels.forEach((p) => {
+      // Always refresh live stream panels; view-specific only when visible or always-safe.
+      if (p === "command" || p === "agents_panel" || view === p || (p === "agents" && view === "agents")) {
+        this.invalidate(p, { pushType: t, push });
+      } else if (view === p.replace("_center", "") || view === p) {
+        this.invalidate(p, { pushType: t, push });
+      } else if (["control_center", "evidence", "risks", "remediations", "compliance", "license"].includes(p) && view === p) {
+        this.invalidate(p, { pushType: t, push });
+      }
+    });
+    // Agents panel is safe to refresh whenever command/agent events arrive
+    if (
+      t.startsWith("agent") ||
+      t.startsWith("command.") ||
+      t === "agent_command" ||
+      t === "license.updated" ||
+      t === "agent.update.available"
+    ) {
+      this.invalidate("agents_panel");
+      if (view === "agents") this.invalidate("agents");
+      if (view === "agent_detail") this.invalidate("agent_detail");
+      if (t === "license.updated" || t === "agent.update.available") this.invalidate("license");
+    }
+  },
+  reconnect() {
+    if (typeof ensureRealtimeFeed === "function") {
+      ensureRealtimeFeed({ force: true, lastEventId: this.lastEventId });
+    }
+  },
+  replay() {
+    this.reconnect();
+  },
+};
+// Back-compat alias used by older snippets
+window.RealtimeManager.lastEventIdFn = function () {
+  return this.lastEventId || "";
 };
 
 function _rtHealthDash(v) {
@@ -3146,67 +3276,27 @@ function startRealtimeFeed(opts) {
             const host = push.hostname || push.agent_id || "agent";
             notifyUser(`**SecuraIQ Sentinel · ${sev.toUpperCase()}** — ${push.title || "Suspicious activity"} on \`${host}\``);
           }
-          if (typeof pushCcLiveEvent === "function") {
-            pushCcLiveEvent({
-              when: new Date().toLocaleTimeString(),
-              label: push.title || "Agent threat",
-              detail: `${push.hostname || push.agent_id || "agent"} · ${sev}`,
-              sev: sev === "critical" || sev === "high" ? sev : "",
-            });
-          }
         }
-        if (
-          pushType &&
-          typeof pushCcLiveEvent === "function" &&
-          ["scan", "job", "inventory", "software_inventory", "intel", "combo", "remediation", "agent", "agent_command"].includes(pushType)
-        ) {
-          const label =
-            pushType === "scan"
-              ? `Scan ${(push && push.status) || "update"}`
-              : pushType === "job"
-                ? `Job ${(push && (push.kind || push.status)) || "update"}`
-                : pushType.replace(/_/g, " ");
-          pushCcLiveEvent({
-            when: new Date().toLocaleTimeString(),
-            label,
-            detail: (push && (push.target || push.message || push.id || push.status || "")) || "",
-            sev: pushType === "scan" && /fail|error/i.test(String((push && push.status) || "")) ? "high" : "",
-          });
-        }
+        // Live stream + panel invalidation: RealtimeManager.route → describeRealtimeEvent
+        // (covers control.*, command.*, evidence.*, license.*, etc.)
         // Process coalesced sibling events so agent/command bursts aren't dropped.
         also.forEach((sibling) => {
           if (!sibling || typeof sibling !== "object") return;
           const st = String(sibling.type || "");
-          // Same-type scan siblings are skipped by the alsoPushes replay loop below
-          // (subType === pushType). Still advance live step UI so the newest
-          // phase/step/pct in the burst is not lost.
           if (st === "scan") {
             if (typeof pulseVaScanFromPush === "function") pulseVaScanFromPush(sibling);
             if (typeof pulseActiveScanFromPush === "function") pulseActiveScanFromPush(sibling);
           }
-          if (
-            typeof pushCcLiveEvent === "function" &&
-            ["scan", "job", "inventory", "software_inventory", "intel", "combo", "remediation", "agent", "agent_command"].includes(st)
-          ) {
-            pushCcLiveEvent({
-              when: new Date().toLocaleTimeString(),
-              label: st === "scan"
-                ? `Scan ${(sibling && sibling.status) || "update"}`
-                : st.replace(/_/g, " "),
-              detail: String(sibling.target || sibling.message || sibling.id || sibling.status || sibling.phase || sibling.step || ""),
-              sev: st === "scan" && /fail|error/i.test(String((sibling && sibling.status) || "")) ? "high" : "",
-            });
-          }
           if (st === "agent_command" && (sibling.status === "done" || sibling.status === "error" || sibling.verification_status)) {
             if (typeof notifyUser === "function") {
               if (sibling.verification_status === "verified") {
-                notifyUser(`**Patch verified** — command \`${String(sibling.id || "").slice(0, 8)}\` confirmed after inventory refresh.`);
+                notifyUser(`**Verified** — command \`${String(sibling.id || "").slice(0, 8)}\` confirmed after check-in.`);
               } else if (sibling.verification_status === "verification_failed") {
-                notifyUser(`**Patch not confirmed** — command \`${String(sibling.id || "").slice(0, 8)}\` still shows the issue.`);
+                notifyUser(`**Not confirmed** — command \`${String(sibling.id || "").slice(0, 8)}\` still shows the issue.`);
               } else if (sibling.status === "done") {
-                notifyUser(`**Patch applied** — agent finished command \`${String(sibling.id || "").slice(0, 8)}\`. Re-verifying…`);
+                notifyUser(`**Command done** — agent finished \`${String(sibling.id || "").slice(0, 8)}\`. Re-verifying…`);
               } else if (sibling.status === "error") {
-                notifyUser(`**Patch failed** — command \`${String(sibling.id || "").slice(0, 8)}\` reported an error.`);
+                notifyUser(`**Command failed** — \`${String(sibling.id || "").slice(0, 8)}\` reported an error.`);
               }
             }
             if (typeof renderAgentsPanel === "function") renderAgentsPanel();
@@ -3261,18 +3351,16 @@ function startRealtimeFeed(opts) {
           const subType = sub && sub.type ? String(sub.type) : "";
           if (!subType || subType === pushType) continue;
           const subData = { ...data, push: sub };
-          window.dispatchEvent(
-            new CustomEvent("securaiq:realtime", {
-              detail: {
-                ...subData,
-                jobsChanged,
-                kpisChanged,
-                pushRefresh: true,
-                pushType: subType,
-                heartbeat: false,
-              },
-            })
-          );
+          const subDetail = {
+            ...subData,
+            jobsChanged,
+            kpisChanged,
+            pushRefresh: true,
+            pushType: subType,
+            heartbeat: false,
+          };
+          window.dispatchEvent(new CustomEvent("securaiq:realtime", { detail: subDetail }));
+          if (rt && typeof rt.route === "function") rt.route(subDetail);
           applyRealtimeWorkspaceRefresh(subData, {
             jobsChanged,
             kpisChanged,
@@ -3346,6 +3434,9 @@ const REALTIME_LIVE_TYPES = new Set([
   "software_inventory",
   "software.inventory.updated",
   "software.vulnerability.changed",
+  "software.installed",
+  "software.removed",
+  "software.updated",
   "scan_clear",
   "archive",
   "archive_delete",
@@ -3357,32 +3448,146 @@ const REALTIME_LIVE_TYPES = new Set([
   "xdr_batch",
   "siem",
   "agent",
+  "agent.connected",
+  "agent.disconnected",
+  "agent.online",
+  "agent.offline",
+  "agent.health_changed",
+  "agent.update.available",
   "agent_threat",
   "cloud",
   "thehive",
   "incident",
+  "incident.created",
   "remediation",
+  "remediation.recommended",
+  "remediation.created",
+  "remediation.completed",
   "risk",
+  "risk.changed",
   "playbook",
   "campaign",
   "gap",
   "hardening",
   "notification",
   "hunt",
-  // Task F aliases / domain coverage (backend may emit related type strings)
   "evidence",
+  "evidence.created",
   "compliance",
+  "compliance.updated",
+  "compliance.control_failed",
+  "compliance.control_passed",
   "configuration",
   "configuration.drift_detected",
   "control.failed",
   "control.passed",
   "control.test.completed",
-  "remediation.recommended",
-  "risk.changed",
-  "threat",
+  "command.pending",
+  "command.approved",
+  "command.sent",
+  "command.ack",
+  "command.completed",
   "verification",
+  "verification.pass",
+  "verification.fail",
+  "verification.completed",
+  "license.updated",
+  "threat",
 ]);
 window.REALTIME_LIVE_TYPES = REALTIME_LIVE_TYPES;
+
+/** Human-readable label + detail for Live security stream (operators understand every change). */
+function describeRealtimeEvent(type, push) {
+  const p = push || {};
+  const t = String(type || p.type || "").trim();
+  if (!t || t === "unknown") return null;
+  const when = new Date().toLocaleTimeString();
+  const aid = String(p.agent_id || p.id || "").slice(0, 8);
+  const test = p.test || p.test_name || "";
+  const status = p.status || p.lifecycle || "";
+  const summary = String(p.summary || p.message || p.title || p.notes || "").slice(0, 120);
+  const labels = {
+    "agent.online": "Agent online",
+    "agent.connected": "Agent connected",
+    "agent.offline": "Agent offline",
+    "agent.disconnected": "Agent disconnected",
+    "agent.update.available": "Agent update available",
+    agent: p.status === "online" ? "Agent online" : "Agent update",
+    agent_command: `Command ${status || "update"}`,
+    "command.pending": "Command pending approval",
+    "command.approved": "Command approved",
+    "command.sent": "Command sent to agent",
+    "command.ack": "Agent acknowledged command",
+    "command.completed": status === "error" ? "Command failed" : "Command completed",
+    "control.failed": `Control FAIL${test ? `: ${test}` : ""}`,
+    "control.passed": `Control PASS${test ? `: ${test}` : ""}`,
+    "control.test.completed": `Control tested${test ? `: ${test}` : ""}`,
+    "evidence.created": "Evidence recorded",
+    evidence: "Evidence update",
+    "compliance.updated": "Compliance updated",
+    compliance: "Compliance signal",
+    "risk.changed": "Risk score changed",
+    risk: "Risk update",
+    "remediation.recommended": "Remediation recommended",
+    "remediation.created": "Remediation created",
+    remediation: "Remediation update",
+    "verification.pass": "Verification PASS",
+    "verification.fail": "Verification FAIL",
+    "license.updated": "License updated",
+    "software.installed": "Software installed",
+    "software.removed": "Software removed",
+    "software.updated": "Software updated",
+    inventory: "Inventory update",
+    asset: "Asset update",
+    vuln: "Vulnerability update",
+    scan: `Scan ${status || "update"}`,
+    job: `Job ${p.kind || status || "update"}`,
+  };
+  let label = labels[t] || t.replace(/[._]/g, " ");
+  let detail =
+    summary ||
+    [aid && `agent ${aid}`, p.asset_id && `asset ${String(p.asset_id).slice(0, 8)}`, p.plan, p.mode, p.version, p.kind]
+      .filter(Boolean)
+      .join(" · ");
+  let sev = "";
+  if (t.includes("fail") || status === "error" || status === "fail" || p.severity === "critical") sev = "high";
+  else if (t.includes("pass") || status === "done" || status === "pass") sev = "";
+  else if (p.severity === "high") sev = "high";
+  else if (p.severity === "medium") sev = "medium";
+  if (t === "agent_threat") {
+    label = p.title || "Agent threat";
+    detail = `${p.hostname || aid || "agent"} · ${p.severity || "medium"}`;
+    sev = p.severity === "critical" || p.severity === "high" ? p.severity : sev;
+  }
+  return { when, label, detail, sev, type: t, event_id: p.event_id || "" };
+}
+window.describeRealtimeEvent = describeRealtimeEvent;
+
+function realtimePanelsForType(type) {
+  const t = String(type || "");
+  const panels = new Set(["command"]);
+  if (t.startsWith("agent") || t.startsWith("command.") || t === "agent_command" || t === "agent.update.available") {
+    panels.add("agents");
+    panels.add("agents_panel");
+    panels.add("agent_detail");
+  }
+  if (t.startsWith("control.") || t.startsWith("compliance") || t.startsWith("configuration")) {
+    panels.add("control_center");
+    panels.add("compliance");
+  }
+  if (t.startsWith("evidence")) panels.add("evidence");
+  if (t.startsWith("risk")) panels.add("risks");
+  if (t.startsWith("remediation") || t.startsWith("command.") || t.startsWith("verification")) {
+    panels.add("remediations");
+    panels.add("agents_panel");
+  }
+  if (t === "license.updated" || t === "agent.update.available") panels.add("license");
+  if (t.startsWith("software") || t === "inventory" || t === "vuln" || t === "vuln_batch") {
+    panels.add("command");
+  }
+  return [...panels];
+}
+window.realtimePanelsForType = realtimePanelsForType;
 
 function applyRealtimeWorkspaceRefresh(data, flags) {
   const view =
@@ -6405,9 +6610,13 @@ function paintCcLiveStream() {
     .slice(0, 14)
     .map((e) => {
       const when = e.when || "—";
+      const typeBadge = e.type
+        ? `<code class="wz-event-type" title="${escapeHtml(e.type)}">${escapeHtml(e.type)}</code>`
+        : "";
       return `<li class="wz-event-row${e.sev ? ` sev-${escapeHtml(e.sev)}` : ""}">
         <span class="wz-event-time">${escapeHtml(when)}</span>
         <span class="wz-event-body"><strong>${escapeHtml(e.label || "")}</strong>
+        ${typeBadge}
         <span class="hint">${escapeHtml(e.detail || "")}</span></span></li>`;
     })
     .join("");

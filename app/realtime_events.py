@@ -279,9 +279,63 @@ def publish_job_completion(
         publish(type="notification", title="Executive report ready", **base)
 
 
+# Status / lifecycle → dotted command.* / verification.* (UI + timeline).
+_COMMAND_STATUS_TO_DOTTED: dict[str, str] = {
+    "pending_approval": "command.pending",
+    "queued": "command.approved",
+    "sent": "command.sent",
+    "acked": "command.ack",
+    "done": "command.completed",
+    "error": "command.completed",  # still completed lifecycle; UI reads status
+    "rejected": "command.completed",
+    "timeout": "command.completed",
+}
+
+
+def command_status_event_type(status: str, *, verification_status: str = "") -> str | None:
+    """Dotted product event for a command status transition."""
+    vs = (verification_status or "").strip().lower()
+    if vs in ("verified", "pass", "passed"):
+        return "verification.pass"
+    if vs in ("verification_failed", "fail", "failed"):
+        return "verification.fail"
+    return _COMMAND_STATUS_TO_DOTTED.get((status or "").strip().lower())
+
+
+def publish_aliased(
+    primary_type: str,
+    *,
+    aliases: list[str] | None = None,
+    **fields: Any,
+) -> None:
+    """Publish primary event, then thin alias events (same ids / agent) for UI/subscribers.
+
+    Primary keeps backward-compatible flat types (``agent``, ``agent_command``).
+    Aliases are dotted product events (``agent.online``, ``command.pending``).
+    """
+    from app.realtime_bus import publish
+
+    primary = (primary_type or "").strip()
+    if not primary:
+        return
+    publish(type=primary, event_type=primary, **fields)
+    seen = {primary}
+    for alias in aliases or []:
+        a = (alias or "").strip()
+        if not a or a in seen:
+            continue
+        seen.add(a)
+        try:
+            publish(type=a, event_type=a, alias_of=primary, **fields)
+        except Exception:
+            pass
+
+
 __all__ = [
     "build_event",
+    "command_status_event_type",
     "normalize_event",
+    "publish_aliased",
     "publish_job_completion",
     "validate_event",
 ]
