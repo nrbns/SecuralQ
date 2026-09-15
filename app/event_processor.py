@@ -918,6 +918,24 @@ def _handle_control_failed(event: dict[str, Any]) -> None:
             entity_id=entity_id[:120],
             summary=title,
         )
+        try:
+            from app.controls.auto_evidence import record_control_result_evidence
+
+            record_control_result_evidence(
+                user_id,
+                control_id=control_id or test_name or entity_id,
+                result="fail",
+                framework_id=framework_id,
+                check_id=test_name,
+                event_id=str(event.get("event_id") or ""),
+                organization_id=str(event.get("org_id") or event.get("organization_id") or ""),
+                asset_id=asset_id,
+                agent_id=agent_id,
+                previous_evidence_id=str((evidence or {}).get("id") or ""),
+                summary=title[:500],
+            )
+        except Exception:
+            pass
     try:
         from app.realtime_bus import publish
 

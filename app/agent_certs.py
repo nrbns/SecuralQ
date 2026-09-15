@@ -3,7 +3,7 @@
 Lab/default: bearer+HMAC remains authoritative. When AGENT_MTLS_ENABLED=true,
 enrollment can issue a short-lived self-signed client cert stored on the agent
 row. Full reverse-proxy mTLS termination is an ops deployment step (nginx/Caddy
-client auth) — this module provides identity material + schema only.
+client auth) — this module provides identity material + issue/renew/rotate/revoke.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ import hashlib
 from typing import Any
 
 from app.config import settings
-from app.db import get_conn, now
+from app.db import get_conn, new_id, now
 
 
 def mtls_enabled() -> bool:
@@ -42,13 +42,15 @@ def verify_proxy_client_cert(
     ok_values = {"SUCCESS", "TRUE", "1", "OK", "YES"}
     if verify not in ok_values:
         return "Client certificate required (proxy mTLS verify failed)"
+    got = (client_fingerprint or "").strip().lower().replace(":", "")
+    if got and is_fingerprint_revoked(got):
+        return "Client certificate revoked"
     if not getattr(settings, "agent_mtls_require_fingerprint_match", False):
         return None
     expected = (agent.get("certificate_fingerprint") or "").strip().lower().replace(":", "")
     if not expected:
         # Enrolled without cert — allow during rollout unless fingerprint required globally
         return None
-    got = (client_fingerprint or "").strip().lower().replace(":", "")
     if not got or got != expected:
         return "Client certificate fingerprint mismatch"
     return None
@@ -65,6 +67,8 @@ def ensure_cert_columns() -> None:
         "certificate_expires_at": "REAL",
         "certificate_issued_at": "REAL",
         "certificate_public_key_pem": "TEXT NOT NULL DEFAULT ''",
+        "certificate_revoked_at": "REAL",
+        "certificate_serial": "TEXT NOT NULL DEFAULT ''",
     }
     for name, typedef in additions.items():
         if cols and name not in cols:
@@ -72,6 +76,60 @@ def ensure_cert_columns() -> None:
                 c.execute(f"ALTER TABLE securaiq_agents ADD COLUMN {name} {typedef}")
             except Exception:
                 pass
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS securaiq_agent_cert_revocations (
+            id TEXT PRIMARY KEY,
+            agent_id TEXT NOT NULL,
+            fingerprint TEXT NOT NULL,
+            serial TEXT NOT NULL DEFAULT '',
+            reason TEXT NOT NULL DEFAULT '',
+            revoked_at REAL NOT NULL,
+            revoked_by TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_agent_cert_rev_fp "
+        "ON securaiq_agent_cert_revocations(fingerprint)"
+    )
+    c.commit()
+
+
+def is_fingerprint_revoked(fingerprint: str) -> bool:
+    fp = (fingerprint or "").strip().lower().replace(":", "")
+    if not fp:
+        return False
+    ensure_cert_columns()
+    c = get_conn()
+    row = c.execute(
+        "SELECT 1 FROM securaiq_agent_cert_revocations WHERE fingerprint = ? LIMIT 1",
+        (fp,),
+    ).fetchone()
+    return bool(row)
+
+
+def _record_revocation(
+    agent_id: str,
+    *,
+    fingerprint: str,
+    serial: str = "",
+    reason: str = "",
+    revoked_by: str = "",
+) -> None:
+    fp = (fingerprint or "").strip().lower().replace(":", "")
+    if not fp:
+        return
+    ensure_cert_columns()
+    c = get_conn()
+    c.execute(
+        """
+        INSERT INTO securaiq_agent_cert_revocations
+        (id, agent_id, fingerprint, serial, reason, revoked_at, revoked_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (new_id(), agent_id, fp, serial or "", reason or "", now(), revoked_by or ""),
+    )
     c.commit()
 
 
@@ -79,7 +137,7 @@ def issue_agent_client_certificate(agent_id: str, *, days: int = 60) -> dict[str
     """Issue a lab self-signed client cert for the agent. Returns PEMs once."""
     ensure_cert_columns()
     from cryptography import x509
-    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric import ed25519
     from cryptography.x509.oid import NameOID
 
@@ -92,12 +150,13 @@ def issue_agent_client_certificate(agent_id: str, *, days: int = 60) -> dict[str
         ]
     )
     now_dt = dt.datetime.utcnow()
+    serial = x509.random_serial_number()
     cert = (
         x509.CertificateBuilder()
         .subject_name(subject)
         .issuer_name(issuer)
         .public_key(key.public_key())
-        .serial_number(x509.random_serial_number())
+        .serial_number(serial)
         .not_valid_before(now_dt - dt.timedelta(minutes=1))
         .not_valid_after(now_dt + dt.timedelta(days=days))
         .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
@@ -120,23 +179,26 @@ def issue_agent_client_certificate(agent_id: str, *, days: int = 60) -> dict[str
     fp = hashlib.sha256(cert.public_bytes(serialization.Encoding.DER)).hexdigest()
     issued = now()
     expires = issued + days * 86400
+    serial_hex = format(int(serial), "x")
     c = get_conn()
     c.execute(
         """
         UPDATE securaiq_agents
         SET certificate_pem = ?, certificate_fingerprint = ?,
             certificate_expires_at = ?, certificate_issued_at = ?,
-            certificate_public_key_pem = ?
+            certificate_public_key_pem = ?, certificate_revoked_at = NULL,
+            certificate_serial = ?
         WHERE id = ?
         """,
-        (cert_pem, fp, expires, issued, pub_pem, agent_id),
+        (cert_pem, fp, expires, issued, pub_pem, serial_hex, agent_id),
     )
     c.commit()
     return {
         "agent_id": agent_id,
         "certificate_pem": cert_pem,
-        "private_key_pem": key_pem,  # returned ONCE to enroll response — not re-readable
+        "private_key_pem": key_pem,  # returned ONCE — not re-readable as private key
         "fingerprint": fp,
+        "serial": serial_hex,
         "expires_at": expires,
         "issued_at": issued,
         "note": (
@@ -146,15 +208,131 @@ def issue_agent_client_certificate(agent_id: str, *, days: int = 60) -> dict[str
     }
 
 
+def revoke_agent_certificate(
+    agent_id: str,
+    *,
+    reason: str = "revoked",
+    revoked_by: str = "",
+) -> dict[str, Any]:
+    """Revoke current device cert (fingerprint denylist + clear active fields)."""
+    ensure_cert_columns()
+    c = get_conn()
+    row = c.execute(
+        "SELECT certificate_fingerprint, certificate_serial FROM securaiq_agents WHERE id = ?",
+        (agent_id,),
+    ).fetchone()
+    if not row:
+        return {"ok": False, "error": "agent_not_found"}
+    fp = (row["certificate_fingerprint"] if hasattr(row, "keys") else row[0]) or ""
+    serial = (row["certificate_serial"] if hasattr(row, "keys") else (row[1] if len(row) > 1 else "")) or ""
+    fp = str(fp).strip()
+    if fp:
+        _record_revocation(
+            agent_id,
+            fingerprint=fp,
+            serial=str(serial),
+            reason=reason,
+            revoked_by=revoked_by,
+        )
+    ts = now()
+    c.execute(
+        """
+        UPDATE securaiq_agents
+        SET certificate_pem = '', certificate_fingerprint = '',
+            certificate_public_key_pem = '', certificate_serial = '',
+            certificate_revoked_at = ?, certificate_expires_at = NULL
+        WHERE id = ?
+        """,
+        (ts, agent_id),
+    )
+    c.commit()
+    return {"ok": True, "agent_id": agent_id, "revoked_fingerprint": fp or None, "revoked_at": ts}
+
+
+def rotate_agent_client_certificate(
+    agent_id: str,
+    *,
+    days: int | None = None,
+    reason: str = "rotation",
+    rotated_by: str = "",
+) -> dict[str, Any]:
+    """Revoke current cert (if any) and issue a new short-lived client cert."""
+    ensure_cert_columns()
+    prev = revoke_agent_certificate(agent_id, reason=reason, revoked_by=rotated_by)
+    d = int(days) if days is not None else int(getattr(settings, "agent_mtls_cert_days", 60) or 60)
+    issued = issue_agent_client_certificate(agent_id, days=d)
+    return {
+        "ok": True,
+        "rotated": True,
+        "previous": prev,
+        "mtls": {
+            "certificate_pem": issued.get("certificate_pem"),
+            "private_key_pem": issued.get("private_key_pem"),
+            "fingerprint": issued.get("fingerprint"),
+            "serial": issued.get("serial"),
+            "expires_at": issued.get("expires_at"),
+            "issued_at": issued.get("issued_at"),
+            "note": issued.get("note"),
+        },
+    }
+
+
+def renew_agent_client_certificate(
+    agent_id: str,
+    *,
+    days: int | None = None,
+    force: bool = False,
+    renew_before_sec: int = 7 * 86400,
+    renewed_by: str = "",
+) -> dict[str, Any]:
+    """Renew if expiring soon (or ``force``). Same as rotate when renewal is due."""
+    ensure_cert_columns()
+    c = get_conn()
+    row = c.execute(
+        "SELECT certificate_fingerprint, certificate_expires_at FROM securaiq_agents WHERE id = ?",
+        (agent_id,),
+    ).fetchone()
+    if not row:
+        return {"ok": False, "error": "agent_not_found"}
+    fp = (row["certificate_fingerprint"] if hasattr(row, "keys") else row[0]) or ""
+    exp = row["certificate_expires_at"] if hasattr(row, "keys") else row[1]
+    ts = now()
+    try:
+        exp_f = float(exp) if exp is not None else 0.0
+    except (TypeError, ValueError):
+        exp_f = 0.0
+    due = force or not fp or exp_f <= 0 or exp_f <= ts + max(0, int(renew_before_sec))
+    if not due:
+        return {
+            "ok": True,
+            "renewed": False,
+            "reason": "not_due",
+            "expires_at": exp_f,
+            "fingerprint": str(fp),
+        }
+    out = rotate_agent_client_certificate(
+        agent_id,
+        days=days,
+        reason="renewal" if not force else "forced_renewal",
+        rotated_by=renewed_by,
+    )
+    out["renewed"] = True
+    return out
+
+
 def agent_cert_summary(agent: dict[str, Any] | None) -> dict[str, Any] | None:
     if not agent:
         return None
     fp = (agent.get("certificate_fingerprint") or "").strip()
-    if not fp:
+    revoked_at = agent.get("certificate_revoked_at")
+    if not fp and not revoked_at:
         return None
     return {
-        "fingerprint": fp,
+        "fingerprint": fp or None,
         "expires_at": agent.get("certificate_expires_at"),
         "issued_at": agent.get("certificate_issued_at"),
-        "has_certificate": True,
+        "serial": agent.get("certificate_serial") or "",
+        "revoked_at": revoked_at,
+        "has_certificate": bool(fp),
+        "revoked": bool(revoked_at) and not fp,
     }

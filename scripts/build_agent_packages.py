@@ -464,10 +464,38 @@ def main() -> int:
 
     manifest = OUT / "MANIFEST.txt"
     lines = [f"SecuraIQ-Agent {version}", f"engine={engine}", f"host={host}-{_host_arch()}", ""]
+    release: dict = {
+        "product": "SecuraIQ-Agent",
+        "version": version,
+        "engine": engine,
+        "architecture": _host_arch(),
+        "host": host,
+        "artifacts": [],
+        "disclaimer": (
+            "SHA-256 listed when files exist. Authenticode/notarization require "
+            "org signing secrets — scaffolds only until secrets are configured."
+        ),
+    }
+    import hashlib
+
     for p in artifacts:
         if p.is_file():
-            lines.append(f"{p.name}\t{p.stat().st_size}\t{p}")
+            digest = hashlib.sha256(p.read_bytes()).hexdigest()
+            lines.append(f"{p.name}\t{p.stat().st_size}\tsha256:{digest}\t{p}")
+            release["artifacts"].append(
+                {
+                    "name": p.name,
+                    "size": p.stat().st_size,
+                    "sha256": digest,
+                    "path": str(p),
+                    "signature": None,  # filled by CI signing when secrets present
+                }
+            )
     manifest.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    release_path = OUT / "release-manifest.json"
+    import json
+
+    release_path.write_text(json.dumps(release, indent=2) + "\n", encoding="utf-8")
 
     print("")
     print("Artifacts:")
@@ -475,6 +503,7 @@ def main() -> int:
         if p.is_file():
             print(f"  {p}  ({p.stat().st_size:,} bytes)")
     print(f"Manifest: {manifest}")
+    print(f"Release manifest: {release_path}")
     if host != "macos":
         print("Note: .dmg requires macOS — see scripts/packaging/build_macos_dmg.sh and CI.")
     return 0

@@ -1459,6 +1459,12 @@ def revoke_agent(user_id: str, agent_id: str) -> bool:
     c = get_conn()
     c.execute("UPDATE securaiq_agents SET revoked = 1 WHERE id = ?", (agent_id,))
     c.commit()
+    try:
+        from app.agent_certs import revoke_agent_certificate
+
+        revoke_agent_certificate(agent_id, reason="agent_revoked", revoked_by=user_id)
+    except Exception:
+        pass
     # Immediately drop live gateway sockets (don't wait for next check-in).
     try:
         from app.agent_gateway import force_disconnect_agent
@@ -1635,31 +1641,47 @@ COMMAND_STATUSES = {"pending_approval", "queued", "sent", "acked", "done", "erro
 
 # Richer realtime lifecycle (dual-written as `lifecycle` on the bus). DB `status`
 # enum stays unchanged for compatibility.
+# Target closed-loop vocabulary (Sprint 4):
+#   RECOMMENDED → PENDING_APPROVAL → APPROVED → SIGNED → SENT → ACK →
+#   EXECUTED → VERIFYING → VERIFIED (+ REJECTED / EXPIRED / TIMEOUT / FAILED / ROLLBACK)
 COMMAND_LIFECYCLE = {
-    "PENDING",
+    "RECOMMENDED",
+    "PENDING_APPROVAL",
+    "PENDING",  # legacy alias of PENDING_APPROVAL
     "APPROVED",
+    "SIGNED",
     "DISPATCHED",
-    "DELIVERED",
-    "ACKNOWLEDGED",
+    "SENT",
+    "DELIVERED",  # legacy alias of SENT
+    "ACK",
+    "ACKNOWLEDGED",  # legacy alias of ACK
     "EXECUTING",
-    "COMPLETED",
-    "VERIFICATION",
+    "EXECUTED",
+    "COMPLETED",  # legacy alias of EXECUTED when no verify
+    "VERIFYING",
+    "VERIFICATION",  # legacy alias of VERIFYING
     "VERIFIED",
     "FAILED",
     "TIMEOUT",
     "REJECTED",
     "EXPIRED",
+    "ROLLBACK",
 }
 
 _STATUS_TO_LIFECYCLE = {
-    "pending_approval": "PENDING",
+    "recommended": "RECOMMENDED",
+    "pending_approval": "PENDING_APPROVAL",
     "queued": "APPROVED",
-    "sent": "DELIVERED",
-    "acked": "ACKNOWLEDGED",
+    "signed": "SIGNED",
+    "sent": "SENT",
+    "acked": "ACK",
+    "executing": "EXECUTING",
+    "executed": "EXECUTED",
     "done": "COMPLETED",
     "error": "FAILED",
     "rejected": "REJECTED",
     "timeout": "TIMEOUT",
+    "rollback": "ROLLBACK",
 }
 
 
@@ -1686,13 +1708,13 @@ def command_lifecycle(
         return "EXPIRED"
     if st == "done":
         if v in ("pending",):
-            return "VERIFICATION"
+            return "VERIFYING"
         if v in ("verified",):
             return "VERIFIED"
         if v in ("verification_failed",):
             return "FAILED"
-        return "COMPLETED"
-    return _STATUS_TO_LIFECYCLE.get(st, "PENDING")
+        return "EXECUTED"
+    return _STATUS_TO_LIFECYCLE.get(st, "PENDING_APPROVAL")
 
 
 def _publish_agent_command(
@@ -2794,8 +2816,21 @@ def record_command_verification(command_id: str, *, verified: bool | None, detai
         command_id=command_id,
         status=str(row["status"]),
         verification_status=v_status,
-        phase="VERIFIED" if verified is True else ("FAILED" if verified is False else "VERIFICATION"),
+        phase="VERIFIED" if verified is True else ("FAILED" if verified is False else "VERIFYING"),
     )
+    if verified is True:
+        try:
+            from app.controls.auto_evidence import record_remediation_verified_evidence
+
+            record_remediation_verified_evidence(
+                str(row.get("user_id") or "local"),
+                command_id=command_id,
+                agent_id=str(row.get("agent_id") or ""),
+                result="pass",
+                detail={"verification_detail": detail_text},
+            )
+        except Exception:
+            pass
     campaign_id = row.get("campaign_id") or ""
     if campaign_id:
         try:

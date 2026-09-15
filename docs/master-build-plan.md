@@ -79,6 +79,8 @@ Run `scripts/realtime_acceptance_demo.py` / `scripts/realtime_phase1_proof.py` o
 
 **Freeze Phase 22+** (cloud / container / AppSec / identity / data / TPRM / malware depth / AI SecOps expansions) until the acceptance workflow works reliably on lab endpoints you own.
 
+**Sprints 2–6 foundations (extended, not rewritten):** see [SPRINTS-2-6-PRODUCTION.md](./SPRINTS-2-6-PRODUCTION.md) — mTLS issue/rotate/revoke, control auto-evidence, closed-loop lifecycle vocabulary, licensing/MFA facades, SHA-256 release manifest. Commercial Authenticode and measured HA capacity remain ops claims.
+
 Then deepen Phases 2–21 (agents, security pipeline, risk/compliance/evidence) before orange/blue expansion.
 
 ---
@@ -122,9 +124,10 @@ See [securaiq-architecture.md](./securaiq-architecture.md) · [agent-platform.md
 - Enrollment → device identity → certs → mTLS → short-lived creds → rotation
 - Replay protection, signed commands, policy, signed updates / rollback
 
-**Status: Partial** — bearer + HMAC + opt-in Ed25519; **RT-17** mandatory seals when
-`AGENT_REQUIRE_COMMAND_SIGNATURE=true` (+ replay). **Missing:** mTLS / device certs /
-cert rotation (RT-16). Signed agent installers still deferred.
+**Status: Partial→improved** — bearer + HMAC + opt-in Ed25519; **RT-17** mandatory seals when
+`AGENT_REQUIRE_COMMAND_SIGNATURE=true` (+ replay). **mTLS:** issue / renew / rotate / revoke
++ revocation denylist + proxy verify (`app/agent_certs.py`, agent certificate APIs). Signed
+commercial installers still secrets-gated.
 
 ---
 
@@ -133,7 +136,8 @@ cert rotation (RT-16). Signed agent installers still deferred.
 - Lifecycle: PENDING → APPROVED → … → VERIFIED (+ REJECTED / TIMEOUT / FAILED / EXPIRED)
 - Controlled actions (patch, isolate, stop process, firewall, collect, scan, config) under approval/policy
 
-**Status: Partial** — command lifecycle dual-write on the bus; allowlisted kinds include
+**Status: Partial→improved** — command lifecycle dual-write on the bus with closed-loop
+vocabulary (`RECOMMENDED`…`VERIFIED` + failure paths); allowlisted kinds include
 `enable_firewall`, `enable_defender`, `disable_ssh_root`, `patch_package`, `agent_upgrade`
 with host-control verification on next PASS/FAIL check-in. Not full isolate/kill-process yet.
 

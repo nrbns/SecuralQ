@@ -912,6 +912,112 @@ async def api_revoke_agent(agent_id: str, user: Annotated[AuthUser, Depends(requ
     return {"ok": True}
 
 
+class CertRotateBody(BaseModel):
+    days: int | None = Field(default=None, ge=7, le=365)
+    force: bool = False
+
+
+@router.get("/{agent_id}/certificate")
+async def api_agent_certificate_summary(
+    agent_id: str, user: Annotated[AuthUser, Depends(require_user)]
+):
+    from app.agent_certs import agent_cert_summary
+
+    agent = get_agent(agent_id)
+    if not agent_visible_to_user(user.id, agent):
+        raise HTTPException(status_code=404, detail="Agent not found")
+    require_perm(user, "agent.read", org_id=agent.get("org_id") if agent else None)
+    return agent_cert_summary(agent) or {"has_certificate": False}
+
+
+@router.post("/{agent_id}/certificate/issue")
+async def api_agent_certificate_issue(
+    agent_id: str,
+    user: Annotated[AuthUser, Depends(require_user)],
+    body: CertRotateBody | None = None,
+):
+    from app.agent_certs import issue_agent_client_certificate, mtls_enabled
+    from app.config import settings as _settings
+
+    agent = get_agent(agent_id)
+    if not agent_visible_to_user(user.id, agent):
+        raise HTTPException(status_code=404, detail="Agent not found")
+    require_perm(user, "agent.write", org_id=agent.get("org_id") if agent else None)
+    if not mtls_enabled():
+        raise HTTPException(status_code=400, detail="AGENT_MTLS_ENABLED is false")
+    days = (body.days if body and body.days else None) or int(
+        getattr(_settings, "agent_mtls_cert_days", 60) or 60
+    )
+    issued = issue_agent_client_certificate(agent_id, days=days)
+    audit("agent_cert_issue", user.id, {"agent_id": agent_id, "fingerprint": issued.get("fingerprint")})
+    return {"ok": True, "mtls": issued}
+
+
+@router.post("/{agent_id}/certificate/rotate")
+async def api_agent_certificate_rotate(
+    agent_id: str,
+    user: Annotated[AuthUser, Depends(require_user)],
+    body: CertRotateBody | None = None,
+):
+    from app.agent_certs import mtls_enabled, rotate_agent_client_certificate
+
+    agent = get_agent(agent_id)
+    if not agent_visible_to_user(user.id, agent):
+        raise HTTPException(status_code=404, detail="Agent not found")
+    require_perm(user, "agent.write", org_id=agent.get("org_id") if agent else None)
+    if not mtls_enabled():
+        raise HTTPException(status_code=400, detail="AGENT_MTLS_ENABLED is false")
+    out = rotate_agent_client_certificate(
+        agent_id,
+        days=body.days if body else None,
+        reason="operator_rotate",
+        rotated_by=user.id,
+    )
+    audit("agent_cert_rotate", user.id, {"agent_id": agent_id})
+    return out
+
+
+@router.post("/{agent_id}/certificate/renew")
+async def api_agent_certificate_renew(
+    agent_id: str,
+    user: Annotated[AuthUser, Depends(require_user)],
+    body: CertRotateBody | None = None,
+):
+    from app.agent_certs import mtls_enabled, renew_agent_client_certificate
+
+    agent = get_agent(agent_id)
+    if not agent_visible_to_user(user.id, agent):
+        raise HTTPException(status_code=404, detail="Agent not found")
+    require_perm(user, "agent.write", org_id=agent.get("org_id") if agent else None)
+    if not mtls_enabled():
+        raise HTTPException(status_code=400, detail="AGENT_MTLS_ENABLED is false")
+    out = renew_agent_client_certificate(
+        agent_id,
+        days=body.days if body else None,
+        force=bool(body.force) if body else False,
+        renewed_by=user.id,
+    )
+    audit("agent_cert_renew", user.id, {"agent_id": agent_id, "renewed": out.get("renewed")})
+    return out
+
+
+@router.post("/{agent_id}/certificate/revoke")
+async def api_agent_certificate_revoke(
+    agent_id: str, user: Annotated[AuthUser, Depends(require_user)]
+):
+    from app.agent_certs import revoke_agent_certificate
+
+    agent = get_agent(agent_id)
+    if not agent_visible_to_user(user.id, agent):
+        raise HTTPException(status_code=404, detail="Agent not found")
+    require_perm(user, "agent.write", org_id=agent.get("org_id") if agent else None)
+    out = revoke_agent_certificate(agent_id, reason="operator_revoke", revoked_by=user.id)
+    if not out.get("ok"):
+        raise HTTPException(status_code=404, detail=out.get("error") or "not found")
+    audit("agent_cert_revoke", user.id, {"agent_id": agent_id})
+    return out
+
+
 @router.delete("/{agent_id}")
 async def api_delete_agent(agent_id: str, user: Annotated[AuthUser, Depends(require_user)]):
     agent = get_agent(agent_id)

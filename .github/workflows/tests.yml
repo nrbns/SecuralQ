@@ -59,6 +59,7 @@ jobs:
           tests/test_realtime_bus.py
           tests/test_realtime_rt02_rt06.py
           tests/test_realtime_p0_ui_events.py
+          tests/test_sprints_2_6_foundations.py
       - name: Acceptance demo --local
         run: python scripts/realtime_acceptance_demo.py --local
       - name: Phase 1 simulate once-only

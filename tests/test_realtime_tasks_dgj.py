@@ -129,12 +129,13 @@ def test_server_sequence_acked_host_payload_newest():
 def test_command_lifecycle_mapping():
     from app.agents import command_lifecycle
 
-    assert command_lifecycle("pending_approval") == "PENDING"
+    assert command_lifecycle("pending_approval") == "PENDING_APPROVAL"
     assert command_lifecycle("queued") == "APPROVED"
-    assert command_lifecycle("sent") == "DELIVERED"
-    assert command_lifecycle("acked") == "ACKNOWLEDGED"
-    assert command_lifecycle("done") == "COMPLETED"
-    assert command_lifecycle("done", verification_status="pending") == "VERIFICATION"
+    assert command_lifecycle("sent") == "SENT"
+    assert command_lifecycle("acked") == "ACK"
+    assert command_lifecycle("done") == "EXECUTED"
+    assert command_lifecycle("done", verification_status="pending") == "VERIFYING"
+    assert command_lifecycle("done", verification_status="verified") == "VERIFIED"
     assert command_lifecycle("done", verification_status="verified") == "VERIFIED"
     assert command_lifecycle("error") == "FAILED"
     assert command_lifecycle("rejected") == "REJECTED"

@@ -5747,19 +5747,21 @@
     if (cmd && cmd.lifecycle) return String(cmd.lifecycle);
     const st = (cmd && cmd.status) || "";
     const v = (cmd && cmd.verification_status) || "";
+    if (st === "recommended") return "RECOMMENDED";
     if (st === "pending_approval") return "PENDING_APPROVAL";
-    if (st === "queued") return "QUEUED";
-    if (st === "sent") return "DISPATCHED";
-    if (st === "acked") return "EXECUTING";
+    if (st === "queued") return "APPROVED";
+    if (st === "sent") return "SENT";
+    if (st === "acked") return "ACK";
     if (st === "done") {
-      if (v === "pending") return "VERIFICATION";
+      if (v === "pending") return "VERIFYING";
       if (v === "verified") return "VERIFIED";
       if (v === "verification_failed") return "FAILED";
-      return "COMPLETED";
+      return "EXECUTED";
     }
     if (st === "error") return "FAILED";
     if (st === "rejected") return "REJECTED";
     if (st === "timeout") return "TIMEOUT";
+    if (st === "rollback") return "ROLLBACK";
     return (st || "—").toUpperCase();
   }
 
