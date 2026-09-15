@@ -24,8 +24,8 @@ lab hosts and Phase B commercial packaging gates exist.
 | 6 | Remediation → approve → execute → verify | Closed loop for host remediations |
 | 7 | **Risk reduction on verified PASS** (`risk.changed` + score_delta) | **This slice** |
 | 8 | Dashboard / Compliance Center SSE invalidation | **This slice** |
-| 9 | Tenant isolation automated tests | Partial — keep expanding |
-| 10 | MFA + licensing commercial layer | Facades — deepen in Phase B |
+| 9 | Tenant isolation automated tests | Expanded (agents, control_results, SecOps, RBAC) |
+| 10 | MFA + licensing commercial layer | Phase B foundations (`docs/PHASE-B-COMMERCIAL.md`) |
 
 ## Honesty
 
@@ -40,8 +40,17 @@ lab hosts and Phase B commercial packaging gates exist.
 - Bus: `compliance.updated` (`live_percent`, `percent_delta`), `risk.changed` (`score_delta`)
 - `control.passed` / `control.failed` processors → evidence + risk + live compliance
 
+## Ops
+
+- Sentinel lab measure: `docs/ops/SENTINEL-FAILOVER-LAB.md`, `scripts/sentinel_failover_measure.py`
+- HA/DR draft: `docs/ops/HA-DR.md`
+
 ## Tests
 
 ```bash
-pytest -v tests/test_phase_a_live_compliance_risk.py tests/test_p1_control_history_timeline.py
+pytest -v \
+  tests/test_phase_a_live_compliance_risk.py \
+  tests/test_p1_control_history_timeline.py \
+  tests/test_cross_tenant_isolation.py \
+  tests/test_phase_ab_commercial_foundations.py
 ```

@@ -272,7 +272,7 @@ Packaging scaffolds may ship for **lab/owned hosts**; commercial “signed enter
 5. [x] Publish `license.updated` on issue/validate/revoke; `agent.update.available` on update publish.
 6. [x] Live security stream shows human labels + event type badges for the full closed-loop vocabulary.
 7. [x] CI once-only / XAUTOCLAIM / SSE replay proofs (`tests/test_realtime_phase1_proof.py`, `app/realtime/`).
-8. [ ] Ops: record a **measured** Sentinel failover timing note after `docker compose stop redis-primary` (lab stub only — not Cluster cert).
+8. [x] Ops: Sentinel failover **procedure + measure script** (`docs/ops/SENTINEL-FAILOVER-LAB.md`, `scripts/sentinel_failover_measure.py`) — fill measured seconds after `docker compose stop redis-primary` (lab stub only — not Cluster cert).
 
 ### P1 — Make the chain complete product-wise (Sprint 2–4; do not expand scanners first)
 

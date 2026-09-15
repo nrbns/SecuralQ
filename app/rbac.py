@@ -77,6 +77,26 @@ def has_perm(user: AuthUser, action: str, *, org_id: str | None = None) -> bool:
     return ORG_ROLE_RANK.get(role, -1) >= ORG_ROLE_RANK.get(str(org_min), 99)
 
 
+def permission_matrix() -> dict[str, Any]:
+    """Stable commercial RBAC catalog for Trust Center / API docs."""
+    return {
+        "ok": True,
+        "org_roles": list(ORG_ROLE_RANK.keys()),
+        "actions": sorted(PERMISSIONS.keys()),
+        "permissions": {
+            action: {
+                "global_roles": sorted(spec.get("global") or []),
+                "org_min": spec.get("org_min"),
+            }
+            for action, spec in PERMISSIONS.items()
+        },
+        "disclaimer": (
+            "Global admin bypasses org_min. Lab user `local` is treated as global admin. "
+            "agent.approve requires org admin (or global admin)."
+        ),
+    }
+
+
 def require_perm(user: AuthUser, action: str, *, org_id: str | None = None) -> None:
     if not has_perm(user, action, org_id=org_id):
         raise HTTPException(

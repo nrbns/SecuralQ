@@ -247,3 +247,86 @@ def test_tool_scope_blocks_cross_engagement_target(two_orgs):
             ip="8.8.8.8",
             authorized=True,
         )
+
+
+def test_agent_control_results_and_secops_isolation(two_orgs):
+    """Agents, control_results history, and SecOps get_agent fail closed."""
+    alice, bob, org_a, org_b = two_orgs
+    from app.agents import enroll_agent, list_agents
+    from app.controls.history import append_control_result, list_control_results
+    from app.secops.tools import call_tool
+
+    ea = enroll_agent(alice.id, name="alice-agent", org_id=org_a["id"])
+    eb = enroll_agent(bob.id, name="bob-agent", org_id=org_b["id"])
+    alice_ids = {a["id"] for a in list_agents(alice.id, org_id=org_a["id"])}
+    bob_ids = {a["id"] for a in list_agents(bob.id, org_id=org_b["id"])}
+    assert ea["agent_id"] in alice_ids and eb["agent_id"] not in alice_ids
+    assert eb["agent_id"] in bob_ids and ea["agent_id"] not in bob_ids
+
+    append_control_result(
+        alice.id,
+        framework_id="cis",
+        control_id="9.1",
+        test_name="host_firewall",
+        result="fail",
+        agent_id=ea["agent_id"],
+        org_id=org_a["id"],
+    )
+    append_control_result(
+        bob.id,
+        framework_id="cis",
+        control_id="9.1",
+        test_name="host_firewall",
+        result="pass",
+        agent_id=eb["agent_id"],
+        org_id=org_b["id"],
+    )
+    alice_rows = list_control_results(alice.id, agent_id=ea["agent_id"])
+    bob_rows = list_control_results(bob.id, agent_id=eb["agent_id"])
+    assert len(alice_rows) >= 1
+    assert all(r.get("agent_id") == ea["agent_id"] for r in alice_rows)
+    assert list_control_results(bob.id, agent_id=ea["agent_id"]) == []
+    assert list_control_results(alice.id, agent_id=eb["agent_id"]) == []
+    assert bob_rows and bob_rows[0]["result"] == "pass"
+
+    # SecOps: Bob cannot read Alice's agent
+    denied = call_tool(
+        "get_agent",
+        bob.id,
+        org_id=org_b["id"],
+        args={"agent_id": ea["agent_id"]},
+    )
+    assert denied.get("ok") is True
+    assert denied.get("data") is None
+
+    allowed = call_tool(
+        "get_agent",
+        alice.id,
+        org_id=org_a["id"],
+        args={"agent_id": ea["agent_id"]},
+    )
+    assert allowed.get("ok") is True
+    assert (allowed.get("data") or {}).get("id") == ea["agent_id"]
+
+
+def test_rbac_viewer_cannot_approve_agent_commands(two_orgs):
+    alice, _bob, org_a, _ob = two_orgs
+    from fastapi import HTTPException
+
+    from app.auth import AuthUser, register_user
+    from app.commercial_ext import add_org_member
+    from app.rbac import has_perm, permission_matrix, require_perm
+
+    vu = register_user("viewer_iso_user", "password123", role="user")
+    add_org_member(alice.id, org_a["id"], "viewer_iso_user", role="viewer")
+    user = AuthUser(id=vu.id, username="viewer_iso_user", role="user")
+    assert has_perm(user, "agent.read", org_id=org_a["id"]) is True
+    assert has_perm(user, "agent.approve", org_id=org_a["id"]) is False
+    try:
+        require_perm(user, "agent.approve", org_id=org_a["id"])
+        raise AssertionError("viewer must not approve")
+    except HTTPException as exc:
+        assert exc.status_code == 403
+    matrix = permission_matrix()
+    assert "agent.approve" in matrix["actions"]
+    assert matrix["permissions"]["agent.approve"]["org_min"] == "admin"

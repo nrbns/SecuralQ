@@ -28,6 +28,46 @@ ALLOWED_TOOLS: frozenset[str] = frozenset(
     }
 )
 
+READ_TOOLS: frozenset[str] = frozenset(
+    {
+        "get_asset",
+        "get_agent",
+        "get_inventory",
+        "get_events",
+        "get_vulnerabilities",
+        "get_controls",
+        "get_evidence",
+        "get_attack_paths",
+        "calculate_risk",
+        "list_priority_findings",
+        "list_agent_threats",
+        "verify_host_remediation",
+    }
+)
+
+WRITE_TOOLS: frozenset[str] = frozenset(
+    {
+        "propose_remediation",
+        "propose_approval",
+    }
+)
+
+# Explicit denylist for jailbreak-style names (fail closed even if somehow registered).
+DENIED_TOOL_NAMES: frozenset[str] = frozenset(
+    {
+        "shell",
+        "bash",
+        "powershell",
+        "exec",
+        "run_command",
+        "sql",
+        "db_query",
+        "approve_command",
+        "execute_command",
+        "send_command",
+    }
+)
+
 
 def list_allowed_tools() -> list[str]:
     return sorted(ALLOWED_TOOLS)
@@ -44,7 +84,7 @@ def call_tool(
     """Dispatch one allowlisted tool. Unknown names are denied (fail closed)."""
     args = args if isinstance(args, dict) else {}
     tool = (name or "").strip()
-    if tool not in ALLOWED_TOOLS:
+    if tool in DENIED_TOOL_NAMES or tool not in ALLOWED_TOOLS:
         return {
             "ok": False,
             "error": "tool_not_allowed",
@@ -54,6 +94,14 @@ def call_tool(
     try:
         fn = _DISPATCH[tool]
         data = fn(user_id, org_id=org_id, engagement_id=engagement_id, **_safe_kwargs(tool, args))
+        # Hard guarantee: write tools never mutate via this path
+        if tool in WRITE_TOOLS and isinstance(data, dict) and data.get("mutated") is True:
+            return {
+                "ok": False,
+                "error": "mutation_denied",
+                "tool": tool,
+                "detail": "SecOps write tools are propose-only; human approval required.",
+            }
         return {"ok": True, "tool": tool, "data": data}
     except TypeError as exc:
         return {"ok": False, "error": "bad_args", "tool": tool, "detail": str(exc)[:300]}
