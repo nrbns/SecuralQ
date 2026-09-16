@@ -6852,23 +6852,31 @@
     if (!quiet || !already) {
       body.innerHTML = `
         <section class="cc-panel" id="agentsLicensePanel">
-          <header><h2>License</h2><button type="button" class="btn-secondary" id="agentsLicenseRefreshBtn">Validate</button></header>
+          <header style="display:flex;flex-wrap:wrap;gap:0.5rem;align-items:center;justify-content:space-between">
+            <div>
+              <h2 style="margin:0">License &amp; security profile</h2>
+              <p class="hint" style="margin:0.25rem 0 0">Server-signed entitlement is authoritative · local cache is state only</p>
+            </div>
+            <button type="button" class="btn-secondary" id="agentsLicenseRefreshBtn">Validate</button>
+          </header>
           <div id="agentsLicenseBody"><p class="hint">Loading…</p></div>
         </section>
         <section class="cc-panel agents-rt-strip" id="agentsRealtimePanel" style="margin-top:1rem">
           <header><h2>Realtime status</h2><button type="button" class="btn-secondary" id="agentsPageRefreshBtn">Refresh</button></header>
           <div id="agentsRealtimeBody"><p class="hint">Loading…</p></div>
         </section>
-        <section class="cc-panel" id="agentsPackagesPanel" style="margin-top:1rem">
+        <div class="agents-deploy-fleet">
+        <section class="cc-panel" id="agentsPackagesPanel">
           <header><h2>Deploy SecuraIQ</h2></header>
           <div id="agentsPackagesBody"><p class="hint">Loading…</p></div>
         </section>
-        <section class="cc-panel" id="agentsFleetPanel" style="margin-top:1rem">
+        <section class="cc-panel" id="agentsFleetPanel">
           <header><h2>Fleet</h2></header>
           <div id="agentsPageEnrollResult"></div>
           <div id="agentsPageCampaignForm"></div>
           <div id="agentsFleetBody"><p class="hint">Loading…</p></div>
-        </section>`;
+        </section>
+        </div>`;
       body.dataset.agentsRendered = "1";
       wireAgentsControls({
         enrollBtn: "agentsPageEnrollBtn",
@@ -11921,46 +11929,39 @@
     const body = qs("billingPageBody");
     if (!body) return;
     body.innerHTML = `<p class="hint">Loading billing…</p>`;
-    let dash = {};
-    let plat = {};
-    let usage = {};
-    let plans = [];
-    // Real bug found in audit: a failed /api/dashboard fetch was silently
-    // swallowed and the page rendered zeroed-out defaults (0 assets, 0 risks,
-    // "Community" plan) that look identical to a genuinely empty/local
-    // workspace. Track failure explicitly and say so instead.
-    let loadFailed = false;
-    let licCommercial = {};
-    try {
-      const [dRes, healthRes, platRes, usageRes, plansRes, licRes] = await Promise.all([
-        fetch("/api/dashboard", { headers: authHeaders() }),
-        fetch("/api/health").catch(() => null),
-        fetch("/api/platform/status", { headers: authHeaders() }).catch(() => null),
-        fetch("/api/billing/usage", { headers: authHeaders() }).catch(() => null),
-        fetch("/api/billing/plans").catch(() => null),
-        fetch("/api/licenses/commercial-status", { headers: authHeaders() }).catch(() => null),
-      ]);
-      if (!dRes.ok) loadFailed = true;
-      dash = await dRes.json().catch(() => ({}));
-      if (healthRes && healthRes.ok) plat = await healthRes.json().catch(() => ({}));
-      const platStatus = platRes && platRes.ok ? await platRes.json().catch(() => ({})) : {};
-      plat = { ...plat, ...platStatus };
-      usage = usageRes && usageRes.ok ? await usageRes.json().catch(() => ({})) : {};
-      const plansData = plansRes && plansRes.ok ? await plansRes.json().catch(() => ({})) : {};
-      plans = Object.entries(plansData.plans || {}).map(([id, p]) => ({ id, ...p }));
-      licCommercial = licRes && licRes.ok ? await licRes.json().catch(() => ({})) : {};
-    } catch (err) {
-      loadFailed = true;
-    }
-    const licAct = licCommercial.activation || {};
-    const licUsage = licCommercial.usage || {};
-    const live = dash.live_compliance || {};
-    const prod = dash.production_profile || {};
-    const limit = usage.messages_limit == null ? "unlimited" : usage.messages_limit;
-    const planCards = plans.length
-      ? plans
-          .map(
-            (p) => `<article class="cc-panel integ-card-sm">
+
+    const getJson = async (url, ms = 6000) => {
+      const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+      const timer = ctrl ? setTimeout(() => ctrl.abort(), ms) : null;
+      try {
+        const res = await fetch(url, { headers: authHeaders(), signal: ctrl?.signal });
+        if (!res.ok) return null;
+        return await res.json().catch(() => null);
+      } catch {
+        return null;
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    };
+
+    const paint = (opts) => {
+      const {
+        loadFailed = false,
+        licCommercial = {},
+        usage = {},
+        plans = [],
+        plat = {},
+        live = {},
+        prod = {},
+        dash = {},
+      } = opts || {};
+      const licAct = licCommercial.activation || {};
+      const licUsage = licCommercial.usage || {};
+      const limit = usage.messages_limit == null ? "unlimited" : usage.messages_limit;
+      const planCards = plans.length
+        ? plans
+            .map(
+              (p) => `<article class="cc-panel integ-card-sm">
               <h3>${escapeHtml(p.label || p.id)}</h3>
               <p class="hint">${p.price_usd == null ? "Contact sales" : p.price_usd === 0 ? "Free" : `$${p.price_usd}/mo`}</p>
               <p>${p.messages_per_month == null ? "Unlimited messages" : `${p.messages_per_month} messages/mo`}</p>
@@ -11972,21 +11973,21 @@
                     : ""
               }
             </article>`
-          )
-          .join("")
-      : `<p class="hint">Community / local — self-hosted</p>`;
-    body.innerHTML = `
+            )
+            .join("")
+        : `<p class="hint">Community / local — self-hosted</p>`;
+      body.innerHTML = `
       ${
         loadFailed
-          ? `<p class="hint" style="color:#c0392b">Could not load billing/usage data — showing partial or default values, not a confirmed state. Reload to retry.</p>`
+          ? `<p class="hint" style="color:#c0392b">Could not load license status — showing partial values. Reload to retry.</p>`
           : ""
       }
       <div class="billing-grid">
         <section class="cc-panel">
           <header><h2>Signed license (authoritative)</h2></header>
           <ul class="cc-list">
-            <li>Plan — <strong>${escapeHtml(licAct.plan || usage.plan || "none")}</strong></li>
-            <li>Status — <strong>${escapeHtml(licAct.status || licAct.mode || "none")}</strong></li>
+            <li>Plan — <strong>${escapeHtml(licAct.plan || licUsage.plan || usage.plan || "none")}</strong></li>
+            <li>Status — <strong>${escapeHtml(licAct.status || licUsage.mode || licAct.mode || "none")}</strong></li>
             <li>Agents — <strong>${escapeHtml(String(licUsage.agents_current ?? "—"))} / ${escapeHtml(
               String(licUsage.max_agents == null ? "∞" : licUsage.max_agents)
             )}</strong></li>
@@ -12050,30 +12051,77 @@
           <p class="hint">Stripe checkout when <code>STRIPE_SECRET_KEY</code> is configured. Local mode has no invoices.</p>
         </section>
       </div>`;
-    body.querySelectorAll(".billing-upgrade").forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        const plan = btn.getAttribute("data-plan");
-        btn.disabled = true;
-        try {
-          const res = await fetch("/api/billing/checkout", {
-            method: "POST",
-            headers: authHeaders({ "Content-Type": "application/json" }),
-            body: JSON.stringify({
-              plan,
-              success_url: `${window.location.origin}/?billing=success`,
-              cancel_url: `${window.location.origin}/?billing=cancel`,
-            }),
-          });
-          const data = await res.json().catch(() => ({}));
-          if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
-          if (data.url) window.location.href = data.url;
-          else if (typeof notifyUser === "function") notifyUser("**Checkout session created.**");
-        } catch (err) {
-          alert(err.message || "Checkout unavailable");
-        } finally {
-          btn.disabled = false;
-        }
+      body.querySelectorAll(".billing-upgrade").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const plan = btn.getAttribute("data-plan");
+          btn.disabled = true;
+          try {
+            const res = await fetch("/api/billing/checkout", {
+              method: "POST",
+              headers: authHeaders({ "Content-Type": "application/json" }),
+              body: JSON.stringify({
+                plan,
+                success_url: `${window.location.origin}/?billing=success`,
+                cancel_url: `${window.location.origin}/?billing=cancel`,
+              }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+            if (data.url) window.location.href = data.url;
+            else if (typeof notifyUser === "function") notifyUser("**Checkout session created.**");
+          } catch (err) {
+            alert(err.message || "Checkout unavailable");
+          } finally {
+            btn.disabled = false;
+          }
+        });
       });
+      body.querySelectorAll("[data-workspace]").forEach((btn) => {
+        btn.addEventListener("click", () => window.showWorkspace?.(btn.getAttribute("data-workspace")));
+      });
+    };
+
+    // Progressive: license first so the page never sticks on Loading…
+    let licCommercial = (await getJson("/api/licenses/commercial-status", 15000)) || {};
+    if (!(licCommercial.ok || licCommercial.usage)) {
+      // Retry once without a tight abort — server may be busy with dashboard
+      try {
+        const res = await fetch("/api/licenses/commercial-status", { headers: authHeaders() });
+        if (res.ok) licCommercial = (await res.json().catch(() => null)) || {};
+      } catch {
+        /* keep empty */
+      }
+    }
+    if (!(licCommercial.ok || licCommercial.usage) && window.__securaiqLastLicense) {
+      licCommercial = window.__securaiqLastLicense;
+    }
+    if (licCommercial.ok || licCommercial.usage) {
+      window.__securaiqLastLicense = licCommercial;
+    }
+    paint({
+      loadFailed: false,
+      licCommercial,
+    });
+
+    const [usage, plansData, platHealth, platStatus, live, prod, brief] = await Promise.all([
+      getJson("/api/billing/usage", 6000),
+      getJson("/api/billing/plans", 6000),
+      getJson("/api/health", 4000),
+      getJson("/api/platform/status", 6000),
+      getJson("/api/compliance/live-score", 6000),
+      getJson("/api/controls/production-profile", 5000),
+      getJson("/api/dashboard/brief", 8000),
+    ]);
+    const plans = Object.entries((plansData && plansData.plans) || {}).map(([id, p]) => ({ id, ...p }));
+    paint({
+      loadFailed: false,
+      licCommercial,
+      usage: usage || {},
+      plans,
+      plat: { ...(platHealth || {}), ...(platStatus || {}) },
+      live: live || {},
+      prod: prod || {},
+      dash: brief || {},
     });
   }
 

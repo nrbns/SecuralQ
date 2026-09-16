@@ -4194,7 +4194,7 @@ button.integ-chip:hover {
   border-color: var(--accent-border);
 }
 
-/* Empty MC: hide live chrome — but keep #sqLiveStream (moved outside dashboard) visible */
+/* Empty MC: hide live chrome — but keep #sqLiveStream (moved outside dashboard) visible
 #viewCommand.mc-is-empty .mc-live-dashboard,
 .mc-live-dashboard[hidden] {
   display: none !important;
@@ -9027,7 +9027,7 @@ a.agents-pkg-dl {
   .impact-summary-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
-/* Phase A/B UI � production profile banner + live controls KPI */
+/* Phase A/B UI — production profile banner + live controls KPI */
 .mc-prod-profile {
   padding: 0.55rem 0.75rem;
   border-radius: 6px;
@@ -9039,4 +9039,103 @@ a.agents-pkg-dl {
 }
 .sq-stat-live strong {
   letter-spacing: -0.02em;
+}
+/* Always-on Mission Control plane strip */
+.mc-plane-strip {
+  margin: 0.75rem 0 1rem;
+  max-width: min(100%, 72rem);
+}
+#viewCommand.mc-is-empty .mc-plane-strip {
+  margin-left: auto;
+  margin-right: auto;
+  width: min(100%, 56rem);
+}
+.mc-golden-loop {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.25rem;
+  margin: 0 0 0.75rem;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--border, #d0d7de);
+  border-radius: 8px;
+  background: var(--sq-card, #fff);
+}
+.mc-loop-step {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  padding: 0.25rem 0.45rem;
+  border-radius: 6px;
+  font: inherit;
+  color: inherit;
+}
+.mc-loop-step:hover { background: color-mix(in srgb, var(--sq-accent, #2563eb) 10%, transparent); }
+.mc-loop-step span {
+  display: block;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted, #667);
+}
+.mc-loop-arrow { color: var(--muted, #889); font-size: 0.85rem; padding: 0 0.1rem; }
+.sq-stat-row { grid-template-columns: repeat(7, minmax(0, 1fr)); }
+.sq-stat-live { border-left-color: #0d9488; }
+.sq-stat-live strong { color: #0d9488; }
+.mc-prod-profile { margin: 0.35rem 0 0; }
+.rt-health.is-lab .rt-health-grid dd { color: var(--muted, #889); }
+@media (max-width: 1100px) {
+  .sq-stat-row { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+@media (max-width: 700px) {
+  .sq-stat-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .mc-loop-arrow { display: none; }
+}
+
+/* UX polish: agents deploy + billing + golden loop */
+.agents-deploy-fleet {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  margin-top: 1rem;
+}
+.agents-live-mirror {
+  max-height: 12rem;
+  overflow: auto;
+  margin: 0;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border, #d0d7de);
+  border-radius: 8px;
+  background: var(--panel, #fafbfc);
+  font-size: 0.82rem;
+}
+.billing-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+.mc-golden-loop .mc-loop-step strong,
+.mc-loop-step {
+  font-weight: 650;
+  font-size: 0.86rem;
+  line-height: 1.25;
+}
+.mc-prod-profile .btn-secondary {
+  margin-left: 0.35rem;
+  vertical-align: baseline;
+}
+#viewCommand.mc-is-empty .mc-first-run {
+  margin-bottom: 0.75rem;
+}
+.rt-health.is-lab {
+  opacity: 0.92;
+}
+.rt-health.is-lab .rt-health-head h4::after {
+  content: " · lab";
+  font-weight: 500;
+  color: var(--muted, #889);
+  font-size: 0.8em;
 }

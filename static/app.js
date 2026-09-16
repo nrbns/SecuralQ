@@ -3046,16 +3046,20 @@ async function refreshRealtimeHealthPanel() {
     if (note) {
       if (!bus.redis_configured) {
         note.textContent = "Lab in-process bus — set REDIS_URL for Streams + DLQ metrics.";
+        panel.classList.add("is-lab");
       } else if (thr.backpressure_active) {
         note.textContent = "Soft backpressure: stream near maxlen (XADD still runs; maxlen trims).";
+        panel.classList.remove("is-lab");
       } else {
         note.textContent =
           bus.hint ||
           `Stream ${stream.stream_length ?? "—"} · published ${thr.published_total ?? 0}`;
+        panel.classList.remove("is-lab");
       }
     }
     panel.dataset.mode = bus.mode || "";
     panel.classList.toggle("rt-health-warn", Boolean(thr.backpressure_active) || Number(stream.dlq_length || 0) > 0);
+    panel.classList.toggle("is-lab", !bus.redis_configured);
   } catch {
     /* ignore — panel is best-effort */
   }
@@ -5002,6 +5006,45 @@ function showView(view, opts = {}) {
   closeSidebar();
 }
 
+function applyMcProdProfileBanner(p) {
+  const prodBanner = document.getElementById("mcProdProfileBanner");
+  if (!prodBanner) return;
+  const ready = !!(p && p.production_ready_agent_security);
+  const flags = (p && p.flags) || {};
+  const on = Object.entries(flags)
+    .filter(([, v]) => v)
+    .map(([k]) => k.replace(/^agent_/, "").replace(/_/g, " "));
+  prodBanner.classList.toggle("is-ready", ready);
+  prodBanner.innerHTML = ready
+    ? `<strong>Production agent security</strong> — core flags enabled (${escapeHtml(on.slice(0, 4).join(", ") || "ready")}).`
+    : `<strong>Lab profile</strong> — mTLS / signed commands / replay protection off by default.
+       <button type="button" class="btn-secondary" data-workspace="agents">Agents &amp; license</button>`;
+  prodBanner.querySelectorAll("[data-workspace]").forEach((btn) => {
+    if (btn.dataset.planeWired) return;
+    btn.dataset.planeWired = "1";
+    btn.addEventListener("click", () => window.showWorkspace?.(btn.getAttribute("data-workspace")));
+  });
+}
+
+function refreshMcProdProfileBanner(prod) {
+  if (prod && typeof prod === "object" && Object.keys(prod).length) {
+    applyMcProdProfileBanner(prod);
+    return Promise.resolve(prod);
+  }
+  return fetch("/api/controls/production-profile", { headers: authHeaders() })
+    .then((r) => (r.ok ? r.json() : {}))
+    .then((p) => {
+      applyMcProdProfileBanner(p && Object.keys(p).length ? p : { production_ready_agent_security: false, flags: {} });
+      return p;
+    })
+    .catch(() => {
+      const el = document.getElementById("mcProdProfileBanner");
+      if (el && /Checking/i.test(el.textContent || "")) {
+        applyMcProdProfileBanner({ production_ready_agent_security: false, flags: {} });
+      }
+    });
+}
+
 async function loadCommandCenter() {
   if (window.__securaiqCcLoading) {
     window.__securaiqCcReloadQueued = true;
@@ -5009,6 +5052,9 @@ async function loadCommandCenter() {
   }
   window.__securaiqCcLoading = true;
   window.__securaiqCcReloadQueued = false;
+  // Don't wait on the heavy dashboard for Lab/Production banner or impact tile
+  refreshMcProdProfileBanner();
+  if (typeof window.loadImpactHeroStat === "function") window.loadImpactHeroStat();
   clearTimeout(window.__securaiqCcLockTimer);
   window.__securaiqCcLockTimer = setTimeout(() => {
     if (window.__securaiqCcLoading) {
@@ -5195,19 +5241,26 @@ async function loadCommandCenter() {
           : `${p} pass · ${f} fail · not cert`;
     }
     const prod = data.production_profile || {};
-    const prodBanner = document.getElementById("mcProdProfileBanner");
-    if (prodBanner) {
-      const ready = !!prod.production_ready_agent_security;
-      const flags = prod.flags || {};
-      const on = Object.entries(flags)
-        .filter(([, v]) => v)
-        .map(([k]) => k.replace(/^agent_/, "").replace(/_/g, " "));
-      prodBanner.classList.toggle("is-ready", ready);
-      prodBanner.innerHTML = ready
-        ? `<strong>Production agent security</strong> — core flags enabled (${escapeHtml(on.slice(0, 4).join(", ") || "ready")}).`
-        : `<strong>Lab profile</strong> — mTLS / signed commands / replay protection off by default.
-           <button type="button" class="btn-secondary" data-workspace="agents" style="margin-left:0.5rem">Agents &amp; license</button>
-           <span class="hint">See GET /api/controls/production-profile</span>`;
+    refreshMcProdProfileBanner(prod);
+    // Live % fallback when dashboard payload is older than this UI
+    if (
+      (!data.live_compliance || data.live_compliance.live_percent == null) &&
+      document.getElementById("ccLivePercent")
+    ) {
+      fetch("/api/compliance/live-score", { headers: authHeaders() })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((liveSnap) => {
+          if (!liveSnap) return;
+          const liveEl = document.getElementById("ccLivePercent");
+          const liveSub = document.getElementById("ccLiveSub");
+          if (liveEl && liveSnap.live_percent != null) {
+            liveEl.textContent = `${Math.round(Number(liveSnap.live_percent))}%`;
+          }
+          if (liveSub) {
+            liveSub.textContent = `${liveSnap.passing || 0} pass · ${liveSnap.failing || 0} fail · not cert`;
+          }
+        })
+        .catch(() => {});
     }
     const orgRisk = data.org_risk || {};
     const orgRiskEl = document.getElementById("ccOrgRisk");
@@ -5709,13 +5762,21 @@ function syncChecklistProgress(data) {
   } catch {
     /* ignore */
   }
+  const fleet = data.agents_fleet || {};
+  const live = data.live_compliance || {};
   const marks = {
     org: (mc.organization || "") !== "Local workspace" && (mc.organization || "") !== "—",
+    agents: Number(fleet.total || 0) > 0,
+    live: live.live_percent != null || Number(live.passing || 0) + Number(live.failing || 0) > 0,
+    remediate: Number(data.remediations_open || 0) > 0 || Number(data.remediations_total || 0) > 0,
+    verify: Number(live.passing || 0) > 0,
+    evidence: Number((data.evidence_count || data.evidence_total || 0)) > 0 || Number(data.assessment_count || 0) > 0,
+    report: Number(data.assessment_count || 0) > 0 || Number(data.assets_total || 0) > 0,
+    // legacy keys kept harmless
     assets: Number(data.assets_total || 0) > 0,
     scan: Number(today.critical_findings || 0) + Number(data.vulnerabilities_open || 0) > 0,
     hardening: Boolean((data.hardening || {}).audit_done),
     gap: Number(data.assessment_count || 0) > 0,
-    report: Number(data.assessment_count || 0) > 0 || Number(data.assets_total || 0) > 0,
     integrations: integVisited,
   };
   document.querySelectorAll("#mcChecklist li[data-step]").forEach((li) => {
@@ -5772,8 +5833,10 @@ function wireMissionFirstRunOnce() {
       else if (mod === "gap") openGap();
     });
   });
-  document.querySelectorAll("#mcFirstRun [data-workspace]").forEach((btn) => {
+  document.querySelectorAll("#mcFirstRun [data-workspace], #mcPlaneStrip [data-workspace]").forEach((btn) => {
     if (btn.classList.contains("mc-check-btn")) return;
+    if (btn.dataset.planeWired) return;
+    btn.dataset.planeWired = "1";
     btn.addEventListener("click", () => {
       const ws = btn.getAttribute("data-workspace");
       if (ws && typeof window.showWorkspace === "function") window.showWorkspace(ws);

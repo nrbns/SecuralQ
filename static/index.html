@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -33,7 +33,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/style.css?v=169" />
+  <link rel="stylesheet" href="/style.css?v=173" />
   <script src="/vendor/marked.min.js"></script>
 </head>
 <body>
@@ -203,7 +203,7 @@
         </div>
         <div class="topbar-search-wrap">
           <label class="visually-hidden" for="globalSearch">Search workspace</label>
-          <input id="globalSearch" type="search" class="topbar-search" placeholder="Search assets, CVEs, findings, investigations…" autocomplete="off" enterkeyhint="search" title="⌘K — global search" />
+          <input id="globalSearch" type="search" class="topbar-search" placeholder="Search assets, CVEs, findings, investigations…" autocomplete="off" enterkeyhint="search" title="âŒ˜K — global search" />
           <div id="searchResults" class="search-results hidden" role="listbox" aria-label="Search results"></div>
         </div>
         <div class="topbar-util" aria-label="Status and account">
@@ -273,30 +273,94 @@
             </dl>
           </div>
 
-          <section id="mcFirstRun" class="mc-first-run" aria-label="Quick start">
+          <!-- Always-on control-plane strip (visible even when mcLiveDashboard is hidden) -->
+          <section class="mc-plane-strip rt-always-on" id="mcPlaneStrip" aria-label="Control plane status">
+            <nav class="mc-golden-loop" aria-label="Verified risk reduction loop">
+              <button type="button" class="mc-loop-step" data-workspace="agents"><span>See</span> Agent</button>
+              <span class="mc-loop-arrow" aria-hidden="true">→</span>
+              <button type="button" class="mc-loop-step" data-workspace="compliance_center"><span>Detect</span> Control</button>
+              <span class="mc-loop-arrow" aria-hidden="true">→</span>
+              <button type="button" class="mc-loop-step" data-workspace="evidence"><span>Prove</span> Evidence</button>
+              <span class="mc-loop-arrow" aria-hidden="true">→</span>
+              <button type="button" class="mc-loop-step" data-workspace="remediations"><span>Act</span> Remediate</button>
+              <span class="mc-loop-arrow" aria-hidden="true">→</span>
+              <button type="button" class="mc-loop-step" data-workspace="agents"><span>Verify</span> Pass</button>
+              <span class="mc-loop-arrow" aria-hidden="true">→</span>
+              <button type="button" class="mc-loop-step" data-workspace="executive"><span>Reduce</span> Risk</button>
+            </nav>
+
+            <div class="sq-stat-row" id="ccKpis" aria-label="Summary metrics">
+              <button type="button" class="sq-stat sq-stat-sec" data-scroll="sqPostureCard" title="Security index from live workspace posture">
+                <span class="sq-stat-label">Security</span>
+                <strong id="ccScore">0</strong>
+                <em class="mc-trend" id="ccScoreTrend"></em>
+                <span class="sq-stat-sub" id="ccScoreLevel">—</span>
+              </button>
+              <button type="button" class="sq-stat sq-stat-risk" data-workspace="executive" title="Organizational exposure — open findings ranked by impact">
+                <span class="sq-stat-label">Risk</span>
+                <strong id="ccOrgRisk">—</strong>
+                <em class="mc-trend" id="ccRiskTrend"></em>
+                <span class="sq-stat-sub" id="ccOrgRiskBand">exposure</span>
+              </button>
+              <button type="button" class="sq-stat sq-stat-comp" data-workspace="compliance_center" title="Assessed frameworks only — evidence supporting controls, not certification">
+                <span class="sq-stat-label">Compliance</span>
+                <strong id="ccCompliance">—</strong>
+                <em class="mc-trend" id="ccCompTrend"></em>
+                <span class="sq-stat-sub" id="ccComplianceSub">not assessed</span>
+              </button>
+              <button type="button" class="sq-stat sq-stat-live" data-workspace="compliance_center" title="Live operating-effectiveness from agent control PASS/FAIL — not blended into gap %">
+                <span class="sq-stat-label">Live controls</span>
+                <strong id="ccLivePercent">—</strong>
+                <em class="mc-trend" id="ccLiveTrend"></em>
+                <span class="sq-stat-sub" id="ccLiveSub">no results yet</span>
+              </button>
+              <button type="button" class="sq-stat sq-stat-impact" data-workspace="impact" title="Canonical controls across frameworks">
+                <span class="sq-stat-label">Cross-framework</span>
+                <strong id="ccImpactValue">—</strong>
+                <span class="sq-stat-sub" id="ccImpactSub">loading…</span>
+              </button>
+              <button type="button" class="sq-stat sq-stat-agents" data-workspace="agents" title="SecuraIQ Agents &amp; packages">
+                <span class="sq-stat-label">Agents</span>
+                <strong id="ccAgentsOnline">0</strong>
+                <em class="mc-trend" id="ccAgentTrend"></em>
+                <span class="sq-stat-sub" id="ccAgentsSub">0 enrolled</span>
+              </button>
+              <button type="button" class="sq-stat sq-stat-crit" data-workspace="vulns" title="Open critical findings">
+                <span class="sq-stat-label">Critical</span>
+                <strong id="ccCrit">0</strong>
+                <em class="mc-trend" id="ccCritTrend"></em>
+                <span class="sq-stat-sub" id="ccFindingsHint">findings</span>
+              </button>
+            </div>
+            <p class="mc-prod-profile hint" id="mcProdProfileBanner">Checking production profile…</p>
+          </section>
+
+<section id="mcFirstRun" class="mc-first-run" aria-label="Quick start">
             <div class="mc-first-run-head">
               <div>
                 <p class="mc-kicker">Start here</p>
-                <h2>Your workspace is ready</h2>
-                <p class="hint">Create a scan: Nmap discovers ports/services → evidence → findings. Import is optional for third-party reports.</p>
+                <h2>Close the control loop</h2>
+                <p class="hint">Enroll an agent → detect control FAIL → approve remediation → verify PASS → evidence + risk drop. Scans remain available when you need discovery.</p>
               </div>
               <div class="mc-first-run-actions">
-                <button type="button" class="btn-primary-cc" id="mcComboAssess" data-action="combo-assess">Combo assessment</button>
+                <button type="button" class="btn-primary-cc" data-workspace="agents">Enroll agent</button>
                 <button type="button" class="btn-secondary" id="mcLiveScan" data-action="new-scan">New scan</button>
-                <button type="button" class="btn-secondary" data-workspace="assets">Add assets</button>
-                <button type="button" class="btn-secondary" data-workspace="vulns">Import (optional)</button>
+                <button type="button" class="btn-secondary" id="mcComboAssess" data-action="combo-assess">Combo assessment</button>
+                <button type="button" class="btn-secondary" data-workspace="compliance_center">Live controls</button>
               </div>
             </div>
             <ol class="mc-checklist" id="mcChecklist">
               <li data-step="org"><button type="button" class="mc-check-btn" data-workspace="orgs"><span>1</span> Organization</button></li>
-              <li data-step="assets"><button type="button" class="mc-check-btn" data-workspace="assets"><span>2</span> Assets</button></li>
-              <li data-step="scan"><button type="button" class="mc-check-btn" data-action="new-scan"><span>3</span> Run scan</button></li>
-              <li data-step="hardening"><button type="button" class="mc-check-btn" data-workspace="frameworks"><span>4</span> Hardening audit</button></li>
-              <li data-step="gap"><button type="button" class="mc-check-btn" data-module="gap"><span>5</span> Gap analysis</button></li>
-              <li data-step="report"><button type="button" class="mc-check-btn" data-workspace="reports"><span>6</span> Reports</button></li>
-              <li data-step="integrations"><button type="button" class="mc-check-btn" data-workspace="integrations"><span>7</span> Connect tools</button></li>
+              <li data-step="agents"><button type="button" class="mc-check-btn" data-workspace="agents"><span>2</span> Enroll agent</button></li>
+              <li data-step="live"><button type="button" class="mc-check-btn" data-workspace="compliance_center"><span>3</span> Live controls</button></li>
+              <li data-step="remediate"><button type="button" class="mc-check-btn" data-workspace="remediations"><span>4</span> Remediate</button></li>
+              <li data-step="verify"><button type="button" class="mc-check-btn" data-workspace="agents"><span>5</span> Verify</button></li>
+              <li data-step="evidence"><button type="button" class="mc-check-btn" data-workspace="evidence"><span>6</span> Evidence</button></li>
+              <li data-step="report"><button type="button" class="mc-check-btn" data-workspace="reports"><span>7</span> Reports</button></li>
             </ol>
           </section>
+
+          
 
           <!-- Always visible (even when Mission Control is empty) so realtime changes are not hidden -->
           <section class="sq-card sq-live-stream rt-always-on" id="sqLiveStream">
@@ -357,60 +421,17 @@
           </div>
 
           <nav class="wz-module-grid" aria-label="Security modules">
-            <button type="button" class="wz-module-card" data-workspace="soc"><span class="wz-mod-ico" aria-hidden="true">◆</span><strong>Security events</strong><em>Incidents &amp; alerts</em></button>
-            <button type="button" class="wz-module-card" data-workspace="vulns"><span class="wz-mod-ico" aria-hidden="true">◆</span><strong>Vulnerability detection</strong><em>CVE · KEV · EPSS</em></button>
-            <button type="button" class="wz-module-card" data-workspace="software"><span class="wz-mod-ico" aria-hidden="true">◆</span><strong>IT hygiene</strong><em>Software &amp; patches</em></button>
-            <button type="button" class="wz-module-card" data-workspace="compliance_center"><span class="wz-mod-ico" aria-hidden="true">◆</span><strong>Regulatory compliance</strong><em>Evidence-backed controls</em></button>
-            <button type="button" class="wz-module-card" data-workspace="intel"><span class="wz-mod-ico" aria-hidden="true">◆</span><strong>Threat intelligence</strong><em>IOC · hunting</em></button>
-            <button type="button" class="wz-module-card" data-workspace="remediations"><span class="wz-mod-ico" aria-hidden="true">◆</span><strong>Incident response</strong><em>Remediate · verify</em></button>
-            <button type="button" class="wz-module-card" data-workspace="assets"><span class="wz-mod-ico" aria-hidden="true">◆</span><strong>Endpoint security</strong><em>Assets · agents</em></button>
-            <button type="button" class="wz-module-card" data-workspace="graph"><span class="wz-mod-ico" aria-hidden="true">◆</span><strong>Attack paths</strong><em>Business risk graph</em></button>
+            <button type="button" class="wz-module-card" data-workspace="soc"><span class="wz-mod-ico" aria-hidden="true">â—†</span><strong>Security events</strong><em>Incidents &amp; alerts</em></button>
+            <button type="button" class="wz-module-card" data-workspace="vulns"><span class="wz-mod-ico" aria-hidden="true">â—†</span><strong>Vulnerability detection</strong><em>CVE · KEV · EPSS</em></button>
+            <button type="button" class="wz-module-card" data-workspace="software"><span class="wz-mod-ico" aria-hidden="true">â—†</span><strong>IT hygiene</strong><em>Software &amp; patches</em></button>
+            <button type="button" class="wz-module-card" data-workspace="compliance_center"><span class="wz-mod-ico" aria-hidden="true">â—†</span><strong>Regulatory compliance</strong><em>Evidence-backed controls</em></button>
+            <button type="button" class="wz-module-card" data-workspace="intel"><span class="wz-mod-ico" aria-hidden="true">â—†</span><strong>Threat intelligence</strong><em>IOC · hunting</em></button>
+            <button type="button" class="wz-module-card" data-workspace="remediations"><span class="wz-mod-ico" aria-hidden="true">â—†</span><strong>Incident response</strong><em>Remediate · verify</em></button>
+            <button type="button" class="wz-module-card" data-workspace="assets"><span class="wz-mod-ico" aria-hidden="true">â—†</span><strong>Endpoint security</strong><em>Assets · agents</em></button>
+            <button type="button" class="wz-module-card" data-workspace="graph"><span class="wz-mod-ico" aria-hidden="true">â—†</span><strong>Attack paths</strong><em>Business risk graph</em></button>
           </nav>
 
-          <div class="sq-stat-row" id="ccKpis" aria-label="Summary metrics">
-            <button type="button" class="sq-stat sq-stat-sec" data-scroll="sqPostureCard" title="Security index from live workspace posture">
-              <span class="sq-stat-label">Security</span>
-              <strong id="ccScore">0</strong>
-              <em class="mc-trend" id="ccScoreTrend"></em>
-              <span class="sq-stat-sub" id="ccScoreLevel">—</span>
-            </button>
-            <button type="button" class="sq-stat sq-stat-risk" data-workspace="executive" title="Organizational exposure — open findings ranked by impact">
-              <span class="sq-stat-label">Risk</span>
-              <strong id="ccOrgRisk">—</strong>
-              <em class="mc-trend" id="ccRiskTrend"></em>
-              <span class="sq-stat-sub" id="ccOrgRiskBand">exposure</span>
-            </button>
-            <button type="button" class="sq-stat sq-stat-comp" data-workspace="compliance_center" title="Assessed frameworks only — evidence supporting controls, not certification">
-              <span class="sq-stat-label">Compliance</span>
-              <strong id="ccCompliance">—</strong>
-              <em class="mc-trend" id="ccCompTrend"></em>
-              <span class="sq-stat-sub" id="ccComplianceSub">not assessed</span>
-            </button>
-            <button type="button" class="sq-stat sq-stat-live" data-workspace="compliance_center" title="Live operating-effectiveness from agent control PASS/FAIL — not blended into gap %">
-              <span class="sq-stat-label">Live controls</span>
-              <strong id="ccLivePercent">—</strong>
-              <em class="mc-trend" id="ccLiveTrend"></em>
-              <span class="sq-stat-sub" id="ccLiveSub">no results yet</span>
-            </button>
-            <button type="button" class="sq-stat sq-stat-impact" data-workspace="impact" title="Canonical controls implemented across every framework they genuinely map to — real cross-framework impact, not a theoretical claim">
-              <span class="sq-stat-label">Cross-framework impact</span>
-              <strong id="ccImpactValue">—</strong>
-              <span class="sq-stat-sub" id="ccImpactSub">loading…</span>
-            </button>
-            <button type="button" class="sq-stat sq-stat-agents" data-workspace="agents" title="SecuraIQ Agents &amp; packages">
-              <span class="sq-stat-label">Agents</span>
-              <strong id="ccAgentsOnline">0</strong>
-              <em class="mc-trend" id="ccAgentTrend"></em>
-              <span class="sq-stat-sub" id="ccAgentsSub">0 enrolled</span>
-            </button>
-            <button type="button" class="sq-stat sq-stat-crit" data-workspace="vulns" title="Open critical findings">
-              <span class="sq-stat-label">Critical</span>
-              <strong id="ccCrit">0</strong>
-              <em class="mc-trend" id="ccCritTrend"></em>
-              <span class="sq-stat-sub" id="ccFindingsHint">findings</span>
-            </button>
-          </div>
-          <p class="mc-prod-profile hint" id="mcProdProfileBanner" style="margin:0.5rem 0 0.75rem">Checking production profile…</p>
+          <!-- KPIs live in #mcPlaneStrip (always-on) — do not duplicate ids here -->
           <!-- Hidden legacy KPI targets kept for SSE / trend helpers -->
           <span id="ccAssets" class="hidden" hidden aria-hidden="true">0</span>
           <span id="sqHighCount" class="hidden" hidden aria-hidden="true">0</span>
@@ -544,7 +565,7 @@
             <header class="sq-card-head"><h3>Risk heat map</h3>
               <button type="button" class="btn-secondary" data-workspace="risks">Open risk register</button>
             </header>
-            <p class="hint" style="margin:0 0 0.25rem">Open risks plotted by impact × likelihood — from your real risk register, not a mockup.</p>
+            <p class="hint" style="margin:0 0 0.25rem">Open risks plotted by impact Ã— likelihood — from your real risk register, not a mockup.</p>
             <div id="ccRiskHeat" class="risk-heat"><p class="hint">Loading…</p></div>
           </section>
 
@@ -571,7 +592,7 @@
               </section>
               <section class="sq-card sw-panel" id="mcSoftwarePanel">
                 <header class="sw-panel-head">
-                  <h3>Software &amp; tools <span class="sw-mc-live-dot" id="mcSoftwareLiveDot" title="Live updates">●</span></h3>
+                  <h3>Software &amp; tools <span class="sw-mc-live-dot" id="mcSoftwareLiveDot" title="Live updates">â—</span></h3>
                   <div class="page-head-actions">
                     <button type="button" class="sw-tab is-active" data-sw-tab="hosts" aria-selected="true">Hosts</button>
                     <button type="button" class="sw-tab" data-sw-tab="tools" aria-selected="false">Local tools</button>
@@ -787,7 +808,7 @@
           <div class="page-head">
             <h1>Automation</h1>
             <div class="page-head-actions">
-              <span class="auto-live-pill" id="automationLivePill" aria-live="polite">○ Connecting</span>
+              <span class="auto-live-pill" id="automationLivePill" aria-live="polite">â—‹ Connecting</span>
               <button type="button" class="btn-secondary" id="automationRefreshJobs">Refresh</button>
               <button type="button" class="btn-primary-cc" data-action="new-scan">New scan</button>
               <button type="button" class="btn-primary-cc" id="automationAskDesign" data-mode="ciso" data-prompt="Design an automation workflow: authorized web or network scan → AI triage → risk → approval → ticket → notify → verify close. Keep web and network scans separate.">Design with AI</button>
@@ -881,7 +902,7 @@
         <section id="viewAgentDetail" class="workspace-view hidden" data-module-page data-view-panel="agent_detail" data-workspace="agent_detail">
           <div class="page-head">
             <div>
-              <button type="button" class="btn-secondary" id="agentDetailBackBtn">← Back to fleet</button>
+              <button type="button" class="btn-secondary" id="agentDetailBackBtn">â† Back to fleet</button>
               <h1 id="agentDetailTitle" style="margin-top:0.65rem">Agent</h1>
               <p class="page-intro hint" id="agentDetailSub" style="margin:0.35rem 0 0">Host detail · inventory · commands</p>
             </div>
@@ -1251,7 +1272,7 @@
         <h2 id="settingsHeading">Settings</h2>
         <button type="button" class="btn-secondary" data-close-settings>Close</button>
       </div>
-      <p class="lan-tip" id="lanTip">Phones/tablets: open this app via your host LAN URL (same Wi‑Fi). Backends run on the host.</p>
+      <p class="lan-tip" id="lanTip">Phones/tablets: open this app via your host LAN URL (same Wiâ€‘Fi). Backends run on the host.</p>
       <form id="settingsForm" class="settings-form">
         <fieldset>
           <legend>Appearance</legend>
@@ -1262,7 +1283,7 @@
               <option value="dark">Dark</option>
             </select>
           </label>
-          <p class="hint">Applies immediately. "System” follows your OS preference until you pick light/dark.</p>
+          <p class="hint">Applies immediately. "System”Â follows your OS preference until you pick light/dark.</p>
         </fieldset>
 
         <fieldset>
@@ -2301,7 +2322,7 @@
     </div>
   </div>
 
-  <script src="/app.js?v=219"></script>
-  <script src="/workspace.js?v=212"></script>
+  <script src="/app.js?v=223"></script>
+  <script src="/workspace.js?v=220"></script>
 </body>
 </html>
