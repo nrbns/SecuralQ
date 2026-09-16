@@ -10667,8 +10667,16 @@ function resolveNotifLink(link) {
   const s = String(link);
   if (s.startsWith("/#")) {
     const hash = s.slice(2).split("?")[0];
+    const qs = s.includes("?") ? s.slice(s.indexOf("?") + 1) : "";
+    const params = new URLSearchParams(qs);
+    const assetId = params.get("asset") || params.get("id");
+    if ((hash === "asset_detail" || hash === "assets") && assetId) {
+      return { workspace: "asset_detail", assetId };
+    }
     return { workspace: hash === "agents" ? "agents" : hash, hash };
   }
+  const assetMatch = s.match(/\/assets\/([^/?#]+)/i);
+  if (assetMatch) return { workspace: "asset_detail", assetId: decodeURIComponent(assetMatch[1]) };
   if (s.includes("/agents")) return { workspace: "agents" };
   if (s.includes("/remediat")) return { workspace: "remediations" };
   if (s.includes("/vuln")) return { workspace: "vulns" };
@@ -10713,6 +10721,11 @@ function renderNotifList(data) {
         }
       }
       const nav = resolveNotifLink(link);
+      if (nav?.assetId && typeof window.openAssetDetail === "function") {
+        document.getElementById("notifPanel")?.classList.add("hidden");
+        window.openAssetDetail(nav.assetId);
+        return;
+      }
       if (nav?.workspace && typeof window.showWorkspace === "function") {
         document.getElementById("notifPanel")?.classList.add("hidden");
         window.showWorkspace(nav.workspace);

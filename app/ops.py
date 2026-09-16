@@ -403,21 +403,45 @@ def global_search(user_id: str, q: str) -> dict[str, Any]:
         results.append({"kind": kind, "title": title, "meta": meta, "ref": ref})
 
     for a in list_assets(user_id):
-        blob = f"{a.get('name','')} {a.get('asset_type','')} {a.get('owner','')}".lower()
+        blob = " ".join(
+            str(a.get(k) or "")
+            for k in ("name", "asset_type", "owner", "ip", "os", "mac", "hostname", "criticality")
+        ).lower()
         if query in blob:
-            add("asset", a.get("name") or "asset", a.get("criticality") or "", a.get("id") or "")
+            meta = " · ".join(
+                x for x in (a.get("ip") or "", a.get("criticality") or "", a.get("os") or "") if x
+            )
+            add("asset", a.get("name") or "asset", meta, a.get("id") or "")
     for r in list_risks(user_id):
         blob = f"{r.get('threat','')} {r.get('asset_name','')} {r.get('owner','')}".lower()
         if query in blob:
             add("risk", r.get("threat") or "risk", f"score {r.get('risk_score')}", r.get("id") or "")
     for v in list_vulnerabilities(user_id):
-        blob = f"{v.get('cve','')} {v.get('title','')} {v.get('asset_name','')}".lower()
+        blob = f"{v.get('cve','')} {v.get('title','')} {v.get('asset_name','')} {v.get('severity','')}".lower()
         if query in blob:
-            add("vuln", f"{v.get('cve') or ''} {v.get('title')}".strip(), v.get("severity") or "", v.get("id") or "")
+            kind = "cve" if (v.get("cve") or "").lower().startswith("cve") or query.startswith("cve") else "vuln"
+            add(
+                kind,
+                f"{v.get('cve') or ''} {v.get('title')}".strip(),
+                f"{v.get('severity') or ''} · {v.get('asset_name') or ''}".strip(" ·"),
+                v.get("id") or "",
+            )
     for rem in list_remediations(user_id):
-        blob = f"{rem.get('control_id','')} {rem.get('title','')}".lower()
+        blob = f"{rem.get('control_id','')} {rem.get('title','')} {rem.get('owner','')}".lower()
         if query in blob:
-            add("remediation", f"{rem.get('control_id')} — {rem.get('title')}", rem.get("status") or "", rem.get("id") or "")
+            add(
+                "remediation",
+                f"{rem.get('control_id')} — {rem.get('title')}",
+                rem.get("status") or "",
+                rem.get("id") or "",
+            )
+            if rem.get("control_id") and query in str(rem.get("control_id") or "").lower():
+                add(
+                    "control",
+                    str(rem.get("control_id")),
+                    rem.get("title") or "remediation control",
+                    rem.get("id") or "",
+                )
     for p in list_playbooks(user_id):
         if query in (p.get("title") or "").lower():
             add("playbook", p.get("title") or "playbook", p.get("severity") or "", p.get("id") or "")
@@ -431,7 +455,95 @@ def global_search(user_id: str, q: str) -> dict[str, Any]:
         if query in (w.get("value") or "").lower():
             add("intel", w.get("value") or "watch", w.get("kind") or "", w.get("id") or "")
 
-    return {"query": q, "results": results[:40], "count": len(results[:40])}
+    try:
+        from app.agents import list_agents
+
+        for ag in list_agents(user_id, limit=100):
+            blob = " ".join(
+                str(ag.get(k) or "") for k in ("hostname", "name", "os", "ip", "status", "id")
+            ).lower()
+            if query in blob:
+                add(
+                    "agent",
+                    ag.get("hostname") or ag.get("name") or ag.get("id") or "agent",
+                    ag.get("status") or "",
+                    ag.get("id") or "",
+                )
+    except Exception:
+        pass
+
+    try:
+        from app.commercial_ext import list_evidence_links
+
+        for ev in list_evidence_links(user_id):
+            blob = " ".join(
+                str(ev.get(k) or "")
+                for k in ("control_id", "filename", "remediation_title", "owner", "status", "note")
+            ).lower()
+            if query in blob:
+                add(
+                    "evidence",
+                    ev.get("filename") or ev.get("control_id") or "evidence",
+                    f"{ev.get('control_id') or ''} · {ev.get('status') or ''}".strip(" ·"),
+                    ev.get("id") or "",
+                )
+    except Exception:
+        pass
+
+    try:
+        from app.gap_analysis import list_assessments
+
+        for asmt in list_assessments(user_id):
+            blob = f"{asmt.get('title','')} {asmt.get('framework_id','')}".lower()
+            if query in blob:
+                add(
+                    "control",
+                    asmt.get("title") or "gap assessment",
+                    f"{asmt.get('framework_id') or ''} · {asmt.get('compliance_percent', '—')}%",
+                    asmt.get("id") or "",
+                )
+    except Exception:
+        pass
+
+    # Catalog control IDs (CMMC / ISO) when query looks like a control ref
+    if len(query) >= 3 and any(ch.isdigit() for ch in query):
+        try:
+            from app.controls.catalog import catalog_frameworks, list_framework_controls
+
+            seen_ctrl: set[str] = set()
+            for fw in catalog_frameworks()[:6]:
+                fid = str(fw.get("id") or "")
+                if not fid:
+                    continue
+                for ctrl in list_framework_controls(fid)[:400]:
+                    cid = str(getattr(ctrl, "id", "") or "")
+                    title = str(getattr(ctrl, "title", "") or "")
+                    blob = f"{cid} {title}".lower()
+                    if query not in blob:
+                        continue
+                    key = f"{fid}:{cid}".lower()
+                    if key in seen_ctrl:
+                        continue
+                    seen_ctrl.add(key)
+                    add("control", cid or title, f"{fid} · {title}"[:120], cid or "")
+                    if len(seen_ctrl) >= 8:
+                        break
+                if len(seen_ctrl) >= 8:
+                    break
+        except Exception:
+            pass
+
+    # Deduplicate identical kind+ref+title
+    deduped: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in results:
+        key = f"{row.get('kind')}|{row.get('ref')}|{row.get('title')}".lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(row)
+
+    return {"query": q, "results": deduped[:40], "count": len(deduped[:40])}
 
 
 def soc_overview(user_id: str) -> dict[str, Any]:

@@ -13033,6 +13033,7 @@
       asset: "assets",
       risk: "risks",
       vuln: "vulns",
+      cve: "vulns",
       remediation: "remediations",
       playbook: "playbooks",
       campaign: "campaigns",
