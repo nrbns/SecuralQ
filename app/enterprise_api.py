@@ -803,6 +803,26 @@ async def assets_list(
     return {"assets": assets, "live_scans": live_scans, "org_id": oid}
 
 
+@router.get("/assets/{asset_id}")
+async def assets_get(
+    asset_id: str,
+    user: Annotated[AuthUser, Depends(require_user)],
+    x_securaiq_org: str | None = Header(default=None, alias="X-SecuraIQ-Org"),
+):
+    """Single-asset security profile for the asset detail page."""
+    oid = resolve_request_org(user, header_org=x_securaiq_org)
+    require_perm(user, "asset.read", org_id=oid)
+    from app.enterprise import enrich_assets_with_scans, get_asset
+
+    asset = get_asset(user.id, asset_id)
+    if not asset:
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=404, detail="Asset not found")
+    assets, live_scans = enrich_assets_with_scans(user.id, [asset])
+    return {"asset": (assets[0] if assets else asset), "live_scans": live_scans, "org_id": oid}
+
+
 @router.post("/assets/lan-refresh")
 async def assets_lan_refresh(
     user: Annotated[AuthUser, Depends(require_user)],

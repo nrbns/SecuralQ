@@ -33,7 +33,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/style.css?v=175" />
+  <link rel="stylesheet" href="/style.css?v=176" />
   <script src="/vendor/marked.min.js"></script>
 </head>
 <body>
@@ -862,10 +862,18 @@
           <div id="automationPageBody"></div>
         </section>
         <section id="viewRemediations" class="workspace-view hidden" data-module-page data-view-panel="remediations">
-          <div class="page-head"><h1>Remediation tracker</h1>
+          <div class="page-head"><h1>Remediation Center</h1>
             <div class="page-head-actions">
               <button type="button" class="btn-secondary" id="remsOpenGap">Run gap analysis</button>
+              <button type="button" class="btn-secondary" data-workspace="agents">Pending approvals</button>
             </div>
+          </div>
+          <div class="cc-kpi-grid rem-kpi-strip" id="remsKpiStrip" aria-label="Remediation lifecycle">
+            <article class="cc-kpi"><span>Recommended</span><strong id="remKpiRecommended">—</strong></article>
+            <article class="cc-kpi"><span>Pending</span><strong id="remKpiPending">—</strong></article>
+            <article class="cc-kpi"><span>Executing</span><strong id="remKpiExecuting">—</strong></article>
+            <article class="cc-kpi"><span>Verifying</span><strong id="remKpiVerifying">—</strong></article>
+            <article class="cc-kpi"><span>Completed</span><strong id="remKpiCompleted">—</strong></article>
           </div>
           <form id="remCreateForm" class="inline-form" style="margin-bottom:1rem">
             <input id="remNewTitle" placeholder="New remediation title" required style="min-width:14rem" />
@@ -946,13 +954,24 @@
         <section id="viewAgentDetail" class="workspace-view hidden" data-module-page data-view-panel="agent_detail" data-workspace="agent_detail">
           <div class="page-head">
             <div>
-              <button type="button" class="btn-secondary" id="agentDetailBackBtn">â† Back to fleet</button>
+              <button type="button" class="btn-secondary" id="agentDetailBackBtn">← Back to fleet</button>
               <h1 id="agentDetailTitle" style="margin-top:0.65rem">Agent</h1>
               <p class="page-intro hint" id="agentDetailSub" style="margin:0.35rem 0 0">Host detail · inventory · commands</p>
             </div>
             <div class="page-head-actions" id="agentDetailHeadActions" style="display:flex;gap:0.5rem;flex-wrap:wrap"></div>
           </div>
           <div id="agentDetailBody"><p class="hint">Select an agent from the fleet list.</p></div>
+        </section>
+        <section id="viewAssetDetail" class="workspace-view hidden" data-module-page data-view-panel="asset_detail" data-workspace="asset_detail">
+          <div class="page-head">
+            <div>
+              <button type="button" class="btn-secondary" id="assetDetailBackBtn">← Back to assets</button>
+              <h1 id="assetDetailTitle" style="margin-top:0.65rem">Asset</h1>
+              <p class="page-intro hint" id="assetDetailSub" style="margin:0.35rem 0 0">Security profile · software · findings · activity</p>
+            </div>
+            <div class="page-head-actions" id="assetDetailHeadActions" style="display:flex;gap:0.5rem;flex-wrap:wrap"></div>
+          </div>
+          <div id="assetDetailBody"><p class="hint">Select an asset from inventory.</p></div>
         </section>
         <section id="viewExecutive" class="workspace-view hidden" data-module-page data-view-panel="executive">
           <div class="page-head">
@@ -2429,7 +2448,7 @@
     </div>
   </div>
 
-  <script src="/app.js?v=225"></script>
-  <script src="/workspace.js?v=222"></script>
+  <script src="/app.js?v=226"></script>
+  <script src="/workspace.js?v=223"></script>
 </body>
 </html>

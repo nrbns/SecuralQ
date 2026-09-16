@@ -9353,3 +9353,10 @@ a.agents-pkg-dl {
   border-color: #86efac;
   background: #f0fdf4;
 }
+
+/* Rem / notif productization */
+.rem-kpi-strip { margin: 0 0 1rem; }
+.notif-item { display:block; width:100%; text-align:left; border:0; background:transparent; cursor:pointer; padding:0.55rem 0.65rem; font:inherit; color:inherit; border-bottom:1px solid var(--border,#eee); }
+.notif-item:hover { background: color-mix(in srgb, var(--sq-accent,#2563eb) 8%, transparent); }
+.notif-kind { display:inline-block; font-size:0.65rem; font-weight:800; letter-spacing:0.04em; text-transform:uppercase; color:var(--muted,#667); margin-right:0.35rem; }
+.asset-tab.is-active { border-color: var(--accent-border,#93c5fd); background: color-mix(in srgb, var(--sq-accent,#2563eb) 10%, transparent); }

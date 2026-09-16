@@ -3448,13 +3448,11 @@ function startRealtimeFeed(opts) {
         }
         if (pushType === "notification" && typeof refreshNotifBadge === "function") {
           clearTimeout(window.__securaiqNotifRtTimer);
-          window.__securaiqNotifRtTimer = setTimeout(() => {
-            refreshNotifBadge();
+          window.__securaiqNotifRtTimer = setTimeout(async () => {
+            const data = await refreshNotifBadge();
             const panel = document.getElementById("notifPanel");
-            if (panel && !panel.hidden && typeof fetchNotifications === "function") {
-              fetchNotifications().then((d) => {
-                if (d && typeof renderNotifList === "function") renderNotifList(d);
-              });
+            if (panel && !panel.classList.contains("hidden") && data && typeof renderNotifList === "function") {
+              renderNotifList(data);
             }
           }, 250);
         }
@@ -10664,35 +10662,60 @@ function setNotifBadge(count) {
   badge.textContent = String(Math.min(99, n));
 }
 
+function resolveNotifLink(link) {
+  if (!link) return null;
+  const s = String(link);
+  if (s.startsWith("/#")) {
+    const hash = s.slice(2).split("?")[0];
+    return { workspace: hash === "agents" ? "agents" : hash, hash };
+  }
+  if (s.includes("/agents")) return { workspace: "agents" };
+  if (s.includes("/remediat")) return { workspace: "remediations" };
+  if (s.includes("/vuln")) return { workspace: "vulns" };
+  if (s.includes("/compliance")) return { workspace: "compliance_center" };
+  if (s.includes("/evidence")) return { workspace: "evidence" };
+  if (s.includes("/incident") || s.includes("/soc")) return { workspace: "soc" };
+  if (s.includes("/asset")) return { workspace: "assets" };
+  return null;
+}
+
 function renderNotifList(data) {
   const list = document.getElementById("notifList");
   if (!list) return;
   const items = data?.notifications || [];
   if (!items.length) {
-    list.innerHTML = '<p class="notif-empty">No notifications yet.</p>';
+    list.innerHTML = '<p class="notif-empty">No notifications yet — critical findings, control failures, and agent events appear here.</p>';
     return;
   }
   list.innerHTML = items
     .map((n) => {
       const time = n.created_at ? new Date(n.created_at * 1000).toLocaleString() : "";
-      return `<div class="notif-item ${n.read ? "" : "unread"}" data-id="${n.id}">
-        <div class="notif-title">${escapeHtml(n.title || "")}</div>
+      const kind = (n.kind || n.type || "info").toLowerCase();
+      return `<button type="button" class="notif-item ${n.read ? "" : "unread"}" data-id="${escapeHtml(n.id)}" data-link="${escapeHtml(n.link || "")}">
+        <div class="notif-title"><span class="notif-kind">${escapeHtml(kind)}</span> ${escapeHtml(n.title || "")}</div>
         ${n.body ? `<div class="notif-body">${escapeHtml(n.body)}</div>` : ""}
         <div class="notif-time">${escapeHtml(time)}</div>
-      </div>`;
+      </button>`;
     })
     .join("");
   list.querySelectorAll(".notif-item").forEach((el) => {
     el.addEventListener("click", async () => {
       const id = el.getAttribute("data-id");
-      if (!el.classList.contains("unread")) return;
-      el.classList.remove("unread");
-      try {
-        await fetch(`/api/notifications/${id}/read`, { method: "POST", headers: authHeaders() });
-        const fresh = await fetchNotifications();
-        if (fresh) setNotifBadge(fresh.unread_count);
-      } catch {
-        /* badge just stays slightly stale — not worth surfacing an error for */
+      const link = el.getAttribute("data-link");
+      if (el.classList.contains("unread")) {
+        el.classList.remove("unread");
+        try {
+          await fetch(`/api/notifications/${id}/read`, { method: "POST", headers: authHeaders() });
+          const fresh = await fetchNotifications();
+          if (fresh) setNotifBadge(fresh.unread_count);
+        } catch {
+          /* ignore */
+        }
+      }
+      const nav = resolveNotifLink(link);
+      if (nav?.workspace && typeof window.showWorkspace === "function") {
+        document.getElementById("notifPanel")?.classList.add("hidden");
+        window.showWorkspace(nav.workspace);
       }
     });
   });

@@ -333,6 +333,7 @@
       command: "viewCommand",
       chat: "viewChat",
       assets: "viewAssets",
+      asset_detail: "viewAssetDetail",
       software: "viewSoftware",
       risks: "viewRisks",
       vulns: "viewVulns",
@@ -373,7 +374,7 @@
     setPageComposerHint(view);
     document.querySelectorAll(".nav-item[data-view], .nav-link[data-workspace]").forEach((el) => {
       const v = el.getAttribute("data-view") || el.getAttribute("data-workspace");
-      const active = v === view || (view === "agent_detail" && v === "agents");
+      const active = v === view || (view === "agent_detail" && v === "agents") || (view === "asset_detail" && v === "assets");
       el.classList.toggle("active", active);
     });
     const title = qs("topbarChatTitle");
@@ -382,6 +383,7 @@
         command: "Command Center",
         chat: "AI Assistant",
         assets: "Assets",
+        asset_detail: "Asset detail",
         software: "Software inventory",
         risks: "Risk Register",
         vulns: "Vulnerabilities",
@@ -416,6 +418,7 @@
     if (view === "command") loadImpactHeroStat();
     if (view === "chat" && typeof syncEmptyState === "function") syncEmptyState();
     if (view === "assets") renderAssetsPage();
+    if (view === "asset_detail") renderAssetDetailPage(window.__securaiqSelectedAssetId);
     if (view === "software") renderSoftwarePage();
     if (view === "risks") renderRisksPage();
     if (view === "vulns") renderVulnsPage();
@@ -655,6 +658,7 @@
         <td>${patchCell}</td>
         <td class="ws-actions">
           <button type="button" class="btn-primary-cc ws-scan-asset" data-target="${escapeHtml(scanTarget)}">Scan</button>
+          <button type="button" class="btn-secondary ws-asset-detail" data-id="${escapeHtml(a.id || "")}">Details</button>
           <button type="button" class="btn-secondary ws-asset-software" data-id="${escapeHtml(a.id || "")}" data-name="${escapeHtml(
             title || a.name || ""
           )}">Software</button>
@@ -1029,6 +1033,9 @@
         };
         showWorkspace("software");
       });
+    });
+    qs("assetsPageBody")?.querySelectorAll(".ws-asset-detail").forEach((btn) => {
+      btn.addEventListener("click", () => openAssetDetail(btn.getAttribute("data-id")));
     });
     qs("assetsPageBody")?.querySelectorAll(".ws-asset-patch").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -3577,7 +3584,40 @@
       }
       return;
     }
-    const rows = (data.remediations || [])
+    const remediations = data.remediations || [];
+    let pendingCmds = [];
+    try {
+      const pendingRes = await fetch("/api/agents/commands/pending?limit=100", { headers: authHeaders() });
+      if (pendingRes.ok) {
+        const pd = await pendingRes.json().catch(() => ({}));
+        pendingCmds = pd.commands || pd.items || [];
+      }
+    } catch {
+      /* optional */
+    }
+    const openRows = remediations.filter((r) => (r.status || "open") !== "done");
+    const doneRows = remediations.filter((r) => (r.status || "") === "done");
+    const recommended = openRows.filter((r) =>
+      /auto|recommend|control.?test|agent/i.test(`${r.notes || ""} ${r.recommendation || ""} ${r.source || ""}`)
+    ).length;
+    const pendingExtra = pendingCmds.filter((c) =>
+      /pending|approval|recommended/i.test(String(c.status || c.state || ""))
+    ).length;
+    const executing = pendingCmds.filter((c) =>
+      /execut|sent|ack|dispatch|deliver/i.test(String(c.status || c.state || ""))
+    ).length;
+    const verifying = pendingCmds.filter((c) => /verif/i.test(String(c.status || c.state || ""))).length;
+    const setK = (id, n) => {
+      const el = qs(id);
+      if (el) el.textContent = String(n);
+    };
+    setK("remKpiRecommended", recommended || openRows.length);
+    setK("remKpiPending", Math.max(0, openRows.length - recommended) + pendingExtra);
+    setK("remKpiExecuting", executing);
+    setK("remKpiVerifying", verifying);
+    setK("remKpiCompleted", doneRows.length);
+
+    const rows = remediations
       .map((r) => {
         const narrative =
           typeof window.renderNarrativeBlock === "function"
@@ -3625,6 +3665,16 @@
       rows,
       "No remediations — run Gap analysis or approve an agent fix"
     );
+    if (pendingCmds.length) {
+      const host = qs("remsPageBody");
+      if (host) {
+        const note = document.createElement("p");
+        note.className = "hint";
+        note.style.marginTop = "0.75rem";
+        note.textContent = `${pendingCmds.length} agent command(s) awaiting approval/execution — open Agents → Pending Approvals.`;
+        host.appendChild(note);
+      }
+    }
     wireAskAiButtons("remsPageBody");
     qs("remsPageBody")?.querySelectorAll(".ws-rem-expand").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -5913,6 +5963,179 @@
     return (st || "—").toUpperCase();
   }
 
+  function openAssetDetail(assetId) {
+    if (!assetId) return;
+    window.__securaiqSelectedAssetId = assetId;
+    if (!window.__securaiqAssetDetailTab) window.__securaiqAssetDetailTab = "overview";
+    window.showWorkspace?.("asset_detail");
+  }
+  window.openAssetDetail = openAssetDetail;
+
+  async function renderAssetDetailPage(assetId) {
+    const body = qs("assetDetailBody");
+    const titleEl = qs("assetDetailTitle");
+    const subEl = qs("assetDetailSub");
+    const actionsEl = qs("assetDetailHeadActions");
+    if (!body) return;
+    const id = assetId || window.__securaiqSelectedAssetId;
+    if (!id) {
+      body.innerHTML = `<p class="hint">No asset selected — <button type="button" class="btn-secondary" id="assetDetailBackInline">Back to inventory</button></p>`;
+      qs("assetDetailBackInline")?.addEventListener("click", () => showWorkspace("assets"));
+      return;
+    }
+    body.innerHTML = `<p class="hint">Loading asset profile…</p>`;
+    let asset = {};
+    let software = [];
+    let deps = [];
+    let vulns = [];
+    try {
+      const [aRes, sRes, dRes, vRes] = await Promise.all([
+        fetch(`/api/assets/${encodeURIComponent(id)}`, { headers: authHeaders() }),
+        fetch(`/api/assets/${encodeURIComponent(id)}/software?limit=100`, { headers: authHeaders() }).catch(() => null),
+        fetch(`/api/assets/${encodeURIComponent(id)}/dependencies`, { headers: authHeaders() }).catch(() => null),
+        fetch(`/api/vulnerabilities?limit=200`, { headers: authHeaders() }).catch(() => null),
+      ]);
+      const aData = await aRes.json().catch(() => ({}));
+      if (!aRes.ok) throw new Error(aData.detail || `HTTP ${aRes.status}`);
+      asset = aData.asset || aData || {};
+      if (sRes && sRes.ok) {
+        const sd = await sRes.json().catch(() => ({}));
+        software = sd.software || sd.items || sd.products || [];
+      }
+      if (dRes && dRes.ok) {
+        const dd = await dRes.json().catch(() => ({}));
+        deps = dd.dependencies || dd.items || [];
+      }
+      if (vRes && vRes.ok) {
+        const vd = await vRes.json().catch(() => ({}));
+        const all = vd.vulnerabilities || vd.items || [];
+        vulns = all.filter((v) => String(v.asset_id || "") === String(id) || String(v.asset_name || "") === String(asset.name || ""));
+      }
+    } catch (err) {
+      body.innerHTML = `<p class="hint">Could not load asset: ${escapeHtml(err.message || String(err))}</p>`;
+      return;
+    }
+    const label = displayAssetLabel(asset) || asset.name || id;
+    if (titleEl) titleEl.textContent = label;
+    if (subEl) {
+      subEl.textContent = [asset.ip, asset.os, asset.asset_type || asset.category]
+        .filter(Boolean)
+        .join(" · ") || "Security profile";
+    }
+    if (actionsEl) {
+      actionsEl.innerHTML = `
+        <button type="button" class="btn-secondary" id="assetDetailScan" data-target="${escapeHtml(asset.ip || asset.name || "")}">Scan</button>
+        <button type="button" class="btn-secondary" data-workspace="agents">Agents</button>
+        <button type="button" class="btn-secondary" data-workspace="vulns">Findings</button>`;
+      actionsEl.querySelectorAll("[data-workspace]").forEach((b) =>
+        b.addEventListener("click", () => showWorkspace(b.getAttribute("data-workspace")))
+      );
+      actionsEl.querySelector("#assetDetailScan")?.addEventListener("click", () => {
+        const t = actionsEl.querySelector("#assetDetailScan")?.getAttribute("data-target");
+        if (t && typeof window.queueLiveScan === "function") window.queueLiveScan(t);
+        else if (t) showWorkspace("reports");
+      });
+    }
+    qs("assetDetailBackBtn")?.addEventListener("click", () => showWorkspace("assets"), { once: true });
+
+    const tab = window.__securaiqAssetDetailTab || "overview";
+    const tabs = [
+      ["overview", "Overview"],
+      ["software", "Software"],
+      ["vulns", "Vulnerabilities"],
+      ["deps", "Dependencies"],
+      ["activity", "Activity"],
+    ];
+    const crit = vulns.filter((v) => /critical|high/i.test(v.severity || "")).length;
+    const narrative =
+      typeof window.renderNarrativeBlock === "function"
+        ? window.renderNarrativeBlock({
+            what: label,
+            why: `${asset.criticality || "medium"} criticality · ${asset.asset_type || "asset"}`,
+            evidence: `${software.length} software · ${vulns.length} findings`,
+            impact: crit ? `${crit} critical/high open` : "No critical/high on this host",
+            action: "Scan / patch via Agents / open remediations",
+            verify: "Retest after remediation",
+          })
+        : "";
+
+    let pane = "";
+    if (tab === "overview") {
+      pane = `
+        <div class="cc-kpi-grid" style="margin:0 0 0.75rem">
+          <article class="cc-kpi"><span>Risk / criticality</span><strong>${escapeHtml(asset.criticality || "—")}</strong></article>
+          <article class="cc-kpi"><span>Findings</span><strong>${vulns.length}</strong></article>
+          <article class="cc-kpi"><span>Critical/High</span><strong>${crit}</strong></article>
+          <article class="cc-kpi"><span>Software</span><strong>${software.length}</strong></article>
+          <article class="cc-kpi"><span>Last scan</span><strong>${escapeHtml(asset.last_scan_status || "—")}</strong></article>
+        </div>
+        ${narrative}
+        <ul class="cc-list">
+          <li>Owner — <strong>${escapeHtml(asset.owner || "unassigned")}</strong></li>
+          <li>IP — <strong>${escapeHtml(asset.ip || "—")}</strong></li>
+          <li>OS — <strong>${escapeHtml(asset.os || "—")}</strong></li>
+          <li>MAC — <strong>${escapeHtml(asset.mac || "—")}</strong></li>
+          <li>CMMC scope — <strong>${escapeHtml(asset.cmmc_asset_category || "not classified")}</strong></li>
+        </ul>`;
+    } else if (tab === "software") {
+      pane = software.length
+        ? `<div class="data-table-wrap"><table class="data-table"><thead><tr><th>Product</th><th>Version</th><th>Status</th></tr></thead><tbody>${software
+            .slice(0, 80)
+            .map(
+              (s) =>
+                `<tr><td>${escapeHtml(s.name || s.product || s.title || "—")}</td><td>${escapeHtml(
+                  s.version || "—"
+                )}</td><td>${escapeHtml(s.status || s.patch_status || "—")}</td></tr>`
+            )
+            .join("")}</tbody></table></div>`
+        : `<p class="hint">No software inventory for this asset yet — sync inventory or open Software &amp; patches.</p>`;
+    } else if (tab === "vulns") {
+      pane = vulns.length
+        ? `<div class="data-table-wrap"><table class="data-table"><thead><tr><th>Finding</th><th>Severity</th><th>Status</th></tr></thead><tbody>${vulns
+            .slice(0, 60)
+            .map(
+              (v) =>
+                `<tr><td>${escapeHtml(v.title || v.cve || v.id)}</td><td>${escapeHtml(
+                  v.severity || "—"
+                )}</td><td>${escapeHtml(v.status || "open")}</td></tr>`
+            )
+            .join("")}</tbody></table></div>`
+        : `<p class="hint">No vulnerabilities linked to this asset.</p>`;
+    } else if (tab === "deps") {
+      pane = deps.length
+        ? `<ul class="cc-list">${deps
+            .map((d) => `<li>${escapeHtml(d.target_name || d.target_id || d.id)} · ${escapeHtml(d.relation || d.kind || "depends")}</li>`)
+            .join("")}</ul>`
+        : `<p class="hint">No dependency links yet.</p>`;
+    } else {
+      pane = `<p class="hint">Activity stream uses Mission Control Live activity for org-wide events. Asset-scoped timeline expands with agent telemetry.</p>
+        <button type="button" class="btn-secondary" data-view="command">Open Command Center stream</button>`;
+    }
+
+    body.innerHTML = `
+      <nav class="agent-detail-tabs" style="display:flex;gap:0.35rem;flex-wrap:wrap;margin-bottom:0.75rem">
+        ${tabs
+          .map(
+            ([k, lab]) =>
+              `<button type="button" class="btn-secondary asset-tab ${k === tab ? "is-active" : ""}" data-tab="${k}">${lab}</button>`
+          )
+          .join("")}
+      </nav>
+      <div class="asset-detail-pane">${pane}</div>`;
+    body.querySelectorAll(".asset-tab").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        window.__securaiqAssetDetailTab = btn.getAttribute("data-tab");
+        renderAssetDetailPage(id);
+      });
+    });
+    body.querySelectorAll("[data-view]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        if (typeof showView === "function") showView(btn.getAttribute("data-view"));
+      });
+    });
+  }
+  window.renderAssetDetailPage = renderAssetDetailPage;
+
   function openAgentDetail(agentId) {
     if (!agentId) return;
     window.__securaiqSelectedAgentId = agentId;
@@ -7286,7 +7509,9 @@
       });
       el.querySelectorAll(".agents-view-asset").forEach((btn) => {
         btn.addEventListener("click", () => {
-          window.showWorkspace?.("assets");
+          const aid = btn.getAttribute("data-asset-id") || btn.getAttribute("data-id");
+          if (aid && typeof openAssetDetail === "function") openAssetDetail(aid);
+          else window.showWorkspace?.("assets");
         });
       });
       el.querySelectorAll(".agents-open-detail").forEach((btn) => {
@@ -12813,6 +13038,9 @@
       campaign: "campaigns",
       incident: "soc",
       intel: "intel",
+      control: "control_center",
+      evidence: "evidence",
+      agent: "agents",
     };
 
     function hideSearchResults() {
@@ -12840,7 +13068,9 @@
         .slice(0, 12)
         .map(
           (r) =>
-            `<button type="button" class="search-hit" data-kind="${escapeHtml(r.kind || "")}">
+            `<button type="button" class="search-hit" data-kind="${escapeHtml(r.kind || "")}" data-ref="${escapeHtml(
+              r.ref || r.id || ""
+            )}">
               <span class="search-kind">${escapeHtml(r.kind || "")}</span>
               <strong>${escapeHtml(r.title || r.name || r.id || "")}</strong>
               <span class="hint">${escapeHtml(r.meta || r.subtitle || r.summary || "")}</span>
@@ -12851,13 +13081,23 @@
       resultsEl.querySelectorAll(".search-hit").forEach((btn) => {
         btn.addEventListener("click", () => {
           const kind = btn.getAttribute("data-kind");
+          const ref = btn.getAttribute("data-ref");
           hideSearchResults();
+          if (kind === "asset" && ref && typeof openAssetDetail === "function") {
+            openAssetDetail(ref);
+            return;
+          }
+          if (kind === "agent" && ref && typeof openAgentDetail === "function") {
+            openAgentDetail(ref);
+            return;
+          }
           showWorkspace(route[kind] || "command");
         });
       });
     }
 
     if (searchEl) {
+      let debounceTimer = null;
       searchEl.addEventListener("keydown", async (e) => {
         if (e.key === "Escape") {
           hideSearchResults();
@@ -12869,10 +13109,23 @@
         await runGlobalSearch(searchEl.value.trim());
       });
       searchEl.addEventListener("input", () => {
-        if (!searchEl.value.trim()) hideSearchResults();
+        const q = searchEl.value.trim();
+        if (!q) {
+          hideSearchResults();
+          return;
+        }
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => runGlobalSearch(q), 280);
       });
       document.addEventListener("click", (e) => {
         if (!e.target.closest?.(".topbar-search-wrap")) hideSearchResults();
+      });
+      document.addEventListener("keydown", (e) => {
+        if ((e.metaKey || e.ctrlKey) && String(e.key || "").toLowerCase() === "k") {
+          e.preventDefault();
+          searchEl.focus();
+          searchEl.select?.();
+        }
       });
     }
   }
