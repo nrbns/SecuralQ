@@ -9139,3 +9139,144 @@ a.agents-pkg-dl {
   color: var(--muted, #889);
   font-size: 0.8em;
 }
+/* Command Center ops home — WHAT / WHY / DO / FIXED */
+.mc-ops-home {
+  margin: 0.75rem 0 1rem;
+  max-width: min(100%, 72rem);
+}
+#viewCommand.mc-is-empty .mc-ops-home {
+  margin-left: auto;
+  margin-right: auto;
+  width: min(100%, 56rem);
+}
+.mc-ops-grid {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+@media (max-width: 1100px) {
+  .mc-ops-grid { grid-template-columns: 1fr; }
+}
+.mc-ops-card {
+  border: 1px solid var(--border, #d0d7de);
+  border-radius: 10px;
+  background: var(--sq-card, #fff);
+  padding: 0.75rem 0.85rem;
+  min-height: 8.5rem;
+}
+.mc-ops-card > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.55rem;
+}
+.mc-ops-card > header h3 {
+  margin: 0;
+  font-size: 0.82rem;
+  font-weight: 750;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--muted, #667);
+}
+.mc-ops-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.4rem;
+}
+.mc-ops-item {
+  width: 100%;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 0.55rem;
+  align-items: start;
+  text-align: left;
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 8px;
+  background: var(--panel, #fafbfc);
+  padding: 0.45rem 0.55rem;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+.mc-ops-item:hover {
+  border-color: var(--accent-border, #93c5fd);
+  background: color-mix(in srgb, var(--sq-accent, #2563eb) 8%, transparent);
+}
+.mc-ops-rank {
+  display: grid;
+  place-items: center;
+  width: 1.35rem;
+  height: 1.35rem;
+  border-radius: 999px;
+  background: var(--accent-soft, #dbeafe);
+  color: var(--accent-hover, #1d4ed8);
+  font-size: 0.7rem;
+  font-weight: 800;
+}
+.mc-ops-body {
+  display: grid;
+  gap: 0.1rem;
+  min-width: 0;
+}
+.mc-ops-body strong {
+  font-size: 0.88rem;
+  line-height: 1.25;
+}
+.mc-ops-body em {
+  font-style: normal;
+  font-size: 0.75rem;
+  color: var(--muted, #667);
+}
+.mc-ops-impact {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: #b45309;
+  white-space: nowrap;
+}
+.mc-ops-stats {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.35rem;
+}
+.mc-ops-stats li {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-size: 0.84rem;
+}
+.mc-ops-stats span { color: var(--muted, #667); }
+.mc-ops-stats strong { font-variant-numeric: tabular-nums; }
+.mc-ops-flow {
+  margin: 0;
+  display: grid;
+  gap: 0.45rem;
+}
+.mc-ops-flow > div {
+  display: grid;
+  grid-template-columns: 3.2rem 1fr;
+  gap: 0.45rem;
+  align-items: start;
+}
+.mc-ops-flow dt {
+  margin: 0;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted, #667);
+  padding-top: 0.15rem;
+}
+.mc-ops-flow dd {
+  margin: 0;
+  font-size: 0.86rem;
+  line-height: 1.35;
+}
+.mc-ops-action { border-left: 3px solid #dc2626; }
+.mc-ops-fixed { border-left: 3px solid #059669; }
+.mc-ops-decision { border-left: 3px solid #2563eb; }

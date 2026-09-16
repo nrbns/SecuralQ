@@ -5458,6 +5458,7 @@ async function loadCommandCenter() {
           "Empty workspace — add an asset or run an authorized scan. Compliance stays unassessed until gap analysis.";
       }
       renderSqPostureBars(data, 0, 0);
+      renderMcOpsHome(data);
       renderFixFirstPanel([]);
       renderCcLiveStream([], data);
       wireCcKpiNavOnce();
@@ -5500,6 +5501,7 @@ async function loadCommandCenter() {
 
     // Work queue
     renderWorkQueue(data.work_queue || []);
+    renderMcOpsHome(data);
     renderMcDecisionPanel(data);
     renderMcCharts(data);
     renderAttentionDashboard(data, recentScans);
@@ -5927,6 +5929,135 @@ function renderWorkQueue(items) {
 }
 window.renderWorkQueue = renderWorkQueue;
 
+function renderMcOpsHome(data) {
+  data = data || {};
+  const brief = data.morning_brief || {};
+  const wq = data.work_queue || [];
+  const attention = data.needs_attention || data.pending_approvals || [];
+  const fix = data.fix_first || [];
+  const wf = data.workflow || {};
+  const trends = data.kpi_trends || {};
+  const live = data.live_compliance || {};
+  const list = document.getElementById("mcActionRequiredList");
+  if (list) {
+    const items = [];
+    for (const w of wq.slice(0, 3)) {
+      items.push({
+        title: w.title,
+        why: w.ai || `Priority ${(w.priority || "medium").toLowerCase()}`,
+        impact: w.risk != null ? `Risk ${w.risk}` : (w.priority || "").toUpperCase(),
+        workspace: w.workspace || "remediations",
+      });
+    }
+    for (const a of attention.slice(0, 3 - items.length)) {
+      items.push({
+        title: a.title || a.control_id || "Pending approval",
+        why: `${a.kind || "remediation"} · ${a.owner || "Unassigned"}`,
+        impact: (a.status || "open").toUpperCase(),
+        workspace: a.kind === "incident" ? "soc" : "remediations",
+      });
+    }
+    if (!items.length && (brief.attention || brief.next_step)) {
+      items.push({
+        title: brief.attention || brief.next_step,
+        why: brief.summary || "From morning brief",
+        impact: "TODAY",
+        workspace: "remediations",
+      });
+    }
+    if (!items.length) {
+      list.innerHTML = `<li class="hint">No urgent actions — enroll an agent or run live controls to populate the queue.</li>`;
+    } else {
+      list.innerHTML = items
+        .map(
+          (it, i) => `<li>
+            <button type="button" class="mc-ops-item" data-workspace="${escapeHtml(it.workspace)}">
+              <span class="mc-ops-rank">${i + 1}</span>
+              <span class="mc-ops-body">
+                <strong>${escapeHtml(it.title)}</strong>
+                <em>${escapeHtml(it.why)}</em>
+              </span>
+              <span class="mc-ops-impact">${escapeHtml(it.impact)}</span>
+            </button>
+          </li>`
+        )
+        .join("");
+      list.querySelectorAll("[data-workspace]").forEach((btn) => {
+        btn.addEventListener("click", () => window.showWorkspace?.(btn.getAttribute("data-workspace")));
+      });
+    }
+  }
+
+  const setTxt = (id, v) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = v;
+  };
+  const closed = Number(wf.closed || 0);
+  const passN = Number(live.passing || 0);
+  const riskDelta = trends.risks_delta;
+  const vulnsDelta = trends.vulns_delta;
+  const topImpact = fix[0]?.estimated_risk_reduction_pct;
+  setTxt("mcFixedClosed", String(closed));
+  setTxt("mcFixedControls", passN ? `${passN} PASS` : "—");
+  if (riskDelta != null || vulnsDelta != null) {
+    const parts = [];
+    if (riskDelta != null) parts.push(`risks ${riskDelta > 0 ? "+" : ""}${riskDelta}`);
+    if (vulnsDelta != null) parts.push(`vulns ${vulnsDelta > 0 ? "+" : ""}${vulnsDelta}`);
+    setTxt("mcFixedRiskDelta", parts.join(" · ") || "—");
+  } else {
+    setTxt("mcFixedRiskDelta", trends.has_baseline ? "flat" : "no baseline yet");
+  }
+  setTxt(
+    "mcFixedTopImpact",
+    topImpact != null ? `↓ ${topImpact}% if fixed` : fix[0]?.title ? "ranked" : "—"
+  );
+  const note = document.getElementById("mcFixedNote");
+  if (note) {
+    note.textContent = closed
+      ? `${closed} finding(s) closed in lifecycle · live controls ${live.live_percent != null ? Math.round(Number(live.live_percent)) + "%" : "—"}`
+      : "Verified closes only — complete remediate → verify to move the needle.";
+  }
+
+  const what = document.getElementById("mcOpsWhat");
+  const why = document.getElementById("mcOpsWhy");
+  const doit = document.getElementById("mcOpsDo");
+  const fixed = document.getElementById("mcOpsFixed");
+  const top = wq[0] || fix[0];
+  if (what) {
+    what.textContent =
+      brief.attention ||
+      top?.title ||
+      (data.is_empty ? "Workspace empty — enroll an agent to start the control loop" : "Monitoring posture");
+  }
+  if (why) {
+    why.textContent =
+      top?.ai ||
+      top?.reasons?.[0] ||
+      brief.summary ||
+      (Number(data.vulnerabilities_critical_high || 0)
+        ? `${data.vulnerabilities_critical_high} critical/high findings open`
+        : "No critical queue pressure");
+  }
+  if (doit) {
+    doit.textContent =
+      brief.next_step ||
+      top?.prompt ||
+      (data.is_empty ? "Open Agents → enroll endpoint" : "Triage Action required, then approve remediation");
+  }
+  if (fixed) {
+    fixed.textContent = closed
+      ? `${closed} closed · ${passN} controls PASS`
+      : "Nothing verified closed yet today";
+  }
+
+  document.querySelectorAll("#mcOpsHome [data-workspace]").forEach((btn) => {
+    if (btn.dataset.opsWired) return;
+    btn.dataset.opsWired = "1";
+    btn.addEventListener("click", () => window.showWorkspace?.(btn.getAttribute("data-workspace")));
+  });
+}
+window.renderMcOpsHome = renderMcOpsHome;
+
 function renderMcDecisionPanel(data) {
   const what = document.getElementById("mcDecisionWhat");
   const why = document.getElementById("mcDecisionWhy");
@@ -5937,18 +6068,26 @@ function renderMcDecisionPanel(data) {
   const top = wq[0];
   const crit = data.vulnerabilities_critical_high || 0;
   const risks = data.risks_open || 0;
+  const wf = data.workflow || {};
+  const trends = data.kpi_trends || {};
   if (!top && !crit && !risks) {
     what.textContent = "Posture is quiet — keep monitoring and attach evidence for compliance.";
-    why.textContent = "No open critical queue items.";
-    next.textContent = "Run a gap analysis or import the latest scanner export.";
+    if (why) why.textContent = "No open critical queue items.";
+    if (next) next.textContent = "Run live controls or import the latest scanner export.";
   } else if (top) {
     what.textContent = top.title;
-    why.textContent = top.ai || `Priority ${top.priority} · owner ${top.owner || "Unassigned"}`;
-    next.textContent = top.prompt || "Ask AI for remediation steps, then create a tracked task.";
+    if (why) why.textContent = top.ai || `Priority ${top.priority} · owner ${top.owner || "Unassigned"}`;
+    if (next) next.textContent = top.prompt || "Ask AI for remediation steps, then create a tracked task.";
   } else {
     what.textContent = `${crit} critical/high findings · ${risks} open risks`;
-    why.textContent = "Unresolved findings increase residual risk and audit exposure.";
-    next.textContent = "Triage top vulns, assign owners, and open remediations.";
+    if (why) why.textContent = "Unresolved findings increase residual risk and audit exposure.";
+    if (next) next.textContent = "Triage top vulns, assign owners, and open remediations.";
+  }
+  // Surface FIXED under why/next as a trailing hint when present
+  if (why && Number(wf.closed || 0) > 0) {
+    const delta =
+      trends.vulns_delta != null ? ` · vulns Δ ${trends.vulns_delta}` : "";
+    why.textContent = `${why.textContent} · Fixed: ${wf.closed} closed${delta}`;
   }
   if (actions) {
     actions.innerHTML = `

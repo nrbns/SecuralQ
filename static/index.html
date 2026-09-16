@@ -33,7 +33,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/style.css?v=173" />
+  <link rel="stylesheet" href="/style.css?v=174" />
   <script src="/vendor/marked.min.js"></script>
 </head>
 <body>
@@ -54,11 +54,11 @@
       <nav class="side-nav" aria-label="Primary">
         <button type="button" class="nav-item" data-view="command" id="navCommand">
           <span class="nav-ico" data-ico="mc" aria-hidden="true"></span>
-          <span class="nav-item-label">Overview</span>
+          <span class="nav-item-label">Command Center</span>
         </button>
         <button type="button" class="nav-item" data-view="executive" id="navExecutive">
           <span class="nav-ico" data-ico="rep" aria-hidden="true"></span>
-          <span class="nav-item-label">Executive Dashboard</span>
+          <span class="nav-item-label">Executive</span>
         </button>
         <button type="button" class="nav-item active" data-view="chat" id="navChat">
           <span class="nav-ico" data-ico="ai" aria-hidden="true"></span>
@@ -87,12 +87,12 @@
         <div class="nav-group-body">
           <button type="button" class="nav-link" data-view="chat" data-mode="threat_hunt" data-prompt="Investigate our top critical findings: what happened, why it matters, and prioritized remediation steps"><span class="nav-ico sm" data-ico="soc" aria-hidden="true"></span> AI Investigation</button>
           <button type="button" class="nav-link" id="navEvidence" data-workspace="evidence"><span class="nav-ico sm" data-ico="ev" aria-hidden="true"></span> Evidence</button>
-          <button type="button" class="nav-link" data-workspace="graph"><span class="nav-ico sm" data-ico="graph" aria-hidden="true"></span> Knowledge graph</button>
+          <button type="button" class="nav-link" data-workspace="graph"><span class="nav-ico sm" data-ico="graph" aria-hidden="true"></span> Attack Paths</button>
         </div>
       </nav>
 
-      <nav class="side-nav nav-group" aria-label="Response" data-nav-group>
-        <button type="button" class="nav-group-toggle" aria-expanded="true"><span class="nav-ico" data-ico="pb" aria-hidden="true"></span> Response</button>
+      <nav class="side-nav nav-group" aria-label="Remediation" data-nav-group>
+        <button type="button" class="nav-group-toggle" aria-expanded="true"><span class="nav-ico" data-ico="pb" aria-hidden="true"></span> Remediation</button>
         <div class="nav-group-body">
           <button type="button" class="nav-link" id="remBtn" data-workspace="remediations"><span class="nav-ico sm" data-ico="ctrl" aria-hidden="true"></span> Remediation</button>
           <button type="button" class="nav-link" id="playbookBtn" data-workspace="playbooks"><span class="nav-ico sm" data-ico="pb" aria-hidden="true"></span> Playbooks</button>
@@ -128,6 +128,7 @@
           <button type="button" class="nav-link" data-workspace="integrations"><span class="nav-ico sm" data-ico="plug" aria-hidden="true"></span> Integrations</button>
           <button type="button" class="nav-link" id="orgsBtn" data-workspace="orgs">Organizations</button>
           <button type="button" class="nav-link" id="authBtnNav" data-open-auth>Users / RBAC</button>
+          <button type="button" class="nav-link" data-workspace="agents">License &amp; Agents</button>
           <button type="button" class="nav-link" data-workspace="billing">Billing</button>
           <button type="button" class="nav-link" id="settingsBtnNav" data-open-settings><span class="nav-ico sm" data-ico="set" aria-hidden="true"></span> Settings</button>
           <button type="button" class="nav-link" id="uploadBtnNav" data-open-upload>Upload evidence</button>
@@ -262,7 +263,7 @@
         <section id="viewCommand" class="workspace-view mc-is-empty" data-view-panel="command">
           <div class="mc-context" id="mcContext">
             <div class="mc-context-main">
-              <p class="mc-kicker" id="mcGreeting">Mission Control</p>
+              <p class="mc-kicker" id="mcGreeting">Command Center</p>
               <h1 class="mc-org" id="mcOrgName">Local workspace</h1>
               <p class="mc-lead" id="mcAiSummary">Your workspace is empty — pick a path below when you&rsquo;re ready.</p>
               <p class="hint hidden" id="mcTodaySummary" hidden></p>
@@ -335,6 +336,47 @@
             <p class="mc-prod-profile hint" id="mcProdProfileBanner">Checking production profile…</p>
           </section>
 
+
+          <!-- Always-on ops home: WHAT / WHY / DO / FIXED -->
+          <section class="mc-ops-home rt-always-on" id="mcOpsHome" aria-label="Command Center operations">
+            <div class="mc-ops-grid">
+              <article class="mc-ops-card mc-ops-action" id="mcActionRequired">
+                <header>
+                  <h3>Action required</h3>
+                  <button type="button" class="btn-ghost sq-link-btn" data-workspace="remediations">Review all →</button>
+                </header>
+                <ol id="mcActionRequiredList" class="mc-ops-list">
+                  <li class="hint">Loading priorities…</li>
+                </ol>
+              </article>
+              <article class="mc-ops-card mc-ops-fixed" id="mcRiskReduction">
+                <header>
+                  <h3>Risk reduction today</h3>
+                  <button type="button" class="btn-ghost sq-link-btn" data-workspace="executive">Exposure →</button>
+                </header>
+                <ul id="mcRiskReductionList" class="mc-ops-stats">
+                  <li><span>Findings closed</span><strong id="mcFixedClosed">—</strong></li>
+                  <li><span>Controls restored</span><strong id="mcFixedControls">—</strong></li>
+                  <li><span>Risk delta</span><strong id="mcFixedRiskDelta">—</strong></li>
+                  <li><span>Top fix impact</span><strong id="mcFixedTopImpact">—</strong></li>
+                </ul>
+                <p class="hint" id="mcFixedNote">Verified closes only — not projected.</p>
+              </article>
+              <article class="mc-ops-card mc-ops-decision" id="mcOpsDecision">
+                <header>
+                  <h3>What → Why → Do → Fixed</h3>
+                  <button type="button" class="btn-secondary" id="mcAskOpsDecision" data-view="chat" data-mode="ciso" data-prompt="From Command Center: what is happening, why it matters, what I should do next, and what was already fixed">Ask AI</button>
+                </header>
+                <dl class="mc-ops-flow">
+                  <div><dt>What</dt><dd id="mcOpsWhat">—</dd></div>
+                  <div><dt>Why</dt><dd id="mcOpsWhy">—</dd></div>
+                  <div><dt>Do</dt><dd id="mcOpsDo">—</dd></div>
+                  <div><dt>Fixed</dt><dd id="mcOpsFixed">—</dd></div>
+                </dl>
+              </article>
+            </div>
+          </section>
+
 <section id="mcFirstRun" class="mc-first-run" aria-label="Quick start">
             <div class="mc-first-run-head">
               <div>
@@ -364,7 +406,7 @@
 
           <!-- Always visible (even when Mission Control is empty) so realtime changes are not hidden -->
           <section class="sq-card sq-live-stream rt-always-on" id="sqLiveStream">
-            <header class="sq-card-head"><h3>Live security stream</h3>
+            <header class="sq-card-head"><h3>Live activity</h3>
               <span class="hint" id="sqStreamPulse">SSE</span>
             </header>
             <p class="hint" id="sqStreamLegend" style="margin:0 0 0.5rem">
@@ -586,8 +628,8 @@
               <section class="sq-card wz-decision-panel" id="mcDecisionPanel">
                 <header><h3>Recommended action</h3><button type="button" class="btn-secondary" id="mcAskDecision" data-view="chat" data-mode="ciso" data-prompt="From Mission Control posture, what happened, why, what should I do next, and create a remediation plan">Ask AI</button></header>
                 <p id="mcDecisionWhat" class="wz-decision-lead">—</p>
-                <p class="hint" id="mcDecisionWhy" hidden>—</p>
-                <p class="hint" id="mcDecisionNext" hidden>—</p>
+                <p class="hint" id="mcDecisionWhy">—</p>
+                <p class="hint" id="mcDecisionNext">—</p>
                 <div class="mc-decision-actions" id="mcDecisionActions"></div>
               </section>
               <section class="sq-card sw-panel" id="mcSoftwarePanel">
@@ -2322,7 +2364,7 @@
     </div>
   </div>
 
-  <script src="/app.js?v=223"></script>
-  <script src="/workspace.js?v=220"></script>
+  <script src="/app.js?v=224"></script>
+  <script src="/workspace.js?v=221"></script>
 </body>
 </html>
