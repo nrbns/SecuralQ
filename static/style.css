@@ -9280,3 +9280,76 @@ a.agents-pkg-dl {
 .mc-ops-action { border-left: 3px solid #dc2626; }
 .mc-ops-fixed { border-left: 3px solid #059669; }
 .mc-ops-decision { border-left: 3px solid #2563eb; }
+
+/* Onboarding wizard */
+.ob-steps {
+  list-style: none;
+  margin: 0 0 1rem;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+.ob-steps li {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid var(--border, #d0d7de);
+  font-size: 0.78rem;
+  color: var(--muted, #667);
+}
+.ob-steps li span {
+  display: grid;
+  place-items: center;
+  width: 1.2rem;
+  height: 1.2rem;
+  border-radius: 999px;
+  background: var(--panel, #f3f4f6);
+  font-weight: 800;
+  font-size: 0.68rem;
+}
+.ob-steps li.is-active {
+  border-color: var(--accent-border, #93c5fd);
+  color: var(--text, #111);
+  background: color-mix(in srgb, var(--sq-accent, #2563eb) 8%, transparent);
+}
+.ob-steps li.is-done { opacity: 0.7; }
+.ob-panel h3 { margin: 0 0 0.35rem; }
+.ob-pane { display: grid; gap: 0.65rem; }
+.narrative-block, .mc-ops-flow.narrative-block { margin: 0.5rem 0; }
+.agents-install-cmd {
+  margin-top: 0.55rem;
+  padding: 0.45rem 0.55rem;
+  border-radius: 8px;
+  border: 1px dashed var(--border, #d0d7de);
+  background: var(--panel, #fafbfc);
+  font-size: 0.78rem;
+  word-break: break-all;
+}
+.agents-install-cmd code { font-size: 0.76rem; }
+.agents-roadmap-badges { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.5rem; }
+.agents-roadmap-badges span {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  padding: 0.2rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid var(--border, #d0d7de);
+  color: var(--muted, #667);
+}
+.ws-narrative-row td { background: color-mix(in srgb, var(--panel, #f8fafc) 90%, transparent); }
+.rt-sse-banner {
+  margin: 0.5rem 0;
+  padding: 0.45rem 0.65rem;
+  border-radius: 8px;
+  border: 1px solid #f59e0b;
+  background: #fffbeb;
+  font-size: 0.82rem;
+}
+.rt-sse-banner.is-ok {
+  border-color: #86efac;
+  background: #f0fdf4;
+}

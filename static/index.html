@@ -33,7 +33,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/style.css?v=174" />
+  <link rel="stylesheet" href="/style.css?v=175" />
   <script src="/vendor/marked.min.js"></script>
 </head>
 <body>
@@ -385,7 +385,8 @@
                 <p class="hint">Enroll an agent → detect control FAIL → approve remediation → verify PASS → evidence + risk drop. Scans remain available when you need discovery.</p>
               </div>
               <div class="mc-first-run-actions">
-                <button type="button" class="btn-primary-cc" data-workspace="agents">Enroll agent</button>
+                <button type="button" class="btn-primary-cc" id="obStartWizard">Guided setup</button>
+                <button type="button" class="btn-secondary" data-workspace="agents">Enroll agent</button>
                 <button type="button" class="btn-secondary" id="mcLiveScan" data-action="new-scan">New scan</button>
                 <button type="button" class="btn-secondary" id="mcComboAssess" data-action="combo-assess">Combo assessment</button>
                 <button type="button" class="btn-secondary" data-workspace="compliance_center">Live controls</button>
@@ -409,6 +410,7 @@
             <header class="sq-card-head"><h3>Live activity</h3>
               <span class="hint" id="sqStreamPulse">SSE</span>
             </header>
+            <p class="rt-sse-banner hidden" id="rtSseBanner" role="status"></p>
             <p class="hint" id="sqStreamLegend" style="margin:0 0 0.5rem">
               Realtime timeline: agent · control · evidence · compliance · risk · remediation · command · verification · license
             </p>
@@ -2038,6 +2040,69 @@
     </div>
   </div>
 
+  
+  <div id="onboardingWizard" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="obHeading">
+    <div class="modal-backdrop" data-close-onboarding></div>
+    <div class="modal-card modal-card-wide">
+      <div class="modal-header">
+        <h2 id="obHeading">Welcome to SecuraIQ</h2>
+        <button type="button" class="btn-secondary" data-close-onboarding>Close</button>
+      </div>
+      <p class="hint" id="obLead">Guided setup — organization → security profile → endpoint → frameworks → done.</p>
+      <ol class="ob-steps" id="obSteps" aria-label="Onboarding steps">
+        <li class="is-active" data-ob-step="1"><span>1</span> Organization</li>
+        <li data-ob-step="2"><span>2</span> Security profile</li>
+        <li data-ob-step="3"><span>3</span> Add endpoint</li>
+        <li data-ob-step="4"><span>4</span> Frameworks</li>
+        <li data-ob-step="5"><span>5</span> Complete</li>
+      </ol>
+      <div id="obPanel" class="ob-panel">
+        <div class="ob-pane" data-ob-pane="1">
+          <h3>Create your organization</h3>
+          <p class="hint">Tenancy boundary for users, agents, and evidence. Local mode works without auth.</p>
+          <form id="obOrgForm" class="settings-form">
+            <label>Organization name
+              <input type="text" id="obOrgName" placeholder="Acme Security Lab" required maxlength="120" />
+            </label>
+            <button type="submit" class="btn-primary-cc">Create &amp; continue</button>
+          </form>
+          <p class="hint"><button type="button" class="linkish" id="obSkipOrg">Skip for local workspace</button></p>
+        </div>
+        <div class="ob-pane hidden" data-ob-pane="2">
+          <h3>Security profile</h3>
+          <p class="hint" id="obProfileHint">Checking production agent-security flags…</p>
+          <ul class="cc-list" id="obProfileFlags"></ul>
+          <p class="hint">Lab defaults keep mTLS / signed commands off. Enable them before commercial claims (Settings / env).</p>
+          <div class="settings-row">
+            <button type="button" class="btn-secondary" data-open-auth id="obOpenAccount">Account / MFA</button>
+            <button type="button" class="btn-primary-cc" id="obNextProfile">Continue</button>
+          </div>
+        </div>
+        <div class="ob-pane hidden" data-ob-pane="3">
+          <h3>Add your first endpoint</h3>
+          <p class="hint">Generate a bootstrap token, download the OS package, enroll the agent.</p>
+          <div class="settings-row">
+            <button type="button" class="btn-primary-cc" id="obGotoAgents">Open Agents &amp; Deploy</button>
+            <button type="button" class="btn-secondary" id="obNextEndpoint">I've enrolled — continue</button>
+          </div>
+        </div>
+        <div class="ob-pane hidden" data-ob-pane="4">
+          <h3>Choose compliance frameworks</h3>
+          <p class="hint">Assess frameworks so controls map to evidence (not certification).</p>
+          <div class="settings-row">
+            <button type="button" class="btn-primary-cc" id="obOpenGap">Open gap analysis</button>
+            <button type="button" class="btn-secondary" id="obNextFw">Continue</button>
+          </div>
+        </div>
+        <div class="ob-pane hidden" data-ob-pane="5">
+          <h3>You're ready</h3>
+          <p class="hint">Command Center will show Action required, live controls, and the verify loop as agents report.</p>
+          <button type="button" class="btn-primary-cc" id="obFinish">Go to Command Center</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div id="gapModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="gapHeading">
     <div class="modal-backdrop" data-close-gap></div>
     <div class="modal-card modal-card-wide">
@@ -2364,7 +2429,7 @@
     </div>
   </div>
 
-  <script src="/app.js?v=224"></script>
-  <script src="/workspace.js?v=221"></script>
+  <script src="/app.js?v=225"></script>
+  <script src="/workspace.js?v=222"></script>
 </body>
 </html>

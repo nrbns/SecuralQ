@@ -3578,10 +3578,23 @@
       return;
     }
     const rows = (data.remediations || [])
-      .map(
-        (r) => `<tr>
+      .map((r) => {
+        const narrative =
+          typeof window.renderNarrativeBlock === "function"
+            ? window.renderNarrativeBlock({
+                what: r.title || r.control_id,
+                why: r.rationale || r.reason || `Control ${r.control_id || "—"} needs remediation`,
+                evidence: r.evidence_id || r.evidence || "Attach evidence after verification",
+                impact: r.impact || (r.frameworks ? String(r.frameworks) : "Compliance / risk exposure"),
+                action: r.status === "done" ? "Completed" : "Approve / execute via Agents when required",
+                verify: r.status === "done" ? "Verified closed" : "Pending retest after fix",
+              })
+            : "";
+        return `<tr class="ws-rem-main" data-rem-id="${escapeHtml(r.id)}">
         <td>${escapeHtml(r.control_id)}</td>
-        <td>${escapeHtml(r.title)}</td>
+        <td>${escapeHtml(r.title)}
+          <button type="button" class="linkish ws-rem-expand" data-id="${escapeHtml(r.id)}" aria-expanded="false">Details</button>
+        </td>
         <td>${escapeHtml(r.owner || "unassigned")}</td>
         <td>${escapeHtml(r.status)}</td>
         <td>${escapeHtml(r.due_date || "—")}</td>
@@ -3602,16 +3615,27 @@
           )}" data-control="${escapeHtml(r.control_id)}">ServiceNow</button>
           <button type="button" class="btn-secondary ws-rem-del" data-id="${r.id}">Delete</button>
         </td>
-      </tr>`
-      )
+      </tr>
+      <tr class="ws-narrative-row hidden" data-rem-detail="${escapeHtml(r.id)}"><td colspan="6">${narrative}</td></tr>`;
+      })
       .join("");
     await renderTable(
       "remsPageBody",
       ["Control", "Title", "Owner", "Status", "Due", ""],
       rows,
-      "No remediations — run Gap analysis"
+      "No remediations — run Gap analysis or approve an agent fix"
     );
     wireAskAiButtons("remsPageBody");
+    qs("remsPageBody")?.querySelectorAll(".ws-rem-expand").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = btn.getAttribute("data-id");
+        const row = qs("remsPageBody")?.querySelector(`[data-rem-detail="${id}"]`);
+        if (!row) return;
+        const open = row.classList.toggle("hidden") === false;
+        btn.setAttribute("aria-expanded", open ? "true" : "false");
+        btn.textContent = open ? "Hide" : "Details";
+      });
+    });
     qs("remsPageBody")?.querySelectorAll(".ws-rem-done").forEach((btn) => {
       btn.addEventListener("click", async () => {
         await fetch(`/api/gap/remediations/${btn.getAttribute("data-id")}`, {
@@ -5601,6 +5625,18 @@
         const cls = item.primary === false ? "btn-ghost agents-pkg-dl" : "btn-secondary agents-pkg-dl";
         return `<a class="${cls}" href="${escapeHtml(url)}" download>${escapeHtml(item.label || item.filename)}${escapeHtml(size)}</a>`;
       };
+      const serverUrl = (data.deploy && data.deploy.server_url) || window.location.origin;
+      const bootTok = window.__securaiqLastBootstrapToken || "";
+      const installCmd = (osKey) => {
+        const tok = bootTok || "<BOOTSTRAP_TOKEN>";
+        if (osKey === "windows") {
+          return `SecuraIQ-Agent.exe --server ${serverUrl} --token ${tok}`;
+        }
+        if (osKey === "linux") {
+          return `SECURAIQ_SERVER=${serverUrl} SECURAIQ_TOKEN=${tok} ./install.sh`;
+        }
+        return `SECURAIQ_SERVER=${serverUrl} SECURAIQ_TOKEN=${tok} ./install.sh`;
+      };
       const cards = osMeta
         .map((os) => {
           const items = byOs[os.key] || [];
@@ -5627,10 +5663,24 @@
               ${pkgs.map(itemBtn).join("")}
               ${empty}
             </div>
+            <div class="agents-install-cmd">
+              <strong>Install</strong>
+              <code>${escapeHtml(installCmd(os.key))}</code>
+              ${
+                bootTok
+                  ? ""
+                  : `<p class="hint" style="margin:0.35rem 0 0">Generate a bootstrap token above to fill the token placeholder.</p>`
+              }
+            </div>
             ${fallback}
           </article>`;
         })
         .join("");
+      const roadmap = (data.roadmap_packages || []).length
+        ? `<div class="agents-roadmap-badges">${(data.roadmap_packages || [])
+            .map((r) => `<span title="Commercial packaging roadmap">${escapeHtml(r.label || r.kind || "soon")}</span>`)
+            .join("")}</div>`
+        : `<div class="agents-roadmap-badges"><span>MSI soon</span><span>DEB/RPM soon</span><span>Notarized DMG soon</span></div>`;
       const allScripts = (byOs.all || []).map(itemBtn).join("");
       const notes = (data.notes || []).map((n) => `<li>${escapeHtml(n)}</li>`).join("");
       el.innerHTML = `
@@ -5640,14 +5690,16 @@
           · Fleet <strong id="agentsPkgFleetOnline">${Number(rt.fleet_online || 0)}</strong>/<span id="agentsPkgFleetTotal">${Number(rt.fleet_total || 0)}</span> online
         </div>
         <div class="agents-os-grid">${cards}</div>
+        ${roadmap}
         ${allScripts ? `<details class="agents-dev-fallback" style="margin-top:0.75rem"><summary class="hint">Developer fallback — all platforms</summary><div class="agents-pkg-actions" style="margin-top:0.35rem">${allScripts}</div></details>` : ""}
         <div class="agents-enroll-steps" style="margin-top:1rem">
-          <h4 style="margin:0 0 0.35rem">One-click style deploy</h4>
+          <h4 style="margin:0 0 0.35rem">Deploy endpoint</h4>
           <ol class="hint" style="margin:0;padding-left:1.2rem">
             <li>Click <strong>Generate bootstrap token</strong> (short-lived; not a permanent org secret).</li>
             <li>Download the OS package (.exe / .zip / .tar.gz). MSI/DEB/RPM are on the commercial roadmap.</li>
-            <li>Installer calls <code>POST /api/agents/enroll-by-token</code> once → receives permanent <code>agent_id.agent_key</code>.</li>
-            <li>Agent validates license via <code>POST /api/licenses/validate</code> and caches status locally (registry/config = cache only).</li>
+            <li>Run the install command on the card (server = <code>${escapeHtml(serverUrl)}</code>).</li>
+            <li>Installer calls <code>POST /api/agents/enroll-by-token</code> once → permanent <code>agent_id.agent_key</code>.</li>
+            <li>Agent validates license via <code>POST /api/licenses/validate</code> (server is authoritative).</li>
           </ol>
           ${data.deploy?.bootstrap_note ? `<p class="hint" style="margin:0.5rem 0 0">${escapeHtml(data.deploy.bootstrap_note)}</p>` : ""}
         </div>
@@ -5937,6 +5989,18 @@
           <article class="cc-kpi"><span>Check-ins</span><strong>${escapeHtml(String(agent.checkin_count || 0))}</strong></article>
           <article class="cc-kpi"><span>Device cert</span><strong>${mtlsChip} ${escapeHtml(mtls.label)}</strong><em class="hint">${escapeHtml(mtls.detail)}</em></article>
         </div>
+        ${
+          typeof window.renderNarrativeBlock === "function"
+            ? window.renderNarrativeBlock({
+                what: `Endpoint ${payload.hostname || agent.hostname || agent.id || "agent"}`,
+                why: agent.online ? "Online — continuous control telemetry" : "Offline — buffered events until reconnect",
+                evidence: `Last seen ${agent.last_seen || agent.last_checkin || "—"} · ${agent.checkin_count || 0} check-ins`,
+                impact: "Controls · vulns · compliance on this host",
+                action: "Run check / request remediation from Actions",
+                verify: "Control PASS after approved remediation",
+              })
+            : ""
+        }
         <p class="hint" style="margin:0 0 0.5rem">Security posture (from last check-in payload) · open <strong>Security</strong> tab for cert rotate/revoke</p>
         <div class="agent-detail-chips" style="display:flex;flex-wrap:wrap;gap:0.4rem">${chips}</div>`;
     }
@@ -6697,6 +6761,9 @@
           });
           const data = await res.json().catch(() => ({}));
           if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+          if (data.enrollment_token) {
+            window.__securaiqLastBootstrapToken = data.enrollment_token;
+          }
           if (resultEl) {
             resultEl.innerHTML = `
               <div class="cc-panel" style="margin:0.75rem 0;background:var(--panel-2,rgba(255,255,255,0.03))">
@@ -6710,6 +6777,9 @@
             resultEl.querySelector(".agents-enroll-dismiss")?.addEventListener("click", () => {
               resultEl.innerHTML = "";
             });
+            // Refresh deploy cards so install commands include the token
+            const pkgEl = qs("agentsPackagesBody") || qs("socAgentsPackagesBody");
+            if (pkgEl && typeof renderAgentPackagesHub === "function") renderAgentPackagesHub(pkgEl);
           }
         } catch (err) {
           if (typeof notifyUser === "function") notifyUser(`**Bootstrap token failed:** ${err.message || err}`);
@@ -8501,7 +8571,19 @@
           .join("")
       : `<tr><td colspan="4" class="hint">No open gaps without evidence — run a gap analysis or link artifacts</td></tr>`;
     body.innerHTML = `
-      <p class="hint">Evidence Control Center — map artifacts to controls with owner, status, and expiry for audits.</p>
+      <p class="hint">Evidence vault — control → artifact → integrity → audit pack. Not a generic file dump.</p>
+      ${
+        typeof window.renderNarrativeBlock === "function"
+          ? window.renderNarrativeBlock({
+              what: "Digital evidence records",
+              why: "Prove control operating effectiveness for auditors",
+              evidence: `${links.length} linked · ${files.length} files · ${queue.length} collect-next`,
+              impact: "Compliance recalculation and audit packages",
+              action: "Collect next / link artifact / download audit pack",
+              verify: "Independent retest after remediation",
+            })
+          : ""
+      }
       ${
         loadErrors.length
           ? `<p class="hint" style="color:#c0392b">Could not load ${escapeHtml(
@@ -10701,7 +10783,24 @@
                 }
                 return `<tr>
                   <td><strong>${escapeHtml(f.control_id || "")}</strong>
-                    <div class="hint">${escapeHtml(f.title || "")}</div></td>
+                    <div class="hint">${escapeHtml(f.title || "")}</div>
+                    ${
+                      typeof window.renderNarrativeBlock === "function"
+                        ? window.renderNarrativeBlock({
+                            what: f.title || f.control_id || "Control failure",
+                            why: (f.summary || "").slice(0, 200) || "Live test reported FAIL",
+                            evidence: hostLabel
+                              ? `Agent ${hostLabel} · test ${testName}`
+                              : `Live test ${testName || "—"}`,
+                            impact: "Compliance / CIS / ISO mappings for this control",
+                            action: remediations.length
+                              ? "Request remediation (pending approval)"
+                              : "Retest or open Remediation",
+                            verify: "Pending PASS after approved fix",
+                          })
+                        : ""
+                    }
+                  </td>
                   <td><span class="wq-badge pri-${f.status === "fail" ? "high" : "medium"}">${escapeHtml(
                     f.status || "fail"
                   )}</span>

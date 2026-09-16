@@ -3137,6 +3137,25 @@ function realtimeFeedUrl(opts) {
   return q ? `/api/realtime?${q}` : "/api/realtime";
 }
 
+function updateRtSseBanner(state) {
+  const el = document.getElementById("rtSseBanner");
+  if (!el) return;
+  if (state === "connected" || state === "reconnected") {
+    el.classList.remove("hidden");
+    el.classList.add("is-ok");
+    el.textContent = "Realtime connected — panels refresh on events (no full-page refresh).";
+    clearTimeout(window.__securaiqSseBannerHide);
+    window.__securaiqSseBannerHide = setTimeout(() => el.classList.add("hidden"), 4000);
+    return;
+  }
+  el.classList.remove("is-ok", "hidden");
+  if (state === "offline") {
+    el.textContent = "Realtime connection lost — showing last known state. Retrying automatically…";
+  } else {
+    el.textContent = "Realtime reconnecting… last updates will resume when SSE is back.";
+  }
+}
+
 function startRealtimeFeed(opts) {
   opts = opts || {};
   const rt = window.RealtimeManager;
@@ -3176,11 +3195,14 @@ function startRealtimeFeed(opts) {
         rt._failCount = 0;
         if (wasOpen || es.__securaiqWasOpen) {
           rt.setConnState("reconnected", "Live", "reconnected");
+          updateRtSseBanner("reconnected");
         } else {
           rt.setConnState("connected", "Live", "");
+          updateRtSseBanner("connected");
         }
       } else if (!streaming) {
         setLiveState("live-on", "Live", "");
+        updateRtSseBanner("connected");
       }
       if (!window.__securaiqRtSeeded && typeof pushCcLiveEvent === "function") {
         window.__securaiqRtSeeded = true;
@@ -3445,8 +3467,10 @@ function startRealtimeFeed(opts) {
       if (rt) {
         rt._failCount = (rt._failCount || 0) + 1;
         rt.setConnState("reconnecting", "Reconnecting…", "");
+        updateRtSseBanner(rt._failCount >= 8 ? "offline" : "reconnecting");
       } else if (!streaming && !window.__securaiqStreaming) {
         setLiveState("live-off", "Reconnecting…", "");
+        updateRtSseBanner("reconnecting");
       }
       // CONNECTING: browser is auto-reconnecting with Last-Event-ID — do not reopen.
       // CLOSED: permanent close → force reopen and pass last_event_id as polyfill.
@@ -4193,6 +4217,31 @@ function escapeHtml(text) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
 }
+
+/** Universal WHAT → WHY → EVIDENCE → IMPACT → ACTION → VERIFY block */
+function renderNarrativeBlock(fields, opts) {
+  fields = fields || {};
+  opts = opts || {};
+  const rows = [
+    ["What", fields.what],
+    ["Why", fields.why],
+    ["Evidence", fields.evidence],
+    ["Impact", fields.impact],
+    ["Action", fields.action],
+    ["Verify", fields.verify],
+  ].filter(([, v]) => v != null && String(v).trim() !== "");
+  if (!rows.length) return "";
+  const cls = opts.className || "mc-ops-flow narrative-block";
+  return `<dl class="${cls}">${rows
+    .map(
+      ([dt, dd]) =>
+        `<div><dt>${escapeHtml(dt)}</dt><dd>${
+          opts.html ? String(dd) : escapeHtml(String(dd))
+        }</dd></div>`
+    )
+    .join("")}</dl>`;
+}
+window.renderNarrativeBlock = renderNarrativeBlock;
 
 function formatApiDetail(detail, fallback) {
   if (detail == null || detail === "") return fallback || "Request failed";
@@ -5420,6 +5469,7 @@ async function loadCommandCenter() {
       firstRun.classList.toggle("hidden", !emptyWorkspace);
       wireMissionFirstRunOnce();
       syncChecklistProgress(data);
+      maybeOfferOnboarding(emptyWorkspace);
     }
 
     // Software panel already rendered at the top of loadCommandCenter.
@@ -5844,6 +5894,129 @@ function wireMissionFirstRunOnce() {
       if (ws && typeof window.showWorkspace === "function") window.showWorkspace(ws);
     });
   });
+  wireOnboardingWizardOnce();
+}
+
+function wireOnboardingWizardOnce() {
+  if (window.__securaiqOnboardingWired) return;
+  window.__securaiqOnboardingWired = true;
+  const modal = document.getElementById("onboardingWizard");
+  if (!modal) return;
+  let step = 1;
+  const showStep = (n) => {
+    step = Math.max(1, Math.min(5, n));
+    modal.querySelectorAll("[data-ob-pane]").forEach((p) => {
+      p.classList.toggle("hidden", Number(p.getAttribute("data-ob-pane")) !== step);
+    });
+    modal.querySelectorAll("#obSteps li").forEach((li) => {
+      const s = Number(li.getAttribute("data-ob-step"));
+      li.classList.toggle("is-active", s === step);
+      li.classList.toggle("is-done", s < step);
+    });
+  };
+  const openWizard = () => {
+    modal.classList.remove("hidden");
+    showStep(1);
+    refreshObProfile();
+  };
+  const closeWizard = () => modal.classList.add("hidden");
+  window.openOnboardingWizard = openWizard;
+  window.closeOnboardingWizard = closeWizard;
+
+  document.getElementById("obStartWizard")?.addEventListener("click", openWizard);
+  modal.querySelectorAll("[data-close-onboarding]").forEach((el) => el.addEventListener("click", closeWizard));
+
+  async function refreshObProfile() {
+    const hint = document.getElementById("obProfileHint");
+    const flagsEl = document.getElementById("obProfileFlags");
+    try {
+      const res = await fetch("/api/controls/production-profile", { headers: authHeaders() });
+      const p = res.ok ? await res.json() : {};
+      const ready = !!p.production_ready_agent_security;
+      if (hint) {
+        hint.textContent = ready
+          ? "Production agent-security flags look enabled."
+          : "Lab profile — mTLS / signed commands / replay protection off by default.";
+      }
+      if (flagsEl) {
+        const flags = p.flags || {};
+        flagsEl.innerHTML = Object.keys(flags).length
+          ? Object.entries(flags)
+              .map(
+                ([k, v]) =>
+                  `<li><strong>${escapeHtml(k.replace(/^agent_/, "").replace(/_/g, " "))}</strong> — ${
+                    v ? "on" : "off"
+                  }</li>`
+              )
+              .join("")
+          : `<li class="hint">No flags returned</li>`;
+      }
+    } catch {
+      if (hint) hint.textContent = "Could not load production profile — continue in lab mode.";
+    }
+  }
+
+  document.getElementById("obOrgForm")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const name = document.getElementById("obOrgName")?.value?.trim();
+    if (!name) return;
+    try {
+      const res = await fetch("/api/orgs", {
+        method: "POST",
+        headers: authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ name }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(formatApiDetail(data.detail, res.status));
+      notifyUser(`**Organization created** · ${name}`);
+      showStep(2);
+      refreshObProfile();
+    } catch (err) {
+      alert(err.message || "Could not create organization");
+    }
+  });
+  document.getElementById("obSkipOrg")?.addEventListener("click", () => {
+    showStep(2);
+    refreshObProfile();
+  });
+  document.getElementById("obNextProfile")?.addEventListener("click", () => showStep(3));
+  document.getElementById("obGotoAgents")?.addEventListener("click", () => {
+    closeWizard();
+    window.showWorkspace?.("agents");
+  });
+  document.getElementById("obNextEndpoint")?.addEventListener("click", () => showStep(4));
+  document.getElementById("obOpenGap")?.addEventListener("click", () => {
+    closeWizard();
+    if (typeof openGap === "function") openGap();
+  });
+  document.getElementById("obNextFw")?.addEventListener("click", () => showStep(5));
+  document.getElementById("obFinish")?.addEventListener("click", () => {
+    try {
+      localStorage.setItem("securaiq.onboarding.done", "1");
+    } catch {
+      /* ignore */
+    }
+    closeWizard();
+    if (typeof showView === "function") showView("command");
+    else if (typeof loadCommandCenter === "function") loadCommandCenter();
+  });
+  document.getElementById("obOpenAccount")?.addEventListener("click", () => {
+    if (typeof openAuth === "function") openAuth();
+  });
+}
+
+function maybeOfferOnboarding(emptyWorkspace) {
+  if (!emptyWorkspace) return;
+  try {
+    if (localStorage.getItem("securaiq.onboarding.done") === "1") return;
+    if (localStorage.getItem("securaiq.onboarding.auto") === "1") return;
+    localStorage.setItem("securaiq.onboarding.auto", "1");
+  } catch {
+    return;
+  }
+  setTimeout(() => {
+    if (typeof window.openOnboardingWizard === "function") window.openOnboardingWizard();
+  }, 600);
 }
 
 function renderWorkQueue(items) {
