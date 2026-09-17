@@ -928,7 +928,7 @@ async def metrics():
     return PlainTextResponse(render_prometheus(), media_type="text/plain; version=0.0.4")
 
 
-@app.get("/.well-known/security.txt", response_class=None)
+@app.get("/.well-known/security.txt")
 async def security_txt():
     """#243 RFC 9116 security.txt + PSIRT contact."""
     from datetime import datetime, timezone
