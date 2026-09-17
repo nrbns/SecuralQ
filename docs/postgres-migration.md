@@ -34,11 +34,28 @@ docker compose --profile saas up -d
 
 | Phase | Work | Status |
 |-------|------|--------|
-| 1 | Alembic + SQLAlchemy models | Planned |
+| 1 | Alembic + SQLAlchemy models | Partial — `alembic/` baseline + `scripts/db_migrate_and_run.py`; full DDL still `init_schema()` |
 | 2 | Dual-backend `get_conn()` | **Done (MVP)** |
-| 3 | Data export/import SQLite → Postgres | Planned |
+| 3 | Data export/import SQLite → Postgres | **Partial** — `scripts/sqlite_to_postgres_export.py` (row export SQL/JSON) |
 | 4 | CI matrix against Postgres | Planned |
 | 5 | Default Compose SaaS profile to Postgres | Planned |
+
+## SQLite → Postgres row export (#227)
+
+```bash
+python scripts/sqlite_to_postgres_export.py --sqlite data/securaiq.db --out data/exports/sqlite_export.sql
+python scripts/sqlite_to_postgres_export.py --sqlite data/securaiq.db --json-dir data/exports/json
+```
+
+Apply the SQL against a Postgres DB that already has schema from `init_schema` / Alembic. This is a **row dump**, not a substitute for a full Alembic revision chain.
+
+## Backup / restore drill (#229)
+
+```bash
+python scripts/backup_restore_drill.py
+```
+
+CI-safe SQLite copy→restore→verify. Ops still own Postgres `pg_dump` / PITR drills (see `docs/backup-dr.md`).
 
 ## MVP limits
 

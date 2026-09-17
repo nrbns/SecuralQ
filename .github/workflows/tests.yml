@@ -56,6 +56,7 @@ jobs:
           tests/test_host_command_verification.py
           tests/test_phase_a_live_compliance_risk.py
           tests/test_wave1_complete.py
+          tests/test_master_checklist_p0.py
           tests/test_realtime_phase1_proof.py
           tests/test_stream_durability.py
           tests/test_redis_dlq_ops.py
@@ -63,6 +64,8 @@ jobs:
           tests/test_realtime_rt02_rt06.py
           tests/test_realtime_p0_ui_events.py
           tests/test_sprints_2_6_foundations.py
+      - name: Backup-restore drill (#229)
+        run: python scripts/backup_restore_drill.py
       - name: Sentinel HA measure dry-run
         run: python scripts/sentinel_failover_measure.py --dry-run
       - name: Release test #1 — firewall golden loop (--firewall-only)

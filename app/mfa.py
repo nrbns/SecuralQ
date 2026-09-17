@@ -196,17 +196,48 @@ def record_mfa_attempt(user_id: str, *, success: bool, kind: str = "totp") -> No
         (new_id(), user_id, kind, 1 if success else 0, now()),
     )
     c.commit()
+    # #228 — mirror MFA failures in Redis for multi-replica rate limits
+    try:
+        from app.redis_client import get_sync_redis, redis_enabled
+
+        if not redis_enabled():
+            return
+        r = get_sync_redis(cached=True)
+        if r is None:
+            return
+        key = f"securaiq:mfa_fail:{user_id}"
+        if success:
+            r.delete(key)
+        else:
+            n = int(r.incr(key))
+            if n == 1:
+                r.expire(key, int(_MFA_FAIL_WINDOW_SEC))
+    except Exception:
+        pass
 
 
 def mfa_rate_limited(user_id: str) -> bool:
     """True when too many recent MFA failures for this user."""
     ensure_mfa_schema()
+    redis_n: int | None = None
+    try:
+        from app.redis_client import get_sync_redis, redis_enabled
+
+        if redis_enabled():
+            r = get_sync_redis(cached=True)
+            if r is not None:
+                raw = r.get(f"securaiq:mfa_fail:{user_id}")
+                redis_n = int(raw) if raw is not None else 0
+    except Exception:
+        redis_n = None
     since = now() - _MFA_FAIL_WINDOW_SEC
     row = get_conn().execute(
         "SELECT COUNT(*) AS n FROM mfa_attempts WHERE user_id = ? AND success = 0 AND created_at >= ?",
         (user_id, since),
     ).fetchone()
-    return int((row["n"] if row else 0) or 0) >= _MFA_FAIL_MAX
+    db_n = int((row["n"] if row else 0) or 0)
+    n = max(db_n, redis_n) if redis_n is not None else db_n
+    return n >= _MFA_FAIL_MAX
 
 
 def assert_mfa_not_rate_limited(user_id: str) -> None:

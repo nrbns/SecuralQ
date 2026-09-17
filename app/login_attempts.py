@@ -1,4 +1,8 @@
-"""Persistent login/MFA attempt lockout (survives process restarts)."""
+"""Persistent login/MFA attempt lockout (survives process restarts).
+
+DB rows are the audit SoT. When Redis is configured, failure counters are also
+mirrored in Redis so multi-replica API nodes share the same lockout window (#228).
+"""
 
 from __future__ import annotations
 
@@ -45,6 +49,60 @@ def _window_sec() -> float:
         return 900.0
 
 
+def _redis_fail_key(username: str) -> str:
+    return f"securaiq:login_fail:{(username or '').strip().lower()}"
+
+
+def _redis_incr_failure(username: str) -> int | None:
+    """Increment Redis failure counter; return new count or None if Redis unavailable."""
+    try:
+        from app.redis_client import get_sync_redis, redis_enabled
+
+        if not redis_enabled():
+            return None
+        r = get_sync_redis(cached=True)
+        if r is None:
+            return None
+        key = _redis_fail_key(username)
+        n = int(r.incr(key))
+        if n == 1:
+            r.expire(key, int(_window_sec()))
+        return n
+    except Exception:
+        return None
+
+
+def _redis_get_failures(username: str) -> int | None:
+    try:
+        from app.redis_client import get_sync_redis, redis_enabled
+
+        if not redis_enabled():
+            return None
+        r = get_sync_redis(cached=True)
+        if r is None:
+            return None
+        raw = r.get(_redis_fail_key(username))
+        if raw is None:
+            return 0
+        return int(raw)
+    except Exception:
+        return None
+
+
+def _redis_clear_failures(username: str) -> None:
+    try:
+        from app.redis_client import get_sync_redis, redis_enabled
+
+        if not redis_enabled():
+            return
+        r = get_sync_redis(cached=True)
+        if r is None:
+            return
+        r.delete(_redis_fail_key(username))
+    except Exception:
+        pass
+
+
 def record_login_attempt(
     username: str,
     *,
@@ -63,6 +121,10 @@ def record_login_attempt(
         (new_id(), user, (ip or "").strip()[:128], 1 if success else 0, int(mfa_stage), now()),
     )
     c.commit()
+    if success:
+        _redis_clear_failures(user)
+    else:
+        _redis_incr_failure(user)
 
 
 def failed_count(username: str, *, since: float | None = None) -> int:
@@ -76,7 +138,12 @@ def failed_count(username: str, *, since: float | None = None) -> int:
         "WHERE username = ? AND success = 0 AND created_at >= ?",
         (user, cutoff),
     ).fetchone()
-    return int((row["n"] if row else 0) or 0)
+    db_n = int((row["n"] if row else 0) or 0)
+    redis_n = _redis_get_failures(user)
+    if redis_n is None:
+        return db_n
+    # Shared counter across replicas — take the stricter signal.
+    return max(db_n, int(redis_n))
 
 
 def is_locked(username: str) -> tuple[bool, dict[str, Any]]:
@@ -90,6 +157,7 @@ def is_locked(username: str) -> tuple[bool, dict[str, Any]]:
         "failures": n,
         "limit": limit,
         "window_sec": int(_window_sec()),
+        "distributed": _redis_get_failures(user) is not None,
     }
     if n >= limit:
         return True, detail
@@ -111,9 +179,5 @@ def assert_not_locked(username: str) -> None:
 
 
 def clear_failures_on_success(username: str) -> None:
-    """Optional soft clear: record success so rolling window recovers naturally.
-
-    We keep history for audit; lockout is count of failures in the window only.
-    """
-    # No DELETE — append-only audit-friendly. Success rows don't count as failures.
-    pass
+    """Clear Redis counter on success; DB history stays append-only for audit."""
+    _redis_clear_failures((username or "").strip().lower())
