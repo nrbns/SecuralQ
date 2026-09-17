@@ -17,15 +17,22 @@ lab hosts and Phase B commercial packaging gates exist.
 | # | Capability | Status |
 |---|------------|--------|
 | 1 | Realtime Streams / DLQ / XAUTOCLAIM / SSE / RealtimeManager | Near-done (CI `phase1-realtime-gate`) |
-| 2 | Agent mTLS + cert lifecycle + signed commands + replay flags | Foundations + production profile |
+| 2 | Agent mTLS + cert lifecycle + signed commands + replay flags | Foundations + production profile (Sprint 2) |
 | 3 | Control engine (last-result + history + affected recompute) | Done (P1) |
-| 4 | Automatic evidence on control/remediation transitions | Foundations |
-| 5 | **Live compliance recalculation** (`live_percent` from last-results) | **This slice** |
+| 4 | Automatic evidence on control/remediation transitions | Done for host FAIL/PASS (+ UNKNOWN emit) |
+| 5 | **Live compliance recalculation** (`live_percent` from last-results) | **Done** — `publish_live_compliance_update` |
 | 6 | Remediation → approve → execute → verify | Closed loop for host remediations |
-| 7 | **Risk reduction on verified PASS** (`risk.changed` + score_delta) | **This slice** |
-| 8 | Dashboard / Compliance Center SSE invalidation | **This slice** |
+| 7 | **Risk reduction on verified PASS** (`risk.changed` + score_delta) | **Done** — org risk on host PASS/FAIL |
+| 8 | Dashboard / Compliance Center SSE invalidation | **Done** — Live activity + KPI patch + soft-poll fallback |
 | 9 | Tenant isolation automated tests | Expanded (agents, control_results, SecOps, RBAC) |
 | 10 | MFA + licensing commercial layer | Phase B foundations (`docs/PHASE-B-COMMERCIAL.md`) |
+
+## Sprint 1 finish (this slice)
+
+- Host UNKNOWN persisted + `control.unknown` (never invent PASS)
+- Host FAIL/PASS use `publish_aliased`; processor skips when `host_side_effects_done`
+- POA&M close → `remediation.completed` / `remediation.verified`
+- UI: truth states PASS/FAIL/UNKNOWN/STALE, Live activity labels, remediations dotted SSE, CC KPI patch
 
 ## Honesty
 

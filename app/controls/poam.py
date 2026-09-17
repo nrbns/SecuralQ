@@ -194,6 +194,24 @@ def close_poam_for_host_pass(
                 try:
                     update_remediation(user_id, rem["id"], {"status": "done"})
                     closed += 1
+                    try:
+                        from app.realtime_events import publish_aliased
+
+                        publish_aliased(
+                            "remediation",
+                            aliases=["remediation.completed", "remediation.verified"],
+                            id=rem.get("id"),
+                            remediation_id=rem.get("id"),
+                            user_id=user_id,
+                            agent_id=agent_id,
+                            status="done",
+                            test=test_name,
+                            title=rem.get("title") or "",
+                            summary=f"Closed after {test_name} PASS",
+                            host_side_effects_done=True,
+                        )
+                    except Exception:
+                        pass
                 except Exception:
                     continue
     except Exception:

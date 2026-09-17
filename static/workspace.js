@@ -10995,6 +10995,46 @@
       }
     };
 
+    /** Truth state: PASS/FAIL/UNKNOWN/STALE/ERROR — never show bare PASS when stale. */
+    const controlTruthLabel = (status, observedAt) => {
+      const st = String(status || "unknown").toLowerCase();
+      let ageSec = null;
+      if (observedAt != null && observedAt !== "") {
+        const n = Number(observedAt);
+        if (Number.isFinite(n)) {
+          const ms = n < 1e12 ? n * 1000 : n;
+          ageSec = Math.max(0, Math.round((Date.now() - ms) / 1000));
+        }
+      }
+      const stale = ageSec != null && ageSec > 15 * 60;
+      if (st === "error") return { label: "ERROR", hint: "Test error", cls: "status-error" };
+      if (st === "unknown" || st === "n/a" || st === "na") {
+        return { label: "UNKNOWN", hint: ageSec != null ? `Last seen ${ageSec}s ago` : "No observation", cls: "status-planned" };
+      }
+      if (stale) {
+        return {
+          label: "STALE",
+          hint: ageSec != null ? `Last observed ${Math.round(ageSec / 60)}m ago` : "Observation expired",
+          cls: "status-planned",
+        };
+      }
+      if (st === "fail" || st === "failed" || st === "partial") {
+        return {
+          label: "FAIL",
+          hint: ageSec != null ? `Observed ${ageSec < 60 ? `${ageSec}s` : `${Math.round(ageSec / 60)}m`} ago` : "",
+          cls: "status-error",
+        };
+      }
+      if (st === "pass" || st === "ok") {
+        return {
+          label: "PASS",
+          hint: ageSec != null ? `Observed ${ageSec < 60 ? `${ageSec}s` : `${Math.round(ageSec / 60)}m`} ago` : "",
+          cls: "status-done",
+        };
+      }
+      return { label: st.toUpperCase(), hint: "", cls: "" };
+    };
+
     const cov =
       summary.evidence_coverage != null && summary.evidence_coverage !== ""
         ? `${summary.evidence_coverage}%`
@@ -11067,6 +11107,10 @@
                       }</button>`
                   );
                 }
+                const truth = controlTruthLabel(
+                  f.status || "fail",
+                  f.tested_at || f.observed_at || (detail && detail.tested_at) || summary.last_test
+                );
                 return `<tr>
                   <td><strong>${escapeHtml(f.control_id || "")}</strong>
                     <div class="hint">${escapeHtml(f.title || "")}</div>
@@ -11087,9 +11131,8 @@
                         : ""
                     }
                   </td>
-                  <td><span class="wq-badge pri-${f.status === "fail" ? "high" : "medium"}">${escapeHtml(
-                    f.status || "fail"
-                  )}</span>
+                  <td><span class="auto-job-status ${truth.cls}">${escapeHtml(truth.label)}</span>
+                    ${truth.hint ? `<div class="hint">${escapeHtml(truth.hint)}</div>` : ""}
                     <div class="hint">${escapeHtml(f.test || "")}</div></td>
                   <td class="hint">${escapeHtml((f.summary || "").slice(0, 140))}</td>
                   <td class="ws-actions">
@@ -13581,7 +13624,7 @@
       clearTimeout(window.__securaiqRiskRtTimer);
       window.__securaiqRiskRtTimer = setTimeout(() => renderRisksPage(), 500);
     }
-    if (view === "remediations" && t === "remediation") {
+    if (view === "remediations" && (t === "remediation" || (typeof t === "string" && t.startsWith("remediation")))) {
       clearTimeout(window.__securaiqRemRtTimer);
       window.__securaiqRemRtTimer = setTimeout(() => renderRemsPage(), 500);
     }

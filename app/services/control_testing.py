@@ -1085,7 +1085,58 @@ def evaluate_agent_host_controls(
                 result["tested_at"] = collected_at
                 out["results"].append(result)
                 status = (result.get("status") or "").lower()
+                # UNKNOWN is honest truth (missing/stale telemetry) — persist + emit,
+                # never invent PASS and never open remediations from UNKNOWN.
                 if status == "unknown":
+                    primary = _HOST_TEST_PRIMARY_CONTROLS.get(test_name)
+                    control_ids = _mapped_control_ids_for_test(test_name)
+                    try:
+                        from app.controls.results import record_test_result
+
+                        for binding in control_ids:
+                            fid = str(binding.get("framework_id") or "").strip()
+                            cid = str(binding.get("control_id") or "").strip()
+                            if not fid or not cid:
+                                continue
+                            record_test_result(
+                                user_id,
+                                fid,
+                                cid,
+                                test_name=test_name,
+                                status="unknown",
+                                summary=str(result.get("summary") or "No observation")[:500],
+                                detail={
+                                    "agent_id": agent_id,
+                                    "asset_id": asset,
+                                    **(result.get("detail") or {}),
+                                },
+                                tested_at=collected_at,
+                            )
+                    except Exception:
+                        pass
+                    try:
+                        from app.realtime_events import publish_aliased
+
+                        publish_aliased(
+                            "control.unknown",
+                            aliases=["control.test.completed"],
+                            status="unknown",
+                            test=test_name,
+                            control_ids=control_ids,
+                            control_id=primary[1] if primary else None,
+                            framework_id=primary[0] if primary else None,
+                            agent_id=agent_id,
+                            asset_id=asset,
+                            user_id=user_id,
+                            summary=result.get("summary") or "No observation",
+                            detail=result.get("detail") or {},
+                            source="securaiq_agent",
+                            host_side_effects_done=True,
+                            observed_at=collected_at,
+                        )
+                        out["events"].append({"type": "control.unknown", "status": "unknown", "test": test_name})
+                    except Exception:
+                        pass
                     continue
 
                 evidence = _record_host_control_evidence(
@@ -1123,10 +1174,11 @@ def evaluate_agent_host_controls(
                 except Exception:
                     pass
                 try:
-                    from app.realtime_bus import publish
+                    from app.realtime_events import publish_aliased
 
-                    publish(
-                        type="compliance",
+                    publish_aliased(
+                        "compliance",
+                        aliases=["compliance.updated"],
                         status=status,
                         test=test_name,
                         control_ids=control_ids,
@@ -1138,23 +1190,8 @@ def evaluate_agent_host_controls(
                         user_id=user_id,
                         summary=result.get("summary") or "",
                         source="securaiq_agent",
-                    )
-                    # Product timeline alias
-                    publish(
-                        type="compliance.updated",
-                        event_type="compliance.updated",
-                        status=status,
-                        test=test_name,
-                        control_ids=control_ids,
-                        control_id=primary[1] if primary else None,
-                        framework_id=primary[0] if primary else None,
-                        evidence_ids=evidence_ids,
-                        agent_id=agent_id,
-                        asset_id=asset,
-                        user_id=user_id,
-                        summary=result.get("summary") or "",
-                        source="securaiq_agent",
-                        alias_of="compliance",
+                        host_side_effects_done=True,
+                        observed_at=collected_at,
                     )
                     out["events"].append({"type": "compliance", "status": status, "test": test_name})
                     out["events"].append({"type": "compliance.updated", "status": status, "test": test_name})
@@ -1190,11 +1227,11 @@ def evaluate_agent_host_controls(
                 if status in ("fail", "pass"):
                     status_event = "control.failed" if status == "fail" else "control.passed"
                     try:
-                        from app.realtime_bus import publish
+                        from app.realtime_events import publish_aliased
 
-                        publish(
-                            event_type=status_event,
-                            type=status_event,
+                        publish_aliased(
+                            status_event,
+                            aliases=["control.test.completed"],
                             status=status,
                             test=test_name,
                             control_ids=control_ids,
@@ -1207,8 +1244,33 @@ def evaluate_agent_host_controls(
                             summary=result.get("summary") or "",
                             detail=result.get("detail") or {},
                             source="securaiq_agent",
+                            host_side_effects_done=True,
+                            observed_at=collected_at,
                         )
                         out["events"].append({"type": status_event, "status": status, "test": test_name})
+                        if evidence_ids:
+                            try:
+                                from app.realtime_events import publish_aliased as _pub_ev
+
+                                _pub_ev(
+                                    "evidence",
+                                    aliases=["evidence.created"],
+                                    evidence_ids=evidence_ids,
+                                    evidence_id=evidence_ids[0],
+                                    test=test_name,
+                                    status=status,
+                                    agent_id=agent_id,
+                                    asset_id=asset,
+                                    user_id=user_id,
+                                    control_id=primary[1] if primary else None,
+                                    framework_id=primary[0] if primary else None,
+                                    summary=result.get("summary") or "",
+                                    source="securaiq_agent",
+                                    host_side_effects_done=True,
+                                )
+                                out["events"].append({"type": "evidence.created", "test": test_name})
+                            except Exception:
+                                pass
                     except Exception:
                         pass
 

@@ -914,6 +914,11 @@ def _handle_control_failed(event: dict[str, Any]) -> None:
     user_id = _resolve_user_id(event)
     if not user_id:
         return
+    # Host evaluate already recorded evidence + live compliance + org risk.
+    if event.get("host_side_effects_done") or (
+        event.get("evidence_ids") and str(event.get("source") or "") == "securaiq_agent"
+    ):
+        return
     et = str(event.get("event_type") or event.get("type") or "control.failed").strip()
     test_name = str(event.get("test") or event.get("test_name") or "").strip()
     control_id = str(event.get("control_id") or "").strip()
@@ -1012,6 +1017,11 @@ def _handle_control_passed(event: dict[str, Any]) -> None:
     """control.passed → evidence + org risk reduction + live compliance refresh."""
     user_id = _resolve_user_id(event)
     if not user_id:
+        return
+    # Host evaluate already recorded evidence + live compliance + org risk.
+    if event.get("host_side_effects_done") or (
+        event.get("evidence_ids") and str(event.get("source") or "") == "securaiq_agent"
+    ):
         return
     et = str(event.get("event_type") or event.get("type") or "control.passed").strip()
     test_name = str(event.get("test") or event.get("test_name") or "").strip()

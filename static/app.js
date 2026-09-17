@@ -2991,11 +2991,26 @@ window.RealtimeManager = {
       if (view === "agent_detail") this.invalidate("agent_detail");
       if (t === "license.updated" || t === "agent.update.available") this.invalidate("license");
     }
-    // Golden loop: compliance/risk always refresh Mission Control stream KPIs
-    if (t.startsWith("compliance") || t.startsWith("control.") || t.startsWith("risk")) {
-      this.invalidate("command");
+    // Golden loop: patch Mission Control KPIs from the event first; full reload only as fallback
+    if (t.startsWith("compliance") || t.startsWith("control.") || t.startsWith("risk") || t.startsWith("remediation")) {
+      if (typeof window.patchCcKpisFromPush === "function") {
+        window.patchCcKpisFromPush(t, push);
+      }
+      // Debounced full CC refresh (SSE primary; avoid stampede)
+      clearTimeout(window.__securaiqCcRtTimer);
+      window.__securaiqCcRtTimer = setTimeout(() => {
+        if (typeof loadCommandCenter === "function" && (window.__securaiqCurrentView === "command" || typeof currentView !== "undefined" && currentView === "command")) {
+          loadCommandCenter();
+        }
+      }, 1200);
       if (view === "compliance_center") this.invalidate("compliance_center");
       if (view === "risks") this.invalidate("risks");
+      if (view === "remediations" || t.startsWith("remediation")) {
+        if (view === "remediations") this.invalidate("remediations");
+      }
+      if (view === "control_center" || t.startsWith("control.")) {
+        if (view === "control_center") this.invalidate("control_center");
+      }
     }
   },
   reconnect() {
@@ -3551,6 +3566,7 @@ const REALTIME_LIVE_TYPES = new Set([
   "configuration.drift_detected",
   "control.failed",
   "control.passed",
+  "control.unknown",
   "control.test.completed",
   "command.pending",
   "command.approved",
@@ -3563,6 +3579,15 @@ const REALTIME_LIVE_TYPES = new Set([
   "verification.completed",
   "license.updated",
   "threat",
+  "remediation.verified",
+  "remediation.pending",
+  "remediation.approved",
+  "remediation.rejected",
+  "remediation.sent",
+  "remediation.acknowledged",
+  "remediation.executing",
+  "remediation.failed",
+  "remediation.verifying",
 ]);
 window.REALTIME_LIVE_TYPES = REALTIME_LIVE_TYPES;
 
@@ -3602,6 +3627,7 @@ function describeRealtimeEvent(type, push) {
     "command.rollback": "Command rollback",
     "control.failed": `Control FAIL${test ? `: ${test}` : ""}`,
     "control.passed": `Control PASS${test ? `: ${test}` : ""}`,
+    "control.unknown": `Control UNKNOWN${test ? `: ${test}` : ""}`,
     "control.test.completed": `Control tested${test ? `: ${test}` : ""}`,
     "evidence.created": "Evidence recorded",
     evidence: "Evidence update",
@@ -3612,13 +3638,20 @@ function describeRealtimeEvent(type, push) {
       : "Compliance updated",
     compliance: "Compliance signal",
     "risk.changed": p.score != null
-      ? `Risk ${p.score}${
+      ? `Risk ${p.previous_score != null ? `${p.previous_score} → ${p.score}` : p.score}${
           p.score_delta != null ? ` (${p.score_delta > 0 ? "+" : ""}${p.score_delta})` : ""
         }`
       : "Risk score changed",
     risk: "Risk update",
     "remediation.recommended": "Remediation recommended",
     "remediation.created": "Remediation created",
+    "remediation.completed": "Remediation completed",
+    "remediation.verified": "Remediation verified",
+    "remediation.pending": "Remediation pending approval",
+    "remediation.approved": "Remediation approved",
+    "remediation.executing": "Remediation executing",
+    "remediation.failed": "Remediation failed",
+    "remediation.verifying": "Remediation verifying",
     remediation: "Remediation update",
     "verification.pass": "Verification PASS",
     "verification.fail": "Verification FAIL",
@@ -3642,8 +3675,19 @@ function describeRealtimeEvent(type, push) {
     [aid && `agent ${aid}`, p.asset_id && `asset ${String(p.asset_id).slice(0, 8)}`, p.plan, p.mode, p.version, p.kind, p.lifecycle]
       .filter(Boolean)
       .join(" · ");
+  if (p.observed_at != null || p.tested_at != null) {
+    const obs = Number(p.observed_at != null ? p.observed_at : p.tested_at);
+    if (Number.isFinite(obs)) {
+      const ms = obs < 1e12 ? obs * 1000 : obs;
+      const agoSec = Math.max(0, Math.round((Date.now() - ms) / 1000));
+      const age =
+        agoSec < 60 ? `Observed ${agoSec}s ago` : agoSec < 3600 ? `Observed ${Math.round(agoSec / 60)}m ago` : `Observed ${Math.round(agoSec / 3600)}h ago`;
+      detail = detail ? `${detail} · ${age}` : age;
+    }
+  }
   let sev = "";
   if (t.includes("fail") || status === "error" || status === "fail" || p.severity === "critical") sev = "high";
+  else if (t.includes("unknown") || t.includes("stale")) sev = "medium";
   else if (t.includes("pass") || status === "done" || status === "pass") sev = "";
   else if (p.severity === "high") sev = "high";
   else if (p.severity === "medium") sev = "medium";
@@ -7073,6 +7117,49 @@ function pushCcLiveEvent(evt) {
   window.__securaiqCcLiveEvents = list.slice(0, 40);
   paintCcLiveStream();
 }
+
+/** Patch Command Center KPI numbers from SSE without a full dashboard fetch. */
+function patchCcKpisFromPush(type, push) {
+  const p = push || {};
+  const t = String(type || "");
+  const liveEl = document.getElementById("ccLivePercent");
+  if (liveEl && (p.live_percent != null || p.percent != null)) {
+    const n = Number(p.live_percent != null ? p.live_percent : p.percent);
+    if (Number.isFinite(n)) {
+      const prev = liveEl.textContent;
+      liveEl.textContent = `${Math.round(n)}%`;
+      if (p.percent_delta != null) {
+        liveEl.title = `Δ ${p.percent_delta > 0 ? "+" : ""}${p.percent_delta}`;
+      }
+      if (prev && prev !== liveEl.textContent) liveEl.classList.add("cc-kpi-flash");
+    }
+  }
+  const riskEl = document.getElementById("ccOrgRisk") || document.getElementById("ccRiskScore");
+  if (riskEl && p.score != null) {
+    const prev = riskEl.textContent;
+    riskEl.textContent = String(p.score);
+    if (p.previous_score != null) {
+      riskEl.title = `${p.previous_score} → ${p.score}`;
+    }
+    if (prev && prev !== riskEl.textContent) riskEl.classList.add("cc-kpi-flash");
+  }
+  const remsEl = document.getElementById("ccRems");
+  if (remsEl && t.startsWith("remediation")) {
+    const cur = Number(remsEl.textContent);
+    if (t.includes("recommended") || t.includes("created") || t.includes("pending")) {
+      if (Number.isFinite(cur)) remsEl.textContent = String(cur + 1);
+    } else if (t.includes("completed") || t.includes("verified")) {
+      if (Number.isFinite(cur) && cur > 0) remsEl.textContent = String(cur - 1);
+    }
+  }
+  const failEl = document.getElementById("ccControlFails");
+  if (failEl) {
+    const cur = Number(failEl.textContent);
+    if (t === "control.failed" && Number.isFinite(cur)) failEl.textContent = String(cur + 1);
+    if (t === "control.passed" && Number.isFinite(cur) && cur > 0) failEl.textContent = String(cur - 1);
+  }
+}
+window.patchCcKpisFromPush = patchCcKpisFromPush;
 
 function paintCcLiveStream() {
   const el = document.getElementById("ccLiveStream");
