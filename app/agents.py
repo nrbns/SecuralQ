@@ -2003,6 +2003,74 @@ def request_agent_upgrade(user_id: str, agent_id: str, *, requested_by: str = ""
     )
 
 
+def create_upgrade_canary_campaign(
+    user_id: str,
+    *,
+    agent_ids: list[str],
+    ring_sizes: list[int] | None = None,
+    requested_by: str = "",
+) -> dict[str, Any]:
+    """#241 — staged agent_upgrade across canary rings (pending_approval each).
+
+    ring_sizes e.g. [1, 5, 50] partitions agent_ids in order. Ring N is not
+    auto-approved when ring N-1 verifies — operator advances rings explicitly.
+    """
+    ensure_schema()
+    ids = [a for a in (agent_ids or []) if a]
+    if not ids:
+        raise ValueError("agent_ids required")
+    sizes = ring_sizes or [1, max(1, len(ids) - 1)]
+    # Build ring membership
+    rings: list[list[str]] = []
+    cursor = 0
+    for i, sz in enumerate(sizes):
+        take = max(1, int(sz))
+        chunk = ids[cursor : cursor + take]
+        if not chunk and i == 0:
+            chunk = ids[:1]
+            cursor = 1
+        elif chunk:
+            cursor += len(chunk)
+        if chunk:
+            rings.append(chunk)
+    if cursor < len(ids):
+        rings.append(ids[cursor:])
+
+    camp_id = new_id()
+    c = get_conn()
+    c.execute(
+        """
+        INSERT INTO securaiq_patch_campaigns
+        (id, user_id, name, status, rings_json, ring_threshold_pct, created_at, resolved_ring)
+        VALUES (?, ?, ?, 'pending', ?, 100, ?, -1)
+        """,
+        (camp_id, user_id, f"canary-upgrade-{camp_id[:8]}", json.dumps([len(r) for r in rings]), now()),
+    )
+    c.commit()
+    commands: list[dict[str, Any]] = []
+    for ring_i, ring_agents in enumerate(rings):
+        for aid in ring_agents:
+            cmd = request_agent_upgrade(
+                user_id,
+                aid,
+                requested_by=requested_by or user_id,
+            )
+            # Stamp campaign + ring on the command row
+            get_conn().execute(
+                "UPDATE securaiq_agent_commands SET campaign_id = ?, ring_index = ? WHERE id = ?",
+                (camp_id, ring_i, cmd["id"]),
+            )
+            get_conn().commit()
+            commands.append({"agent_id": aid, "command_id": cmd["id"], "ring_index": ring_i, "status": cmd["status"]})
+    return {
+        "ok": True,
+        "campaign_id": camp_id,
+        "rings": len(rings),
+        "ring_sizes": [len(r) for r in rings],
+        "commands": commands,
+    }
+
+
 def request_agent_uninstall(
     user_id: str,
     agent_id: str,

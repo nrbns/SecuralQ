@@ -203,5 +203,5 @@ def test_master_checklist_phases_documented():
     text = (Path(__file__).resolve().parents[1] / "docs" / "MASTER-CHECKLIST.md").read_text(
         encoding="utf-8"
     )
-    for needle in ("#251", "#239", "#238", "#255", "#259", "PHASE 6"):
+    for needle in ("#226", "#251", "#255", "#259", "PHASE 6", "#221"):
         assert needle in text

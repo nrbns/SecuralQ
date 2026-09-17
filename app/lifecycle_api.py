@@ -130,6 +130,97 @@ async def api_kms_status(user: Annotated[AuthUser, Depends(require_user)]):
     return status()
 
 
+@router.get("/admin/mtls/fleet-status")
+async def api_mtls_fleet_status(user: Annotated[AuthUser, Depends(require_user)]):
+    require_perm(user, "settings.write", org_id=None)
+    from app.agent_certs import fleet_mtls_status
+
+    return fleet_mtls_status()
+
+
+@router.get("/auth/saml/status")
+async def api_saml_status(user: Annotated[AuthUser, Depends(require_user)]):
+    from app.saml_scaffold import status
+
+    return status()
+
+
+@router.get("/auth/saml/metadata")
+async def api_saml_metadata():
+    from fastapi.responses import Response
+
+    from app.saml_scaffold import sp_metadata
+
+    return Response(content=sp_metadata(), media_type="application/samlmetadata+xml")
+
+
+class SamlAcsBody(BaseModel):
+    SAMLResponse: str = ""
+    saml_response: str = ""
+    RelayState: str = ""
+
+
+@router.post("/auth/saml/acs")
+async def api_saml_acs(req: SamlAcsBody, user: Annotated[AuthUser, Depends(require_user)]):
+    from app.saml_scaffold import receive_acs
+
+    try:
+        return receive_acs(req.model_dump(), actor=user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/export/pptx")
+async def api_export_pptx(user: Annotated[AuthUser, Depends(require_user)]):
+    """#221 — download a one-slide executive PPTX."""
+    from pathlib import Path
+
+    from fastapi.responses import FileResponse
+
+    from app.config import settings
+    from app.pptx_export import build_executive_pptx
+
+    out = Path(settings.data_dir) / "exports" / f"exec-{user.id[:8]}.pptx"
+    bullets = ["SecuraIQ posture export", f"Generated for user {user.username}"]
+    try:
+        from app.db import get_conn
+
+        n = get_conn().execute("SELECT COUNT(*) AS n FROM securaiq_agents").fetchone()
+        bullets.append(f"Agents enrolled: {int(n['n'] if n else 0)}")
+    except Exception:
+        pass
+    build_executive_pptx(out, title="SecuraIQ Executive Summary", bullets=bullets)
+    return FileResponse(
+        path=str(out),
+        filename="securaiq-executive.pptx",
+        media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    )
+
+
+class CanaryUpgradeRequest(BaseModel):
+    agent_ids: list[str]
+    ring_sizes: list[int] | None = None
+
+
+@router.post("/agents/canary-upgrade")
+async def api_canary_upgrade(
+    req: CanaryUpgradeRequest,
+    user: Annotated[AuthUser, Depends(require_user)],
+):
+    require_perm(user, "agent.command", org_id=None)
+    from app.agents import create_upgrade_canary_campaign
+
+    try:
+        return create_upgrade_canary_campaign(
+            user.id,
+            agent_ids=req.agent_ids,
+            ring_sizes=req.ring_sizes,
+            requested_by=user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 # ----- MSSP -----
 
 

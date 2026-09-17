@@ -58,6 +58,7 @@ jobs:
           tests/test_wave1_complete.py
           tests/test_master_checklist_p0.py
           tests/test_master_checklist_phases.py
+          tests/test_close_all_partials.py
           tests/test_realtime_phase1_proof.py
           tests/test_stream_durability.py
           tests/test_redis_dlq_ops.py
@@ -101,13 +102,13 @@ jobs:
           python-version: "3.11"
       - name: Install deps
         run: pip install pydantic pydantic-settings httpx pytest pytest-asyncio cryptography argon2-cffi psycopg[binary]
-      - name: Master checklist + tenancy on Postgres URL
+      - name: Postgres dialect smoke (#252)
         env:
           DATABASE_URL: postgresql://securaiq:securaiq_ci@localhost:5432/securaiq
+        run: python scripts/postgres_ci_smoke.py
+      - name: Checklist tests
         run: >
           pytest -v
           tests/test_master_checklist_p0.py
           tests/test_master_checklist_phases.py
-          tests/test_cross_tenant_isolation.py
-        continue-on-error: true
-        # Soft until full SQL dialect parity; failures tracked as #252 hardening
+          tests/test_close_all_partials.py

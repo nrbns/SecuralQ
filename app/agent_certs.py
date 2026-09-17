@@ -365,3 +365,95 @@ def agent_cert_summary(agent: dict[str, Any] | None) -> dict[str, Any] | None:
         "has_certificate": bool(fp),
         "revoked": bool(revoked_at) and not fp,
     }
+
+
+def fleet_mtls_status() -> dict[str, Any]:
+    """#248 — fleet-wide mTLS readiness (CA material + enforcement flags)."""
+    from pathlib import Path
+
+    ca_dir = Path(settings.data_dir) / "mtls"
+    ca_cert = ca_dir / "ca.crt"
+    ca_key = ca_dir / "ca.key"
+    ca_ready = ca_cert.is_file() and ca_key.is_file()
+    if mtls_enabled() and not ca_ready:
+        try:
+            _ensure_lab_ca(ca_dir)
+            ca_ready = ca_cert.is_file() and ca_key.is_file()
+        except Exception as exc:
+            return {
+                "enabled": True,
+                "ca_ready": False,
+                "error": str(exc)[:200],
+                "proxy_verify": mtls_proxy_verify_enabled(),
+            }
+    enrolled = 0
+    with_cert = 0
+    try:
+        from app.db import table_columns
+
+        cols = table_columns(get_conn(), "securaiq_agents")
+        if cols:
+            enrolled = int(
+                get_conn()
+                .execute("SELECT COUNT(*) AS n FROM securaiq_agents WHERE COALESCE(revoked,0)=0")
+                .fetchone()["n"]
+            )
+            if "certificate_fingerprint" in cols:
+                with_cert = int(
+                    get_conn()
+                    .execute(
+                        "SELECT COUNT(*) AS n FROM securaiq_agents WHERE COALESCE(revoked,0)=0 "
+                        "AND COALESCE(certificate_fingerprint,'') != ''"
+                    )
+                    .fetchone()["n"]
+                )
+    except Exception:
+        pass
+    return {
+        "enabled": mtls_enabled(),
+        "ca_ready": ca_ready,
+        "ca_path": str(ca_cert) if ca_ready else None,
+        "proxy_verify": mtls_proxy_verify_enabled(),
+        "require_fingerprint_match": bool(getattr(settings, "agent_mtls_require_fingerprint_match", False)),
+        "agents_enrolled": enrolled,
+        "agents_with_client_cert": with_cert,
+        "ready_for_proxy_enforce": mtls_enabled() and ca_ready,
+    }
+
+
+def _ensure_lab_ca(ca_dir: Path) -> None:
+    """Create a lab self-signed CA if missing (cryptography)."""
+    from pathlib import Path as _P
+
+    ca_dir = _P(ca_dir)
+    ca_dir.mkdir(parents=True, exist_ok=True)
+    cert_path = ca_dir / "ca.crt"
+    key_path = ca_dir / "ca.key"
+    if cert_path.is_file() and key_path.is_file():
+        return
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "SecuraIQ Lab Agent CA")])
+    ca = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(dt.datetime.utcnow() - dt.timedelta(minutes=1))
+        .not_valid_after(dt.datetime.utcnow() + dt.timedelta(days=3650))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+        .sign(key, hashes.SHA256())
+    )
+    key_path.write_bytes(
+        key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.TraditionalOpenSSL,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+    )
+    cert_path.write_bytes(ca.public_bytes(serialization.Encoding.PEM))

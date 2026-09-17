@@ -12481,8 +12481,11 @@
           <div class="footer-grid" style="gap:0.5rem">
             <button type="button" class="btn-secondary" id="platGdprExport">Download my data export</button>
             <button type="button" class="btn-secondary" id="platGdprErase">Erase my data…</button>
+            <a class="btn-secondary" href="/api/export/pptx" id="platPptxExport">Download executive PPTX</a>
           </div>
-          <p class="hint" style="margin-top:0.75rem">Retention dry-run:
+          <p class="hint" style="margin-top:0.75rem">
+            <a href="/docs/incident-sla.md" target="_blank" rel="noopener">Incident SLA</a>
+            · Retention dry-run:
             <code>${escapeHtml(JSON.stringify((retention && !retention.__error && retention.deleted) || retention || {}))}</code>
           </p>
         </section>
