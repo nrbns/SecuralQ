@@ -182,3 +182,29 @@ def test_lan_start_scripts_enable_device_share():
         assert "ALLOW_OPEN_LAN" in body
         assert "LAN_AUTO_SCAN" in body
         assert "WORKSPACE_ZERO_START" in body
+
+
+def test_agent_deploy_info_localhost_not_reachable(tmp_path, monkeypatch):
+    _reload_db(monkeypatch, tmp_path / "data", HOST="127.0.0.1", PUBLIC_BASE_URL="")
+    import app.platform_info as pi
+
+    importlib.reload(pi)
+    out = pi.agent_deploy_info()
+    assert out["reachable_from_other_hosts"] is False
+    warn = (out["warning"] or "").lower()
+    assert "localhost" in warn or "127.0.0.1" in warn
+
+
+def test_agent_deploy_info_public_base_url(tmp_path, monkeypatch):
+    _reload_db(
+        monkeypatch,
+        tmp_path / "data",
+        HOST="127.0.0.1",
+        PUBLIC_BASE_URL="http://192.168.1.50:8080",
+    )
+    import app.platform_info as pi
+
+    importlib.reload(pi)
+    out = pi.agent_deploy_info()
+    assert out["server_url"] == "http://192.168.1.50:8080"
+    assert out["reachable_from_other_hosts"] is True

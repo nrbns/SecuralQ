@@ -95,6 +95,81 @@ _PLATFORM_CACHE: dict[str, Any] | None = None
 _PLATFORM_CACHE_TS = 0.0
 
 
+def _is_loopback_host(host: str) -> bool:
+    h = (host or "").strip().lower().strip("[]")
+    return h in {"", "localhost", "127.0.0.1", "::1", "0.0.0.0", "::"}
+
+
+def _is_loopback_url(url: str) -> bool:
+    from urllib.parse import urlparse
+
+    try:
+        return _is_loopback_host(urlparse((url or "").strip()).hostname or "")
+    except Exception:
+        return True
+
+
+def agent_deploy_info(*, request_base: str = "") -> dict[str, Any]:
+    """Server URL agents on *other* machines must use (never invent secrets).
+
+    Order: PUBLIC_BASE_URL → non-loopback request Host → LAN share URL when
+    bound to 0.0.0.0 → localhost (with reachable=false warning).
+    """
+    info = platform_info()
+    public = (getattr(settings, "public_base_url", "") or "").strip().rstrip("/")
+    lan_mode = bool(info.get("lan_mode"))
+    lan_urls = list(info.get("lan_urls") or [])
+    share = str(info.get("share_url") or "")
+    local = str(info.get("local_url") or f"http://127.0.0.1:{settings.port}")
+    req = (request_base or "").strip().rstrip("/")
+
+    server_url = ""
+    source = "localhost"
+    if public:
+        server_url = public
+        source = "public_base_url"
+    elif req and not _is_loopback_url(req):
+        server_url = req
+        source = "request_host"
+    elif lan_mode and lan_urls:
+        server_url = share or lan_urls[0]
+        source = "lan"
+    else:
+        server_url = local
+        source = "localhost"
+
+    loopback = _is_loopback_url(server_url)
+    reachable = bool(server_url) and not loopback and (lan_mode or source == "public_base_url" or source == "request_host")
+    warning = ""
+    if not reachable:
+        warning = (
+            "This SecuraIQ instance is only reachable on this machine (localhost bind or "
+            "install URL points at 127.0.0.1/localhost). Agents on other laptops/servers "
+            "will fail to check in. Fix: restart with LAN bind "
+            "(Windows: .\\start_lan.cmd or .\\start.cmd -Lan; Linux/macOS: ./scripts/start.sh --lan), "
+            "open the UI via a LAN IP (not localhost), and use that URL as --server / SECURAIQ_SERVER. "
+            "Or set PUBLIC_BASE_URL in .env to the hostname/IP other hosts can reach."
+        )
+    return {
+        "server_url": server_url,
+        "source": source,
+        "lan_mode": lan_mode,
+        "lan_urls": lan_urls,
+        "local_url": local,
+        "share_url": share,
+        "public_base_url": public,
+        "reachable_from_other_hosts": reachable,
+        "warning": warning,
+        "how_to_fix": [
+            "On the SecuraIQ host: stop the app, then start with LAN mode (.\\start_lan.cmd or ./scripts/start.sh --lan).",
+            "Confirm HOST=0.0.0.0 in .env (or set PUBLIC_BASE_URL=http://<this-host-lan-ip>:8080).",
+            "Allow inbound TCP on the app port in the host firewall (Private profile).",
+            "On the other PC/server: use --server http://<SecuraIQ-LAN-IP>:8080 — never http://127.0.0.1 or localhost.",
+            "Developer fallback needs Python 3.8+ on the target, or use the packaged SecuraIQ-Agent.exe / .tar.gz.",
+        ],
+    }
+
+
 def platform_info() -> dict[str, Any]:
     global _PLATFORM_CACHE, _PLATFORM_CACHE_TS
     import time
@@ -117,6 +192,7 @@ def platform_info() -> dict[str, Any]:
         "local_url": f"http://127.0.0.1:{port}",
         "lan_mode": (settings.host or "").strip() in {"0.0.0.0", "::", "[::]"},
         "share_url": ([f"http://{ip}:{port}" for ip in ips] or [f"http://127.0.0.1:{port}"])[0],
+        "public_base_url": (getattr(settings, "public_base_url", "") or "").strip(),
         "lan_auto_scan": bool(getattr(settings, "lan_auto_scan", False)),
         "workspace_zero_start": bool(getattr(settings, "workspace_zero_start", False)),
         "client_note": (

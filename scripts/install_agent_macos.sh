@@ -40,6 +40,12 @@ if [ -z "$SERVER" ] || [ -z "$TOKEN" ]; then
   echo "Usage: sudo $0 --server https://securaiq.example.com --token <agent_id>.<agent_key>" >&2
   exit 2
 fi
+case "$SERVER" in
+  *localhost*|*127.0.0.1*|*[::1]*)
+    echo "WARNING: --server is localhost. On another Mac that means THIS machine, not SecuraIQ." >&2
+    echo "Use the SecuraIQ LAN IP (e.g. http://192.168.x.x:8080) and start the console with LAN bind." >&2
+    ;;
+esac
 if [ ! -f "$SCRIPT_SRC" ]; then
   echo "Could not find securaiq_agent.py next to this installer at $SCRIPT_SRC" >&2
   echo "Download both files together, e.g.:" >&2

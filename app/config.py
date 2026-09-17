@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     unsloth_load_in_4bit: bool = True
     host: str = "127.0.0.1"  # localhost-only by default; use HOST=0.0.0.0 or start -Lan for LAN
     port: int = 8080
+    # URL other hosts use to reach this SecuraIQ instance (agents / phones / LAN PCs).
+    # When empty, Agents UI prefers a detected LAN IP if HOST=0.0.0.0, else localhost.
+    # Example: PUBLIC_BASE_URL=http://192.168.1.20:8080  or  https://securaiq.example.com
+    public_base_url: str = ""
     # lab = open local OK; production = AUTH_ENABLED required, no open bind without auth
     deployment_mode: str = "lab"
     allow_open_lan: bool = False  # if true, allow AUTH_ENABLED=false on 0.0.0.0 (never for public internet)

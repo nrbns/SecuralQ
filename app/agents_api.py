@@ -465,7 +465,10 @@ def _list_built_packages() -> list[dict[str, Any]]:
 
 
 @router.get("/packages")
-async def api_agent_packages(user: Annotated[AuthUser, Depends(require_user)]):
+async def api_agent_packages(
+    request: Request,
+    user: Annotated[AuthUser, Depends(require_user)],
+):
     """Package-first catalog: built .exe / .zip / .tar.gz / .dmg, plus developer script fallbacks.
 
     Built packages come from dist/agent-packages/ (see scripts/build_agent_packages.py).
@@ -534,6 +537,7 @@ async def api_agent_packages(user: Annotated[AuthUser, Depends(require_user)]):
         "Prefer packaged .exe / .zip / .tar.gz (install.ps1 / install.sh are inside the archive). Raw install_agent_* scripts are developer fallback only.",
         "Windows .exe builds on Windows/CI; Linux/macOS native binaries need matching OS or CI.",
         "Enroll first (token once), download the OS package, then set SECURAIQ_SERVER + SECURAIQ_TOKEN (or pass --server / --token).",
+        "Other PCs/servers cannot use http://127.0.0.1 or localhost as --server — use the host's LAN IP or PUBLIC_BASE_URL.",
     ]
     if dmg_available:
         notes.insert(
@@ -545,6 +549,29 @@ async def api_agent_packages(user: Annotated[AuthUser, Depends(require_user)]):
             1,
             "macOS .dmg is not present on this server (requires macOS or CI macos-latest). Use the .tar.gz package (includes install.sh).",
         )
+
+    # Prefer a URL other hosts can reach (LAN IP / PUBLIC_BASE_URL), not browser localhost.
+    request_base = str(request.base_url).rstrip("/")
+    xf_proto = (request.headers.get("x-forwarded-proto") or "").split(",")[0].strip()
+    xf_host = (request.headers.get("x-forwarded-host") or request.headers.get("host") or "").split(",")[0].strip()
+    if xf_host:
+        scheme = xf_proto or request.url.scheme or "http"
+        request_base = f"{scheme}://{xf_host}".rstrip("/")
+    try:
+        from app.platform_info import agent_deploy_info
+
+        deploy_reach = agent_deploy_info(request_base=request_base)
+    except Exception:
+        deploy_reach = {
+            "server_url": request_base,
+            "reachable_from_other_hosts": False,
+            "lan_mode": False,
+            "lan_urls": [],
+            "warning": "Could not resolve LAN deploy URL — set PUBLIC_BASE_URL in .env.",
+            "how_to_fix": [],
+        }
+    if deploy_reach.get("warning"):
+        notes.insert(0, deploy_reach["warning"])
 
     return {
         "packages": packages,
@@ -594,6 +621,14 @@ async def api_agent_packages(user: Annotated[AuthUser, Depends(require_user)]):
             ],
         },
         "deploy": {
+            "server_url": deploy_reach.get("server_url") or request_base,
+            "source": deploy_reach.get("source") or "request",
+            "lan_mode": bool(deploy_reach.get("lan_mode")),
+            "lan_urls": deploy_reach.get("lan_urls") or [],
+            "local_url": deploy_reach.get("local_url") or "",
+            "reachable_from_other_hosts": bool(deploy_reach.get("reachable_from_other_hosts")),
+            "warning": deploy_reach.get("warning") or "",
+            "how_to_fix": deploy_reach.get("how_to_fix") or [],
             "enroll_token_url": "/api/agents/enroll-tokens",
             "enroll_by_token_url": "/api/agents/enroll-by-token",
             "license_validate_url": "/api/licenses/validate",

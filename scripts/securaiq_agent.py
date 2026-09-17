@@ -3195,6 +3195,22 @@ def main() -> int:
         )
         return 2
 
+    # Catch the #1 cross-machine failure: --server is localhost of the *console* host.
+    try:
+        from urllib.parse import urlparse
+
+        _host = (urlparse(args.server).hostname or "").lower()
+        if _host in {"localhost", "127.0.0.1", "::1"}:
+            print(
+                "[securaiq-agent] WARNING: --server points at localhost. "
+                "On another laptop/server that means THIS machine, not SecuraIQ. "
+                "Use the SecuraIQ host LAN IP (e.g. http://192.168.x.x:8080) or PUBLIC_BASE_URL. "
+                "On the SecuraIQ PC start with .\\start_lan.cmd / ./scripts/start.sh --lan.",
+                file=sys.stderr,
+            )
+    except Exception:
+        pass
+
     if config_path:
         print(f"[securaiq-agent] loaded config from {config_path}")
 

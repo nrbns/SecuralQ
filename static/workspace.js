@@ -5675,7 +5675,19 @@
         const cls = item.primary === false ? "btn-ghost agents-pkg-dl" : "btn-secondary agents-pkg-dl";
         return `<a class="${cls}" href="${escapeHtml(url)}" download>${escapeHtml(item.label || item.filename)}${escapeHtml(size)}</a>`;
       };
-      const serverUrl = (data.deploy && data.deploy.server_url) || window.location.origin;
+      const deploy = data.deploy || {};
+      const savedUrl = (typeof localStorage !== "undefined" && localStorage.getItem("securaiq_agent_server_url")) || "";
+      let serverUrl =
+        (savedUrl || "").trim() ||
+        (deploy.server_url || "").trim() ||
+        window.location.origin;
+      // Never ship loopback to other machines when LAN URLs are known
+      if (/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/i.test(serverUrl)) {
+        const lan = (deploy.lan_urls || [])[0] || deploy.share_url;
+        if (lan) serverUrl = lan;
+      }
+      const reachable = deploy.reachable_from_other_hosts !== false &&
+        !/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/i.test(serverUrl);
       const bootTok = window.__securaiqLastBootstrapToken || "";
       const installCmd = (osKey) => {
         const tok = bootTok || "<BOOTSTRAP_TOKEN>";
@@ -5733,12 +5745,35 @@
         : `<div class="agents-roadmap-badges"><span>MSI soon</span><span>DEB/RPM soon</span><span>Notarized DMG soon</span></div>`;
       const allScripts = (byOs.all || []).map(itemBtn).join("");
       const notes = (data.notes || []).map((n) => `<li>${escapeHtml(n)}</li>`).join("");
+      const reachBanner = reachable
+        ? `<p class="hint" style="margin:0 0 0.75rem">Agents on other machines must use <code>${escapeHtml(serverUrl)}</code> — not localhost.</p>`
+        : `<div class="cc-callout" style="margin:0 0 0.75rem;padding:0.65rem 0.75rem;border:1px solid var(--danger-border,#fca5a5);background:color-mix(in srgb,#ef4444 8%,transparent);border-radius:6px">
+            <strong>Other PCs cannot reach this server</strong>
+            <p class="hint" style="margin:0.35rem 0 0">${escapeHtml(deploy.warning || "SecuraIQ is bound to localhost, or the install URL is 127.0.0.1. Restart with LAN mode and use a LAN IP as --server.")}</p>
+            <ol class="hint" style="margin:0.5rem 0 0;padding-left:1.2rem">
+              ${(deploy.how_to_fix || [
+                "Restart SecuraIQ with .\\\\start_lan.cmd (Windows) or ./scripts/start.sh --lan",
+                "Set PUBLIC_BASE_URL=http://<this-host-LAN-IP>:8080 in .env",
+                "On the other laptop/server use that LAN URL — never localhost",
+              ]).map((s) => `<li>${escapeHtml(s)}</li>`).join("")}
+            </ol>
+          </div>`;
+      const lanChoices = (deploy.lan_urls || [])
+        .map((u) => `<option value="${escapeHtml(u)}">${escapeHtml(u)}</option>`)
+        .join("");
       el.innerHTML = `
+        ${reachBanner}
         <div class="agents-rt-inline hint" id="agentsPkgRealtimeHint">
           Realtime: SSE <code>${escapeHtml(rt.sse || "/api/realtime")}</code>
           · Agent WS <code>${escapeHtml(rt.agent_websocket || "/api/agents/ws")}</code>
           · Fleet <strong id="agentsPkgFleetOnline">${Number(rt.fleet_online || 0)}</strong>/<span id="agentsPkgFleetTotal">${Number(rt.fleet_total || 0)}</span> online
         </div>
+        <label class="hint" style="display:flex;flex-wrap:wrap;gap:0.5rem;align-items:center;margin:0.5rem 0 0.75rem">
+          <span>Server URL for other hosts</span>
+          <input id="agentsDeployServerUrl" type="url" value="${escapeHtml(serverUrl)}" style="min-width:16rem;flex:1" placeholder="http://192.168.x.x:8080" />
+          ${lanChoices ? `<select id="agentsDeployLanPick" aria-label="Pick LAN URL"><option value="">LAN IPs…</option>${lanChoices}</select>` : ""}
+          <button type="button" class="btn-secondary" id="agentsDeployServerSave">Apply</button>
+        </label>
         <div class="agents-os-grid">${cards}</div>
         ${roadmap}
         ${allScripts ? `<details class="agents-dev-fallback" style="margin-top:0.75rem"><summary class="hint">Developer fallback — all platforms</summary><div class="agents-pkg-actions" style="margin-top:0.35rem">${allScripts}</div></details>` : ""}
@@ -5755,6 +5790,32 @@
         </div>
         ${notes ? `<ul class="hint agents-pkg-notes" style="margin:0.75rem 0 0;padding-left:1.2rem">${notes}</ul>` : ""}
       `;
+      const applyServerUrl = () => {
+        const inp = el.querySelector("#agentsDeployServerUrl");
+        const next = (inp?.value || "").trim().replace(/\/$/, "");
+        if (!next) return;
+        try {
+          localStorage.setItem("securaiq_agent_server_url", next);
+        } catch {
+          /* ignore */
+        }
+        window.__securaiqAgentServerUrl = next;
+        renderAgentPackagesHub(el);
+      };
+      el.querySelector("#agentsDeployServerSave")?.addEventListener("click", applyServerUrl);
+      el.querySelector("#agentsDeployLanPick")?.addEventListener("change", (e) => {
+        const v = e.target?.value;
+        if (!v) return;
+        const inp = el.querySelector("#agentsDeployServerUrl");
+        if (inp) inp.value = v;
+        applyServerUrl();
+      });
+      el.querySelector("#agentsDeployServerUrl")?.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          applyServerUrl();
+        }
+      });
     } catch (err) {
       el.innerHTML = `<p class="hint">Couldn't load package catalog. <span class="hint-sub">(${escapeHtml(err.message || String(err))})</span></p>`;
     }

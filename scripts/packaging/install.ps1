@@ -23,6 +23,10 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+if ($Server -match '(?i)localhost|127\.0\.0\.1|\[::1\]') {
+    Write-Warning "Server URL is localhost. On another PC that points at THIS machine, not SecuraIQ. Use the SecuraIQ host LAN IP and start SecuraIQ with .\start_lan.cmd."
+}
+
 $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Error "Run this from an elevated (Administrator) PowerShell session."
