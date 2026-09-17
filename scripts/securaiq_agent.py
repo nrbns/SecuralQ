@@ -318,9 +318,16 @@ class OfflineTelemetryBuffer:
             before = len(self._events)
             self._events = [e for e in self._events if int(e.get("sequence") or 0) not in seqs]
             removed = before - len(self._events)
-            high = max(seqs)
-            if high > self._last_acked:
-                self._last_acked = high
+            # Contiguous watermark only — never jump across holes.
+            expected = self._last_acked + 1
+            for s in sorted(seqs):
+                if s < expected:
+                    continue
+                if s == expected:
+                    self._last_acked = s
+                    expected = s + 1
+                else:
+                    break
             self._persist_unlocked()
             return removed
 
@@ -346,22 +353,48 @@ class OfflineTelemetryBuffer:
             out: dict[str, Any] = {
                 "sequence": self._next_seq - 1 if self._next_seq > 1 else 0,
                 "buffered_events": batch,
+                "expected_next_seq": self._last_acked + 1,
             }
             if request_missing and self._last_acked >= 0:
                 out["request_missing_from"] = self._last_acked + 1
             return out
 
     def apply_server_ack(self, response: dict[str, Any] | None) -> int:
+        """Prefer contiguous last_acked_seq; never advance watermark across holes."""
         if not isinstance(response, dict):
             return 0
-        removed = 0
-        acked = response.get("acked_sequences") or response.get("ack_sequences")
-        if isinstance(acked, list) and acked:
-            removed += self.ack(acked)
         through = response.get("last_acked_seq")
         if through is not None:
-            removed += self.ack_through(int(through))
-        return removed
+            return self.ack_through(int(through))
+        acked = response.get("acked_sequences") or response.get("ack_sequences")
+        if isinstance(acked, list) and acked:
+            try:
+                seqs = sorted({int(s) for s in acked})
+            except (TypeError, ValueError):
+                return 0
+            contiguous: list[int] = []
+            expected = self._last_acked + 1
+            for s in seqs:
+                if s < expected:
+                    continue
+                if s == expected:
+                    contiguous.append(s)
+                    expected = s + 1
+                else:
+                    break
+            if contiguous:
+                return self.ack_through(max(contiguous))
+        return 0
+
+
+def _make_offline_buffer(agent_id: str) -> OfflineTelemetryBuffer:
+    """Prefer shared app buffer (SQLite-capable) when running in-repo; else embedded."""
+    try:
+        from app.agent_offline_buffer import OfflineTelemetryBuffer as SharedBuf
+
+        return SharedBuf(agent_id)  # type: ignore[return-value]
+    except Exception:
+        return OfflineTelemetryBuffer(agent_id)
 
 
 def _compact_snapshot_for_buffer(snapshot: dict) -> dict:
@@ -3327,7 +3360,7 @@ def main() -> int:
     agent_id = _agent_id_from_token(args.token)
     offline_buf: OfflineTelemetryBuffer | None = None
     if not args.no_offline_buffer:
-        offline_buf = OfflineTelemetryBuffer(agent_id)
+        offline_buf = _make_offline_buffer(agent_id)
         if offline_buf.pending_count:
             print(f"[securaiq-agent] offline buffer pending={offline_buf.pending_count} path={offline_buf.path}")
 

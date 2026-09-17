@@ -129,12 +129,21 @@ impl OfflineQueue {
         }
         let set: std::collections::HashSet<u64> = sequences.iter().copied().collect();
         let before = self.events.len();
-        self.events
-            .retain(|e| !set.contains(&e.sequence));
+        self.events.retain(|e| !set.contains(&e.sequence));
         let removed = before - self.events.len();
-        if let Some(high) = sequences.iter().max() {
-            if *high > self.last_acked {
-                self.last_acked = *high;
+        // Contiguous watermark only — never jump across holes.
+        let mut expected = self.last_acked + 1;
+        let mut sorted: Vec<u64> = sequences.to_vec();
+        sorted.sort_unstable();
+        for s in sorted {
+            if s < expected {
+                continue;
+            }
+            if s == expected {
+                self.last_acked = s;
+                expected = s + 1;
+            } else {
+                break;
             }
         }
         self.persist();
@@ -168,23 +177,40 @@ impl OfflineQueue {
             "sequence": sequence,
             "buffered_events": batch,
             "request_missing_from": self.last_acked + 1,
+            "expected_next_seq": self.last_acked + 1,
         })
     }
 
     pub fn apply_server_ack(&mut self, response: &Value) -> usize {
-        let mut removed = 0;
+        // Prefer contiguous server watermark; never advance across holes via sparse lists.
+        if let Some(through) = response.get("last_acked_seq").and_then(|v| v.as_u64()) {
+            return self.ack_through(through);
+        }
         if let Some(acked) = response
             .get("acked_sequences")
             .or_else(|| response.get("ack_sequences"))
             .and_then(|v| v.as_array())
         {
-            let seqs: Vec<u64> = acked.iter().filter_map(|v| v.as_u64()).collect();
-            removed += self.ack(&seqs);
+            let mut seqs: Vec<u64> = acked.iter().filter_map(|v| v.as_u64()).collect();
+            seqs.sort_unstable();
+            let mut contiguous: Vec<u64> = Vec::new();
+            let mut expected = self.last_acked + 1;
+            for s in seqs {
+                if s < expected {
+                    continue;
+                }
+                if s == expected {
+                    contiguous.push(s);
+                    expected = s + 1;
+                } else {
+                    break;
+                }
+            }
+            if let Some(max) = contiguous.last().copied() {
+                return self.ack_through(max);
+            }
         }
-        if let Some(through) = response.get("last_acked_seq").and_then(|v| v.as_u64()) {
-            removed += self.ack_through(through);
-        }
-        removed
+        0
     }
 }
 

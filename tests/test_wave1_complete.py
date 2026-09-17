@@ -173,6 +173,70 @@ def test_custom_control_registry_override(tmp_path, monkeypatch):
     reg._CUSTOM_CACHE = None
 
 
+def test_seq_authority_persisted_on_checkin(tmp_path, monkeypatch):
+    configure_isolated_settings(monkeypatch, tmp_path)
+    from app.agents import checkin, enroll_agent, get_seq_authority
+    from app.auth import login, register_user
+    from app.tenancy import ensure_tenant_schema
+
+    ensure_tenant_schema()
+    register_user("seq_auth_user", "password123", role="admin")
+    user, _ = login("seq_auth_user", "password123")
+    agent = enroll_agent(user.id, name="seq-auth")
+    aid = agent["agent_id"]
+    checkin(
+        aid,
+        {
+            "hostname": "h",
+            "os": "linux",
+            "sequence": 1,
+            "firewall_status": {"collected": True, "enabled": True, "backend": "ufw"},
+        },
+    )
+    auth = get_seq_authority(aid, org_id=None)
+    assert auth is not None
+    assert int(auth["last_acked_seq"]) == 1
+    assert int(auth["expected_next_seq"]) == 2
+
+
+def test_lifecycle_evidence_on_remediation_approved(tmp_path, monkeypatch):
+    configure_isolated_settings(monkeypatch, tmp_path)
+    from app.auth import login, register_user
+    from app.event_processor import process_event
+    from app.services.evidence import get_evidence_for
+    from app.tenancy import ensure_tenant_schema
+
+    ensure_tenant_schema()
+    register_user("life_ev", "password123", role="admin")
+    user, _ = login("life_ev", "password123")
+    ok = process_event(
+        {
+            "event_type": "remediation.approved",
+            "type": "remediation.approved",
+            "user_id": user.id,
+            "id": "rem-test-1",
+            "remediation_id": "rem-test-1",
+            "lifecycle": "APPROVED",
+            "status": "approved",
+        }
+    )
+    assert ok is True
+    rows = get_evidence_for(user.id, entity_type="remediation", entity_id="rem-test-1", limit=5)
+    assert rows, "expected audit evidence for remediation.approved"
+
+
+def test_python_agent_contiguous_ack(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    from scripts.securaiq_agent import OfflineTelemetryBuffer
+
+    buf = OfflineTelemetryBuffer("agent-py", path=tmp_path / "off.json")
+    for _ in range(5):
+        buf.enqueue("telemetry", {})
+    removed = buf.apply_server_ack({"acked_sequences": [1, 2, 4]})
+    assert removed >= 2
+    assert buf._last_acked == 2
+
+
 def test_ops_example_files_exist():
     root = Path(__file__).resolve().parents[1]
     assert (root / "data/ops/.gitkeep").is_file() or (root / "data/ops").is_dir()

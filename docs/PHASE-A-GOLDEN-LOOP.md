@@ -82,13 +82,19 @@ Command execute remains lab-simulated in CI; verification is independent of comm
 
 - Sentinel lab measure: `docs/ops/SENTINEL-FAILOVER-LAB.md`, `scripts/sentinel_failover_measure.py`
 - HA/DR draft: `docs/ops/HA-DR.md`
+- Offline queue: `SECURAIQ_OFFLINE_QUEUE_BACKEND=sqlite` (optional)
+- Commercial boot gate: `SECURAIQ_COMMERCIAL_PROFILE=1`
+- Control overrides: `data/controls/custom_tests.json`
+- Sequence authority: `securaiq_agent_seq_authority` + check-in `expected_next_seq`
 
 ## Tests
 
 ```bash
 pytest -v \
+  tests/test_wave1_complete.py \
   tests/test_phase_a_live_compliance_risk.py \
   tests/test_p1_control_history_timeline.py \
   tests/test_cross_tenant_isolation.py \
+  tests/test_realtime_acceptance_local.py \
   tests/test_phase_ab_commercial_foundations.py
 ```

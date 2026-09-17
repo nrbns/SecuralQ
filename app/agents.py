@@ -139,6 +139,21 @@ def ensure_schema() -> None:
             )
     except Exception:
         pass
+    try:
+        c.execute(
+            """
+            CREATE TABLE IF NOT EXISTS securaiq_agent_seq_authority (
+                org_id TEXT NOT NULL DEFAULT '',
+                agent_id TEXT NOT NULL,
+                last_acked_seq INTEGER NOT NULL DEFAULT 0,
+                expected_next_seq INTEGER NOT NULL DEFAULT 1,
+                updated_at REAL NOT NULL,
+                PRIMARY KEY (org_id, agent_id)
+            )
+            """
+        )
+    except Exception:
+        pass
     c.execute(
         """
         CREATE TABLE IF NOT EXISTS securaiq_agent_threats (
@@ -668,6 +683,54 @@ def _link_agent_asset(
     return asset_id
 
 
+def upsert_seq_authority(
+    agent_id: str,
+    *,
+    org_id: str | None,
+    last_acked_seq: int,
+) -> dict[str, Any]:
+    """Persist org→agent contiguous watermark (server sequence authority)."""
+    ensure_schema()
+    from app.agent_offline_buffer import expected_next_seq
+
+    oid = (org_id or "").strip()
+    last = max(0, int(last_acked_seq or 0))
+    nxt = expected_next_seq(last)
+    c = get_conn()
+    c.execute(
+        """
+        INSERT INTO securaiq_agent_seq_authority (org_id, agent_id, last_acked_seq, expected_next_seq, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(org_id, agent_id) DO UPDATE SET
+          last_acked_seq=excluded.last_acked_seq,
+          expected_next_seq=excluded.expected_next_seq,
+          updated_at=excluded.updated_at
+        """,
+        (oid, agent_id, last, nxt, now()),
+    )
+    c.commit()
+    return {
+        "org_id": oid or None,
+        "agent_id": agent_id,
+        "last_acked_seq": last,
+        "expected_next_seq": nxt,
+    }
+
+
+def get_seq_authority(agent_id: str, *, org_id: str | None = None) -> dict[str, Any] | None:
+    ensure_schema()
+    oid = (org_id or "").strip()
+    row = get_conn().execute(
+        """
+        SELECT org_id, agent_id, last_acked_seq, expected_next_seq, updated_at
+        FROM securaiq_agent_seq_authority
+        WHERE agent_id = ? AND org_id = ?
+        """,
+        (agent_id, oid),
+    ).fetchone()
+    return dict(row) if row else None
+
+
 def checkin(agent_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     """Record a real telemetry check-in and (re)link the backing asset."""
     ensure_schema()
@@ -764,6 +827,14 @@ def checkin(agent_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         ),
     )
     c.commit()
+    try:
+        upsert_seq_authority(
+            agent_id,
+            org_id=agent.get("org_id") or None,
+            last_acked_seq=new_last_seq,
+        )
+    except Exception:
+        pass
     try:
         from app.realtime_events import publish_aliased
 

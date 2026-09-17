@@ -1182,10 +1182,54 @@ def on_local_publish(event: dict[str, Any] | None) -> None:
         pass
 
 
+def _handle_lifecycle_evidence(event: dict[str, Any]) -> None:
+    """remediation.*/command.*/verification.* → structured audit evidence (non-terminal OK)."""
+    user_id = _resolve_user_id(event)
+    if not user_id:
+        return
+    et = str(event.get("event_type") or event.get("type") or "").strip()
+    entity_id = _entity_id(
+        event.get("id"),
+        event.get("command_id"),
+        event.get("remediation_id"),
+        event.get("entity_id"),
+    )
+    if not entity_id:
+        return
+    if et.startswith("command") or et.startswith("agent_command") or et.startswith("verification"):
+        entity_type = "command"
+    else:
+        entity_type = "remediation"
+    title = _event_title(event, default=et or f"{entity_type} lifecycle")
+    evidence = _safe_record_evidence(
+        user_id,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        source="observed",
+        summary=title[:500],
+        detail={
+            "event_id": event.get("event_id"),
+            "event_type": et,
+            "status": event.get("status"),
+            "lifecycle": event.get("lifecycle"),
+            "verification_status": event.get("verification_status"),
+            "agent_id": event.get("agent_id"),
+            "audit": True,
+        },
+        confidence=0.75,
+    )
+    if evidence:
+        _publish_evidence_hint(
+            user_id, evidence=evidence, entity_type=entity_type, entity_id=entity_id, summary=title
+        )
+
+
 HANDLERS: dict[str, Handler] = {
     "agent_threat": _handle_agent_threat,
     "vuln": _handle_vuln,
     "software.vulnerability.changed": _handle_vuln,
+    "vulnerability": _handle_vuln,
+    "vulnerability.detected": _handle_vuln,
     "inventory": _handle_inventory,
     "software_inventory": _handle_inventory,
     "software.inventory.updated": _handle_inventory,
@@ -1194,6 +1238,16 @@ HANDLERS: dict[str, Handler] = {
     "software.updated": _handle_software_change,
     "remediation": _handle_remediation_or_command,
     "agent_command": _handle_remediation_or_command,
+    "remediation.approved": _handle_lifecycle_evidence,
+    "remediation.executed": _handle_lifecycle_evidence,
+    "remediation.recommended": _handle_lifecycle_evidence,
+    "remediation.completed": _handle_lifecycle_evidence,
+    "remediation.verified": _handle_lifecycle_evidence,
+    "command.sent": _handle_lifecycle_evidence,
+    "command.ack": _handle_lifecycle_evidence,
+    "command.verified": _handle_lifecycle_evidence,
+    "verification.pass": _handle_lifecycle_evidence,
+    "verification.fail": _handle_lifecycle_evidence,
     "incident": lambda e: _handle_light_evidence(e, entity_type="incident"),
     "gap": lambda e: _handle_light_evidence(e, entity_type="gap"),
     "configuration.drift_detected": _handle_configuration_drift,
