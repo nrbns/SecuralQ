@@ -80,7 +80,61 @@ async def create_checkout_session(
     if resp.status_code >= 400:
         raise ValueError(f"Stripe error {resp.status_code}: {resp.text[:400]}")
     session = resp.json()
-    return {"checkout_url": session.get("url"), "session_id": session.get("id")}
+    url = session.get("url")
+    return {
+        "checkout_url": url,
+        "url": url,  # UI alias
+        "session_id": session.get("id"),
+    }
+
+
+async def create_billing_portal_session(
+    *,
+    customer_id: str = "",
+    customer_email: str = "",
+    return_url: str,
+) -> dict[str, Any]:
+    """Stripe Customer Portal — manage subscription / invoices.
+
+    If ``customer_id`` is empty, looks up or creates a customer by email.
+    """
+    if not is_configured():
+        raise RuntimeError("Stripe not configured — set STRIPE_SECRET_KEY.")
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        cid = (customer_id or "").strip()
+        if not cid and customer_email:
+            # Search existing customer by email
+            resp = await client.get(
+                f"{STRIPE_API}/customers",
+                params={"email": customer_email, "limit": 1},
+                auth=(settings.stripe_secret_key, ""),
+            )
+            if resp.status_code < 400:
+                data = resp.json()
+                rows = data.get("data") or []
+                if rows:
+                    cid = str(rows[0].get("id") or "")
+            if not cid:
+                resp = await client.post(
+                    f"{STRIPE_API}/customers",
+                    data={"email": customer_email},
+                    auth=(settings.stripe_secret_key, ""),
+                )
+                if resp.status_code >= 400:
+                    raise ValueError(f"Stripe customer error {resp.status_code}: {resp.text[:300]}")
+                cid = str((resp.json() or {}).get("id") or "")
+        if not cid:
+            raise ValueError("customer_id or customer_email required for billing portal")
+        resp = await client.post(
+            f"{STRIPE_API}/billing_portal/sessions",
+            data={"customer": cid, "return_url": return_url},
+            auth=(settings.stripe_secret_key, ""),
+        )
+    if resp.status_code >= 400:
+        raise ValueError(f"Stripe portal error {resp.status_code}: {resp.text[:400]}")
+    session = resp.json()
+    url = session.get("url")
+    return {"portal_url": url, "url": url}
 
 
 def apply_checkout_completed(session: dict[str, Any]) -> dict[str, Any]:
@@ -120,12 +174,27 @@ def apply_checkout_completed(session: dict[str, Any]) -> dict[str, Any]:
     # ~1 year subscription window; Stripe subscription.updated can refresh later.
     expires_at = time.time() + 365 * 86400
     lic = issue_license(uid, org_id=org_id, plan=plan, expires_at=expires_at, grace_days=14)
+    try:
+        from app.realtime_events import publish_aliased
+
+        publish_aliased(
+            "license.updated",
+            aliases=["license.activated", "entitlement.changed"],
+            user_id=uid,
+            org_id=org_id,
+            plan=plan,
+            license_id=lic.get("id"),
+            source="stripe_checkout",
+        )
+    except Exception:
+        pass
     return {
         "ok": True,
         "user_id": uid,
         "plan": plan,
         "org_id": org_id,
         "license_id": lic.get("id"),
+        "customer_id": session.get("customer"),
     }
 
 def verify_webhook_signature(payload: bytes, sig_header: str, tolerance_sec: int = 300) -> bool:

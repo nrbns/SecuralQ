@@ -3578,6 +3578,8 @@ const REALTIME_LIVE_TYPES = new Set([
   "verification.fail",
   "verification.completed",
   "license.updated",
+  "license.activated",
+  "entitlement.changed",
   "threat",
   "remediation.verified",
   "remediation.pending",

@@ -413,7 +413,8 @@ def _classify_package(name: str) -> dict[str, str]:
     return {"os": os_name, "kind": kind}
 
 
-def _list_built_packages() -> list[dict[str, Any]]:
+def list_built_packages() -> list[dict[str, Any]]:
+    """Public catalog of built agent packages under dist/agent-packages/."""
     out: list[dict[str, Any]] = []
     if not _PACKAGE_DIR.is_dir():
         return out
@@ -455,6 +456,11 @@ def _list_built_packages() -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+def _list_built_packages() -> list[dict[str, Any]]:
+    """Backward-compatible alias — prefer ``list_built_packages``."""
+    return list_built_packages()
 
 
 @router.get("/packages")

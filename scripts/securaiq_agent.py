@@ -101,6 +101,43 @@ def install_client_certificate(cert_pem: str, key_pem: str) -> tuple[str, str]:
     return cert_path, key_path
 
 
+def maybe_install_client_certificate_from_env() -> tuple[str, str] | None:
+    """Install PEMs from SECURAIQ_MTLS_CERT_PEM / SECURAIQ_MTLS_KEY_PEM if set.
+
+    Prefer file paths (SECURAIQ_CLIENT_CERT/KEY) in production; PEM env is for
+    one-shot enroll/rotate handoff so the private key is written once to disk.
+    """
+    cert_pem = (os.environ.get("SECURAIQ_MTLS_CERT_PEM") or "").strip()
+    key_pem = (os.environ.get("SECURAIQ_MTLS_KEY_PEM") or "").strip()
+    if not cert_pem or not key_pem:
+        return None
+    if "BEGIN CERTIFICATE" not in cert_pem or "BEGIN" not in key_pem:
+        print("[securaiq-agent] SECURAIQ_MTLS_*_PEM present but not PEM-shaped; skip install", file=sys.stderr)
+        return None
+    paths = install_client_certificate(cert_pem, key_pem)
+    # Do not leave private key in process environment after install.
+    for k in ("SECURAIQ_MTLS_CERT_PEM", "SECURAIQ_MTLS_KEY_PEM"):
+        os.environ.pop(k, None)
+    print(f"[securaiq-agent] installed client certificate → {paths[0]}", flush=True)
+    return paths
+
+
+def maybe_install_mtls_from_payload(payload: dict[str, Any] | None) -> tuple[str, str] | None:
+    """If enroll/rotate response includes mtls.certificate_pem + private_key_pem, install once."""
+    if not isinstance(payload, dict):
+        return None
+    mtls = payload.get("mtls") if isinstance(payload.get("mtls"), dict) else payload
+    if not isinstance(mtls, dict):
+        return None
+    cert = (mtls.get("certificate_pem") or mtls.get("cert_pem") or "").strip()
+    key = (mtls.get("private_key_pem") or mtls.get("key_pem") or "").strip()
+    if not cert or not key:
+        return None
+    paths = install_client_certificate(cert, key)
+    print(f"[securaiq-agent] installed mTLS material from server response → {paths[0]}", flush=True)
+    return paths
+
+
 def _ssl_context(*, insecure: bool = False, url: str = "") -> ssl.SSLContext | None:
     """Build TLS context with optional client cert. None = stdlib defaults."""
     want_client = _client_cert_paths()[0] is not None
@@ -3213,7 +3250,32 @@ def main() -> int:
         action="store_true",
         help="Skip periodic POST /api/agents/license/validate (activation cache)",
     )
+    ap.add_argument(
+        "--install-cert-pem",
+        default="",
+        help="Path to PEM certificate to install as agent.crt (pair with --install-key-pem)",
+    )
+    ap.add_argument(
+        "--install-key-pem",
+        default="",
+        help="Path to PEM private key to install as agent.key (written once; chmod 600)",
+    )
     args = ap.parse_args()
+
+    # Optional one-shot cert install before any HTTPS (files or SECURAIQ_MTLS_*_PEM).
+    if args.install_cert_pem and args.install_key_pem:
+        try:
+            with open(args.install_cert_pem, encoding="utf-8") as fh:
+                cert_pem = fh.read()
+            with open(args.install_key_pem, encoding="utf-8") as fh:
+                key_pem = fh.read()
+            paths = install_client_certificate(cert_pem, key_pem)
+            print(f"[securaiq-agent] installed client certificate → {paths[0]}", flush=True)
+        except OSError as exc:
+            print(f"[securaiq-agent] --install-*-pem failed: {exc}", file=sys.stderr)
+            return 2
+    else:
+        maybe_install_client_certificate_from_env()
 
     if args.token_file:
         try:

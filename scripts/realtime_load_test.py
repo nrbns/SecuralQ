@@ -208,14 +208,28 @@ def main() -> int:
     ap.add_argument("--duration", type=int, default=20)
     ap.add_argument("--workers", type=int, default=20)
     ap.add_argument("--ladder", action="store_true", help="Run 100 → 500 → 1000 sequentially")
-    ap.add_argument("--max-agents", type=int, default=1000, help="Cap ladder top rung (default 1000, not 5k)")
+    ap.add_argument(
+        "--to-5k",
+        action="store_true",
+        help="Extend ladder with 2500 and 5000 rungs (MEASURE ONLY — never claim capacity from empty table)",
+    )
+    ap.add_argument("--max-agents", type=int, default=1000, help="Cap ladder top rung (default 1000; use --to-5k for higher)")
     ap.add_argument("--sse-sample", action="store_true", help="Sample SSE first-byte latency once")
     ap.add_argument("--user-token", default=os.environ.get("SECURAIQ_USER_TOKEN", ""), help="Optional bearer for SSE")
     ap.add_argument("--insecure", action="store_true")
+    ap.add_argument(
+        "--persist",
+        action="store_true",
+        help="Append results to data/ops/capacity_measurements.jsonl",
+    )
     args = ap.parse_args()
 
+    if args.to_5k and args.max_agents < 5000:
+        args.max_agents = 5000
+
     print(
-        "[rt-load] NOT PRODUCTION PROOF — lab ladder only; do not claim 5k-agent capacity.",
+        "[rt-load] NOT PRODUCTION PROOF — lab ladder only; do not claim 5k-agent capacity "
+        "until data/ops/capacity_measurements.jsonl has a real filled run.",
         flush=True,
     )
 
@@ -224,7 +238,7 @@ def main() -> int:
         with open(args.token_file, encoding="utf-8") as fh:
             tokens = [ln.strip() for ln in fh if ln.strip()]
     elif args.admin_token:
-        need = max(args.agents, args.max_agents if args.ladder else args.agents)
+        need = max(args.agents, args.max_agents if args.ladder or args.to_5k else args.agents)
         print(f"[rt-load] enrolling up to {need} agents…", flush=True)
         for i in range(need):
             tokens.append(_enroll(args.server, args.admin_token, f"rt-load-{i}", insecure=args.insecure))
@@ -232,7 +246,12 @@ def main() -> int:
         print("Need --admin-token or --token-file", flush=True)
         return 2
 
-    rungs = [100, 500, 1000] if args.ladder else [args.agents]
+    if args.ladder or args.to_5k:
+        rungs = [100, 500, 1000]
+        if args.to_5k:
+            rungs.extend([2500, 5000])
+    else:
+        rungs = [args.agents]
     rungs = [r for r in rungs if r <= max(1, args.max_agents)]
     if not rungs:
         rungs = [min(len(tokens), max(1, args.agents))]
@@ -263,9 +282,20 @@ def main() -> int:
     summary = {
         "rungs": results,
         "sse_first_event_sec": round(sse_lat, 4) if sse_lat is not None else None,
-        "note": "not production proof — measured lab ladder ≤1k; no 5k claim",
+        "note": "not production proof — measured lab ladder; no 5k claim without filled ops log",
+        "disclaimer": "Do not market 5k agents until CAPACITY-LAB.md table is filled from this harness.",
     }
     print(json.dumps(summary, indent=2))
+    if args.persist:
+        from datetime import datetime, timezone
+        from pathlib import Path
+
+        log = Path(__file__).resolve().parents[1] / "data" / "ops" / "capacity_measurements.jsonl"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        row = {"ts_utc": datetime.now(timezone.utc).isoformat(), **summary}
+        with log.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row) + "\n")
+        print(f"[rt-load] persisted → {log}", flush=True)
     # Soft pass: any rung below 90% success still exits 1 for CI signal.
     bad = [r for r in results if float(r.get("success_rate_pct") or 0) < 90.0]
     return 1 if bad else 0

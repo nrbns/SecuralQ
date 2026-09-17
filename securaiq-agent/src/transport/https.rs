@@ -1,5 +1,6 @@
+use crate::crypto::certificates::{has_client_certificate, identity_pem_bytes};
 use crate::crypto::signatures::replay_headers;
-use reqwest::Client;
+use reqwest::{Client, Identity};
 use serde_json::Value;
 use thiserror::Error;
 
@@ -33,6 +34,22 @@ impl HttpsClient {
         if insecure {
             // Lab / self-signed only — never default in production packaging docs.
             builder = builder.danger_accept_invalid_certs(true);
+        }
+        if let Some(pem) = identity_pem_bytes() {
+            match Identity::from_pem(&pem) {
+                Ok(id) => {
+                    builder = builder.identity(id);
+                    tracing::info!(
+                        "mTLS client certificate loaded ({})",
+                        if has_client_certificate() {
+                            "agent.crt/key"
+                        } else {
+                            "env"
+                        }
+                    );
+                }
+                Err(e) => tracing::warn!("client certificate present but invalid: {e}"),
+            }
         }
         Self {
             base: server_url.trim_end_matches('/').to_string(),

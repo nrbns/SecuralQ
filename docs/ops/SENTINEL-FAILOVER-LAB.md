@@ -9,13 +9,16 @@
 docker compose --profile redis-ha up -d
 python scripts/realtime_phase1_proof.py --check-sentinel
 
-# Inject a stream event while API + event workers are up, then:
-docker compose stop redis-primary
+# Preferred: inject stop + wait for promote + record reconnect timing
+python scripts/sentinel_failover_measure.py --inject-stop --record
 
-# Time until check-sentinel succeeds again:
-python scripts/sentinel_failover_measure.py --record
+# Or manual:
+# docker compose stop redis-primary
+# python scripts/sentinel_failover_measure.py --record
 python scripts/realtime_phase1_proof.py --check-sentinel
 ```
+
+Measurements append to `data/ops/sentinel_failover_measurements.jsonl`.
 
 Confirm after promote:
 

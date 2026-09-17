@@ -43,16 +43,16 @@ Status key: **done** · **partial** · **missing**
 | Evidence generation | **partial** | Evidence store stamps `org_id` and filters with `tenant_visibility_sql`; confirm/list/get fail closed. Not every product claim auto-records evidence yet. |
 | Immutable audit trail | **partial** | Append-only `audit_log` + SIEM forward option. SQLite rows are not WORM/object-lock immutable. |
 | PostgreSQL backup/restore | **partial** | SQLite scripts in `scripts/backup.*`. Postgres path documented (`pg_dump`) in `docs/backup-dr.md` — operator-owned, not a product HA test. |
-| Redis HA/recovery | **partial→lab stub + CI once-only** | Compose `--profile redis-ha` (primary+replica+sentinel, host ports 26379/6380) + `REDIS_SENTINEL_*` client + `reconnect_after_failover`. CI proves once-only / XAUTOCLAIM / acceptance (`phase1-realtime-gate`). Ops runbook: `deploy/redis/README.md`. **Not** Cluster / multi-AZ certification. |
+| Redis HA/recovery | **partial→lab measure** | Compose `--profile redis-ha` + `scripts/sentinel_failover_measure.py --inject-stop --record` → `docs/ops/SENTINEL-FAILOVER-LAB.md` / jsonl. CI proves once-only / XAUTOCLAIM / SSE. **Not** Cluster / multi-AZ certification. |
 | TLS | **partial** | Caddy/nginx scaffolding in `deploy/`; DNS and certs are operator steps. Agent `--insecure` is lab-only. |
 | Rate limiting | **done** | `RateLimitMiddleware` on the API (`RATE_LIMIT_*`). |
 | Secret management | **partial** | `.env` envelope encryption (`app/secrets_crypto.py`); agent raw key shown once. Optional Ed25519 key env vars (unused for live seal). No KMS/HSM. |
-| Signed org licenses | **partial→improved** | `app/license_service.py` Ed25519-signed payloads + plan entitlements + soft enroll quota (`LICENSE_ENFORCEMENT_ENABLED`). Stripe→license refresh and downloads portal still open. |
+| Signed org licenses | **partial→improved** | Ed25519 signed licenses + soft enroll quota. Stripe checkout → `issue_license` + `license.activated` bus event. Customer portal `POST /api/billing/portal` + package downloads `GET /api/billing/downloads`. Inert without Stripe keys. |
 | Signed agent updates | **partial** | `agent_upgrade` carries `expected_sha256` of the server script. Not a code-signing cert / Authenticode / notarization. |
-| Windows installer | **partial** | Packaged `SecuraIQ-Agent-*-windows-x64.exe` + Scheduled Task installer. No signed MSI / Authenticode yet. |
-| Linux packages | **partial** | `*-linux-x64.tar.gz` (native binary on Linux/CI) + systemd `install.sh`. No `.deb` / `.rpm`. |
-| macOS package | **partial** | Portable `.tar.gz`; real `.dmg` via `scripts/packaging/build_macos_dmg.sh` on macOS/CI. Ad-hoc/unsigned Gatekeeper notes in QUICKSTART. |
-| Load test | **partial** | `scripts/realtime_load_test.py` ladder ≤1k + `scripts/load_test_agents.py` / `agent_gateway_load.py`. **Not** production proof; **do not claim 5k**. |
+| Windows installer | **partial** | Packaged exe/zip + WiX MSI scaffold + secrets-gated Authenticode. Unsigned until CI secrets set. |
+| Linux packages | **partial** | tar.gz + DEB/RPM scaffolds; secrets-gated \sign_deb.sh\ / \sign_rpm.sh\. Unsigned until secrets. |
+| macOS package | **partial** | tar.gz + DMG scaffold; notarization secrets-gated. |
+| Load test | **partial** | \scripts/realtime_load_test.py\ (\--ladder\ / \--to-5k --persist\) + \docs/ops/CAPACITY-LAB.md\. **Not** production proof; **do not claim 5k until table filled**. |
 | Failure/recovery test | **partial** | Soft chaos: `scripts/realtime_chaos_test.py` (buffer replay). Redis kill is manual/documented only. |
 | Security test | **partial** | Auth/tenancy/AI suites exist; agent isolation + replay + Ed25519 roundtrip tests. No full pentest report. |
 
@@ -66,9 +66,9 @@ Status key: **done** · **partial** · **missing**
 | Real Agent Gateway | Persistent WS + heartbeat + push commands | **done** (v1) — `WS /api/agents/ws`; HTTP check-in remains fallback |
 | Event pipeline | Agent → detection → risk → dashboard | **partial→improved** — threat ingest + realtime bus + SSE; Streams + scoped processor hooks (notify/evidence/risk when `user_id` known) + RT-06 idempotency; RT-07 threat→incident when burst/keyword threshold met; RT-08 inventory/vuln→org risk (`risk.changed`) + high/crit derived evidence; RT-09 critical/incident → `compute_attack_paths` + `attack_path` summary; SSE tenant filter when AUTH on; **Streams fan-out default** when Redis set; rich twin/XDR correlation still incomplete |
 | Agent installers | MSI / deb / rpm / pkg | **partial** — scripts only |
-| Agent security | Device identity, certs, signed commands | **partial→improved** — bearer + replay/HMAC live; Ed25519 helpers optional (Task J); RT-17 opt-in mandatory seals (`AGENT_REQUIRE_COMMAND_SIGNATURE`, lab default off); certs/mTLS (RT-16) still next |
+| Agent security | Device identity, certs, signed commands | **partial→improved** — bearer + replay/HMAC; optional Ed25519; RT-17 seals; Sprint 2 mTLS issue/rotate + proxy verify + Python/Rust client cert presentment |
 | Real-time dashboard | No polling-dependent UX | **partial** — SSE on publish; some panels still poll |
-| Load testing | 100 → 1,000 → 5,000+ | **partial** — ladder harness ≤1k (`realtime_load_test.py`); **do not claim 5k** |
+| Load testing | 100 → 1,000 → 5,000+ | **partial** — harness supports `--to-5k`; **claim only after** `docs/ops/CAPACITY-LAB.md` filled |
 
 ## P1 (after Agent Gateway + tenancy are green)
 

@@ -1,8 +1,8 @@
 //! Local enrollment identity. Private material never leaves the endpoint.
 //!
-//! Commercial Alpha: bearer token `agent_id.agent_key` + optional HMAC / Ed25519
-//! *command* seals (server keys). Device Ed25519 identity keypairs and mTLS
-//! certificates are Phase 3 (RT-16) — see `docs/agent-protocol-v1.md`.
+//! Bearer token `agent_id.agent_key` + optional HMAC / Ed25519 command seals.
+//! Device client certificates for proxy mTLS: see `crypto::certificates`
+//! (`agent.crt` / `agent.key` or SECURAIQ_CLIENT_CERT / SECURAIQ_CLIENT_KEY).
 
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -35,30 +35,22 @@ impl AgentIdentity {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
+        let has_cert = crate::crypto::certificates::has_client_certificate();
         let body = serde_json::json!({
             "agent_id": self.agent_id,
             "has_key": true,
-            // Token file separate preferred; store id only in identity.json for discovery.
-            // Future RT-16 fields: public_key, certificate_pem, certificate_expiry, status.
+            "has_certificate": has_cert,
         });
         fs::write(path, serde_json::to_vec_pretty(&body).unwrap_or_default())
     }
 
-    /// Placeholder until local device-key persistence lands (RT-16).
+    /// Load identity metadata if present (token still from env / --token).
     pub fn load_optional() -> Option<Self> {
         None
     }
 }
 
 fn identity_path(agent_id: &str) -> PathBuf {
-    let root = std::env::var("SECURAIQ_AGENT_DATA_DIR")
-        .or_else(|_| std::env::var("SECURAIQ_DATA_DIR"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            dirs::home_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join(".securaiq")
-                .join("agent")
-        });
+    let root = crate::crypto::certificates::agent_data_dir();
     root.join(format!("identity_{}.json", &agent_id[..agent_id.len().min(12)]))
 }

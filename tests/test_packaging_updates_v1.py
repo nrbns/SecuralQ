@@ -207,9 +207,16 @@ def test_signing_and_mtls_deploy_files_exist():
     for rel in (
         "scripts/packaging/sign_windows.ps1",
         "scripts/packaging/sign_deb.sh",
+        "scripts/packaging/sign_rpm.sh",
         "scripts/packaging/notarize_macos.sh",
         "deploy/nginx-mtls.conf.example",
         "deploy/Caddyfile.mtls",
         ".github/workflows/agent-packages.yml",
+        "docs/ops/CAPACITY-LAB.md",
+        "docs/ops/SENTINEL-FAILOVER-LAB.md",
+        "scripts/sentinel_failover_measure.py",
     ):
         assert (root / rel).is_file(), rel
+    yml = (root / ".github/workflows/agent-packages.yml").read_text(encoding="utf-8")
+    assert "sign_rpm.sh" in yml
+    assert "SIGN_RPM" in yml

@@ -15,7 +15,8 @@
 | Proxy mTLS | `deploy/nginx-mtls.conf.example`, `AGENT_MTLS_PROXY_VERIFY` | Ops |
 | Gateway wait / WS mTLS parity | `app/agent_gateway.py` `enforce_proxy_mtls` | Done |
 | Production ready = 5 flags | `production_profile.py` (+ fingerprint match) | Done |
-| Python agent client cert presentment | `scripts/securaiq_agent.py` agent.crt/key | Done |
+| Python agent client cert presentment | `scripts/securaiq_agent.py` agent.crt/key + PEM install | Done |
+| Rust agent client cert presentment | `securaiq-agent` certificates + HTTPS Identity | Done |
 | Fleet CA / short-lived ACME | — | Still ops / future |
 
 Production toggles:
@@ -58,7 +59,7 @@ UI: `static/workspace.js` `_agentCommandLifecycle` aligned.
 | WebAuthn / OIDC / SAML / SCIM | existing modules | Partial / deferred depth |
 | MSI / DEB / RPM / DMG scaffolds | `scripts/packaging/*`, CI | Scaffold |
 | `release-manifest.json` + SHA-256 | `scripts/build_agent_packages.py` | Done |
-| Authenticode / notarization | CI secrets-gated | Not claimed without secrets |
+| Authenticode / notarization / RPM sign | CI secrets-gated (`SIGN_WINDOWS` / `SIGN_DEB` / `SIGN_RPM` / `NOTARIZE_MACOS`) | Not claimed without secrets |
 
 ## Sprint 6 — Production ops
 
@@ -66,10 +67,13 @@ UI: `static/workspace.js` `_agentCommandLifecycle` aligned.
 |------------|------|--------|
 | Postgres production guard | `require_postgres_in_production` | Done |
 | Redis HA lab stub | `docker compose --profile redis-ha` | Lab |
+| Sentinel failover measure | `scripts/sentinel_failover_measure.py --inject-stop --record` | Lab measure — fill `docs/ops/SENTINEL-FAILOVER-LAB.md` |
 | Phase 1 CI gate | `phase1-realtime-gate` | Done |
 | Tenant isolation tests | `tests/test_cross_tenant_isolation.py` etc. | Done |
 | Backups / restore / chaos | scripts + docs | Partial — runbook only |
-| Load / capacity measurement | `scripts/realtime_load_test.py` | Lab tool — not a published SLO |
+| Load / capacity measurement | `scripts/realtime_load_test.py` + `docs/ops/CAPACITY-LAB.md` | Lab tool — **no 5k claim until table filled** |
+| Stripe portal + downloads | `POST /api/billing/portal`, `GET /api/billing/downloads` | Done (inert without Stripe keys) |
+| Rust agent client cert | `securaiq-agent` `crypto::certificates` + HTTPS Identity | Done |
 | Production profile status API | `app/production_profile.py` + `/api/controls/production-profile` | Done |
 
 ## P1 product chain (after Sprint 1 gate)

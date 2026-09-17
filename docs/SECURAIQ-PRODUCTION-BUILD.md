@@ -23,14 +23,14 @@
 | Evidence freshness | TTL + freshness + confirm. Deduped by fingerprint (not broken — see §8) |
 | Secrets at rest | Fernet envelope (`app/secrets_crypto.py`). **Gap:** KMS/HSM |
 | Postgres guardrail | Production refuses SQLite unless override. **Gap:** Alembic + export tool + CI matrix |
-| Billing | Stripe checkout/webhook wired; inert without keys |
+| Billing | Stripe checkout + Customer Portal + webhook → license; downloads catalog; inert without keys |
 | License service | **Shipped** — Ed25519-signed `securaiq_licenses`, plans/entitlements, soft enroll quota, Stripe → `issue_license`, online validate + restricted mode, agent `POST /api/agents/license/validate` + local activation cache (state only) |
 
 **Still genuinely missing (build these):** event-driven control recompute, `control_results` history, object storage artifacts, Alembic + SQLite→Postgres export. **Signing/notarization** require your org secrets in CI (scaffolds ship; certs do not).
 
 **Shipped packaging / updates / versioning / mTLS edge:**
 - WiX MSI / deb / rpm wrappers under `scripts/packaging/` (tooling-gated)
-- CI secrets-gated Authenticode (`sign_windows.ps1`), dpkg-sig (`sign_deb.sh`), Apple notarization (`notarize_macos.sh`) in `.github/workflows/agent-packages.yml`
+- CI secrets-gated Authenticode (`sign_windows.ps1`), dpkg-sig (`sign_deb.sh`), rpm (`sign_rpm.sh`), Apple notarization (`notarize_macos.sh`) in `.github/workflows/agent-packages.yml`
 - Signed update metadata + script **and** frozen-binary self-upgrade (`.bak` / staged MSI|DEB when `SECURAIQ_ALLOW_PACKAGE_INSTALL=1`)
 - `/api/v1/*` → `/api/*` alias middleware (`app/api_v1.py`)
 - Proxy mTLS examples: `deploy/nginx-mtls.conf.example`, `deploy/Caddyfile.mtls` + `AGENT_MTLS_PROXY_VERIFY`

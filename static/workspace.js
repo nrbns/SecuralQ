@@ -12475,8 +12475,17 @@
           </ul>
         </section>
         <section class="cc-panel">
+          <header><h2>Downloads &amp; portal</h2></header>
+          <p class="hint" style="margin:0 0 0.5rem">Agent packages (auth-gated). Stripe Customer Portal manages invoices when configured.</p>
+          <div class="page-head-actions" style="margin:0 0 0.75rem">
+            <button type="button" class="btn-secondary" id="billingPortalBtn">Manage subscription</button>
+            <button type="button" class="btn-secondary" data-workspace="agents">Open Agents packages</button>
+          </div>
+          <div id="billingDownloadsBody"><p class="hint">Loading packages…</p></div>
+        </section>
+        <section class="cc-panel">
           <header><h2>Invoices</h2></header>
-          <p class="hint">Stripe checkout when <code>STRIPE_SECRET_KEY</code> is configured. Local mode has no invoices.</p>
+          <p class="hint">Use <strong>Manage subscription</strong> (Stripe Customer Portal) when <code>STRIPE_SECRET_KEY</code> is set. Local mode has no cloud invoices.</p>
         </section>
       </div>`;
       body.querySelectorAll(".billing-upgrade").forEach((btn) => {
@@ -12495,7 +12504,8 @@
             });
             const data = await res.json().catch(() => ({}));
             if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
-            if (data.url) window.location.href = data.url;
+            const dest = data.checkout_url || data.url;
+            if (dest) window.location.href = dest;
             else if (typeof notifyUser === "function") notifyUser("**Checkout session created.**");
           } catch (err) {
             alert(err.message || "Checkout unavailable");
@@ -12504,8 +12514,41 @@
           }
         });
       });
+      body.querySelector("#billingPortalBtn")?.addEventListener("click", async () => {
+        try {
+          const res = await fetch("/api/billing/portal", {
+            method: "POST",
+            headers: authHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify({ return_url: `${window.location.origin}/?workspace=billing` }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+          const dest = data.portal_url || data.url;
+          if (dest) window.location.href = dest;
+        } catch (err) {
+          alert(err.message || "Billing portal unavailable — configure Stripe");
+        }
+      });
       body.querySelectorAll("[data-workspace]").forEach((btn) => {
         btn.addEventListener("click", () => window.showWorkspace?.(btn.getAttribute("data-workspace")));
+      });
+      // progressive package list
+      getJson("/api/billing/downloads", 8000).then((dl) => {
+        const host = body.querySelector("#billingDownloadsBody");
+        if (!host) return;
+        const pkgs = (dl && dl.packages) || [];
+        if (!pkgs.length) {
+          host.innerHTML = `<p class="hint">No built packages on this server — run <code>python scripts/build_agent_packages.py</code> or open Agents → packages.</p>`;
+          return;
+        }
+        host.innerHTML = `<ul class="cc-list">${pkgs
+          .slice(0, 12)
+          .map((p) => {
+            const url = p.download_url || `/api/agents/packages/${encodeURIComponent(p.filename || "")}`;
+            return `<li><a href="${escapeHtml(url)}" download>${escapeHtml(p.label || p.filename)}</a>
+              <span class="hint">${escapeHtml(p.os || "")} · ${escapeHtml(p.kind || "")}</span></li>`;
+          })
+          .join("")}</ul>`;
       });
     };
 

@@ -107,6 +107,24 @@ jobs:
           fi
           bash scripts/packaging/sign_deb.sh dist/agent-packages
 
+      - name: Sign .rpm (Linux, secrets-gated)
+        if: matrix.platform == 'linux'
+        shell: bash
+        env:
+          SIGN_RPM: ${{ secrets.SIGN_RPM }}
+          GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: |
+          if [[ "${SIGN_RPM:-}" != "1" && "${SIGN_RPM:-}" != "true" && "${SIGN_RPM:-}" != "yes" ]]; then
+            echo "rpm --addsign skipped (set SIGN_RPM=1 + GPG secrets to enable)"
+            exit 0
+          fi
+          sudo apt-get update -qq && sudo apt-get install -y -qq rpm gnupg || true
+          if [[ -n "${GPG_PRIVATE_KEY:-}" ]]; then
+            echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+          fi
+          bash scripts/packaging/sign_rpm.sh dist/agent-packages
+
       - name: Notarize macOS (secrets-gated)
         if: matrix.platform == 'macos'
         shell: bash

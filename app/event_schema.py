@@ -101,6 +101,8 @@ EVENT_TYPE_REGISTRY: frozenset[str] = frozenset(
         "inventory",
         "job",
         "license.updated",
+        "license.activated",
+        "entitlement.changed",
         "notification",
         "playbook",
         "remediation",
