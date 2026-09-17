@@ -102,6 +102,7 @@ from app.configuration.configuration_api import router as configuration_router
 from app.live_ssp_api import router as live_ssp_router
 from app.compliance_doc_library_api import router as compliance_doc_library_router
 from app.log_management_api import router as log_management_router
+from app.lifecycle_api import router as lifecycle_router
 from app.commercial_ext import ensure_org_schema
 from app.gap_analysis import ensure_gap_schema
 from app.db import init_schema
@@ -305,6 +306,7 @@ app.add_middleware(
     per_minute=settings.rate_limit_per_minute,
     auth_per_minute=settings.rate_limit_auth_per_minute,
     chat_per_minute=settings.rate_limit_chat_per_minute,
+    api_key_per_minute=getattr(settings, "rate_limit_api_key_per_minute", 600),
 )
 # Added last → runs first: rewrite /api/v1/* → /api/* before routing/rate-limit path keys.
 app.add_middleware(ApiV1AliasMiddleware)
@@ -404,6 +406,7 @@ app.include_router(configuration_router)
 app.include_router(live_ssp_router)
 app.include_router(compliance_doc_library_router)
 app.include_router(log_management_router)
+app.include_router(lifecycle_router)
 
 _PUBLIC_API_PREFIXES = (
     "/api/auth/login",
@@ -417,6 +420,8 @@ _PUBLIC_API_PREFIXES = (
     "/api/billing/webhook",
     "/api/health",
     "/api/realtime",
+    "/api/status/public",
+    "/.well-known/security.txt",
     "/api/siem/webhook",
     "/api/wazuh/webhook",
     "/api/agents/install-script",
@@ -921,6 +926,30 @@ async def metrics():
     from fastapi.responses import PlainTextResponse
 
     return PlainTextResponse(render_prometheus(), media_type="text/plain; version=0.0.4")
+
+
+@app.get("/.well-known/security.txt", response_class=None)
+async def security_txt():
+    """#243 RFC 9116 security.txt + PSIRT contact."""
+    from datetime import datetime, timezone
+
+    from fastapi.responses import PlainTextResponse
+
+    email = getattr(settings, "security_contact_email", None) or "security@securaiq.example"
+    policy = getattr(settings, "security_policy_url", None) or "https://securaiq.example/security"
+    expires = datetime.now(timezone.utc).replace(year=datetime.now(timezone.utc).year + 1).strftime(
+        "%Y-%m-%dT%H:%M:%S.000Z"
+    )
+    body = (
+        f"Contact: mailto:{email}\n"
+        f"Expires: {expires}\n"
+        f"Preferred-Languages: en\n"
+        f"Canonical: https://securaiq.example/.well-known/security.txt\n"
+        f"Policy: {policy}\n"
+        "Acknowledgments: https://securaiq.example/security/thanks\n"
+        "Hiring: https://securaiq.example/careers\n"
+    )
+    return PlainTextResponse(body, media_type="text/plain; charset=utf-8")
 
 
 @app.get("/api/health")

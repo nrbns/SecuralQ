@@ -677,6 +677,14 @@ def row_to_dict(row: Any) -> dict[str, Any] | None:
 
 
 def audit(action: str, user_id: str | None = None, detail: dict[str, Any] | None = None) -> None:
+    # #239 — prefer hash-chained append when schema is available
+    try:
+        from app.audit_chain import append_chained
+
+        append_chained(action, user_id, detail)
+        return
+    except Exception:
+        pass
     c = get_conn()
     c.execute(
         "INSERT INTO audit_log (id, user_id, action, detail, created_at) VALUES (?, ?, ?, ?, ?)",

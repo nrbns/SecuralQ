@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SecuraIQ Status</title>
+  <style>
+    :root { --bg: #0f1419; --fg: #e7ecf1; --muted: #8b9aab; --ok: #3dd68c; --warn: #f5a524; }
+    body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; background: var(--bg); color: var(--fg); }
+    main { max-width: 40rem; margin: 4rem auto; padding: 0 1.25rem; }
+    h1 { font-size: 1.75rem; font-weight: 600; letter-spacing: -0.02em; margin: 0 0 0.5rem; }
+    p { color: var(--muted); line-height: 1.5; }
+    #badge { display: inline-block; margin: 1.25rem 0; padding: 0.35rem 0.75rem; border-radius: 4px; font-weight: 600; }
+    #badge.ok { background: color-mix(in srgb, var(--ok) 25%, transparent); color: var(--ok); }
+    #badge.degraded { background: color-mix(in srgb, var(--warn) 25%, transparent); color: var(--warn); }
+    ul { list-style: none; padding: 0; }
+    li { display: flex; justify-content: space-between; padding: 0.65rem 0; border-bottom: 1px solid #1e2832; }
+    a { color: #7eb8ff; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>SecuraIQ Status</h1>
+    <p>Public service health. For vulnerability reports see <a href="/.well-known/security.txt">security.txt</a>.</p>
+    <div id="badge">Loading…</div>
+    <ul id="checks"></ul>
+    <p id="meta"></p>
+  </main>
+  <script>
+    async function load() {
+      const r = await fetch("/api/status/public");
+      const j = await r.json();
+      const badge = document.getElementById("badge");
+      badge.textContent = j.status === "operational" ? "All systems operational" : "Degraded";
+      badge.className = j.status === "operational" ? "ok" : "degraded";
+      const ul = document.getElementById("checks");
+      ul.innerHTML = "";
+      for (const [k, v] of Object.entries(j.checks || {})) {
+        const li = document.createElement("li");
+        li.innerHTML = `<span>${k}</span><span>${v}</span>`;
+        ul.appendChild(li);
+      }
+      document.getElementById("meta").textContent =
+        `Mode: ${j.deployment_mode || "—"} · PSIRT: ${j.psirt || "—"}`;
+    }
+    load().catch((e) => {
+      document.getElementById("badge").textContent = "Unavailable";
+      document.getElementById("badge").className = "degraded";
+    });
+  </script>
+</body>
+</html>

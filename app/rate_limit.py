@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import time
 from collections import defaultdict, deque
 from threading import Lock
-from typing import Any
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -18,13 +18,25 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     Auth/MFA paths use Redis INCR+EXPIRE when Redis is configured so multiple
     API replicas share the same counter. Other paths keep the in-memory
     sliding window (lab / single-instance friendly).
+
+    #234 — when X-API-Key / X-SecuraIQ-Key is present, also apply a per-key
+    bucket (and optional org quota api_per_minute overlay).
     """
 
-    def __init__(self, app, *, per_minute: int = 120, auth_per_minute: int = 30, chat_per_minute: int = 40):
+    def __init__(
+        self,
+        app,
+        *,
+        per_minute: int = 120,
+        auth_per_minute: int = 30,
+        chat_per_minute: int = 40,
+        api_key_per_minute: int = 600,
+    ):
         super().__init__(app)
         self.per_minute = max(10, per_minute)
         self.auth_per_minute = max(5, auth_per_minute)
         self.chat_per_minute = max(5, chat_per_minute)
+        self.api_key_per_minute = max(30, api_key_per_minute)
         self._hits: dict[str, deque[float]] = defaultdict(deque)
         self._lock = Lock()
 
@@ -80,23 +92,60 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 return redis_result
         return self._allow_memory(key, limit)
 
+    def _api_key_fingerprint(self, request: Request) -> str | None:
+        raw = (
+            request.headers.get("x-securaiq-key")
+            or request.headers.get("x-hackgpt-key")
+            or request.headers.get("x-api-key")
+            or ""
+        ).strip()
+        if not raw:
+            auth = request.headers.get("authorization") or ""
+            if auth.lower().startswith("bearer ") and len(auth) > 20:
+                raw = auth[7:].strip()
+        if not raw or len(raw) < 8:
+            return None
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+
     async def dispatch(self, request: Request, call_next) -> Response:
         path = request.url.path
         if not path.startswith("/api/"):
             return await call_next(request)
-        if path in {"/api/health", "/api/realtime"}:
+        if path in {"/api/health", "/api/realtime", "/api/status/public"}:
             return await call_next(request)
         client = request.client.host if request.client else "unknown"
-        # Local lab: don't throttle this machine's own UI/scripts
-        if client in {"127.0.0.1", "::1", "localhost"}:
-            return await call_next(request)
-        limit = self._limit_for(path)
-        bucket = "auth" if self._is_auth_path(path) else ("chat" if "chat" in path or "tools" in path else "api")
-        key = f"{client}:{bucket}"
-        if not self._allow(key, limit, prefer_redis=bucket == "auth"):
-            return JSONResponse(
-                {"detail": f"Rate limit exceeded ({limit}/min). Retry shortly."},
-                status_code=429,
-                headers={"Retry-After": "60"},
+        # Local lab: don't throttle this machine's own UI/scripts by IP
+        if client not in {"127.0.0.1", "::1", "localhost"}:
+            limit = self._limit_for(path)
+            bucket = (
+                "auth"
+                if self._is_auth_path(path)
+                else ("chat" if "chat" in path or "tools" in path else "api")
             )
+            key = f"{client}:{bucket}"
+            if not self._allow(key, limit, prefer_redis=bucket == "auth"):
+                return JSONResponse(
+                    {"detail": f"Rate limit exceeded ({limit}/min). Retry shortly."},
+                    status_code=429,
+                    headers={"Retry-After": "60"},
+                )
+
+        # #234 per-key / tenant API throttle
+        fp = self._api_key_fingerprint(request)
+        if fp:
+            key_limit = self.api_key_per_minute
+            org_hdr = (request.headers.get("x-securaiq-org") or "").strip()
+            if org_hdr:
+                try:
+                    from app.tenant_quotas import get_quotas
+
+                    key_limit = int(get_quotas(org_hdr).get("api_per_minute") or key_limit)
+                except Exception:
+                    pass
+            if not self._allow(f"apikey:{fp}", key_limit, prefer_redis=True):
+                return JSONResponse(
+                    {"detail": f"API key rate limit exceeded ({key_limit}/min)."},
+                    status_code=429,
+                    headers={"Retry-After": "60"},
+                )
         return await call_next(request)

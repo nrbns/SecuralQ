@@ -57,6 +57,7 @@ jobs:
           tests/test_phase_a_live_compliance_risk.py
           tests/test_wave1_complete.py
           tests/test_master_checklist_p0.py
+          tests/test_master_checklist_phases.py
           tests/test_realtime_phase1_proof.py
           tests/test_stream_durability.py
           tests/test_redis_dlq_ops.py
@@ -74,3 +75,39 @@ jobs:
         run: python scripts/realtime_acceptance_demo.py --local
       - name: Phase 1 simulate once-only
         run: python scripts/realtime_phase1_proof.py --simulate
+
+  # #252 — Postgres matrix (schema/smoke; SQLite remains default lab path)
+  pytest-postgres:
+    name: pytest (Postgres)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: securaiq
+          POSTGRES_PASSWORD: securaiq_ci
+          POSTGRES_DB: securaiq
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U securaiq -d securaiq"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps
+        run: pip install pydantic pydantic-settings httpx pytest pytest-asyncio cryptography argon2-cffi psycopg[binary]
+      - name: Master checklist + tenancy on Postgres URL
+        env:
+          DATABASE_URL: postgresql://securaiq:securaiq_ci@localhost:5432/securaiq
+        run: >
+          pytest -v
+          tests/test_master_checklist_p0.py
+          tests/test_master_checklist_phases.py
+          tests/test_cross_tenant_isolation.py
+        continue-on-error: true
+        # Soft until full SQL dialect parity; failures tracked as #252 hardening

@@ -128,6 +128,39 @@ def verify_password(password: str, stored: str) -> bool:
         return False
 
 
+def needs_rehash(stored: str) -> bool:
+    """#255 — upgrade PBKDF2 (or missing argon2) hashes to Argon2id on next login."""
+    stored = stored or ""
+    if not stored.startswith("$argon2"):
+        return True
+    try:
+        from argon2 import PasswordHasher
+        from argon2.exceptions import InvalidHash
+
+        return bool(PasswordHasher().check_needs_rehash(stored))
+    except ImportError:
+        return False
+    except Exception:
+        return False
+
+
+def maybe_rehash_password(user_id: str, password: str, stored: str) -> bool:
+    """If verify succeeded and hash is legacy, rewrite to Argon2id. Returns True if updated."""
+    if not needs_rehash(stored):
+        return False
+    try:
+        new_hash = hash_password(password)
+        if not new_hash.startswith("$argon2") and stored.startswith("pbkdf2$"):
+            return False  # argon2-cffi unavailable — keep pbkdf2
+        c = get_conn()
+        c.execute("UPDATE users SET password_hash = ? WHERE id = ?", (new_hash, user_id))
+        c.commit()
+        audit("password_rehash", user_id, {"from": "legacy", "to": "argon2id" if new_hash.startswith("$argon2") else "pbkdf2"})
+        return True
+    except Exception:
+        return False
+
+
 def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
@@ -206,6 +239,9 @@ def login(
         record_login_attempt(uname, ip=ip, success=False, mfa_stage=0)
         audit("login_failed", row["id"] if row else f"unknown:{uname}", {"ip": ip})
         raise ValueError("Invalid username or password")
+
+    # #255 opportunistic Argon2id rehash after successful password verify
+    maybe_rehash_password(row["id"], password, row["password_hash"])
 
     mfa_on = bool(row["mfa_enabled"])
     if mfa_on:

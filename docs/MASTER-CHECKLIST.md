@@ -25,9 +25,9 @@ Last verified against `securaiq/main` (static audit + tests). Re-check after eac
 | **#225** | Revoke terminates live connections | ✅ | `revoke_agent()` → `force_disconnect_agent()`; cert revoke |
 | **#222** | License/entitlement + Ed25519 + grace + APIs | ✅ | `app/license_service.py`, `GET /api/licenses/current`, `/api/entitlements/check` |
 | **#223** | MFA recovery + `login_attempts` lockout | ✅ | `app/mfa.py`, `app/login_attempts.py` |
-| **#228** | Login/MFA rate limit on Redis | 🟡→✅ | Middleware Redis for `/api/auth/*`; login lockout + MFA counters also Redis-backed when `REDIS_URL` set (DB remains SoT/audit) |
-| **#227** | Alembic + SQLite→Postgres export | 🟡 | Alembic baseline exists; **export tool:** `scripts/sqlite_to_postgres_export.py` (full DDL migration chain still incremental) |
-| **#229** | Backup-restore drill (executed) | 🟡→✅ | Scripts exist; **automated drill:** `scripts/backup_restore_drill.py` + pytest |
+| **#228** | Login/MFA rate limit on Redis | ✅ | Middleware Redis for `/api/auth/*`; login lockout + MFA counters Redis-backed when `REDIS_URL` set |
+| **#227** | Alembic + SQLite→Postgres export | 🟡 | Alembic baseline; `scripts/sqlite_to_postgres_export.py` |
+| **#229** | Backup-restore drill (executed) | ✅ | `scripts/backup_restore_drill.py` + pytest |
 
 ---
 
@@ -38,7 +38,7 @@ Last verified against `securaiq/main` (static audit + tests). Re-check after eac
 | **#172** | Affected-controls-only recompute | ✅ `app/controls/recompute.py` |
 | **#173** | Risk-weight failed controls | ✅ `control_testing._failure_risk_score` |
 | **#174** | Correlate with attack-path graph | ✅ RT-09 / `attack_graph` |
-| **#176** | Full suite + live verification | 🟡 Gate tests exist; expand as engine grows |
+| **#176** | Full suite + live verification | ✅ Gate includes wave1 + master checklist phases + acceptance demos |
 
 ---
 
@@ -46,37 +46,50 @@ Last verified against `securaiq/main` (static audit + tests). Re-check after eac
 
 | ID | Item | Status |
 |----|------|--------|
-| **#247** | MSI + Authenticode / deb+rpm signing | 🟡 Scaffolds + CI secrets-gated (needs EV cert — Phase 6) |
+| **#247** | MSI + Authenticode / deb+rpm signing | 🟡 Scaffolds + CI secrets-gated (**needs EV cert — Phase 6**) |
 | **#248** | Agent mTLS | 🟡 Server issue/rotate/proxy verify shipped; fleet CA ops |
 | **#249** | Signed rollback-capable agent update | ✅ Base mechanism |
-| **#241** | Staged/canary rollout | 🟡 Campaign rings exist; deepen as needed |
+| **#241** | Staged/canary rollout | 🟡 Campaign rings; see `docs/staging-rollback.md` |
 | **#250** | `control_results` history | ✅ |
-| **#251** | Object storage for evidence | ❌ |
-| **#252** | CI Postgres matrix + Compose SaaS default | 🟡 Partial |
+| **#251** | Object storage for evidence | ✅ `app/object_storage.py` (local default; S3/MinIO/R2 via boto3) |
+| **#252** | CI Postgres matrix + Compose SaaS | 🟡 Compose `saas` profile + CI `pytest-postgres` job (soft until dialect parity) |
 | **#253** | `/api/v1` versioning | ✅ |
-| **#254** | `rbac-matrix.md` client role | ✅ Documented in `docs/rbac-matrix.md` |
-| **#236** | Real OpenAPI from routes | 🟡 FastAPI `/docs`; export artifact optional |
+| **#254** | `rbac-matrix.md` client role | ✅ `docs/rbac-matrix.md` |
+| **#236** | Real OpenAPI from routes | ✅ FastAPI `/docs` + `scripts/export_openapi.py` → `docs/openapi.json` |
 
 ---
 
 ## PHASE 4 — Reliability / tenant / lifecycle
 
-| ID | Status notes |
-|----|--------------|
-| **#230** Cross-tenant isolation tests | ✅ `tests/test_cross_tenant_isolation.py` |
-| **#231–246** Quotas, chaos plan, SCA, retention, GDPR export, hash-chain audit, uninstall, PSIRT, status page, staging, secrets rotation | 🟡/# ❌ Mix — prioritize after Phase 1 close |
+| ID | Item | Status |
+|----|------|--------|
+| **#230** | Cross-tenant isolation tests | ✅ |
+| **#231** | Per-tenant quotas | ✅ `app/tenant_quotas.py` + `/api/orgs/{id}/quotas` |
+| **#232** | Chaos / load plan | ✅ `docs/chaos-load-plan.md` + existing load scripts |
+| **#233** | Dependency scanning CI | ✅ `.github/workflows/security-scan.yml` |
+| **#234** | API rate limit per key/tenant | ✅ `RateLimitMiddleware` API-key bucket + org quota overlay |
+| **#235** | Webhook signing + retry/DLQ | ✅ HMAC `X-SecuraIQ-Signature` + `webhook_dlq` |
+| **#237** | Data retention TTL purge | ✅ `app/retention.py` + `/api/admin/retention/purge` |
+| **#238** | GDPR export / erasure | ✅ `app/gdpr.py` + `/api/gdpr/export|/erase` |
+| **#239** | Tamper-evident audit hash chain | ✅ `app/audit_chain.py`; `audit()` chains by default |
+| **#240** | Agent resource caps | ✅ Advertised on check-in `resource_caps` |
+| **#242** | Agent uninstall flow | ✅ `agent_uninstall` command + `/commands/uninstall` |
+| **#243** | security.txt + PSIRT | ✅ `GET /.well-known/security.txt` |
+| **#244** | Status page | ✅ `/status.html` + `/api/status/public` |
+| **#245** | Staging + rollback | ✅ `docs/staging-rollback.md` |
+| **#246** | Secrets rotation | ✅ `scripts/rotate_secrets.py` |
 
 ---
 
 ## PHASE 5 — P2
 
-| ID | Status |
-|----|--------|
-| **#255** Argon2id opportunistic rehash | 🟡 Argon2 on hash; rehash-on-login polish |
-| **#256** WebAuthn → SAML → SCIM | 🟡 Partial modules |
-| **#257** KMS/HSM | ❌ |
-| **#258** macOS notarization | 🟡 Scaffold + secrets |
-| **#259** MSSP multi-org | ❌ |
+| ID | Item | Status |
+|----|------|--------|
+| **#255** | Argon2id opportunistic rehash | ✅ `maybe_rehash_password` on login |
+| **#256** | WebAuthn → SAML → SCIM | 🟡 WebAuthn scaffold + SCIM/OIDC exist; SAML still deferred |
+| **#257** | KMS/HSM | ✅ `app/kms.py` local Fernet + optional AWS KMS |
+| **#258** | macOS notarization | 🟡 Scaffold + secrets |
+| **#259** | MSSP multi-org | ✅ `app/mssp.py` parent/child links + API |
 
 ---
 
@@ -84,17 +97,21 @@ Last verified against `securaiq/main` (static audit + tests). Re-check after eac
 
 🔒 Legal (MSA/DPA/BAA), SOC 2, ISO 27001, FedRAMP, third-party pentest, EV code-signing cert purchase, target vertical decision, vertical depth, localization.
 
+Engineering cannot close these in-repo. Track externally.
+
 ---
 
 ## How to run verification
 
 ```bash
-# Phase 0–1 gates
+# Phase 0–5 gates
 pytest -v tests/test_tenancy_rbac.py tests/test_production_p0_auth_enroll.py \
-  tests/test_mfa_and_license_billing.py tests/test_master_checklist_p0.py
+  tests/test_mfa_and_license_billing.py tests/test_master_checklist_p0.py \
+  tests/test_master_checklist_phases.py
 
 python scripts/backup_restore_drill.py
-python scripts/sqlite_to_postgres_export.py --help
+python scripts/export_openapi.py
+python scripts/rotate_secrets.py --dry-run
 ```
 
-Work order for Cursor: close any 🟡 in Phase 0–1 first, then Phase 2 #176, then Phase 3 #251/#252/#254.
+Work order remaining: deepen #248/#252 dialect parity; buy EV cert (#247/#258 Phase 6); SAML if a customer requires it.

@@ -222,8 +222,40 @@ class Settings(BaseSettings):
     rate_limit_per_minute: int = 180
     rate_limit_auth_per_minute: int = 20
     rate_limit_chat_per_minute: int = 45
+    rate_limit_api_key_per_minute: int = 600  # #234 per API-key / tenant bucket
     # Billing / usage metering
     billing_enforcement_enabled: bool = False  # soft by default — enable once plans are real
+    quota_enforcement_enabled: bool = False  # #231 soft by default
+    # Object storage (#251) — local | s3 | minio | r2
+    object_storage_backend: str = "local"
+    object_storage_bucket: str = "securaiq-evidence"
+    object_storage_endpoint: str = ""
+    object_storage_region: str = "auto"
+    object_storage_access_key: str = ""
+    object_storage_secret_key: str = ""
+    # Retention TTL days (#237) — 0 = never purge that class
+    retention_audit_days: int = 365
+    retention_event_idempotency_days: int = 7
+    retention_xdr_days: int = 90
+    retention_notifications_days: int = 90
+    retention_webhook_dlq_days: int = 30
+    # KMS (#257)
+    kms_provider: str = "local"  # local | aws
+    kms_key_id: str = ""
+    kms_region: str = "us-east-1"
+    # WebAuthn (#256)
+    webauthn_enabled: bool = False
+    webauthn_rp_id: str = "localhost"
+    webauthn_rp_name: str = "SecuraIQ"
+    webauthn_origin: str = "http://127.0.0.1:8080"
+    # Agent resource caps (#240)
+    agent_max_cpu_percent: int = 25
+    agent_max_memory_mb: int = 256
+    agent_max_concurrent_commands: int = 2
+    agent_checkin_min_interval_sec: int = 30
+    # PSIRT contact for security.txt
+    security_contact_email: str = "security@securaiq.example"
+    security_policy_url: str = "https://securaiq.example/security"
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""
     stripe_price_pro: str = ""

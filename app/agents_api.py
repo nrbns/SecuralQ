@@ -36,6 +36,7 @@ from app.agents import (
     reject_campaign,
     reject_command,
     report_command_result,
+    request_agent_uninstall,
     request_agent_upgrade,
     request_command,
     request_enable_defender_command,
@@ -1184,6 +1185,19 @@ async def api_request_agent_upgrade(agent_id: str, user: Annotated[AuthUser, Dep
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     audit("agent_upgrade_request", user.id, {"agent_id": agent_id})
+    return result
+
+
+@router.post("/{agent_id}/commands/uninstall")
+async def api_request_agent_uninstall(agent_id: str, user: Annotated[AuthUser, Depends(require_user)]):
+    """#242 — request remote uninstall (pending_approval; approve before delivery)."""
+    agent = get_agent(agent_id)
+    require_perm(user, "agent.command", org_id=agent.get("org_id") if agent else None)
+    try:
+        result = request_agent_uninstall(user.id, agent_id, requested_by=user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    audit("agent_uninstall_request", user.id, {"agent_id": agent_id})
     return result
 
 

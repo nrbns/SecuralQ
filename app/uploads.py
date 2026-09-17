@@ -79,6 +79,16 @@ def save_upload(
     stored = dest_dir / f"{fid}_{safe}"
     stored.write_bytes(data)
 
+    # #251 — also mirror into object storage when configured (local no-op copy)
+    object_meta: dict[str, Any] = {}
+    try:
+        from app.object_storage import evidence_key, put_bytes
+
+        okey = evidence_key(None, fid, safe)
+        object_meta = put_bytes(okey, data, content_type="application/octet-stream")
+    except Exception:
+        object_meta = {}
+
     text = extract_text(safe, data)
     kind = "image" if ext in _IMAGE_EXT else "zip" if ext == ".zip" else "document"
 
@@ -107,6 +117,7 @@ def save_upload(
         "size_bytes": len(data),
         "engagement_id": engagement_id,
         "ingested": bool(ingest and text.strip() and kind == "document"),
+        "object_storage": object_meta or None,
         "kind": kind,
         "preview": (text[:240] + ("…" if len(text) > 240 else "")) if text else "",
     }

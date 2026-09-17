@@ -984,6 +984,7 @@ def checkin(agent_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         pass
     commands = _dispatch_queued_commands(agent_id)
     out: dict[str, Any] = {"ok": True, "asset_id": asset_id, "commands": commands}
+    out["resource_caps"] = agent_resource_caps()
     if host_controls is not None:
         # Release-test / diagnostics — same object produced on the production path.
         out["host_controls"] = host_controls
@@ -1720,6 +1721,7 @@ SUPPORTED_COMMAND_KINDS = {
     "enable_firewall",
     "enable_defender",
     "disable_ssh_root",
+    "agent_uninstall",
 }
 COMMAND_STATUSES = {"pending_approval", "queued", "sent", "acked", "done", "error", "rejected", "timeout"}
 
@@ -2001,7 +2003,41 @@ def request_agent_upgrade(user_id: str, agent_id: str, *, requested_by: str = ""
     )
 
 
-def _get_command_row(user_id: str, agent_id: str, command_id: str):
+def request_agent_uninstall(
+    user_id: str,
+    agent_id: str,
+    *,
+    requested_by: str = "",
+    revoke_after: bool = True,
+) -> dict[str, Any]:
+    """#242 — remote uninstall command (pending_approval → approve → agent removes itself).
+
+    After successful uninstall evidence, operator should revoke/delete the agent row.
+    Payload is intentionally minimal: remove service/scripts only on owned labs.
+    """
+    return request_command(
+        user_id,
+        agent_id,
+        kind="agent_uninstall",
+        payload={
+            "action": "uninstall",
+            "revoke_after": bool(revoke_after),
+            "note": "Authorized uninstall of SecuraIQ agent on owned/lab host only",
+        },
+        requested_by=requested_by or user_id,
+    )
+
+
+def agent_resource_caps() -> dict[str, Any]:
+    """#240 — soft caps advertised on check-in for agent self-throttling."""
+    from app.config import settings
+
+    return {
+        "max_cpu_percent": int(getattr(settings, "agent_max_cpu_percent", 25) or 25),
+        "max_memory_mb": int(getattr(settings, "agent_max_memory_mb", 256) or 256),
+        "max_concurrent_commands": int(getattr(settings, "agent_max_concurrent_commands", 2) or 2),
+        "checkin_min_interval_sec": int(getattr(settings, "agent_checkin_min_interval_sec", 30) or 30),
+    }
     c = get_conn()
     row = c.execute(
         "SELECT * FROM securaiq_agent_commands WHERE id = ? AND agent_id = ?", (command_id, agent_id)
