@@ -1,24 +1,29 @@
 """REALTIME v1 RT-10/11 acceptance harness — lab only.
 
+**Release test #1 (firewall golden loop):** FAIL → evidence → risk/compliance →
+POA&M → approve rem → lab-simulated execute → PASS via ``checkin()`` →
+independent telemetry verify → risk/compliance improve.
+
 Simulates host-control fail → evidence → risk → POA&M → approved rem command →
 pass for **firewall**, **Defender**, and **SSH** **without** mutating a real host.
 
-Local mode asserts the full in-process closed loop per control:
+Local mode asserts the full in-process closed loop per control via the production
+``checkin()`` entrypoint (not a direct evaluator bypass):
 
-  1. Control FAIL (synthetic telemetry)
+  1. Control FAIL (synthetic telemetry through checkin)
   2. Evidence created (observed)
   3. Compliance / control.failed event published (capture bus)
   4. POA&M / gap_remediation OPEN (or rem exists)
-  5. risk event published (and risk.changed if available)
+  5. risk + risk.changed published on bus
   6. rem command pending → approve → lab-simulated agent result
-  7. Control PASS (synthetic payload)
+  7. Control PASS (synthetic payload through checkin)
   8. Evidence PASS
   9. POA&M CLOSED / rem done
- 10. risk reduction hint / risk.changed
- 11. command verification_status=verified (after PASS check-in)
+ 10. risk reduction + live compliance on bus
+ 11. command verification_status=verified (telemetry re-check, not command JSON)
 
 Modes:
-  --local (default)  In-process via evaluate_agent_host_controls + temp DB
+  --local (default)  In-process via checkin + temp DB
   --server URL       Live HTTP check-in against a lab server you own
 
 Honest disclaimer (always printed):
@@ -27,6 +32,7 @@ Honest disclaimer (always printed):
 Usage:
 
   python scripts/realtime_acceptance_demo.py --local
+  python scripts/realtime_acceptance_demo.py --local --firewall-only
   python scripts/realtime_acceptance_demo.py --server http://127.0.0.1:8080 --token <admin_jwt>
 """
 
@@ -455,6 +461,37 @@ def _run_rem_command(
         return ""
 
 
+def _live_compliance_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for e in events:
+        et = _event_type(e)
+        if et in ("compliance.updated", "compliance.live") or (
+            et == "compliance" and e.get("live_percent") is not None
+        ):
+            out.append(e)
+            continue
+        # Nested / aliased publishes may stamp live_percent on compliance.updated
+        if e.get("live_percent") is not None and et.startswith("compliance"):
+            out.append(e)
+    return out
+
+
+def _verification_bus_events(events: list[dict[str, Any]], *, command_id: str = "") -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for e in events:
+        et = _event_type(e)
+        if et in ("verification.pass", "command.verified", "verification.passed"):
+            out.append(e)
+            continue
+        if et in ("agent_command", "command.completed") and (
+            str(e.get("verification_status") or "").lower() == "verified"
+            or str(e.get("lifecycle") or "").upper() == "VERIFIED"
+        ):
+            if not command_id or str(e.get("id") or e.get("command_id") or "") == command_id:
+                out.append(e)
+    return out
+
+
 def run_local_host_loop(
     user_id: str,
     agent_id: str,
@@ -463,9 +500,12 @@ def run_local_host_loop(
     report: AcceptanceReport | None = None,
     step_prefix: str = "",
 ) -> AcceptanceReport:
-    """One FAIL → evidence → bus → POA&M → risk → approve rem → PASS → verified."""
+    """One FAIL → evidence → bus → POA&M → risk → approve rem → PASS → verified.
+
+    Production entrypoint: ``agents.checkin`` (not a direct evaluator bypass).
+    """
+    from app.agents import checkin
     from app.db import get_conn
-    from app.services.control_testing import evaluate_agent_host_controls
     from app.services.evidence import get_evidence_for
 
     report = report or AcceptanceReport(mode="local")
@@ -481,16 +521,27 @@ def run_local_host_loop(
     test_id = loop.test_id
 
     with _capture_bus() as bus_fail:
-        out_fail = evaluate_agent_host_controls(user_id, agent_id, disabled, asset_id="")
+        cin_fail = checkin(agent_id, disabled)
+    out_fail = cin_fail.get("host_controls") if isinstance(cin_fail.get("host_controls"), dict) else {}
+    if not out_fail:
+        # Honest fail — checkin must surface host_controls for release test #1.
+        out_fail = {"ok": False, "results": [], "events": [], "evidence_ids": []}
     tr_fail = _test_result(out_fail, test_id) or {}
 
-    fail_ok = bool(out_fail.get("ok")) and (tr_fail.get("status") or "").lower() == "fail"
+    fail_ok = (
+        bool(cin_fail.get("ok"))
+        and bool(out_fail.get("ok"))
+        and (tr_fail.get("status") or "").lower() == "fail"
+    )
     report.steps.append(
         StepResult(
             name=_n(0),
             ok=fail_ok,
-            detail=f"status={tr_fail.get('status')!r} summary={tr_fail.get('summary') or ''}"[:240],
+            detail=f"checkin_ok={cin_fail.get('ok')} status={tr_fail.get('status')!r} "
+            f"summary={tr_fail.get('summary') or ''}"[:240],
             data={
+                "via_checkin": True,
+                "checkin_ok": cin_fail.get("ok"),
                 "evaluator_ok": out_fail.get("ok"),
                 loop.status_key: tr_fail.get("status"),
                 "test_id": test_id,
@@ -530,14 +581,15 @@ def run_local_host_loop(
     out_comp = [
         e
         for e in (out_fail.get("events") or [])
-        if e.get("type") == "compliance"
-        and e.get("test") == test_id
-        and (e.get("status") or "").lower() == "fail"
+        if e.get("type") in ("compliance", "compliance.updated", "control.failed")
+        and (not e.get("test") or e.get("test") == test_id)
+        and (e.get("status") or "").lower() in ("fail", "failed", "")
     ]
+    # Release test #1: require bus publish (not evaluator-only soft OR).
     report.steps.append(
         StepResult(
             name=_n(2),
-            ok=bool(bus_comp) or bool(out_comp),
+            ok=bool(bus_comp),
             detail=(
                 f"bus_compliance_or_control_failed={len(bus_comp)} "
                 f"evaluator_compliance_fail={len(out_comp)}"
@@ -568,19 +620,17 @@ def run_local_host_loop(
     )
 
     bus_risk = _risk_events(bus_fail, test_id, reduction=False)
-    out_risk = [e for e in (out_fail.get("events") or []) if e.get("type") == "risk"]
     risk_changed = _risk_changed_events(bus_fail)
+    # Require a bus risk signal (risk and/or risk.changed) — no evaluator-only pass.
     report.steps.append(
         StepResult(
             name=_n(4),
-            ok=bool(bus_risk) or bool(out_risk),
+            ok=bool(bus_risk) or bool(risk_changed),
             detail=(
-                f"bus_risk={len(bus_risk)} evaluator_risk={len(out_risk)} "
-                f"risk_changed={'yes' if risk_changed else 'n/a'}"
+                f"bus_risk={len(bus_risk)} risk_changed={len(risk_changed)}"
             ),
             data={
                 "bus_risk_count": len(bus_risk),
-                "evaluator_risk": out_risk,
                 "risk_changed_available": bool(risk_changed),
                 "risk_changed_count": len(risk_changed),
             },
@@ -592,19 +642,30 @@ def run_local_host_loop(
     )
 
     with _capture_bus() as bus_pass:
-        out_pass = evaluate_agent_host_controls(user_id, agent_id, enabled, asset_id="")
+        cin_pass = checkin(agent_id, enabled)
+    out_pass = cin_pass.get("host_controls") if isinstance(cin_pass.get("host_controls"), dict) else {}
+    if not out_pass:
+        out_pass = {"ok": False, "results": [], "events": [], "evidence_ids": []}
     tr_pass = _test_result(out_pass, test_id) or {}
-    pass_ok = bool(out_pass.get("ok")) and (tr_pass.get("status") or "").lower() == "pass"
+    pass_ok = (
+        bool(cin_pass.get("ok"))
+        and bool(out_pass.get("ok"))
+        and (tr_pass.get("status") or "").lower() == "pass"
+    )
     report.steps.append(
         StepResult(
             name=_n(6),
             ok=pass_ok,
-            detail=f"status={tr_pass.get('status')!r} summary={tr_pass.get('summary') or ''}"[:240],
+            detail=f"checkin_ok={cin_pass.get('ok')} status={tr_pass.get('status')!r} "
+            f"summary={tr_pass.get('summary') or ''}"[:240],
             data={
+                "via_checkin": True,
+                "checkin_ok": cin_pass.get("ok"),
                 "evaluator_ok": out_pass.get("ok"),
                 loop.status_key: tr_pass.get("status"),
                 "events": out_pass.get("events") or [],
                 "evidence_ids": out_pass.get("evidence_ids") or [],
+                "live_compliance": out_pass.get("live_compliance"),
             },
         )
     )
@@ -639,24 +700,23 @@ def run_local_host_loop(
     )
 
     bus_reduce = _risk_events(bus_pass, test_id, reduction=True)
-    out_reduce = [
-        e
-        for e in (out_pass.get("events") or [])
-        if e.get("type") == "risk" and (e.get("hint") or "").lower() == "reduction"
-    ]
     risk_changed_pass = _risk_changed_events(bus_pass)
+    live_bus = _live_compliance_events(bus_pass)
+    live_snap = out_pass.get("live_compliance") if isinstance(out_pass.get("live_compliance"), dict) else None
+    # Risk must improve on the bus after FAIL→PASS (reduction hint and/or risk.changed).
     report.steps.append(
         StepResult(
             name=_n(9),
-            ok=bool(bus_reduce) or bool(out_reduce) or bool(risk_changed_pass),
+            ok=bool(bus_reduce) or bool(risk_changed_pass),
             detail=(
-                f"bus_reduction={len(bus_reduce)} evaluator_reduction={len(out_reduce)} "
-                f"risk_changed={'yes' if risk_changed_pass else 'n/a'}"
+                f"bus_reduction={len(bus_reduce)} risk_changed={len(risk_changed_pass)} "
+                f"live_compliance_bus={len(live_bus)} live_snap={'yes' if live_snap else 'no'}"
             ),
             data={
                 "bus_reduction": len(bus_reduce),
-                "evaluator_events": out_reduce,
                 "risk_changed_available": bool(risk_changed_pass),
+                "live_compliance_bus": len(live_bus),
+                "live_compliance": live_snap,
             },
         )
     )
@@ -668,12 +728,22 @@ def run_local_host_loop(
             (cid,),
         ).fetchone()
         vstat = (dict(row).get("verification_status") if row else "") or ""
+    v_bus = _verification_bus_events(bus_pass, command_id=cid)
     report.steps.append(
         StepResult(
             name=f"{prefix}{LOCAL_VERIFY_STEP}",
             ok=bool(cid) and vstat == "verified",
-            detail=f"command_id={cid[:16] if cid else ''} verification_status={vstat}",
-            data={"command_id": cid, "verification_status": vstat},
+            detail=(
+                f"command_id={cid[:16] if cid else ''} verification_status={vstat} "
+                f"bus_verify_events={len(v_bus)}"
+            ),
+            data={
+                "command_id": cid,
+                "verification_status": vstat,
+                "via_checkin": True,
+                "bus_verify_events": len(v_bus),
+                "lab_note": "execute step is lab-simulated; verify is independent telemetry re-check",
+            },
         )
     )
     return report

@@ -874,6 +874,7 @@ def checkin(agent_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         )
     )
     _eff = effective_payload if isinstance(effective_payload, dict) else payload
+    host_controls: dict[str, Any] | None = None
     if not (_eff or {}).get("truncated") or _host_present:
         try:
             from app.configuration.observe import record_checkin_observations
@@ -890,14 +891,14 @@ def checkin(agent_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         try:
             from app.services.control_testing import evaluate_agent_host_controls
 
-            evaluate_agent_host_controls(
+            host_controls = evaluate_agent_host_controls(
                 agent.get("user_id") or "local",
                 agent_id,
                 _eff if isinstance(_eff, dict) else payload,
                 asset_id=asset_id,
             )
         except Exception:
-            pass
+            host_controls = None
     # Detect (architecture Phase 6–7) — check-in FIM + allowlisted security_logs
     # → native threats. Never invent from added/truncated/non-allowlisted lines.
     # Must never break check-in.
@@ -912,6 +913,9 @@ def checkin(agent_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         pass
     commands = _dispatch_queued_commands(agent_id)
     out: dict[str, Any] = {"ok": True, "asset_id": asset_id, "commands": commands}
+    if host_controls is not None:
+        # Release-test / diagnostics — same object produced on the production path.
+        out["host_controls"] = host_controls
     if seq_recovery:
         out["last_acked_seq"] = seq_recovery.get("last_acked_seq", new_last_seq)
         out["acked_sequences"] = seq_recovery.get("acked_sequences") or []

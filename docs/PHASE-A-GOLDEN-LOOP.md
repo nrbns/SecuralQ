@@ -12,6 +12,35 @@ Do **not** expand Phase C/D (attack graph depth, cloud/identity/SBOM/AppSec
 integrations, AI SecOps missions) until Phase A acceptance is green on owned
 lab hosts and Phase B commercial packaging gates exist.
 
+**Build order (Wave 1):** (1) firewall closed-loop = release test #1,
+(2) Redis HA measured failover, (3) per-tenant/agent sequence + gap recovery,
+(4) durable agent offline queue, (5) mandatory mTLS + Ed25519 commercial seals,
+(6) control config engine + automatic evidence + independent verification.
+Do not start Wave 2–5 product sprawl until #1 is green in CI.
+
+## Release test #1 — Firewall golden loop
+
+**Definition of done for Phase A product claims:**
+
+```text
+Endpoint change → Detect → Risk → Compliance → Evidence
+  → Approve remediation → Execute (lab-sim OK in CI)
+  → Independent verify (telemetry re-check via checkin)
+  → Risk + live compliance improve → bus events captured
+```
+
+```bash
+# CI + local (synthetic host — no OS mutation)
+pytest -v tests/test_realtime_acceptance_local.py::test_realtime_acceptance_local_firewall_fail_then_pass
+python scripts/realtime_acceptance_demo.py --local --firewall-only
+
+# Owned lab host (optional — real enable_firewall)
+python scripts/realtime_acceptance_demo.py --server http://HOST:8080 --token "$ADMIN_JWT"
+```
+
+Harness path uses production ``agents.checkin()`` (not a direct evaluator bypass).
+Command execute remains lab-simulated in CI; verification is independent of command JSON.
+
 ## Phase A checklist (harden, don’t replace)
 
 | # | Capability | Status |

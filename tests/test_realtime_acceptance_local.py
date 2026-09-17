@@ -39,11 +39,17 @@ def test_realtime_acceptance_local_firewall_fail_then_pass(tmp_path, monkeypatch
     by_name = {s.name: s for s in report.steps}
     assert by_name["1_firewall_off_host_control_fail"].ok is True
     assert by_name["1_firewall_off_host_control_fail"].data.get("firewall_status") == "fail"
+    assert by_name["1_firewall_off_host_control_fail"].data.get("via_checkin") is True
     assert by_name["2_evidence_created_observed"].ok is True
     assert by_name["3_compliance_or_control_failed_event"].ok is True
+    assert by_name["3_compliance_or_control_failed_event"].data.get("bus_events")
     assert by_name["4_poam_gap_remediation_open"].ok is True
     assert by_name["4_poam_gap_remediation_open"].data.get("open_count", 0) >= 1
     assert by_name["5_risk_event_published"].ok is True
+    assert (
+        by_name["5_risk_event_published"].data.get("bus_risk_count", 0) >= 1
+        or by_name["5_risk_event_published"].data.get("risk_changed_count", 0) >= 1
+    )
 
     fw_cmd = by_name["6_enable_firewall_command"]
     assert fw_cmd.ok is True
@@ -51,15 +57,18 @@ def test_realtime_acceptance_local_firewall_fail_then_pass(tmp_path, monkeypatch
     assert fw_cmd.data.get("pending_ok") is True
     assert fw_cmd.data.get("approve_ok") is True
     assert fw_cmd.data.get("final_status") == "done"
+    assert fw_cmd.data.get("lab_simulated_agent_result") is True
 
     assert by_name["7_firewall_on_pass"].ok is True
     assert by_name["7_firewall_on_pass"].data.get("firewall_status") == "pass"
+    assert by_name["7_firewall_on_pass"].data.get("via_checkin") is True
     assert by_name["8_evidence_pass"].ok is True
     assert by_name["9_poam_closed_rem_done"].ok is True
     assert by_name["9_poam_closed_rem_done"].data.get("still_open") == 0
     assert by_name["10_risk_reduction_hint"].ok is True
     assert by_name[LOCAL_VERIFY_STEP].ok is True
     assert by_name[LOCAL_VERIFY_STEP].data.get("verification_status") == "verified"
+    assert by_name[LOCAL_VERIFY_STEP].data.get("via_checkin") is True
 
     marker = poam_marker("host_firewall", aid)
     assert not any(
