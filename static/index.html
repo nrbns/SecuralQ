@@ -130,6 +130,7 @@
           <button type="button" class="nav-link" id="authBtnNav" data-open-auth>Users / RBAC</button>
           <button type="button" class="nav-link" data-workspace="agents">License &amp; Agents</button>
           <button type="button" class="nav-link" data-workspace="billing">Billing</button>
+          <button type="button" class="nav-link" data-workspace="platform">Platform &amp; Privacy</button>
           <button type="button" class="nav-link" id="settingsBtnNav" data-open-settings><span class="nav-ico sm" data-ico="set" aria-hidden="true"></span> Settings</button>
           <button type="button" class="nav-link" id="uploadBtnNav" data-open-upload>Upload evidence</button>
           <button type="button" class="nav-link hidden" id="exportMdBtn" title="Export current chat as Markdown">Export chat</button>
@@ -172,6 +173,8 @@
         <p class="sidebar-refuse">Authorized labs &amp; GRC only - no crimeware modes.</p>
         <p class="sidebar-legal">
           <a href="/manual/" target="_blank" rel="noopener">User manual</a>
+          · <a href="/status.html" target="_blank" rel="noopener">Status</a>
+          · <a href="/.well-known/security.txt" target="_blank" rel="noopener">security.txt</a>
           · <a href="/legal/" target="_blank" rel="noopener">Legal</a>
           · <a href="/legal/privacy.html" target="_blank" rel="noopener">Privacy</a>
           · <a href="/legal/ai-usage.html" target="_blank" rel="noopener">AI limits</a>
@@ -1101,6 +1104,13 @@
         <section id="viewBilling" class="workspace-view hidden" data-module-page data-view-panel="billing">
           <div class="page-head"><h1>Billing</h1></div>
           <div id="billingPageBody"></div>
+        </section>
+        <section id="viewPlatform" class="workspace-view hidden" data-module-page data-view-panel="platform">
+          <div class="page-head">
+            <h1>Platform &amp; Privacy</h1>
+            <p class="page-intro hint">Commercial lifecycle — status, retention, GDPR, audit integrity, storage, MSSP.</p>
+          </div>
+          <div id="platformPageBody"><p class="hint">Loading…</p></div>
         </section>
         <section id="viewGraph" class="workspace-view hidden" data-module-page data-view-panel="graph">
           <div class="page-head"><h1>Knowledge graph</h1></div>

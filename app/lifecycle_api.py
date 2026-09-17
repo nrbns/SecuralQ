@@ -101,6 +101,16 @@ async def api_verify_audit_chain(user: Annotated[AuthUser, Depends(require_user)
     return verify_chain(limit=limit)
 
 
+@router.post("/admin/audit/backfill-chain")
+async def api_backfill_audit_chain(user: Annotated[AuthUser, Depends(require_user)], limit: int = 50000):
+    require_perm(user, "settings.write", org_id=None)
+    from app.audit_chain import backfill_chain, verify_chain
+
+    filled = backfill_chain(limit=limit)
+    filled["verify"] = verify_chain(limit=min(limit, 10000))
+    return filled
+
+
 # ----- Object storage / KMS status -----
 
 

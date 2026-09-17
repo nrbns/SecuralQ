@@ -357,6 +357,7 @@
       audit_center: "viewAuditCenter",
       integrations: "viewIntegrations",
       billing: "viewBilling",
+      platform: "viewPlatform",
       graph: "viewGraph",
       automation: "viewAutomation",
       executive: "viewExecutive",
@@ -445,6 +446,7 @@
     if (view === "audit_center") renderAuditCenterPage();
     if (view === "integrations") renderIntegrationsPage();
     if (view === "billing") renderBillingPage();
+    if (view === "platform") renderPlatformPage();
     if (view === "graph") renderGraphPage();
     if (view === "automation") renderAutomationPage();
     if (view === "executive") renderExecutiveDashboardPage();
@@ -6750,6 +6752,9 @@
         actionBtns.push(
           `<button type="button" class="btn-secondary" id="agentDetailUpgrade">Request upgrade</button>`
         );
+        actionBtns.push(
+          `<button type="button" class="btn-secondary" id="agentDetailUninstall">Request uninstall</button>`
+        );
       }
       if (headActions) headActions.innerHTML = actionBtns.join("");
 
@@ -6962,6 +6967,33 @@
           renderAgentDetailPage(id);
         } catch (err) {
           alert(err.message || "Upgrade request failed");
+          btn.disabled = false;
+        }
+      });
+
+      qs("agentDetailUninstall")?.addEventListener("click", async (ev) => {
+        const btn = ev.currentTarget;
+        if (
+          !confirm(
+            "Request remote uninstall for this agent? It stays pending until you approve. Only use on owned/lab hosts."
+          )
+        )
+          return;
+        btn.disabled = true;
+        try {
+          const r = await fetch(`/api/agents/${encodeURIComponent(id)}/commands/uninstall`, {
+            method: "POST",
+            headers: authHeaders(),
+          });
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+          if (typeof notifyUser === "function") {
+            notifyUser("**Uninstall requested** — approve on Commands tab before the agent removes itself.");
+          }
+          window.__securaiqAgentDetailTab = "commands";
+          renderAgentDetailPage(id);
+        } catch (err) {
+          alert(err.message || "Uninstall request failed");
           btn.disabled = false;
         }
       });
@@ -12353,6 +12385,175 @@
     });
   }
 
+  async function renderPlatformPage() {
+    const body = qs("platformPageBody");
+    if (!body) return;
+    body.innerHTML = `<p class="hint">Loading platform status…</p>`;
+
+    const getJson = async (url, ms = 8000) => {
+      const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+      const timer = ctrl ? setTimeout(() => ctrl.abort(), ms) : null;
+      try {
+        const res = await fetch(url, { headers: authHeaders(), signal: ctrl?.signal });
+        if (!res.ok) {
+          const detail = await res.text().catch(() => "");
+          return { __error: true, status: res.status, detail: detail.slice(0, 200) };
+        }
+        return await res.json().catch(() => null);
+      } catch (err) {
+        return { __error: true, detail: String(err.message || err) };
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    };
+    const postJson = async (url, payload) => {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { ...authHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify(payload || {}),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+      return data;
+    };
+
+    const [pub, store, kms, chain, webauthn] = await Promise.all([
+      getJson("/api/status/public"),
+      getJson("/api/admin/object-storage/status"),
+      getJson("/api/admin/kms/status"),
+      getJson("/api/admin/audit/verify-chain?limit=2000"),
+      getJson("/api/auth/webauthn/status"),
+    ]);
+    let retention = { __error: true };
+    try {
+      const res = await fetch("/api/admin/retention/purge?dry_run=true", {
+        method: "POST",
+        headers: authHeaders(),
+      });
+      retention = res.ok ? await res.json() : { __error: true, status: res.status };
+    } catch (e) {
+      retention = { __error: true, detail: String(e.message || e) };
+    }
+
+    const cell = (ok, label, detail) =>
+      `<li><strong>${escapeHtml(label)}</strong> — <span>${ok ? "ok" : "check"}</span> ` +
+      `<span class="hint">${escapeHtml(detail || "")}</span></li>`;
+    const pubOk = pub && !pub.__error && pub.status === "operational";
+    const chainOk = chain && !chain.__error && chain.ok === true;
+    const storeOk = store && !store.__error;
+    const kmsOk = kms && !kms.__error;
+
+    body.innerHTML = `
+      <div class="billing-grid">
+        <section class="cc-panel">
+          <header><h2>Public status</h2></header>
+          <ul class="cc-list">
+            ${cell(pubOk, "Overall", pub?.status || pub?.detail || "unavailable")}
+            ${Object.entries(pub?.checks || {})
+              .map(([k, v]) => cell(v === "ok" || v === "not_configured", k, String(v)))
+              .join("")}
+          </ul>
+          <p class="hint" style="margin-top:0.75rem">
+            <a href="/status.html" target="_blank" rel="noopener">Open status page</a>
+            · <a href="/.well-known/security.txt" target="_blank" rel="noopener">security.txt</a>
+            · PSIRT: ${escapeHtml(pub?.psirt || "—")}
+          </p>
+        </section>
+        <section class="cc-panel">
+          <header><h2>Integrity &amp; storage</h2></header>
+          <ul class="cc-list">
+            ${cell(chainOk, "Audit hash chain", chainOk ? `${chain.checked} entries verified` : (chain?.reason || chain?.detail || "—"))}
+            ${cell(storeOk, "Object storage", storeOk ? `${store.backend}` : (store?.detail || "—"))}
+            ${cell(kmsOk, "KMS", kmsOk ? `${kms.provider}` : (kms?.detail || "—"))}
+            ${cell(!(webauthn && webauthn.__error), "WebAuthn", webauthn?.enabled ? "enabled" : "scaffold (off)")}
+          </ul>
+          <div class="footer-grid" style="margin-top:0.75rem;gap:0.5rem">
+            <button type="button" class="btn-secondary" id="platVerifyChain">Re-verify audit chain</button>
+            <button type="button" class="btn-secondary" id="platBackfillChain">Backfill legacy audit hashes</button>
+            <button type="button" class="btn-secondary" id="platRetentionDry">Retention dry-run</button>
+            <button type="button" class="btn-secondary" id="platRetentionRun">Purge expired (live)</button>
+          </div>
+          <pre id="platOpsOut" class="hint" style="white-space:pre-wrap;margin-top:0.75rem"></pre>
+        </section>
+        <section class="cc-panel">
+          <header><h2>GDPR / privacy</h2></header>
+          <p class="hint">Export your subject data pack, or erase (Art.17). Erasure requires typing DELETE.</p>
+          <div class="footer-grid" style="gap:0.5rem">
+            <button type="button" class="btn-secondary" id="platGdprExport">Download my data export</button>
+            <button type="button" class="btn-secondary" id="platGdprErase">Erase my data…</button>
+          </div>
+          <p class="hint" style="margin-top:0.75rem">Retention dry-run:
+            <code>${escapeHtml(JSON.stringify((retention && !retention.__error && retention.deleted) || retention || {}))}</code>
+          </p>
+        </section>
+      </div>`;
+
+    const out = qs("platOpsOut");
+    const setOut = (obj) => {
+      if (out) out.textContent = typeof obj === "string" ? obj : JSON.stringify(obj, null, 2);
+    };
+    qs("platVerifyChain")?.addEventListener("click", async () => {
+      setOut("Verifying…");
+      setOut(await getJson("/api/admin/audit/verify-chain?limit=5000"));
+    });
+    qs("platBackfillChain")?.addEventListener("click", async () => {
+      if (!confirm("Backfill hash-chain fields on legacy audit rows?")) return;
+      setOut("Backfilling…");
+      try {
+        const res = await fetch("/api/admin/audit/backfill-chain", {
+          method: "POST",
+          headers: authHeaders(),
+        });
+        setOut(await res.json());
+      } catch (e) {
+        setOut(String(e.message || e));
+      }
+    });
+    qs("platRetentionDry")?.addEventListener("click", async () => {
+      setOut("Dry-run…");
+      try {
+        const res = await fetch("/api/admin/retention/purge?dry_run=true", { method: "POST", headers: authHeaders() });
+        setOut(await res.json());
+      } catch (e) {
+        setOut(String(e.message || e));
+      }
+    });
+    qs("platRetentionRun")?.addEventListener("click", async () => {
+      if (!confirm("Permanently delete expired retention rows?")) return;
+      setOut("Purging…");
+      try {
+        const res = await fetch("/api/admin/retention/purge?dry_run=false", { method: "POST", headers: authHeaders() });
+        setOut(await res.json());
+      } catch (e) {
+        setOut(String(e.message || e));
+      }
+    });
+    qs("platGdprExport")?.addEventListener("click", async () => {
+      setOut("Exporting…");
+      const pack = await getJson("/api/gdpr/export");
+      if (pack?.__error) {
+        setOut(pack);
+        return;
+      }
+      const blob = new Blob([JSON.stringify(pack, null, 2)], { type: "application/json" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `securaiq-gdpr-export-${Date.now()}.json`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+      setOut({ ok: true, tables: Object.keys(pack.tables || {}), exported_at: pack.exported_at });
+    });
+    qs("platGdprErase")?.addEventListener("click", async () => {
+      const confirmWord = prompt("Type DELETE to erase your account data (Art.17):");
+      if (confirmWord !== "DELETE") return;
+      try {
+        setOut(await postJson("/api/gdpr/erase", { confirm: "DELETE" }));
+      } catch (e) {
+        setOut(String(e.message || e));
+      }
+    });
+  }
+
   async function renderBillingPage() {
     const body = qs("billingPageBody");
     if (!body) return;
@@ -13491,6 +13692,7 @@
         integrations: () => typeof renderIntegrationsPage === "function" && renderIntegrationsPage(),
         orgs: () => typeof renderOrgsPage === "function" && renderOrgsPage(),
         billing: () => typeof renderBillingPage === "function" && renderBillingPage(),
+        platform: () => typeof renderPlatformPage === "function" && renderPlatformPage(),
         executive: () => typeof renderExecutiveDashboardPage === "function" && renderExecutiveDashboardPage(),
       };
       const fn = runners[view];

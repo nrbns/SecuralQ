@@ -82,8 +82,39 @@ def append_chained(
     return {"id": rid, "prev_hash": prev, "entry_hash": entry, "created_at": ts}
 
 
+def backfill_chain(*, limit: int = 50_000) -> dict[str, Any]:
+    """Assign hashes to legacy unhashed audit rows in chronological order."""
+    ensure_audit_chain_schema()
+    c = get_conn()
+    rows = c.execute(
+        "SELECT id, user_id, action, detail, created_at, prev_hash, entry_hash "
+        "FROM audit_log ORDER BY created_at ASC, id ASC LIMIT ?",
+        (max(1, limit),),
+    ).fetchall()
+    prev = GENESIS
+    updated = 0
+    for r in rows:
+        eh = (r["entry_hash"] or "").strip()
+        if eh:
+            prev = eh
+            continue
+        try:
+            detail = json.loads(r["detail"] or "{}")
+        except json.JSONDecodeError:
+            detail = {}
+        entry = _canonical(r["action"], r["user_id"], detail, float(r["created_at"]), prev)
+        c.execute(
+            "UPDATE audit_log SET prev_hash = ?, entry_hash = ? WHERE id = ?",
+            (prev, entry, r["id"]),
+        )
+        prev = entry
+        updated += 1
+    c.commit()
+    return {"ok": True, "updated": updated, "tip": prev}
+
+
 def verify_chain(*, limit: int = 10_000) -> dict[str, Any]:
-    """Walk newest-first-stored rows in chronological order; report first break."""
+    """Walk rows in chronological order; report first break."""
     ensure_audit_chain_schema()
     c = get_conn()
     rows = c.execute(
@@ -114,7 +145,6 @@ def verify_chain(*, limit: int = 10_000) -> dict[str, Any]:
                 "reason": "entry_hash mismatch",
             }
         if checked > 0 and ph and ph != expected_prev and expected_prev != GENESIS:
-            # Allow first chained row after legacy rows to start from GENESIS
             if ph != GENESIS:
                 return {
                     "ok": False,
