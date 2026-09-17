@@ -115,6 +115,7 @@ def test_production_profile_status_flags(tmp_path, monkeypatch):
 
     monkeypatch.setattr(settings, "agent_mtls_enabled", True, raising=False)
     monkeypatch.setattr(settings, "agent_mtls_proxy_verify", True, raising=False)
+    monkeypatch.setattr(settings, "agent_mtls_require_fingerprint_match", True, raising=False)
     monkeypatch.setattr(settings, "agent_require_command_signature", True, raising=False)
     monkeypatch.setattr(settings, "agent_require_replay_protection", True, raising=False)
     st2 = production_profile_status()

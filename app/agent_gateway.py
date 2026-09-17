@@ -16,7 +16,7 @@ import logging
 import threading
 from typing import Any
 
-from fastapi import APIRouter, Header, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
 from app.agents import (
@@ -181,13 +181,26 @@ async def _push_queued(agent_id: str) -> None:
         log.debug("push failed for agent %s", agent_id[:8])
 
 
-def _auth_agent(authorization: str | None) -> dict[str, Any]:
+def _auth_agent(
+    authorization: str | None,
+    *,
+    request: Request | None = None,
+    headers: Any = None,
+) -> dict[str, Any]:
     agent_id, raw_key = parse_agent_bearer(authorization)
     if not agent_id or not raw_key:
         raise HTTPException(status_code=401, detail="Missing or malformed agent token")
     agent = authenticate_agent(agent_id, raw_key)
     if not agent:
         raise HTTPException(status_code=401, detail="Invalid or revoked agent token")
+    from app.agent_certs import enforce_proxy_mtls
+
+    hdrs = headers
+    if hdrs is None and request is not None:
+        hdrs = request.headers
+    mtls_err = enforce_proxy_mtls(agent, headers=hdrs)
+    if mtls_err:
+        raise HTTPException(status_code=401, detail=mtls_err)
     return agent
 
 
@@ -199,13 +212,14 @@ class GatewayWaitRequest(BaseModel):
 @router.post("/gateway/wait")
 async def gateway_wait(
     req: GatewayWaitRequest,
+    request: Request,
     authorization: str | None = Header(default=None, alias="Authorization"),
 ):
     """Long-poll for queued commands — near-instant when notify_agent fires."""
     if not settings.agent_gateway_enabled:
         raise HTTPException(status_code=503, detail="Agent gateway disabled")
     bind_loop()
-    agent = _auth_agent(authorization)
+    agent = _auth_agent(authorization, request=request)
     aid = str(agent["id"])
     cmds = _dispatch_queued_commands(aid, limit=req.limit)
     if cmds:
@@ -263,6 +277,11 @@ async def _auth_from_hello(websocket: WebSocket, hello: dict[str, Any]) -> dict[
     if err and settings.agent_require_replay_protection:
         return None
     if err and hello.get("sig"):
+        return None
+    from app.agent_certs import enforce_proxy_mtls
+
+    mtls_err = enforce_proxy_mtls(agent, headers=websocket.headers)
+    if mtls_err:
         return None
     return agent
 

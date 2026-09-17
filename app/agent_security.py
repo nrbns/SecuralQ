@@ -1,10 +1,10 @@
 """Agent command signing, event IDs, and replay protection.
 
-Floor for Agent Platform v1 — not full mTLS/certificate lifecycle yet.
-
 HMAC seals remain the default command delivery path. Opt-in Ed25519 (or both)
-via ``AGENT_COMMAND_SIGNING_ALG`` / ``agent_command_signing_alg`` (REALTIME Task J).
-Production direction: Ed25519 + mTLS; HMAC keeps labs working without keys.
+via ``AGENT_COMMAND_SIGNING_ALG`` / ``agent_command_signing_alg``.
+Device cert issue/rotate/renew/revoke lives in ``app/agent_certs.py``;
+proxy mTLS verify is enforced on HTTP check-in and the Agent Gateway when
+``AGENT_MTLS_PROXY_VERIFY`` is enabled. Production needs all five profile flags.
 """
 
 from __future__ import annotations

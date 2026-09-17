@@ -16,6 +16,35 @@ from app.config import settings
 from app.db import get_conn, new_id, now
 
 
+def proxy_client_headers_from_map(headers: Any) -> tuple[str | None, str | None]:
+    """Read nginx/Caddy client-cert headers from a mapping or Starlette Headers."""
+    if headers is None:
+        return None, None
+    get = getattr(headers, "get", None)
+    if not callable(get):
+        return None, None
+    verify = get("X-SSL-Client-Verify") or get("x-ssl-client-verify")
+    fp = get("X-SSL-Client-Fingerprint") or get("x-ssl-client-fingerprint")
+    return (str(verify) if verify is not None else None), (str(fp) if fp is not None else None)
+
+
+def enforce_proxy_mtls(
+    agent: dict[str, Any],
+    *,
+    client_verify: str | None = None,
+    client_fingerprint: str | None = None,
+    headers: Any = None,
+) -> str | None:
+    """Return error detail if proxy mTLS fails; None when OK / enforcement off."""
+    if client_verify is None and client_fingerprint is None and headers is not None:
+        client_verify, client_fingerprint = proxy_client_headers_from_map(headers)
+    return verify_proxy_client_cert(
+        agent,
+        client_verify=client_verify,
+        client_fingerprint=client_fingerprint,
+    )
+
+
 def mtls_enabled() -> bool:
     return bool(getattr(settings, "agent_mtls_enabled", False))
 

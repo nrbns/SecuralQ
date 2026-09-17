@@ -41,7 +41,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-AGENT_VERSION = "1.1.4"
+AGENT_VERSION = "1.1.5"
 DEFAULT_INTERVAL_SEC = 60
 SENTINEL_VERSION = "1.0.0"
 DEFAULT_SENTINEL_INTERVAL_SEC = 10
@@ -64,6 +64,73 @@ def _agent_home() -> str:
     if _is_frozen():
         return os.path.dirname(os.path.abspath(sys.executable))
     return os.path.dirname(os.path.abspath(__file__))
+
+
+def _client_cert_paths() -> tuple[str | None, str | None]:
+    """Optional mTLS client material for HTTPS to a terminating proxy.
+
+    Env: SECURAIQ_CLIENT_CERT + SECURAIQ_CLIENT_KEY, or files agent.crt/agent.key
+    (or client.crt/client.key) next to the agent binary.
+    """
+    cert = (os.environ.get("SECURAIQ_CLIENT_CERT") or "").strip()
+    key = (os.environ.get("SECURAIQ_CLIENT_KEY") or "").strip()
+    if cert and key and os.path.isfile(cert) and os.path.isfile(key):
+        return cert, key
+    home = _agent_home()
+    for cname, kname in (("agent.crt", "agent.key"), ("client.crt", "client.key")):
+        cp, kp = os.path.join(home, cname), os.path.join(home, kname)
+        if os.path.isfile(cp) and os.path.isfile(kp):
+            return cp, kp
+    return None, None
+
+
+def install_client_certificate(cert_pem: str, key_pem: str) -> tuple[str, str]:
+    """Write issued PEMs next to the agent (private key once). Returns paths."""
+    home = _agent_home()
+    os.makedirs(home, exist_ok=True)
+    cert_path = os.path.join(home, "agent.crt")
+    key_path = os.path.join(home, "agent.key")
+    with open(cert_path, "w", encoding="utf-8") as fh:
+        fh.write((cert_pem or "").strip() + "\n")
+    with open(key_path, "w", encoding="utf-8") as fh:
+        fh.write((key_pem or "").strip() + "\n")
+    try:
+        os.chmod(key_path, 0o600)
+    except OSError:
+        pass
+    return cert_path, key_path
+
+
+def _ssl_context(*, insecure: bool = False, url: str = "") -> ssl.SSLContext | None:
+    """Build TLS context with optional client cert. None = stdlib defaults."""
+    want_client = _client_cert_paths()[0] is not None
+    https = (url or "").lower().startswith("https://")
+    if not https and not want_client:
+        return None
+    if not https and not insecure and not want_client:
+        return None
+    ctx = ssl.create_default_context()
+    if insecure:
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    cert, key = _client_cert_paths()
+    if cert and key:
+        try:
+            ctx.load_cert_chain(certfile=cert, keyfile=key)
+        except Exception as exc:
+            print(f"[securaiq-agent] client cert load failed: {exc}", file=sys.stderr)
+    return ctx if (https or want_client or insecure) else None
+
+
+def _urlopen(req: urllib.request.Request, *, timeout: float, insecure: bool = False):
+    url = req.full_url if hasattr(req, "full_url") else str(getattr(req, "get_full_url", lambda: "")())
+    if not url:
+        try:
+            url = req.get_full_url()
+        except Exception:
+            url = ""
+    ctx = _ssl_context(insecure=insecure, url=url)
+    return urllib.request.urlopen(req, timeout=timeout, context=ctx)
 
 
 def _load_env_file(path: str) -> None:
@@ -1812,10 +1879,8 @@ def send_threat_report(server: str, token: str, detections: list[dict], *, insec
         },
     )
     ctx = None
-    if url.startswith("https://") and insecure:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
+    if url.startswith("https://") or _client_cert_paths()[0]:
+        ctx = _ssl_context(insecure=insecure, url=url)
     with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
@@ -2337,11 +2402,7 @@ def execute_agent_upgrade(payload: dict, *, server: str, insecure: bool = False)
         return {"ok": False, "error": "SECURAIQ_REQUIRE_UPDATE_SIG=1 but payload has no signature"}
 
     req = urllib.request.Request(url, headers={"User-Agent": f"SecuraIQ-Agent/{AGENT_VERSION}"})
-    ctx = None
-    if url.startswith("https://") and insecure:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
+    ctx = _ssl_context(insecure=insecure, url=url)
     try:
         with urllib.request.urlopen(req, timeout=120, context=ctx) as resp:
             new_content = resp.read()
@@ -2621,11 +2682,7 @@ def send_command_result(server: str, token: str, command_id: str, status: str, r
         url, data=data, method="POST",
         headers=headers,
     )
-    ctx = None
-    if url.startswith("https://") and insecure:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
+    ctx = _ssl_context(insecure=insecure, url=url)
     with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
@@ -2779,11 +2836,7 @@ def validate_license_online(server: str, token: str, *, insecure: bool = False) 
     }
     headers.update(_replay_headers(token, data))
     req = urllib.request.Request(url, data=data, method="POST", headers=headers)
-    ctx = None
-    if url.startswith("https://") and insecure:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
+    ctx = _ssl_context(insecure=insecure, url=url)
     with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
@@ -2844,11 +2897,7 @@ def send_checkin(server: str, token: str, payload: dict, *, insecure: bool = Fal
         method="POST",
         headers=headers,
     )
-    ctx = None
-    if url.startswith("https://") and insecure:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
+    ctx = _ssl_context(insecure=insecure, url=url)
     with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
@@ -2875,11 +2924,7 @@ def gateway_wait(
         method="POST",
         headers=headers,
     )
-    ctx = None
-    if url.startswith("https://") and insecure:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
+    ctx = _ssl_context(insecure=insecure, url=url)
     # Long-poll can sit until timeout_sec; add a small buffer.
     with urllib.request.urlopen(req, timeout=max(35.0, timeout_sec + 10.0), context=ctx) as resp:
         return json.loads(resp.read().decode("utf-8"))
@@ -2898,11 +2943,7 @@ def send_command_ack(server: str, token: str, command_id: str, *, insecure: bool
         url, data=data, method="POST",
         headers=headers,
     )
-    ctx = None
-    if url.startswith("https://") and insecure:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
+    ctx = _ssl_context(insecure=insecure, url=url)
     with urllib.request.urlopen(req, timeout=15.0, context=ctx) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
@@ -2930,10 +2971,12 @@ def _ws_connect(server: str, token: str, *, insecure: bool = False, timeout: flo
         host, port = hostport, (443 if tls else 80)
     sock = socket.create_connection((host, port), timeout=timeout)
     if tls:
-        ctx = ssl.create_default_context()
-        if insecure:
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
+        ctx = _ssl_context(insecure=insecure, url="https://" + hostport)
+        if ctx is None:
+            ctx = ssl.create_default_context()
+            if insecure:
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
         sock = ctx.wrap_socket(sock, server_hostname=host)
     key = base64.b64encode(os.urandom(16)).decode("ascii")
     req = (

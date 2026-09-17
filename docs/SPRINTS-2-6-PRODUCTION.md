@@ -13,6 +13,9 @@
 | Agent revoke ⇒ cert revoke | `revoke_agent()` | Done |
 | API | `POST /api/agents/{id}/certificate/{issue,rotate,renew,revoke}` | Done |
 | Proxy mTLS | `deploy/nginx-mtls.conf.example`, `AGENT_MTLS_PROXY_VERIFY` | Ops |
+| Gateway wait / WS mTLS parity | `app/agent_gateway.py` `enforce_proxy_mtls` | Done |
+| Production ready = 5 flags | `production_profile.py` (+ fingerprint match) | Done |
+| Python agent client cert presentment | `scripts/securaiq_agent.py` agent.crt/key | Done |
 | Fleet CA / short-lived ACME | — | Still ops / future |
 
 Production toggles:

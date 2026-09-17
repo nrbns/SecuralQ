@@ -189,11 +189,9 @@ def _visible_agent(user: AuthUser, agent_id: str, *, org_id: str | None = None) 
 def _ssl_client_headers(request: Request | None) -> tuple[str | None, str | None]:
     if request is None:
         return None, None
-    verify = request.headers.get("X-SSL-Client-Verify") or request.headers.get("x-ssl-client-verify")
-    fp = request.headers.get("X-SSL-Client-Fingerprint") or request.headers.get(
-        "x-ssl-client-fingerprint"
-    )
-    return verify, fp
+    from app.agent_certs import proxy_client_headers_from_map
+
+    return proxy_client_headers_from_map(request.headers)
 
 
 def _authenticate_agent_request(
@@ -218,20 +216,15 @@ def _authenticate_agent_request(
         raise HTTPException(status_code=401, detail=err)
     if ssl_client_verify is None and ssl_client_fingerprint is None and request is not None:
         ssl_client_verify, ssl_client_fingerprint = _ssl_client_headers(request)
-    try:
-        from app.agent_certs import verify_proxy_client_cert
+    from app.agent_certs import enforce_proxy_mtls
 
-        mtls_err = verify_proxy_client_cert(
-            agent,
-            client_verify=ssl_client_verify,
-            client_fingerprint=ssl_client_fingerprint,
-        )
-        if mtls_err:
-            raise HTTPException(status_code=401, detail=mtls_err)
-    except HTTPException:
-        raise
-    except Exception:
-        pass
+    mtls_err = enforce_proxy_mtls(
+        agent,
+        client_verify=ssl_client_verify,
+        client_fingerprint=ssl_client_fingerprint,
+    )
+    if mtls_err:
+        raise HTTPException(status_code=401, detail=mtls_err)
     return agent
 
 

@@ -34,6 +34,7 @@ def production_profile_status() -> dict[str, Any]:
             flags["agent_require_replay_protection"],
             flags["agent_mtls_enabled"],
             flags["agent_mtls_proxy_verify"],
+            flags["agent_mtls_require_fingerprint_match"],
         ]
     )
     return {
@@ -49,6 +50,7 @@ def production_profile_status() -> dict[str, Any]:
         ],
         "disclaimer": (
             "Lab defaults keep these off so local demos work without proxy mTLS. "
-            "Enable all flags behind a terminating proxy before commercial claims."
+            "Enable all five flags behind a terminating proxy before commercial claims. "
+            "Agents must present the issued client cert (agent.crt/agent.key) to the proxy."
         ),
     }
