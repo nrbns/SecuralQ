@@ -358,6 +358,7 @@
       integrations: "viewIntegrations",
       billing: "viewBilling",
       platform: "viewPlatform",
+      system_health: "viewSystemHealth",
       graph: "viewGraph",
       automation: "viewAutomation",
       executive: "viewExecutive",
@@ -447,6 +448,7 @@
     if (view === "integrations") renderIntegrationsPage();
     if (view === "billing") renderBillingPage();
     if (view === "platform") renderPlatformPage();
+    if (view === "system_health") renderSystemHealthPage();
     if (view === "graph") renderGraphPage();
     if (view === "automation") renderAutomationPage();
     if (view === "executive") renderExecutiveDashboardPage();
@@ -12385,6 +12387,79 @@
     });
   }
 
+  async function renderSystemHealthPage() {
+    const body = qs("systemHealthPageBody");
+    if (!body) return;
+    body.innerHTML = `<p class="hint">Loading system health…</p>`;
+    let data = null;
+    try {
+      const res = await fetch("/api/admin/system-health", { headers: authHeaders() });
+      data = await res.json();
+      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    } catch (err) {
+      body.innerHTML = `<p class="hint" style="color:#c0392b">${escapeHtml(err.message || String(err))}</p>`;
+      return;
+    }
+    const status = data.status || "unknown";
+    const checks = data.checks || {};
+    const rows = Object.entries(checks)
+      .map(([k, v]) => {
+        const st = (v && v.status) || "—";
+        const detail =
+          typeof v.detail === "string"
+            ? v.detail
+            : v.detail
+              ? JSON.stringify(v.detail).slice(0, 160)
+              : "";
+        return `<li><strong>${escapeHtml(k)}</strong> — <span>${escapeHtml(st)}</span> <span class="hint">${escapeHtml(detail)}</span></li>`;
+      })
+      .join("");
+    const loop = (data.loop || []).map((s) => `<span class="mc-loop-step" style="display:inline-block;margin:0.15rem">${escapeHtml(s)}</span>`).join(" → ");
+    const es = window.__securaiqRealtimeEs;
+    const esState =
+      es && typeof EventSource !== "undefined"
+        ? es.readyState === EventSource.OPEN
+          ? "connected"
+          : es.readyState === EventSource.CONNECTING
+            ? "connecting"
+            : "closed"
+        : window.RealtimeManager?.state || "unknown";
+    body.innerHTML = `
+      <div class="billing-grid">
+        <section class="cc-panel">
+          <header><h2>Overall · ${escapeHtml(status)}</h2></header>
+          <p class="hint">Mode: ${escapeHtml(data.deployment_mode || "—")} · UI SSE: <strong>${escapeHtml(esState)}</strong> · RealtimeManager: <strong>${escapeHtml(window.RealtimeManager?.state || "—")}</strong></p>
+          <ul class="cc-list">${rows}</ul>
+          <div class="footer-grid" style="margin-top:0.75rem;gap:0.5rem">
+            <button type="button" class="btn-secondary" id="sysHealthRefresh">Refresh</button>
+            <a class="btn-secondary" href="/status.html" target="_blank" rel="noopener">Public status</a>
+            <button type="button" class="btn-secondary" data-view="command">Open Command Center timeline</button>
+          </div>
+        </section>
+        <section class="cc-panel">
+          <header><h2>Closed-loop product path</h2></header>
+          <p class="hint" style="line-height:1.8">${loop}</p>
+          <p class="hint">Do not rebuild foundations — make every step visible in the UI.</p>
+        </section>
+      </div>`;
+    qs("sysHealthRefresh")?.addEventListener("click", () => renderSystemHealthPage());
+    body.querySelectorAll("[data-view]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const v = btn.getAttribute("data-view");
+        if (v && typeof showView === "function") showView(v);
+      });
+    });
+    // Live refresh via RealtimeManager (no page-local EventSource)
+    if (window.RealtimeManager && !window.__securaiqSysHealthSub) {
+      window.__securaiqSysHealthSub = window.RealtimeManager.subscribe("*", () => {
+        if (window.__securaiqWorkspaceView === "system_health") {
+          clearTimeout(window.__securaiqSysHealthTimer);
+          window.__securaiqSysHealthTimer = setTimeout(() => renderSystemHealthPage(), 2500);
+        }
+      });
+    }
+  }
+
   async function renderPlatformPage() {
     const body = qs("platformPageBody");
     if (!body) return;
@@ -13696,6 +13771,7 @@
         orgs: () => typeof renderOrgsPage === "function" && renderOrgsPage(),
         billing: () => typeof renderBillingPage === "function" && renderBillingPage(),
         platform: () => typeof renderPlatformPage === "function" && renderPlatformPage(),
+        system_health: () => typeof renderSystemHealthPage === "function" && renderSystemHealthPage(),
         executive: () => typeof renderExecutiveDashboardPage === "function" && renderExecutiveDashboardPage(),
       };
       const fn = runners[view];

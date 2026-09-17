@@ -103,6 +103,7 @@ from app.live_ssp_api import router as live_ssp_router
 from app.compliance_doc_library_api import router as compliance_doc_library_router
 from app.log_management_api import router as log_management_router
 from app.lifecycle_api import router as lifecycle_router
+from app.system_health_api import router as system_health_router
 from app.commercial_ext import ensure_org_schema
 from app.gap_analysis import ensure_gap_schema
 from app.db import init_schema
@@ -407,6 +408,7 @@ app.include_router(live_ssp_router)
 app.include_router(compliance_doc_library_router)
 app.include_router(log_management_router)
 app.include_router(lifecycle_router)
+app.include_router(system_health_router)
 
 _PUBLIC_API_PREFIXES = (
     "/api/auth/login",
