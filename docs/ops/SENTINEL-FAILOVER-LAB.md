@@ -44,3 +44,13 @@ When measured, append a dated section below (do not invent numbers).
 Safe: “Lab Sentinel stub with documented failover procedure; CI proves once-only / XAUTOCLAIM / SSE replay without requiring live Sentinel.”
 
 Unsafe: “Production Redis HA certified” / “multi-AZ failover SLO”.
+
+## CI vs ops
+
+| Mode | Command | Proves |
+|------|---------|--------|
+| Dry-run | `python scripts/sentinel_failover_measure.py --dry-run` | Script + docs path exist |
+| Metrics | `python scripts/sentinel_failover_measure.py --metrics-only` | Streams/DLQ snapshot when Redis up (no failover) |
+| Measured | `--inject-stop --record` | Lab reconnect timing + optional stream metrics |
+
+Fill `events_sent` / `events_lost` / `duplicates` / `replayed` only from a live worker run — never invent.

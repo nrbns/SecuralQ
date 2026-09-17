@@ -12,11 +12,13 @@ Do **not** expand Phase C/D (attack graph depth, cloud/identity/SBOM/AppSec
 integrations, AI SecOps missions) until Phase A acceptance is green on owned
 lab hosts and Phase B commercial packaging gates exist.
 
-**Build order (Wave 1):** (1) firewall closed-loop = release test #1,
-(2) Redis HA measured failover, (3) per-tenant/agent sequence + gap recovery,
-(4) durable agent offline queue, (5) mandatory mTLS + Ed25519 commercial seals,
-(6) control config engine + automatic evidence + independent verification.
-Do not start Wave 2–5 product sprawl until #1 is green in CI.
+**Build order (Wave 1):** (1) firewall closed-loop = release test #1 ✅,
+(2) Redis HA measured failover (ops + metrics scaffold),
+(3) per-agent contiguous sequence + gap recovery (`expected_next_seq`),
+(4) durable agent offline queue (`SECURAIQ_OFFLINE_QUEUE_BACKEND=sqlite`),
+(5) commercial profile enforce (`SECURAIQ_COMMERCIAL_PROFILE` + Ed25519),
+(6) control config overrides (`data/controls/custom_tests.json`).
+Do not start Wave 2–5 product sprawl until #1 stays green in CI.
 
 ## Release test #1 — Firewall golden loop
 

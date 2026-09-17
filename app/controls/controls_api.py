@@ -119,3 +119,22 @@ async def api_controls_production_profile(_user: Annotated[AuthUser, Depends(req
     from app.production_profile import production_profile_status
 
     return production_profile_status()
+
+
+@router.get("/registry")
+async def api_controls_registry(_user: Annotated[AuthUser, Depends(require_user)]):
+    """Curated + optional custom control-test registry (read-only)."""
+    from app.controls.test_registry import list_registry, load_custom_registry_overrides
+
+    curated = list_registry()
+    custom = load_custom_registry_overrides()
+    return {
+        "ok": True,
+        "count": len(curated),
+        "custom_override_count": len(custom),
+        "tests": curated,
+        "note": (
+            "Custom bindings: data/controls/custom_tests.json (see custom_tests.example.json). "
+            "New test_names need an evaluator in control_testing to execute."
+        ),
+    }

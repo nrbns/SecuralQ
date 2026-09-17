@@ -919,10 +919,19 @@ def checkin(agent_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     if seq_recovery:
         out["last_acked_seq"] = seq_recovery.get("last_acked_seq", new_last_seq)
         out["acked_sequences"] = seq_recovery.get("acked_sequences") or []
+        out["expected_next_seq"] = int(
+            seq_recovery.get("expected_next_seq")
+            or (int(seq_recovery.get("last_acked_seq") or new_last_seq or 0) + 1)
+        )
         if seq_recovery.get("missing_from") is not None:
             out["missing_from"] = seq_recovery["missing_from"]
         if seq_recovery.get("gap"):
             out["gap"] = seq_recovery["gap"]
+            gap = seq_recovery["gap"]
+            if isinstance(gap, dict) and gap.get("expected_next") is not None:
+                out["expected_next_seq"] = int(gap["expected_next"])
+    else:
+        out["expected_next_seq"] = int(new_last_seq or 0) + 1
     return out
 
 

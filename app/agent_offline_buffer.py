@@ -1,17 +1,22 @@
 """Bounded local offline telemetry buffer for SecuraIQ agents (REALTIME Task D).
 
-Client-side helper intended for packaging into the agent binary later. When the
-network fails, events are sequenced and persisted to a local JSON file. On
-reconnect the agent flushes missing sequences and drops them after ACK.
+Client-side helper for packaging into the agent. When the network fails, events
+are sequenced and persisted locally. On reconnect the agent flushes missing
+sequences and drops them after contiguous server ACK.
 
-This is a lab/scaffolding queue — not a durable HA log. Defaults: max 5000
-events and a soft disk-byte cap.
+Backends:
+  * ``json`` (default) — atomic JSON file (lab / lightweight)
+  * ``sqlite`` — WAL SQLite durable queue (``SECURAIQ_OFFLINE_QUEUE_BACKEND=sqlite``)
+
+This is **not** a commercial HA log until ops measures disk/recovery SLOs.
+Defaults: max 5000 events and a soft disk-byte cap (JSON).
 """
 
 from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import threading
 import time
 from pathlib import Path
@@ -22,7 +27,7 @@ DEFAULT_MAX_BYTES = 8 * 1024 * 1024  # 8 MiB soft cap
 DEFAULT_FILENAME = "securaiq_offline_telemetry.json"
 
 
-def default_buffer_path(agent_id: str = "") -> Path:
+def default_buffer_path(agent_id: str = "", *, backend: str = "json") -> Path:
     """Prefer XDG/data dir; fall back to cwd-relative ``data/``."""
     base = os.environ.get("SECURAIQ_AGENT_DATA_DIR") or os.environ.get("SECURAIQ_DATA_DIR")
     if base:
@@ -32,11 +37,23 @@ def default_buffer_path(agent_id: str = "") -> Path:
         root = home / ".securaiq" / "agent"
     root.mkdir(parents=True, exist_ok=True)
     suffix = f"_{agent_id[:12]}" if agent_id else ""
+    if (backend or "json").lower() == "sqlite":
+        return root / f"offline_telemetry{suffix}.sqlite"
     return root / f"offline_telemetry{suffix}.json"
 
 
+def resolve_backend(explicit: str | None = None) -> str:
+    raw = (explicit or os.environ.get("SECURAIQ_OFFLINE_QUEUE_BACKEND") or "json").strip().lower()
+    return "sqlite" if raw in ("sqlite", "sql", "db") else "json"
+
+
+def expected_next_seq(last_acked_seq: int) -> int:
+    """Trusted watermark + 1 — never skip a hole."""
+    return max(0, int(last_acked_seq or 0)) + 1
+
+
 class OfflineTelemetryBuffer:
-    """Per-agent sequenced event queue with JSON persistence."""
+    """Per-agent sequenced event queue with JSON or SQLite persistence."""
 
     def __init__(
         self,
@@ -45,18 +62,104 @@ class OfflineTelemetryBuffer:
         path: Path | str | None = None,
         max_events: int = DEFAULT_MAX_EVENTS,
         max_bytes: int = DEFAULT_MAX_BYTES,
+        backend: str | None = None,
     ) -> None:
         self.agent_id = str(agent_id or "unknown")
-        self.path = Path(path) if path else default_buffer_path(self.agent_id)
+        self.backend = resolve_backend(backend)
+        self.path = Path(path) if path else default_buffer_path(self.agent_id, backend=self.backend)
+        if self.backend == "sqlite" and self.path.suffix.lower() in (".json", ""):
+            self.path = self.path.with_suffix(".sqlite")
         self.max_events = max(1, int(max_events))
         self.max_bytes = max(64 * 1024, int(max_bytes))
         self._lock = threading.RLock()
         self._next_seq = 1
         self._last_acked = 0
         self._events: list[dict[str, Any]] = []
-        self._load()
+        self._conn: sqlite3.Connection | None = None
+        if self.backend == "sqlite":
+            self._sqlite_open()
+            self._sqlite_load()
+        else:
+            self._load()
 
-    # ------------------------------------------------------------------ persistence
+    # ------------------------------------------------------------------ sqlite
+
+    def _sqlite_open(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._conn = sqlite3.connect(str(self.path), check_same_thread=False)
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA synchronous=NORMAL")
+        self._conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS meta (
+              key TEXT PRIMARY KEY,
+              value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS events (
+              sequence INTEGER PRIMARY KEY,
+              event_type TEXT NOT NULL,
+              payload_json TEXT NOT NULL,
+              enqueued_at REAL NOT NULL
+            );
+            """
+        )
+        self._conn.commit()
+
+    def _sqlite_meta_get(self, key: str, default: str = "") -> str:
+        assert self._conn is not None
+        row = self._conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+        return str(row[0]) if row else default
+
+    def _sqlite_meta_set(self, key: str, value: str) -> None:
+        assert self._conn is not None
+        self._conn.execute(
+            "INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, value),
+        )
+
+    def _sqlite_load(self) -> None:
+        assert self._conn is not None
+        self._next_seq = max(1, int(self._sqlite_meta_get("next_seq", "1") or "1"))
+        self._last_acked = max(0, int(self._sqlite_meta_get("last_acked_seq", "0") or "0"))
+        rows = self._conn.execute(
+            "SELECT sequence, event_type, payload_json, enqueued_at FROM events ORDER BY sequence ASC"
+        ).fetchall()
+        self._events = []
+        for seq, et, payload_json, enqueued_at in rows:
+            try:
+                payload = json.loads(payload_json)
+            except Exception:
+                payload = {}
+            self._events.append(
+                {
+                    "sequence": int(seq),
+                    "event_type": str(et or "telemetry"),
+                    "payload": payload if isinstance(payload, dict) else {},
+                    "enqueued_at": float(enqueued_at or 0),
+                }
+            )
+        self._trim_unlocked()
+        self._sqlite_persist_unlocked()
+
+    def _sqlite_persist_unlocked(self) -> None:
+        assert self._conn is not None
+        self._sqlite_meta_set("agent_id", self.agent_id)
+        self._sqlite_meta_set("next_seq", str(self._next_seq))
+        self._sqlite_meta_set("last_acked_seq", str(self._last_acked))
+        self._conn.execute("DELETE FROM events")
+        for e in self._events:
+            self._conn.execute(
+                "INSERT INTO events(sequence, event_type, payload_json, enqueued_at) VALUES(?,?,?,?)",
+                (
+                    int(e["sequence"]),
+                    str(e.get("event_type") or "telemetry"),
+                    json.dumps(e.get("payload") or {}, separators=(",", ":")),
+                    float(e.get("enqueued_at") or time.time()),
+                ),
+            )
+        self._conn.commit()
+
+    # ------------------------------------------------------------------ json persistence
 
     def _load(self) -> None:
         if not self.path.is_file():
@@ -75,6 +178,9 @@ class OfflineTelemetryBuffer:
         self._trim_unlocked()
 
     def _persist_unlocked(self) -> None:
+        if self.backend == "sqlite":
+            self._sqlite_persist_unlocked()
+            return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "agent_id": self.agent_id,
@@ -82,6 +188,7 @@ class OfflineTelemetryBuffer:
             "last_acked_seq": self._last_acked,
             "events": self._events,
             "updated_at": time.time(),
+            "backend": "json",
         }
         text = json.dumps(payload, separators=(",", ":"))
         # Soft disk cap: drop oldest until under budget (always keep ≥1 newest if any).
@@ -145,7 +252,7 @@ class OfflineTelemetryBuffer:
             return [dict(e) for e in self._events if int(e.get("sequence") or 0) > int(last_acked)]
 
     def ack(self, sequences: list[int] | int) -> int:
-        """Remove ACKed sequences and advance last_acked. Returns count removed."""
+        """Remove ACKed sequences. Prefer ``ack_through`` for contiguous watermarks."""
         if isinstance(sequences, int):
             seqs = {int(sequences)}
         else:
@@ -156,14 +263,21 @@ class OfflineTelemetryBuffer:
             before = len(self._events)
             self._events = [e for e in self._events if int(e.get("sequence") or 0) not in seqs]
             removed = before - len(self._events)
-            high = max(seqs)
-            if high > self._last_acked:
-                self._last_acked = high
+            # Only advance watermark contiguously from previous last_acked.
+            expected = self._last_acked + 1
+            for s in sorted(seqs):
+                if s < expected:
+                    continue
+                if s == expected:
+                    self._last_acked = s
+                    expected = s + 1
+                else:
+                    break
             self._persist_unlocked()
             return removed
 
     def ack_through(self, sequence: int) -> int:
-        """ACK all events with sequence <= sequence."""
+        """ACK all events with sequence <= sequence (contiguous prefix delete)."""
         seq = int(sequence)
         with self._lock:
             before = len(self._events)
@@ -186,23 +300,42 @@ class OfflineTelemetryBuffer:
             out: dict[str, Any] = {
                 "sequence": self._next_seq - 1 if self._next_seq > 1 else 0,
                 "buffered_events": batch,
+                "expected_next_seq": expected_next_seq(self._last_acked),
             }
             if request_missing and self._last_acked >= 0:
                 out["request_missing_from"] = self._last_acked + 1
             return out
 
     def apply_server_ack(self, response: dict[str, Any] | None) -> int:
-        """Consume check-in response ACKs. Returns number of events removed."""
+        """Consume check-in response ACKs using contiguous watermark only.
+
+        Prefers ``last_acked_seq`` (server contiguous authority). Sparse
+        ``acked_sequences`` never advances the watermark across a hole.
+        """
         if not isinstance(response, dict):
             return 0
-        removed = 0
-        acked = response.get("acked_sequences") or response.get("ack_sequences")
-        if isinstance(acked, list) and acked:
-            removed += self.ack(acked)
         through = response.get("last_acked_seq")
         if through is not None:
-            removed += self.ack_through(int(through))
-        return removed
+            return self.ack_through(int(through))
+        acked = response.get("acked_sequences") or response.get("ack_sequences")
+        if isinstance(acked, list) and acked:
+            try:
+                seqs = sorted({int(s) for s in acked})
+            except (TypeError, ValueError):
+                return 0
+            contiguous: list[int] = []
+            expected = self.last_acked_seq + 1
+            for s in seqs:
+                if s < expected:
+                    continue
+                if s == expected:
+                    contiguous.append(s)
+                    expected = s + 1
+                else:
+                    break
+            if contiguous:
+                return self.ack_through(max(contiguous))
+        return 0
 
 
 # Host / inventory keys worth re-applying from ACKed offline buffer payloads (RT-05).
@@ -342,11 +475,12 @@ def process_buffered_events_on_server(
             break
 
     gap: dict[str, Any] | None = None
+    exp_next = expected_next_seq(last)
     if gap_detected and missing_from is not None:
         gap = {
             "detected": True,
             "missing_from": missing_from,
-            "expected_next": last + 1,
+            "expected_next": exp_next,
             "last_acked_seq": last,
             "first_unacked_in_batch": min(unacked_in_batch) if unacked_in_batch else None,
             "acked_through": last,
@@ -356,8 +490,9 @@ def process_buffered_events_on_server(
         "agent_id": agent_id,
         "last_acked_seq": last,
         "acked_sequences": acked,
+        "expected_next_seq": exp_next,
         "missing_from": missing_from,
         "gap": gap,
         "newest_acked_host_payload": newest_acked_host_payload or None,
-        "note": "offline buffer recovery — lab scaffolding, not durable HA",
+        "note": "offline buffer recovery — contiguous watermark only; sqlite backend optional",
     }

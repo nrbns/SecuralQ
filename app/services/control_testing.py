@@ -47,7 +47,12 @@ from app.controls.test_registry import (
 )
 from app.db import now
 
-# Derived from app.controls.test_registry — keep import name for callers/tests.
+# Derived from app.controls.test_registry (includes optional custom_tests.json).
+def _control_test_map() -> dict[tuple[str, str], list[str]]:
+    return build_control_test_map()
+
+
+# Backward-compatible module attribute (refreshed on access via __getattr__).
 _CONTROL_TEST_MAP: dict[tuple[str, str], list[str]] = build_control_test_map()
 
 # SLA windows (days) a critical/high open vulnerability may age before the
@@ -61,7 +66,7 @@ _HIGH_SLA_DAYS = 60
 def controls_with_live_tests(framework_id: str) -> set[str]:
     """Which control ids in this framework have at least one live test --
     lets the UI show a 'Live tested' badge without running the tests."""
-    return {cid for (fid, cid) in _CONTROL_TEST_MAP if fid == framework_id}
+    return {cid for (fid, cid) in _control_test_map() if fid == framework_id}
 
 
 def _test_asset_inventory(user_id: str) -> dict[str, Any]:
@@ -632,7 +637,7 @@ def run_live_test(user_id: str, test_name: str) -> dict[str, Any] | None:
 def run_live_tests_for_control(user_id: str, framework_id: str, control_id: str, *, record_evidence: bool = True) -> list[dict[str, Any]]:
     """Every live test mapped to this control, each run fresh (not cached)
     and each optionally recorded to the Evidence Store."""
-    test_names = _CONTROL_TEST_MAP.get((framework_id, control_id), [])
+    test_names = _control_test_map().get((framework_id, control_id), [])
     results = []
     for name in test_names:
         r = run_live_test(user_id, name)
@@ -670,7 +675,7 @@ def run_live_tests_for_framework(user_id: str, framework_id: str, *, record_evid
 
 def mapped_framework_ids() -> list[str]:
     """Framework ids that have at least one curated live-test mapping."""
-    return sorted({fid for (fid, _cid) in _CONTROL_TEST_MAP})
+    return sorted({fid for (fid, _cid) in _control_test_map()})
 
 
 def _failure_risk_score(test_result: dict[str, Any]) -> float:
@@ -828,7 +833,7 @@ def list_live_control_failures(
     return {
         "evaluated_at": evaluated_at,
         "frameworks_tested": len(fids),
-        "controls_with_tests": sum(1 for _ in _CONTROL_TEST_MAP),
+        "controls_with_tests": sum(1 for _ in _control_test_map()),
         "tests_run": tested,
         "passing": passing,
         "partial": partial,
@@ -925,7 +930,7 @@ def _record_host_control_evidence(
 def _mapped_control_ids_for_test(test_name: str) -> list[dict[str, str]]:
     return [
         {"framework_id": fid, "control_id": cid}
-        for (fid, cid), names in _CONTROL_TEST_MAP.items()
+        for (fid, cid), names in _control_test_map().items()
         if test_name in names
     ]
 

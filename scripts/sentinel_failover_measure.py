@@ -3,6 +3,7 @@
 
 Usage:
   python scripts/sentinel_failover_measure.py --dry-run
+  python scripts/sentinel_failover_measure.py --metrics-only
   python scripts/sentinel_failover_measure.py --record
   python scripts/sentinel_failover_measure.py --inject-stop --record
       # stops redis-primary via docker compose, waits for promote, records reconnect
@@ -18,6 +19,7 @@ import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 NOTE = ROOT / "docs" / "ops" / "SENTINEL-FAILOVER-LAB.md"
@@ -32,6 +34,30 @@ def _compose(*args: str) -> subprocess.CompletedProcess[str]:
         text=True,
         timeout=120,
     )
+
+
+def collect_stream_metrics() -> dict[str, Any]:
+    """Best-effort Streams / DLQ snapshot. Safe when Redis is down."""
+    out: dict[str, Any] = {
+        "stream_length": None,
+        "dlq_count": None,
+        "pending_count": None,
+        "consumer_group_lag": None,
+        "ok": False,
+        "error": None,
+    }
+    try:
+        from app.event_processor import stream_monitor_snapshot
+
+        snap = stream_monitor_snapshot() or {}
+        out["stream_length"] = snap.get("stream_length")
+        out["dlq_count"] = snap.get("dlq_length")
+        out["pending_count"] = snap.get("pending_count")
+        out["consumer_group_lag"] = snap.get("consumer_group_lag")
+        out["ok"] = True
+    except Exception as exc:
+        out["error"] = str(exc)[:300]
+    return out
 
 
 def _check_sentinel() -> dict:
@@ -78,6 +104,7 @@ def dry_run() -> int:
                 "steps": [
                     "docker compose --profile redis-ha up -d",
                     "python scripts/realtime_phase1_proof.py --check-sentinel",
+                    "python scripts/sentinel_failover_measure.py --metrics-only",
                     "python scripts/sentinel_failover_measure.py --inject-stop --record",
                     "or: docker compose stop redis-primary && python scripts/sentinel_failover_measure.py --record",
                 ],
@@ -88,8 +115,23 @@ def dry_run() -> int:
     return 0
 
 
+def metrics_only() -> int:
+    metrics = collect_stream_metrics()
+    row = {
+        "ok": True,
+        "mode": "metrics_only",
+        "ts_utc": datetime.now(timezone.utc).isoformat(),
+        "metrics": metrics,
+        "disclaimer": "lab / measured ops proof — not commercial HA certification",
+        "note": "streams snapshot only — does not prove failover",
+    }
+    print(json.dumps(row, indent=2))
+    return 0
+
+
 def record(*, inject_stop: bool = False) -> int:
     LOG.parent.mkdir(parents=True, exist_ok=True)
+    metrics_before = collect_stream_metrics()
     inject: dict = {"attempted": False}
     if inject_stop:
         inject["attempted"] = True
@@ -101,19 +143,27 @@ def record(*, inject_stop: bool = False) -> int:
         check = _wait_promoted()
     else:
         check = _check_sentinel()
+    metrics_after = collect_stream_metrics()
 
     row = {
         "ts_utc": datetime.now(timezone.utc).isoformat(),
         "check": check,
         "inject_stop": inject,
+        "metrics_before": metrics_before,
+        "metrics_after": metrics_after,
         "events_sent": None,
         "events_processed": None,
         "events_duplicated": None,
         "events_lost": None,
         "events_replayed": None,
-        "dlq_count": None,
+        "dlq_count": metrics_after.get("dlq_count"),
+        "stream_length": metrics_after.get("stream_length"),
+        "pending_count": metrics_after.get("pending_count"),
         "disclaimer": "lab / measured ops proof — not commercial HA certification",
-        "note": "Fill event_* / dlq_count from Streams metrics during a live worker run when available.",
+        "note": (
+            "dlq_count/stream_length from stream_monitor_snapshot when Redis is up. "
+            "Fill events_sent/lost/duplicated/replayed from a live worker run — never invent."
+        ),
     }
     with LOG.open("a", encoding="utf-8") as f:
         f.write(json.dumps(row) + "\n")
@@ -125,6 +175,7 @@ def record(*, inject_stop: bool = False) -> int:
             f"- reconnect_ms: `{check.get('reconnect_ms')}`\n"
             f"- promote_wait_ms: `{check.get('promote_wait_ms')}`\n"
             f"- inject_stop: `{inject.get('attempted')}` stop_ms=`{inject.get('stop_ms')}`\n"
+            f"- dlq_count: `{row.get('dlq_count')}` stream_length=`{row.get('stream_length')}`\n"
             f"- error: `{check.get('error')}`\n"
             f"- log: `data/ops/sentinel_failover_measurements.jsonl`\n"
             f"- disclaimer: lab proof only — not multi-AZ commercial HA\n"
@@ -138,6 +189,11 @@ def record(*, inject_stop: bool = False) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument(
+        "--metrics-only",
+        action="store_true",
+        help="Print Streams/DLQ snapshot without failover inject (CI-safe)",
+    )
     ap.add_argument("--record", action="store_true")
     ap.add_argument(
         "--inject-stop",
@@ -145,6 +201,8 @@ def main() -> int:
         help="Stop redis-primary via docker compose before measuring (destructive to that container)",
     )
     args = ap.parse_args()
+    if args.metrics_only:
+        return metrics_only()
     if args.record or args.inject_stop:
         return record(inject_stop=bool(args.inject_stop))
     return dry_run()

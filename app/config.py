@@ -206,6 +206,9 @@ class Settings(BaseSettings):
     agent_mtls_proxy_verify: bool = False
     # If true and agent has certificate_fingerprint, require header match.
     agent_mtls_require_fingerprint_match: bool = False
+    # When true, startup refuses to boot unless all five agent-security flags + Ed25519
+    # command signing are configured (SECURAIQ_COMMERCIAL_PROFILE=1). Lab default off.
+    commercial_profile_enforce: bool = False
     # production / DEPLOYMENT_MODE=production requires PostgreSQL (never SQLite for SaaS)
     require_postgres_in_production: bool = True
     # Security hardening

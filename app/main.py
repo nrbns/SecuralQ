@@ -151,6 +151,14 @@ async def lifespan(app: FastAPI):
         from app.auth import assert_safe_deployment_auth
 
         assert_safe_deployment_auth()
+        try:
+            from app.production_profile import assert_commercial_profile
+
+            assert_commercial_profile()
+        except RuntimeError:
+            raise
+        except Exception:
+            pass
         bootstrap_auth()
         ensure_gap_schema()
         ensure_org_schema()

@@ -214,13 +214,106 @@ CONTROL_TEST_REGISTRY: list[dict[str, Any]] = [
 ]
 
 
+_CUSTOM_CACHE: list[dict[str, Any]] | None = None
+
+
+def load_custom_registry_overrides(*, force: bool = False) -> list[dict[str, Any]]:
+    """Load optional JSON overrides from data/controls/custom_tests.json.
+
+    Admins can add/extend control_bindings for existing test_names without
+    editing Python. New test_names appear in the registry for catalog/UI but
+    still need an evaluator in control_testing to execute.
+    """
+    global _CUSTOM_CACHE
+    import json
+    import os
+    from copy import deepcopy
+    from pathlib import Path
+
+    if _CUSTOM_CACHE is not None and not force:
+        return [deepcopy(e) for e in _CUSTOM_CACHE]
+
+    # Late import path helper — keep module import light
+    from app.paths import project_root
+
+    out: list[dict[str, Any]] = []
+    env = (os.environ.get("SECURAIQ_CONTROL_REGISTRY_PATH") or "").strip()
+    candidates = []
+    if env:
+        candidates.append(Path(env))
+    candidates.append(project_root() / "data" / "controls" / "custom_tests.json")
+
+    for path in candidates:
+        if not path.is_file():
+            continue
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        rows = raw.get("tests") if isinstance(raw, dict) else raw
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get("test_name") or "").strip()
+            if not name:
+                continue
+            bindings_raw = row.get("control_bindings") or []
+            bindings: list[tuple[str, str]] = []
+            for b in bindings_raw:
+                if isinstance(b, (list, tuple)) and len(b) >= 2:
+                    bindings.append((str(b[0]), str(b[1])))
+                elif isinstance(b, dict) and b.get("framework_id") and b.get("control_id"):
+                    bindings.append((str(b["framework_id"]), str(b["control_id"])))
+            out.append(
+                _entry(
+                    name,
+                    data_sources=list(row.get("data_sources") or ["securaiq_agent"]),
+                    expected_state=dict(row.get("expected_state") or {}),
+                    frequency=row.get("frequency") or "on_demand",  # type: ignore[arg-type]
+                    verifiability=row.get("verifiability") or "partial",  # type: ignore[arg-type]
+                    control_bindings=bindings,
+                    remediation_hint=str(row.get("remediation_hint") or ""),
+                )
+            )
+        break  # first existing file wins
+    _CUSTOM_CACHE = out
+    return [deepcopy(e) for e in out]
+
+
+def effective_registry() -> list[dict[str, Any]]:
+    """Curated registry + optional custom JSON overrides (bindings merge by test_name)."""
+    by_name: dict[str, dict[str, Any]] = {}
+    for e in CONTROL_TEST_REGISTRY:
+        by_name[e["test_name"]] = deepcopy(e)
+    for e in load_custom_registry_overrides():
+        name = e["test_name"]
+        if name not in by_name:
+            by_name[name] = e
+            continue
+        base = by_name[name]
+        # Merge bindings; allow custom remediation / expected_state overlays.
+        seen = {(fid, cid) for fid, cid in (base.get("control_bindings") or [])}
+        for fid, cid in e.get("control_bindings") or []:
+            if (fid, cid) not in seen:
+                base.setdefault("control_bindings", []).append((fid, cid))
+                seen.add((fid, cid))
+        if e.get("remediation_hint"):
+            base["remediation_hint"] = e["remediation_hint"]
+        if e.get("expected_state"):
+            base["expected_state"] = {**(base.get("expected_state") or {}), **e["expected_state"]}
+        by_name[name] = base
+    return list(by_name.values())
+
+
 def list_registry() -> list[dict[str, Any]]:
-    return [deepcopy(e) for e in CONTROL_TEST_REGISTRY]
+    return effective_registry()
 
 
 def get_test_entry(test_name: str) -> dict[str, Any] | None:
     name = (test_name or "").strip()
-    for e in CONTROL_TEST_REGISTRY:
+    for e in effective_registry():
         if e["test_name"] == name:
             return deepcopy(e)
     return None
@@ -232,7 +325,7 @@ def build_control_test_map() -> dict[tuple[str, str], list[str]]:
     Preserves multi-test bindings (e.g. CIS-7 → vuln + patch) in registry order.
     """
     out: dict[tuple[str, str], list[str]] = {}
-    for entry in CONTROL_TEST_REGISTRY:
+    for entry in effective_registry():
         name = entry["test_name"]
         for fid, cid in entry.get("control_bindings") or []:
             key = (str(fid), str(cid))

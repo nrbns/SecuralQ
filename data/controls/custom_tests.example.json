@@ -1,0 +1,17 @@
+{
+  "note": "Copy to custom_tests.json to extend control_bindings without editing Python. New test_names need an evaluator in app/services/control_testing.py to execute.",
+  "tests": [
+    {
+      "test_name": "host_firewall",
+      "data_sources": ["securaiq_agent.firewall_status"],
+      "expected_state": {"enabled": true},
+      "frequency": "checkin",
+      "verifiability": "machine",
+      "control_bindings": [
+        ["iso27001", "A.8.20"],
+        ["soc2", "CC6.6"]
+      ],
+      "remediation_hint": "Enable the host firewall, approve enable_firewall, then wait for independent PASS verification."
+    }
+  ]
+}
