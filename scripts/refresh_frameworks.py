@@ -856,6 +856,18 @@ def cmmc_l2() -> dict:
                 "source": "Vendor -- not a SecuraIQ integration",
                 "note": "Same vendor as above; included for reference only.",
             },
+            {
+                "title": "CUI Enclave Options (community notes)",
+                "url": "https://gist.github.com/jgmac1106/1c8818fefce675b4e3be2c25a73ed134",
+                "source": "Unofficial, unverified community notes -- not a SecuraIQ integration",
+                "note": (
+                    "One practitioner's informal categorized list of CUI enclave approaches "
+                    "(secure file sharing, single-device enclaves, commercial VDI, on-prem RDS, "
+                    "MSP-managed GCC High) and example vendor names in each category. Not an "
+                    "official DoD source and not vetted or endorsed by SecuraIQ -- useful only "
+                    "as a starting point for your own vendor research."
+                ),
+            },
         ],
         "controls": [
             c(

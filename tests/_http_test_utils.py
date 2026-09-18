@@ -27,6 +27,7 @@ import sys
 
 
 def configure_isolated_settings(monkeypatch, data_dir, *, auth_enabled: bool = True):
+    import app.config as config_mod
     import app.db as db_mod
 
     # Duck-type rather than `isinstance(s, Settings)`: a module reloaded via
@@ -35,20 +36,37 @@ def configure_isolated_settings(monkeypatch, data_dir, *, auth_enabled: bool = T
     # *new* class object with the same name. An old Settings instance built
     # from the pre-reload class fails `isinstance(old, NewSettings)` even
     # though it's exactly the stale singleton we need to catch and patch.
+    #
+    # After a reload, modules that did `from app.config import settings` still
+    # hold the *pre-reload* object. Rebind every such attribute to the live
+    # app.config.settings singleton so later monkeypatches on that object
+    # reach production_profile / agent_certs / login_attempts / etc.
+    canonical = config_mod.settings
     _required_attrs = ("auth_enabled", "data_dir", "database_url")
-    seen: set[int] = set()
     for mod in list(sys.modules.values()):
         s = getattr(mod, "settings", None)
-        if (
-            s is not None
-            and all(hasattr(s, a) for a in _required_attrs)
-            and id(s) not in seen
-        ):
-            seen.add(id(s))
-            monkeypatch.setattr(s, "data_dir", str(data_dir), raising=False)
-            monkeypatch.setattr(s, "workspace_zero_start", False, raising=False)
-            monkeypatch.setattr(s, "auth_enabled", auth_enabled, raising=False)
-            monkeypatch.setattr(s, "deployment_mode", "lab", raising=False)
-            monkeypatch.setattr(s, "database_url", "", raising=False)
+        if s is None or not all(hasattr(s, a) for a in _required_attrs):
+            continue
+        if s is not canonical:
+            monkeypatch.setattr(mod, "settings", canonical, raising=False)
+
+    monkeypatch.setattr(canonical, "data_dir", str(data_dir), raising=False)
+    monkeypatch.setattr(canonical, "workspace_zero_start", False, raising=False)
+    monkeypatch.setattr(canonical, "auth_enabled", auth_enabled, raising=False)
+    monkeypatch.setattr(canonical, "deployment_mode", "lab", raising=False)
+    monkeypatch.setattr(canonical, "database_url", "", raising=False)
+    # Lab defaults — prevent production/mTLS flags leaking across reload-heavy tests.
+    for _flag in (
+        "agent_mtls_enabled",
+        "agent_mtls_proxy_verify",
+        "agent_mtls_require_fingerprint_match",
+        "agent_require_command_signature",
+        "agent_require_replay_protection",
+        "commercial_profile_enforce",
+        "license_enforcement_enabled",
+        "billing_enforcement_enabled",
+        "quota_enforcement_enabled",
+    ):
+        monkeypatch.setattr(canonical, _flag, False, raising=False)
     db_mod.reset_conn_for_tests()
     return db_mod

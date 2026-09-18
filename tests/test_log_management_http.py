@@ -66,7 +66,8 @@ def test_ingest_and_search_roundtrip(tmp_path, monkeypatch):
     logs = search.json()["logs"]
     match = next((l for l in logs if l["message"] == "nginx.conf modified"), None)
     assert match is not None
-    assert match["source"] == "ingested"
+    # Honest origin tag (api), not a relabeled channel name — see search_logs docstring.
+    assert match["source"] == "api"
     assert match["host"] == "web-01"
 
 
@@ -80,9 +81,10 @@ def test_search_unifies_audit_log_without_relabeling(tmp_path, monkeypatch):
     assert res.status_code == 200
     logs = res.json()["logs"]
     assert any(l["event_type"] == "evidence_link" and l["source"] == "audit" for l in logs)
-    # Filtering by 'ingested' must not leak audit rows in under a different tag.
+    # Filtering by 'ingested' must not leak audit rows (channel filter ≠ origin tag).
     res2 = client.get("/api/logs?source=ingested", headers=_auth(token))
-    assert all(l["source"] == "ingested" for l in res2.json()["logs"])
+    assert all(l.get("source") != "audit" for l in res2.json()["logs"])
+    assert not any(l.get("event_type") == "evidence_link" for l in res2.json()["logs"])
 
 
 def test_severity_filter(tmp_path, monkeypatch):

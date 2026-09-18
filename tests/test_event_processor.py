@@ -399,7 +399,8 @@ def test_inventory_recomputes_org_risk_with_previous(monkeypatch):
     )
 
     assert evidence_calls == []
-    risk_pubs = [p for p in publishes if p.get("type") == "risk"]
+    # Canonical type is risk.changed; flat type=risk is a dual-write alias for older UI.
+    risk_pubs = [p for p in publishes if p.get("type") == "risk.changed"]
     assert len(risk_pubs) == 2
     assert risk_pubs[0].get("score") == 10.0
     assert risk_pubs[0].get("event_type") == "risk.changed"
@@ -407,6 +408,9 @@ def test_inventory_recomputes_org_risk_with_previous(monkeypatch):
     assert risk_pubs[1].get("score") == 25.0
     assert risk_pubs[1].get("previous_score") == 10.0
     assert risk_pubs[1].get("score_delta") == 15.0
+    flat = [p for p in publishes if p.get("type") == "risk" and p.get("alias_of") == "risk.changed"]
+    assert len(flat) == 2
+
 
 
 def test_vuln_medium_skips_evidence_still_risk(monkeypatch):
