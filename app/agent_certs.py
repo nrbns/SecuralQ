@@ -63,7 +63,14 @@ def verify_proxy_client_cert(
 
     Expects nginx/Caddy to set X-SSL-Client-Verify and X-SSL-Client-Fingerprint
     after terminating client TLS. App must only be reachable via that proxy.
+
+    Revoked fingerprints are always rejected when a fingerprint is presented,
+    even if proxy verify is otherwise off (lab rollout safety).
     """
+    got = (client_fingerprint or "").strip().lower().replace(":", "")
+    if got and is_fingerprint_revoked(got):
+        return "Client certificate revoked"
+
     if not mtls_proxy_verify_enabled():
         return None
     verify = (client_verify or "").strip().upper()
@@ -71,9 +78,6 @@ def verify_proxy_client_cert(
     ok_values = {"SUCCESS", "TRUE", "1", "OK", "YES"}
     if verify not in ok_values:
         return "Client certificate required (proxy mTLS verify failed)"
-    got = (client_fingerprint or "").strip().lower().replace(":", "")
-    if got and is_fingerprint_revoked(got):
-        return "Client certificate revoked"
     if not getattr(settings, "agent_mtls_require_fingerprint_match", False):
         return None
     expected = (agent.get("certificate_fingerprint") or "").strip().lower().replace(":", "")

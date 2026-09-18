@@ -145,17 +145,29 @@ def needs_rehash(stored: str) -> bool:
 
 
 def maybe_rehash_password(user_id: str, password: str, stored: str) -> bool:
-    """If verify succeeded and hash is legacy, rewrite to Argon2id. Returns True if updated."""
+    """If verify succeeded and hash is legacy, rewrite to Argon2id. Returns True if updated.
+
+    When argon2-cffi is unavailable, rotates PBKDF2 salt anyway so login still
+    refreshes legacy material (returns True). Prefer Argon2id in production.
+    """
     if not needs_rehash(stored):
         return False
     try:
         new_hash = hash_password(password)
-        if not new_hash.startswith("$argon2") and stored.startswith("pbkdf2$"):
-            return False  # argon2-cffi unavailable — keep pbkdf2
+        # Avoid no-op rewrite of identical pbkdf2 string
+        if new_hash == stored:
+            return False
         c = get_conn()
         c.execute("UPDATE users SET password_hash = ? WHERE id = ?", (new_hash, user_id))
         c.commit()
-        audit("password_rehash", user_id, {"from": "legacy", "to": "argon2id" if new_hash.startswith("$argon2") else "pbkdf2"})
+        audit(
+            "password_rehash",
+            user_id,
+            {
+                "from": "legacy",
+                "to": "argon2id" if new_hash.startswith("$argon2") else "pbkdf2",
+            },
+        )
         return True
     except Exception:
         return False

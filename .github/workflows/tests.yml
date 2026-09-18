@@ -67,6 +67,7 @@ jobs:
           tests/test_realtime_p0_ui_events.py
           tests/test_realtime_ops_remaining.py
           tests/test_realtime_failure_scenarios.py
+          tests/test_realtime_remaining_full.py
           tests/test_sprints_2_6_foundations.py
       - name: Backup-restore drill (#229)
         run: python scripts/backup_restore_drill.py

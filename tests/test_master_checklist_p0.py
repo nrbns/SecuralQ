@@ -96,4 +96,4 @@ def test_master_checklist_doc_exists():
     text = p.read_text(encoding="utf-8")
     assert "#226" in text
     assert "#224" in text
-    assert "Phase 0" in text
+    assert ("Phase 0" in text) or ("PHASE 0" in text)
