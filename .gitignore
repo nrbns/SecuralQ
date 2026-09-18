@@ -21,6 +21,7 @@ vendor/HardeningKitty/
 data/hardeningkitty/
 chat_test_output.txt
 *.log
+dump.rdb
 .DS_Store
 Thumbs.db
 .idea/
