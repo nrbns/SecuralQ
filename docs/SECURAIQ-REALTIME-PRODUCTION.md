@@ -278,6 +278,8 @@ Packaging scaffolds may ship for **lab/owned hosts**; commercial “signed enter
 
 **Still not claimed as commercial HA:** Redis Sentinel measured failover on a real cluster, multi-worker production soak, Authenticode/notarization.
 
+**P0 failure matrix (lab):** `python scripts/realtime_failure_acceptance.py` — duplicate, gap/contiguous ACK, offline buffer, SSE Last-Event-ID, tenant SSE filter, command reject/timeout, bad signature, replay nonce, cert revoke, DLQ rules/replay, metrics (`GET /api/admin/realtime/metrics`), DLQ discard/retry with audit. CI: `tests/test_realtime_failure_scenarios.py`.
+
 ### P1 — Make the chain complete product-wise (Sprint 2–4; do not expand scanners first)
 
 9. [x] Affected-controls-only recompute on package/config events (`app/controls/recompute.py`).

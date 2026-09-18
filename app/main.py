@@ -1056,6 +1056,15 @@ def _require_admin(user: AuthUser) -> None:
         raise HTTPException(status_code=403, detail="Admin role required")
 
 
+@app.get("/api/admin/realtime/metrics")
+async def admin_realtime_metrics(user: Annotated[AuthUser, Depends(require_user)]):
+    """Realtime pipeline meters (ingress / stream / SSE / processor)."""
+    _require_admin(user)
+    from app.realtime_ops import pipeline_metrics
+
+    return pipeline_metrics()
+
+
 @app.get("/api/admin/realtime/dlq")
 async def admin_realtime_dlq_list(
     user: Annotated[AuthUser, Depends(require_user)],
@@ -1063,10 +1072,12 @@ async def admin_realtime_dlq_list(
 ):
     """List dead-lettered stream events (admin). Empty when Redis unset."""
     _require_admin(user)
+    from app.db import audit
     from app.event_processor import list_dlq_entries, stream_monitor_snapshot
 
     entries = list_dlq_entries(limit=limit)
     snap = stream_monitor_snapshot()
+    audit("realtime_dlq_list", user.id, {"count": len(entries), "limit": limit})
     return {
         "ok": True,
         "dlq_key": snap.get("dlq_key"),
@@ -1074,6 +1085,23 @@ async def admin_realtime_dlq_list(
         "entries": entries,
         "count": len(entries),
     }
+
+
+@app.get("/api/admin/realtime/dlq/{entry_id}")
+async def admin_realtime_dlq_inspect(
+    entry_id: str,
+    user: Annotated[AuthUser, Depends(require_user)],
+):
+    """Inspect one DLQ entry by stream id or event_id."""
+    _require_admin(user)
+    from app.db import audit
+    from app.realtime_ops import get_dlq_entry
+
+    row = get_dlq_entry(entry_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="DLQ entry not found")
+    audit("realtime_dlq_inspect", user.id, {"entry_id": entry_id, "event_id": row.get("event_id")})
+    return {"ok": True, "entry": row}
 
 
 class DlqReplayRequest(BaseModel):
@@ -1094,9 +1122,25 @@ async def admin_realtime_dlq_replay(
 ):
     """Requeue DLQ payloads onto the main event stream (admin)."""
     _require_admin(user)
+    from app.db import audit
     from app.event_processor import replay_dlq_entries
 
-    return replay_dlq_entries(req.ids, limit=req.limit)
+    out = replay_dlq_entries(req.ids, limit=req.limit)
+    audit(
+        "realtime_dlq_replay",
+        user.id,
+        {"ids": req.ids, "limit": req.limit, "replayed": out.get("replayed"), "ok": out.get("ok")},
+    )
+    return out
+
+
+@app.post("/api/admin/realtime/dlq/retry")
+async def admin_realtime_dlq_retry(
+    req: DlqReplayRequest,
+    user: Annotated[AuthUser, Depends(require_user)],
+):
+    """Alias of replay — requeue then delete from DLQ (admin)."""
+    return await admin_realtime_dlq_replay(req, user)
 
 
 @app.post("/api/admin/realtime/dlq/purge")
@@ -1106,9 +1150,47 @@ async def admin_realtime_dlq_purge(
 ):
     """Delete DLQ entries (admin). Prefer explicit ids in production."""
     _require_admin(user)
+    from app.db import audit
     from app.event_processor import purge_dlq_entries
 
-    return purge_dlq_entries(req.ids, limit=req.limit, purge_all=bool(req.purge_all))
+    out = purge_dlq_entries(req.ids, limit=req.limit, purge_all=bool(req.purge_all))
+    audit(
+        "realtime_dlq_purge",
+        user.id,
+        {
+            "ids": req.ids,
+            "limit": req.limit,
+            "purge_all": bool(req.purge_all),
+            "deleted": out.get("deleted"),
+            "ok": out.get("ok"),
+        },
+    )
+    return out
+
+
+@app.post("/api/admin/realtime/dlq/discard")
+async def admin_realtime_dlq_discard(
+    req: DlqPurgeRequest,
+    user: Annotated[AuthUser, Depends(require_user)],
+):
+    """Discard (purge) DLQ entries with audit — same as purge, explicit product verb."""
+    _require_admin(user)
+    from app.db import audit
+    from app.event_processor import purge_dlq_entries
+
+    out = purge_dlq_entries(req.ids, limit=req.limit, purge_all=bool(req.purge_all))
+    audit(
+        "realtime_dlq_discard",
+        user.id,
+        {
+            "ids": req.ids,
+            "limit": req.limit,
+            "purge_all": bool(req.purge_all),
+            "deleted": out.get("deleted"),
+            "ok": out.get("ok"),
+        },
+    )
+    return out
 
 
 class RouterPlanRequest(BaseModel):

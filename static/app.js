@@ -3190,6 +3190,45 @@ function wireRealtimeHealthRefresh() {
       else alert(err.message || "DLQ replay failed");
     }
   });
+  document.getElementById("rtHealthDlqDiscardBtn")?.addEventListener("click", async () => {
+    if (!confirm("Discard up to 20 oldest DLQ events? This is audited and cannot be undone.")) return;
+    try {
+      const res = await fetch("/api/admin/realtime/dlq/discard", {
+        method: "POST",
+        headers: { ...authHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ limit: 20 }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.detail || body.reason || `HTTP ${res.status}`);
+      const msg = `**DLQ discard** · ${body.deleted || 0} removed`;
+      if (typeof notifyUser === "function") notifyUser(msg);
+      else alert(msg);
+      refreshRealtimeHealthPanel();
+    } catch (err) {
+      if (typeof notifyUser === "function") notifyUser(`**DLQ discard failed:** ${err.message || err}`);
+      else alert(err.message || "DLQ discard failed");
+    }
+  });
+  document.getElementById("rtHealthMetricsBtn")?.addEventListener("click", async () => {
+    try {
+      const res = await fetch("/api/admin/realtime/metrics", { headers: authHeaders() });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.detail || body.message || `HTTP ${res.status}`);
+      const ing = body.ingress || {};
+      const st = body.stream || {};
+      const sse = body.sse || {};
+      const msg =
+        `**Realtime metrics** · mode ${body.mode || "—"}\n` +
+        `Ingress ${ing.events_per_sec ?? "—"}/s · dups ${ing.duplicates_dropped ?? 0}\n` +
+        `Stream len ${st.length ?? "—"} · lag ${st.lag ?? "—"} · DLQ ${st.dlq_length ?? "—"}\n` +
+        `SSE subs ${sse.local_subscribers ?? "—"}`;
+      if (typeof notifyUser === "function") notifyUser(msg);
+      else alert(msg);
+    } catch (err) {
+      if (typeof notifyUser === "function") notifyUser(`**Metrics failed:** ${err.message || err}`);
+      else alert(err.message || "Metrics failed");
+    }
+  });
 }
 
 function realtimeFeedUrl(opts) {
