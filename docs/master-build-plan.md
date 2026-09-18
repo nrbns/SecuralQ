@@ -3,6 +3,8 @@
 **Canonical product strategy:** Continuous Security, Risk & Compliance Control Plane  
 **Status key:** **Done** · **Partial** · **Missing** — vs current `main` (honest; do not invent Done)
 
+**Working queue (immediate 10):** [MASTER-EXECUTION-PLAN.md](./MASTER-EXECUTION-PLAN.md) — finish control-plane loop + production proof before domain expansion.
+
 Related: [securaiq-architecture.md](./securaiq-architecture.md) (Phase 0 — Rust agent + control plane freeze) ·
 [agent-protocol-v1.md](./agent-protocol-v1.md) ·
 [production-readiness.md](./production-readiness.md) ·
@@ -10,7 +12,8 @@ Related: [securaiq-architecture.md](./securaiq-architecture.md) (Phase 0 — Rus
 [realtime-controls-evidence-spec.md](./realtime-controls-evidence-spec.md) ·
 [control-plane-roadmap.md](./control-plane-roadmap.md) ·
 [control-config-engine.md](./control-config-engine.md) ·
-[agent-platform.md](./agent-platform.md)
+[agent-platform.md](./agent-platform.md) ·
+[PHASE-A-GOLDEN-LOOP.md](./PHASE-A-GOLDEN-LOOP.md)
 
 ---
 

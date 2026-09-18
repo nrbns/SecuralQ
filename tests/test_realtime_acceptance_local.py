@@ -14,6 +14,7 @@ def test_realtime_acceptance_local_firewall_fail_then_pass(tmp_path, monkeypatch
     from app.tenancy import ensure_tenant_schema
     from scripts.realtime_acceptance_demo import (
         LOCAL_STEP_NAMES,
+        LOCAL_TIMELINE_STEP,
         LOCAL_VERIFY_STEP,
         OPTIONAL_ENABLE_FW_STEP,
         run_local_chain,
@@ -29,11 +30,12 @@ def test_realtime_acceptance_local_firewall_fail_then_pass(tmp_path, monkeypatch
 
     assert report.mode == "local"
     assert report.disclaimer == "lab acceptance harness — not a 5k/HA proof"
-    assert len(report.steps) == len(LOCAL_STEP_NAMES) + 1
+    assert len(report.steps) == len(LOCAL_STEP_NAMES) + 2
 
     names = [s.name for s in report.steps]
     assert names[:10] == list(LOCAL_STEP_NAMES)
     assert names[10] == LOCAL_VERIFY_STEP
+    assert names[11] == LOCAL_TIMELINE_STEP
     assert OPTIONAL_ENABLE_FW_STEP == "6_enable_firewall_command"
 
     by_name = {s.name: s for s in report.steps}
@@ -69,6 +71,8 @@ def test_realtime_acceptance_local_firewall_fail_then_pass(tmp_path, monkeypatch
     assert by_name[LOCAL_VERIFY_STEP].ok is True
     assert by_name[LOCAL_VERIFY_STEP].data.get("verification_status") == "verified"
     assert by_name[LOCAL_VERIFY_STEP].data.get("via_checkin") is True
+    assert by_name[LOCAL_TIMELINE_STEP].ok is True
+    assert len(by_name[LOCAL_TIMELINE_STEP].data.get("required_present") or []) >= 4
 
     marker = poam_marker("host_firewall", aid)
     assert not any(
@@ -91,7 +95,7 @@ def test_realtime_acceptance_local_triple_host_loops(tmp_path, monkeypatch):
     from app.controls.poam import poam_marker
     from app.enterprise import list_remediations
     from app.tenancy import ensure_tenant_schema
-    from scripts.realtime_acceptance_demo import HOST_LOOPS, LOCAL_VERIFY_STEP, run_local_all_host_loops
+    from scripts.realtime_acceptance_demo import HOST_LOOPS, LOCAL_TIMELINE_STEP, LOCAL_VERIFY_STEP, run_local_all_host_loops
 
     ensure_tenant_schema()
     register_user("rt_accept_triple", "password123", role="admin")
@@ -101,8 +105,8 @@ def test_realtime_acceptance_local_triple_host_loops(tmp_path, monkeypatch):
 
     report = run_local_all_host_loops(user.id, aid)
     assert report.ok is True
-    # 3 loops × (10 core + 1 verify) = 33
-    assert len(report.steps) == 33
+    # 3 loops × (10 core + verify + timeline) = 36
+    assert len(report.steps) == 36
 
     for loop in HOST_LOOPS:
         prefix = loop.test_id
@@ -121,6 +125,9 @@ def test_realtime_acceptance_local_triple_host_loops(tmp_path, monkeypatch):
         verify = next(s for s in report.steps if s.name == f"{prefix}:{LOCAL_VERIFY_STEP}")
         assert verify.ok is True
         assert verify.data.get("verification_status") == "verified"
+
+        timeline = next(s for s in report.steps if s.name == f"{prefix}:{LOCAL_TIMELINE_STEP}")
+        assert timeline.ok is True
 
         marker = poam_marker(loop.test_id, aid)
         assert not any(

@@ -73,6 +73,7 @@ LOCAL_STEP_NAMES = [
 ]
 OPTIONAL_ENABLE_FW_STEP = "6_enable_firewall_command"
 LOCAL_VERIFY_STEP = "11_command_verification_verified"
+LOCAL_TIMELINE_STEP = "12_realtime_timeline_chain"
 
 PayloadFn = Callable[..., dict[str, Any]]
 
@@ -492,6 +493,76 @@ def _verification_bus_events(events: list[dict[str, Any]], *, command_id: str = 
     return out
 
 
+def _timeline_milestones(events: list[dict[str, Any]]) -> dict[str, Any]:
+    """Map the product acceptance chain onto observed bus event types.
+
+    Browser-free proof that the same vocabulary SSE would deliver to
+    RealtimeManager includes the closed-loop milestones in order.
+
+    Note: a multi-control check-in may emit ``control.passed`` for already-healthy
+    controls before the FAIL under test — order uses first FAIL then the first
+    PASS after that FAIL.
+    """
+    types = [_event_type(e) for e in events if _event_type(e)]
+    low = [t.lower() for t in types]
+
+    def _idxs(pred) -> list[int]:
+        return [i for i, t in enumerate(low) if pred(t)]
+
+    fail_idxs = _idxs(lambda t: "control" in t and "fail" in t)
+    pass_idxs = _idxs(lambda t: "control" in t and "pass" in t)
+    risk_idxs = _idxs(lambda t: t.startswith("risk"))
+    rem_idxs = _idxs(
+        lambda t: (
+            t.startswith("remediation")
+            or t.startswith("command")
+            or "poam" in t
+            or t == "agent_command"
+        )
+    )
+    ver_idxs = _idxs(lambda t: "verif" in t)
+    live_idxs = _idxs(lambda t: "compliance" in t or "live_compliance" in t)
+
+    first: dict[str, int] = {}
+    if fail_idxs:
+        first["control_fail"] = fail_idxs[0]
+        after_fail = first["control_fail"]
+        pass_after = next((i for i in pass_idxs if i > after_fail), None)
+        if pass_after is not None:
+            first["control_pass"] = pass_after
+        ver_after = next(
+            (i for i in ver_idxs if i > first.get("control_pass", after_fail)),
+            None,
+        )
+        if ver_after is not None:
+            first["verification"] = ver_after
+    if risk_idxs:
+        first["risk_up"] = risk_idxs[0]
+    if rem_idxs:
+        first["remediation"] = rem_idxs[0]
+    if live_idxs:
+        first["live_compliance"] = live_idxs[0]
+
+    required = ("control_fail", "risk_up", "remediation", "control_pass", "verification")
+    present = [m for m in required if m in first]
+    order_ok = True
+    if "control_fail" in first and "control_pass" in first:
+        order_ok = order_ok and first["control_fail"] < first["control_pass"]
+    if "control_pass" in first and "verification" in first:
+        order_ok = order_ok and first["control_pass"] <= first["verification"]
+    if "control_fail" in first and "verification" in first:
+        order_ok = order_ok and first["control_fail"] < first["verification"]
+
+    return {
+        "event_types": types[:48],
+        "milestones": first,
+        "required_present": present,
+        "required_missing": [m for m in required if m not in first],
+        "order_ok": order_ok,
+        "ok": len(present) >= 4 and order_ok,
+    }
+
+
 def run_local_host_loop(
     user_id: str,
     agent_id: str,
@@ -744,6 +815,20 @@ def run_local_host_loop(
                 "bus_verify_events": len(v_bus),
                 "lab_note": "execute step is lab-simulated; verify is independent telemetry re-check",
             },
+        )
+    )
+
+    # Step 12: bus timeline chain (SSE vocabulary without a browser)
+    chain = _timeline_milestones(list(bus_fail) + list(bus_pass))
+    report.steps.append(
+        StepResult(
+            name=f"{prefix}{LOCAL_TIMELINE_STEP}",
+            ok=bool(chain.get("ok")),
+            detail=(
+                f"milestones={chain.get('required_present')} "
+                f"missing={chain.get('required_missing')} order_ok={chain.get('order_ok')}"
+            ),
+            data=chain,
         )
     )
     return report

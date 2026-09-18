@@ -16,12 +16,16 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 NOTE = ROOT / "docs" / "ops" / "SENTINEL-FAILOVER-LAB.md"
 LOG = ROOT / "data" / "ops" / "sentinel_failover_measurements.jsonl"
 

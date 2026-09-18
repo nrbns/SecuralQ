@@ -1625,9 +1625,10 @@
     clearInterval(window.__securaiqSwPollTimer);
     window.__securaiqSwPollTimer = setInterval(() => {
       if (window.__securaiqWorkspaceView !== "software") return;
-      if (window.__securaiqEsConnected) return;
+      const rt = window.RealtimeManager;
+      if (window.__securaiqEsConnected || (rt && (rt.state === "connected" || rt.state === "open"))) return;
       refreshSoftwareFromPush({}, { partial: true, summaryOnly: _softwareView === "servers" });
-    }, 60000);
+    }, 120000);
   }
 
   async function renderSoftwarePage(opts) {

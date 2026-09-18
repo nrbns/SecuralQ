@@ -10819,18 +10819,22 @@ checkHealth().then(() => {
 });
 wireCommandCenterUi();
 setInterval(checkHealth, 90000);
-// Command Center soft poll — skip when SSE is already driving refresh.
+// Soft-poll ONLY when SSE / RealtimeManager is not connected (Task #3).
+function _sseRealtimeLive() {
+  const rt = window.RealtimeManager;
+  if (rt && (rt.state === "connected" || rt.state === "open")) return true;
+  return !!window.__securaiqEsConnected;
+}
 setInterval(() => {
-  if (currentView === "command" && !window.__securaiqEsConnected) loadCommandCenter();
-}, 60000);
+  if (currentView === "command" && !_sseRealtimeLive()) loadCommandCenter();
+}, 120000);
 // Fallback live refresh if SSE stalls — keep open workspace panels warm.
-// When the feed is connected, heartbeats already call __securaiqRefreshActiveView.
 setInterval(() => {
-  if (window.__securaiqEsConnected) return;
+  if (_sseRealtimeLive()) return;
   if (typeof window.__securaiqRefreshActiveView === "function") {
     window.__securaiqRefreshActiveView({}, { heartbeat: true });
   }
-}, 15000);
+}, 30000);
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) return;
   syncLiveWorkspace();

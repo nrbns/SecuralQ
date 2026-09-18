@@ -59,6 +59,7 @@ python scripts/realtime_acceptance_demo.py --server http://HOST:8080 --token "$A
 
 Harness path uses production ``agents.checkin()`` (not a direct evaluator bypass).
 Command execute remains lab-simulated in CI; verification is independent of command JSON.
+Step 12 asserts the realtime bus timeline chain (SSE vocabulary without a browser).
 
 ## Phase A checklist (harden, don’t replace)
 
