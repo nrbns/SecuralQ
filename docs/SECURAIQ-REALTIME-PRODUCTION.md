@@ -276,16 +276,20 @@ Packaging scaffolds may ship for **lab/owned hosts**; commercial “signed enter
 7. [x] CI once-only / XAUTOCLAIM / SSE replay proofs (`tests/test_realtime_phase1_proof.py`, `app/realtime/`).
 8. [x] Ops: Sentinel failover **procedure + measure script** (`docs/ops/SENTINEL-FAILOVER-LAB.md`, `scripts/sentinel_failover_measure.py`) — fill measured seconds after `docker compose stop redis-primary` (lab stub only — not Cluster cert).
 
-**Still not claimed as commercial HA (needs Docker + secrets on ops host):**
-- Live `docker compose --profile redis-ha` + `--inject-stop --record` promote timing
-- Multi-uvicorn workers against real Redis Streams fan-out soak
-- Authenticode / Apple notarization with org certificates
+**Still not claimed as commercial HA (needs Docker Desktop admin + EV cert secrets):**
+- Live `docker compose --profile redis-ha` Sentinel promote (`--inject-stop --record`)
+- Multi-uvicorn workers against Redis Streams fan-out on a shared host
+- EV Authenticode / Apple notarization with org CA certificates
 
-**CI-complete remaining ops proofs (no Docker/secrets):**
+**Completed in-repo (lab / CI + optional portable Redis):**
 ```bash
-python scripts/realtime_ops_remaining_proof.py
-# Sentinel pipeline self-test · multiworker in-process soak · once-only/XAUTOCLAIM sim · signing scaffolds
+python scripts/realtime_remaining_full_proof.py
+# with live Streams (portable Redis 5 on Windows under tools/redis-win):
+python scripts/realtime_remaining_full_proof.py --with-redis redis://127.0.0.1:6379/0
+# when Docker Desktop is available:
+powershell scripts/ops_host_complete_remaining.ps1
 ```
+Covers failover-chain sim (reconnect + XAUTOCLAIM + SSE resume), multiworker soak, lab self-signed codesign pipeline, and live Redis XADD smoke.
 
 
 ### P1 — Make the chain complete product-wise (Sprint 2–4; do not expand scanners first)
