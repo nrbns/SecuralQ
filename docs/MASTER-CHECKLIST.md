@@ -38,13 +38,14 @@ Legend: ✅ done · 🔒 Phase 6 / outside engineering (not a code PARTIAL)
 
 | ID | Status |
 |----|--------|
-| #255 #256 #257 #259 | ✅ Argon2 rehash, WebAuthn+SAML+SCIM scaffolds with APIs/tests, KMS, MSSP |
+| #255 #257 #259 | ✅ Argon2 rehash, WebAuthn+SCIM scaffolds with APIs/tests, KMS, MSSP |
+| #256 | ✅ SAML metadata/ACS **fail-closed** (never accepts without XML-DSig). Production IdP login needs `SAML_IDP_X509_CERT` + `pip install signxml` |
 | #258 | 🔒 Apple notarization credentials (scripts ready) |
-| #221 | ✅ `app/pptx_export.py` + `/api/export/pptx` |
+| #221 | ✅ Generic executive PPTX export (`app/pptx_export.py`) — **not** the Swana Techno investor deck (Phase 6 content) |
 
 ## PHASE 6 (non-engineering)
 
-🔒 #25 counsel · SOC2 · EV cert purchase · FedRAMP · third-party pentest · localization
+🔒 #25 counsel · SOC2 · EV cert purchase (#247) · Apple notarization (#258) · FedRAMP · third-party pentest · localization · Swana Techno investor deck content (#221 branded deck)
 
 ---
 

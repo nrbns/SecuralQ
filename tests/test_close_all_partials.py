@@ -131,14 +131,32 @@ def test_248_mtls_fleet_status(tmp_path, monkeypatch):
 
 def test_256_saml_and_scim_surfaces(tmp_path, monkeypatch):
     configure_isolated_settings(monkeypatch, tmp_path)
+    import pytest
+
     from app import saml_scaffold
     from app.config import settings
 
     assert saml_scaffold.enabled() is False
-    assert saml_scaffold.status()["protocol"] == "saml2"
+    st = saml_scaffold.status()
+    assert st["protocol"] == "saml2"
+    assert st["signature_verification_required"] is True
+    assert st["production_ready"] is False
     monkeypatch.setattr(settings, "saml_enabled", True, raising=False)
     meta = saml_scaffold.sp_metadata()
     assert "EntityDescriptor" in meta
+    assert "WantAssertionsSigned=\"true\"" in meta or "WantAssertionsSigned='true'" in meta
+
+    # Fail-closed: unsigned / unverified response must not be accepted
+    with pytest.raises(ValueError, match="fail-closed|refusing|signxml|SAML_IDP"):
+        saml_scaffold.receive_acs({"SAMLResponse": "dGVzdC1mYWtlLXJlc3BvbnNl"})
+
+    # Lab receipt mode still refuses accepted=True
+    monkeypatch.setattr(settings, "saml_allow_unverified_lab", True, raising=False)
+    lab = saml_scaffold.receive_acs({"SAMLResponse": "dGVzdC1mYWtlLXJlc3BvbnNl"})
+    assert lab["ok"] is True
+    assert lab["accepted"] is False
+    assert lab["verified_signature"] is False
+    assert lab.get("lab_receipt_only") is True
 
 
 def test_221_pptx_export(tmp_path, monkeypatch):

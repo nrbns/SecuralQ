@@ -248,12 +248,16 @@ class Settings(BaseSettings):
     webauthn_rp_id: str = "localhost"
     webauthn_rp_name: str = "SecuraIQ"
     webauthn_origin: str = "http://127.0.0.1:8080"
-    # SAML 2.0 SP scaffold (#256)
+    # SAML 2.0 SP scaffold (#256) — fail-closed ACS (signature required)
     saml_enabled: bool = False
     saml_sp_entity_id: str = "http://127.0.0.1:8080/saml/metadata"
     saml_acs_url: str = "http://127.0.0.1:8080/api/auth/saml/acs"
     saml_idp_entity_id: str = ""
     saml_idp_sso_url: str = ""
+    # IdP signing certificate PEM (required before any assertion is accepted)
+    saml_idp_x509_cert: str = ""
+    # When true: ACS may audit an unverified POST but never sets accepted=True
+    saml_allow_unverified_lab: bool = False
     # Agent resource caps (#240)
     agent_max_cpu_percent: int = 25
     agent_max_memory_mb: int = 256

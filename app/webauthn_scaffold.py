@@ -135,7 +135,7 @@ def status(user_id: str | None = None) -> dict[str, Any]:
     out: dict[str, Any] = {
         "enabled": enabled(),
         "rp": rp_config(),
-        "saml_deferred": True,
+        "saml_deferred": True,  # full IdP SSO until SAML_IDP_X509_CERT + signxml; ACS is fail-closed
         "scim": bool(getattr(settings, "scim_enabled", False)),
         "oidc": bool(getattr(settings, "oidc_enabled", False)),
     }

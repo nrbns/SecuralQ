@@ -2,7 +2,7 @@
   "id": "canonical_controls",
   "name": "SecuraIQ Canonical Control Registry",
   "version": "1.0",
-  "description": "Cross-framework control registry: each canonical control maps to the real control IDs that genuinely cover it in each of the 14 framework catalogs. Every mapping below was verified by reading each framework's actual control title/keywords -- a framework is omitted from a canonical control's map wherever no real, defensible correspondence exists (never forced to pad coverage). Implementing one canonical control's real-world control (e.g. enabling MFA) is evidence toward every mapped framework control simultaneously.",
+  "description": "Cross-framework control registry: each canonical control maps to the real control IDs that genuinely cover it across SecuraIQ framework catalogs (including India DPDP Act/Rules). Every mapping was verified against control titles/keywords — a framework is omitted wherever no real correspondence exists. Implementing one canonical control is evidence toward every mapped framework control simultaneously.",
   "canonical_controls": [
     {
       "id": "mfa",
@@ -10,18 +10,46 @@
       "category": "Identity & Access",
       "description": "Users, and especially privileged/administrative accounts, authenticate with more than one factor.",
       "frameworks": {
-        "cmmc_l2": ["IA.L2-3.5.3"],
-        "nist_800_171": ["3.5.3"],
-        "nist_800_53": ["IA-2"],
-        "iso27001": ["A.8.5"],
-        "soc2": ["CC6.1"],
-        "pci_dss": ["8.3", "8.4"],
-        "cis_controls": ["CIS-6"],
-        "nist_csf": ["PR.AA-03"],
-        "hipaa": ["164.312(d)"],
-        "owasp_asvs": ["6.2"],
-        "nis2": ["Art.21(2)(j)"],
-        "owasp_top10": ["A07:2025"]
+        "cmmc_l2": [
+          "IA.L2-3.5.3"
+        ],
+        "nist_800_171": [
+          "3.5.3"
+        ],
+        "nist_800_53": [
+          "IA-2"
+        ],
+        "iso27001": [
+          "A.8.5"
+        ],
+        "soc2": [
+          "CC6.1"
+        ],
+        "pci_dss": [
+          "8.3",
+          "8.4"
+        ],
+        "cis_controls": [
+          "CIS-6"
+        ],
+        "nist_csf": [
+          "PR.AA-03"
+        ],
+        "hipaa": [
+          "164.312(d)"
+        ],
+        "owasp_asvs": [
+          "6.2"
+        ],
+        "nis2": [
+          "Art.21(2)(j)"
+        ],
+        "owasp_top10": [
+          "A07:2025"
+        ],
+        "dpdp_rules_2025": [
+          "Rule-6-Access"
+        ]
       }
     },
     {
@@ -30,18 +58,49 @@
       "category": "Data Protection",
       "description": "Sensitive data is encrypted while stored (disk, database, object storage, backups).",
       "frameworks": {
-        "cmmc_l2": ["SC.L2-3.13.16"],
-        "nist_800_171": ["3.13.16"],
-        "nist_800_53": ["SC-28"],
-        "iso27001": ["A.8.24"],
-        "pci_dss": ["3.5"],
-        "cis_controls": ["CIS-3"],
-        "nist_csf": ["PR.DS-01"],
-        "hipaa": ["164.312(a)(1)"],
-        "owasp_asvs": ["14.1"],
-        "gdpr": ["Art.32"],
-        "nis2": ["Art.21(2)(h)"],
-        "owasp_top10": ["A04:2025"]
+        "cmmc_l2": [
+          "SC.L2-3.13.16"
+        ],
+        "nist_800_171": [
+          "3.13.16"
+        ],
+        "nist_800_53": [
+          "SC-28"
+        ],
+        "iso27001": [
+          "A.8.24"
+        ],
+        "pci_dss": [
+          "3.5"
+        ],
+        "cis_controls": [
+          "CIS-3"
+        ],
+        "nist_csf": [
+          "PR.DS-01"
+        ],
+        "hipaa": [
+          "164.312(a)(1)"
+        ],
+        "owasp_asvs": [
+          "14.1"
+        ],
+        "gdpr": [
+          "Art.32"
+        ],
+        "nis2": [
+          "Art.21(2)(h)"
+        ],
+        "owasp_top10": [
+          "A04:2025"
+        ],
+        "dpdp_act_2023": [
+          "Act-8"
+        ],
+        "dpdp_rules_2025": [
+          "Rule-6-Encryption",
+          "Rule-6"
+        ]
       }
     },
     {
@@ -50,18 +109,48 @@
       "category": "Data Protection",
       "description": "Data moving across networks is protected with strong cryptography (TLS or equivalent).",
       "frameworks": {
-        "cmmc_l2": ["SC.L2-3.13.8"],
-        "nist_800_171": ["3.13.8"],
-        "nist_800_53": ["SC-8"],
-        "iso27001": ["A.8.24"],
-        "soc2": ["CC6.6"],
-        "pci_dss": ["4.2"],
-        "nist_csf": ["PR.DS-02"],
-        "hipaa": ["164.312(e)(1)"],
-        "owasp_asvs": ["12.1"],
-        "gdpr": ["Art.32"],
-        "nis2": ["Art.21(2)(h)"],
-        "owasp_top10": ["A04:2025"]
+        "cmmc_l2": [
+          "SC.L2-3.13.8"
+        ],
+        "nist_800_171": [
+          "3.13.8"
+        ],
+        "nist_800_53": [
+          "SC-8"
+        ],
+        "iso27001": [
+          "A.8.24"
+        ],
+        "soc2": [
+          "CC6.6"
+        ],
+        "pci_dss": [
+          "4.2"
+        ],
+        "nist_csf": [
+          "PR.DS-02"
+        ],
+        "hipaa": [
+          "164.312(e)(1)"
+        ],
+        "owasp_asvs": [
+          "12.1"
+        ],
+        "gdpr": [
+          "Art.32"
+        ],
+        "nis2": [
+          "Art.21(2)(h)"
+        ],
+        "owasp_top10": [
+          "A04:2025"
+        ],
+        "dpdp_act_2023": [
+          "Act-8"
+        ],
+        "dpdp_rules_2025": [
+          "Rule-6"
+        ]
       }
     },
     {
@@ -70,16 +159,45 @@
       "category": "Vulnerability & Patch Management",
       "description": "Vulnerabilities are identified through scanning/monitoring and remediated in a timely, risk-based manner.",
       "frameworks": {
-        "cmmc_l2": ["SI.L2-3.14.1"],
-        "nist_800_171": ["3.14.1"],
-        "nist_800_53": ["RA-5", "SI-2"],
-        "iso27001": ["A.8.8"],
-        "pci_dss": ["6.3", "11.3"],
-        "cis_controls": ["CIS-7"],
-        "nist_csf": ["ID.RA-01", "PR.PS-02"],
-        "owasp_asvs": ["13.1"],
-        "nis2": ["Art.21(2)(e)"],
-        "owasp_top10": ["A03:2025"]
+        "cmmc_l2": [
+          "SI.L2-3.14.1"
+        ],
+        "nist_800_171": [
+          "3.14.1"
+        ],
+        "nist_800_53": [
+          "RA-5",
+          "SI-2"
+        ],
+        "iso27001": [
+          "A.8.8"
+        ],
+        "pci_dss": [
+          "6.3",
+          "11.3"
+        ],
+        "cis_controls": [
+          "CIS-7"
+        ],
+        "nist_csf": [
+          "ID.RA-01",
+          "PR.PS-02"
+        ],
+        "owasp_asvs": [
+          "13.1"
+        ],
+        "nis2": [
+          "Art.21(2)(e)"
+        ],
+        "owasp_top10": [
+          "A03:2025"
+        ],
+        "dpdp_act_2023": [
+          "Act-8"
+        ],
+        "dpdp_rules_2025": [
+          "Rule-6"
+        ]
       }
     },
     {
@@ -88,11 +206,29 @@
       "category": "Asset Management",
       "description": "Hardware and software assets are inventoried and tracked.",
       "frameworks": {
-        "iso27001": ["A.5.9"],
-        "cis_controls": ["CIS-1", "CIS-2"],
-        "nist_csf": ["ID.AM-01", "ID.AM-02"],
-        "pci_dss": ["12.5"],
-        "nis2": ["Art.21(2)(i)"]
+        "iso27001": [
+          "A.5.9"
+        ],
+        "cis_controls": [
+          "CIS-1",
+          "CIS-2"
+        ],
+        "nist_csf": [
+          "ID.AM-01",
+          "ID.AM-02"
+        ],
+        "pci_dss": [
+          "12.5"
+        ],
+        "nis2": [
+          "Art.21(2)(i)"
+        ],
+        "dpdp_act_2023": [
+          "Act-8"
+        ],
+        "dpdp_rules_2025": [
+          "Rule-Inventory"
+        ]
       }
     },
     {
@@ -101,14 +237,35 @@
       "category": "Resilience",
       "description": "Data is regularly backed up, backups are protected, and restoration is tested.",
       "frameworks": {
-        "iso27001": ["A.8.13"],
-        "soc2": ["A1.2"],
-        "cis_controls": ["CIS-11"],
-        "nist_csf": ["PR.DS-11"],
-        "nist_800_53": ["CP-9", "CP-10"],
-        "hipaa": ["164.308(a)(7)"],
-        "gdpr": ["Art.32"],
-        "nis2": ["Art.21(2)(c)"]
+        "iso27001": [
+          "A.8.13"
+        ],
+        "soc2": [
+          "A1.2"
+        ],
+        "cis_controls": [
+          "CIS-11"
+        ],
+        "nist_csf": [
+          "PR.DS-11"
+        ],
+        "nist_800_53": [
+          "CP-9",
+          "CP-10"
+        ],
+        "hipaa": [
+          "164.308(a)(7)"
+        ],
+        "gdpr": [
+          "Art.32"
+        ],
+        "nis2": [
+          "Art.21(2)(c)"
+        ],
+        "dpdp_rules_2025": [
+          "Rule-6-Backup",
+          "Rule-6"
+        ]
       }
     },
     {
@@ -117,17 +274,47 @@
       "category": "Detection",
       "description": "Systems generate audit logs, and those logs are centrally collected and reviewed for anomalies.",
       "frameworks": {
-        "cmmc_l2": ["AU.L2-3.3.1"],
-        "nist_800_171": ["3.3.1"],
-        "nist_800_53": ["AU-2", "AU-12", "SI-4"],
-        "iso27001": ["A.8.15", "A.8.16"],
-        "soc2": ["CC7.1"],
-        "pci_dss": ["10.2"],
-        "cis_controls": ["CIS-8"],
-        "nist_csf": ["PR.PS-04", "DE.CM-01"],
-        "hipaa": ["164.312(b)"],
-        "owasp_asvs": ["16.1"],
-        "owasp_top10": ["A09:2025"]
+        "cmmc_l2": [
+          "AU.L2-3.3.1"
+        ],
+        "nist_800_171": [
+          "3.3.1"
+        ],
+        "nist_800_53": [
+          "AU-2",
+          "AU-12",
+          "SI-4"
+        ],
+        "iso27001": [
+          "A.8.15",
+          "A.8.16"
+        ],
+        "soc2": [
+          "CC7.1"
+        ],
+        "pci_dss": [
+          "10.2"
+        ],
+        "cis_controls": [
+          "CIS-8"
+        ],
+        "nist_csf": [
+          "PR.PS-04",
+          "DE.CM-01"
+        ],
+        "hipaa": [
+          "164.312(b)"
+        ],
+        "owasp_asvs": [
+          "16.1"
+        ],
+        "owasp_top10": [
+          "A09:2025"
+        ],
+        "dpdp_rules_2025": [
+          "Rule-6-Logging",
+          "Rule-6"
+        ]
       }
     },
     {
@@ -136,16 +323,43 @@
       "category": "Response",
       "description": "A documented incident response plan/capability exists and is executed when incidents occur.",
       "frameworks": {
-        "cmmc_l2": ["IR.L2-3.6.1"],
-        "nist_800_171": ["3.6.1"],
-        "nist_800_53": ["IR-4", "IR-6"],
-        "iso27001": ["A.5.24"],
-        "soc2": ["CC7.3"],
-        "pci_dss": ["12.10"],
-        "cis_controls": ["CIS-17"],
-        "nist_csf": ["RS.MA-01"],
-        "hipaa": ["164.308(a)(6)"],
-        "nis2": ["Art.21(2)(b)"]
+        "cmmc_l2": [
+          "IR.L2-3.6.1"
+        ],
+        "nist_800_171": [
+          "3.6.1"
+        ],
+        "nist_800_53": [
+          "IR-4",
+          "IR-6"
+        ],
+        "iso27001": [
+          "A.5.24"
+        ],
+        "soc2": [
+          "CC7.3"
+        ],
+        "pci_dss": [
+          "12.10"
+        ],
+        "cis_controls": [
+          "CIS-17"
+        ],
+        "nist_csf": [
+          "RS.MA-01"
+        ],
+        "hipaa": [
+          "164.308(a)(6)"
+        ],
+        "nis2": [
+          "Art.21(2)(b)"
+        ],
+        "dpdp_act_2023": [
+          "Act-Breach"
+        ],
+        "dpdp_rules_2025": [
+          "Rule-7"
+        ]
       }
     },
     {
@@ -154,18 +368,54 @@
       "category": "Identity & Access",
       "description": "Access to systems and data is restricted to authorized users based on need and least privilege.",
       "frameworks": {
-        "cmmc_l2": ["AC.L2-3.1.1", "AC.L2-3.1.5"],
-        "nist_800_171": ["3.1.1", "3.1.5"],
-        "nist_800_53": ["AC-3", "AC-6"],
-        "iso27001": ["A.5.15", "A.8.3"],
-        "soc2": ["CC6.1"],
-        "pci_dss": ["7.2"],
-        "cis_controls": ["CIS-6"],
-        "nist_csf": ["PR.AA-05"],
-        "hipaa": ["164.308(a)(4)", "164.312(a)(1)"],
-        "owasp_asvs": ["8.1"],
-        "nis2": ["Art.21(2)(i)"],
-        "owasp_top10": ["A01:2025"]
+        "cmmc_l2": [
+          "AC.L2-3.1.1",
+          "AC.L2-3.1.5"
+        ],
+        "nist_800_171": [
+          "3.1.1",
+          "3.1.5"
+        ],
+        "nist_800_53": [
+          "AC-3",
+          "AC-6"
+        ],
+        "iso27001": [
+          "A.5.15",
+          "A.8.3"
+        ],
+        "soc2": [
+          "CC6.1"
+        ],
+        "pci_dss": [
+          "7.2"
+        ],
+        "cis_controls": [
+          "CIS-6"
+        ],
+        "nist_csf": [
+          "PR.AA-05"
+        ],
+        "hipaa": [
+          "164.308(a)(4)",
+          "164.312(a)(1)"
+        ],
+        "owasp_asvs": [
+          "8.1"
+        ],
+        "nis2": [
+          "Art.21(2)(i)"
+        ],
+        "owasp_top10": [
+          "A01:2025"
+        ],
+        "dpdp_act_2023": [
+          "Act-8"
+        ],
+        "dpdp_rules_2025": [
+          "Rule-6-Access",
+          "Rule-6"
+        ]
       }
     },
     {
@@ -174,14 +424,30 @@
       "category": "People",
       "description": "Personnel receive periodic security awareness and role-based training.",
       "frameworks": {
-        "cmmc_l2": ["AT.L2-3.2.1"],
-        "nist_800_171": ["3.2.1"],
-        "nist_800_53": ["AT-2"],
-        "iso27001": ["A.6.3"],
-        "pci_dss": ["12.6"],
-        "cis_controls": ["CIS-14"],
-        "nist_csf": ["PR.AT-01"],
-        "hipaa": ["164.308(a)(5)"]
+        "cmmc_l2": [
+          "AT.L2-3.2.1"
+        ],
+        "nist_800_171": [
+          "3.2.1"
+        ],
+        "nist_800_53": [
+          "AT-2"
+        ],
+        "iso27001": [
+          "A.6.3"
+        ],
+        "pci_dss": [
+          "12.6"
+        ],
+        "cis_controls": [
+          "CIS-14"
+        ],
+        "nist_csf": [
+          "PR.AT-01"
+        ],
+        "hipaa": [
+          "164.308(a)(5)"
+        ]
       }
     },
     {
@@ -190,13 +456,33 @@
       "category": "Governance & Risk",
       "description": "Risks (security or privacy) are formally assessed, prioritized, and used to inform decisions.",
       "frameworks": {
-        "cmmc_l2": ["RA.L2-3.11.1"],
-        "nist_800_171": ["3.11.1"],
-        "nist_800_53": ["RA-3"],
-        "iso27701": ["8.2"],
-        "pci_dss": ["12.3"],
-        "nist_csf": ["ID.RA-05"],
-        "gdpr": ["Art.35"]
+        "cmmc_l2": [
+          "RA.L2-3.11.1"
+        ],
+        "nist_800_171": [
+          "3.11.1"
+        ],
+        "nist_800_53": [
+          "RA-3"
+        ],
+        "iso27701": [
+          "8.2"
+        ],
+        "pci_dss": [
+          "12.3"
+        ],
+        "nist_csf": [
+          "ID.RA-05"
+        ],
+        "gdpr": [
+          "Art.35"
+        ],
+        "dpdp_act_2023": [
+          "Act-10"
+        ],
+        "dpdp_rules_2025": [
+          "Rule-13"
+        ]
       }
     },
     {
@@ -205,12 +491,33 @@
       "category": "Governance & Risk",
       "description": "Security risk from suppliers and other third parties is assessed and managed through the relationship lifecycle.",
       "frameworks": {
-        "nist_csf": ["GV.SC-01"],
-        "nist_800_53": ["SR-1", "SR-3"],
-        "iso27001": ["A.5.19", "A.5.20"],
-        "pci_dss": ["12.8"],
-        "cis_controls": ["CIS-15"],
-        "gdpr": ["Art.28"]
+        "nist_csf": [
+          "GV.SC-01"
+        ],
+        "nist_800_53": [
+          "SR-1",
+          "SR-3"
+        ],
+        "iso27001": [
+          "A.5.19",
+          "A.5.20"
+        ],
+        "pci_dss": [
+          "12.8"
+        ],
+        "cis_controls": [
+          "CIS-15"
+        ],
+        "gdpr": [
+          "Art.28"
+        ],
+        "dpdp_act_2023": [
+          "Act-8-Processor"
+        ],
+        "dpdp_rules_2025": [
+          "Rule-Processors",
+          "Rule-6"
+        ]
       }
     },
     {
@@ -219,14 +526,32 @@
       "category": "Vulnerability & Patch Management",
       "description": "Systems are configured to documented secure baselines rather than insecure defaults.",
       "frameworks": {
-        "cmmc_l2": ["CM.L2-3.4.1"],
-        "nist_800_171": ["3.4.1"],
-        "nist_800_53": ["CM-2", "CM-6", "CM-7"],
-        "iso27001": ["A.8.9"],
-        "pci_dss": ["2.2"],
-        "cis_controls": ["CIS-4"],
-        "nist_csf": ["PR.PS-01"],
-        "owasp_top10": ["A02:2025"]
+        "cmmc_l2": [
+          "CM.L2-3.4.1"
+        ],
+        "nist_800_171": [
+          "3.4.1"
+        ],
+        "nist_800_53": [
+          "CM-2",
+          "CM-6",
+          "CM-7"
+        ],
+        "iso27001": [
+          "A.8.9"
+        ],
+        "pci_dss": [
+          "2.2"
+        ],
+        "cis_controls": [
+          "CIS-4"
+        ],
+        "nist_csf": [
+          "PR.PS-01"
+        ],
+        "owasp_top10": [
+          "A02:2025"
+        ]
       }
     },
     {
@@ -235,13 +560,28 @@
       "category": "Network Security",
       "description": "Networks are segmented and boundaries are controlled to limit lateral movement and unauthorized access.",
       "frameworks": {
-        "cmmc_l2": ["SC.L2-3.13.1"],
-        "nist_800_171": ["3.13.1"],
-        "nist_800_53": ["SC-7"],
-        "iso27001": ["A.8.22"],
-        "pci_dss": ["1.2", "1.3"],
-        "cis_controls": ["CIS-12"],
-        "nist_csf": ["PR.IR-01"]
+        "cmmc_l2": [
+          "SC.L2-3.13.1"
+        ],
+        "nist_800_171": [
+          "3.13.1"
+        ],
+        "nist_800_53": [
+          "SC-7"
+        ],
+        "iso27001": [
+          "A.8.22"
+        ],
+        "pci_dss": [
+          "1.2",
+          "1.3"
+        ],
+        "cis_controls": [
+          "CIS-12"
+        ],
+        "nist_csf": [
+          "PR.IR-01"
+        ]
       }
     },
     {
@@ -250,13 +590,28 @@
       "category": "Threat Detection",
       "description": "Endpoints and systems are protected against malicious code, with detection and response capability.",
       "frameworks": {
-        "cmmc_l2": ["SI.L2-3.14.2"],
-        "nist_800_171": ["3.14.2"],
-        "nist_800_53": ["SI-3"],
-        "iso27001": ["A.8.7"],
-        "pci_dss": ["5.2", "5.3"],
-        "cis_controls": ["CIS-10"],
-        "nist_csf": ["DE.CM-09"]
+        "cmmc_l2": [
+          "SI.L2-3.14.2"
+        ],
+        "nist_800_171": [
+          "3.14.2"
+        ],
+        "nist_800_53": [
+          "SI-3"
+        ],
+        "iso27001": [
+          "A.8.7"
+        ],
+        "pci_dss": [
+          "5.2",
+          "5.3"
+        ],
+        "cis_controls": [
+          "CIS-10"
+        ],
+        "nist_csf": [
+          "DE.CM-09"
+        ]
       }
     },
     {
@@ -265,10 +620,18 @@
       "category": "Vulnerability & Patch Management",
       "description": "Systems and applications undergo periodic penetration testing / adversarial security testing.",
       "frameworks": {
-        "iso27001": ["A.8.29"],
-        "nist_800_53": ["CA-2"],
-        "pci_dss": ["11.4"],
-        "cis_controls": ["CIS-18"]
+        "iso27001": [
+          "A.8.29"
+        ],
+        "nist_800_53": [
+          "CA-2"
+        ],
+        "pci_dss": [
+          "11.4"
+        ],
+        "cis_controls": [
+          "CIS-18"
+        ]
       }
     },
     {
@@ -277,14 +640,31 @@
       "category": "Application Security",
       "description": "Security is integrated into the software development lifecycle (secure coding, review, testing).",
       "frameworks": {
-        "iso27001": ["A.8.25"],
-        "nist_800_53": ["SA-11", "SA-15"],
-        "pci_dss": ["6.2"],
-        "cis_controls": ["CIS-16"],
-        "nist_csf": ["PR.PS-06"],
-        "owasp_asvs": ["15.1"],
-        "nis2": ["Art.21(2)(e)"],
-        "owasp_top10": ["A06:2025"]
+        "iso27001": [
+          "A.8.25"
+        ],
+        "nist_800_53": [
+          "SA-11",
+          "SA-15"
+        ],
+        "pci_dss": [
+          "6.2"
+        ],
+        "cis_controls": [
+          "CIS-16"
+        ],
+        "nist_csf": [
+          "PR.PS-06"
+        ],
+        "owasp_asvs": [
+          "15.1"
+        ],
+        "nis2": [
+          "Art.21(2)(e)"
+        ],
+        "owasp_top10": [
+          "A06:2025"
+        ]
       }
     },
     {
@@ -293,13 +673,29 @@
       "category": "Physical Security",
       "description": "Physical access to facilities and systems is restricted to authorized personnel and monitored.",
       "frameworks": {
-        "cmmc_l2": ["PE.L2-3.10.1"],
-        "nist_800_171": ["3.10.1"],
-        "nist_800_53": ["PE-2", "PE-3"],
-        "iso27001": ["A.7.1", "A.7.2"],
-        "soc2": ["CC6.4"],
-        "pci_dss": ["9.2"],
-        "hipaa": ["164.310(a)(1)"]
+        "cmmc_l2": [
+          "PE.L2-3.10.1"
+        ],
+        "nist_800_171": [
+          "3.10.1"
+        ],
+        "nist_800_53": [
+          "PE-2",
+          "PE-3"
+        ],
+        "iso27001": [
+          "A.7.1",
+          "A.7.2"
+        ],
+        "soc2": [
+          "CC6.4"
+        ],
+        "pci_dss": [
+          "9.2"
+        ],
+        "hipaa": [
+          "164.310(a)(1)"
+        ]
       }
     },
     {
@@ -308,10 +704,18 @@
       "category": "People",
       "description": "Personnel are screened (background checks) prior to being granted access to systems or sensitive data.",
       "frameworks": {
-        "cmmc_l2": ["PS.L2-3.9.1"],
-        "nist_800_171": ["3.9.1"],
-        "nist_800_53": ["PS-3"],
-        "iso27001": ["A.6.1"]
+        "cmmc_l2": [
+          "PS.L2-3.9.1"
+        ],
+        "nist_800_171": [
+          "3.9.1"
+        ],
+        "nist_800_53": [
+          "PS-3"
+        ],
+        "iso27001": [
+          "A.6.1"
+        ]
       }
     },
     {
@@ -320,11 +724,21 @@
       "category": "Identity & Access",
       "description": "Access is promptly revoked when personnel are terminated or change roles.",
       "frameworks": {
-        "cmmc_l2": ["PS.L2-3.9.2"],
-        "nist_800_171": ["3.9.2"],
-        "nist_800_53": ["PS-4"],
-        "iso27001": ["A.6.5"],
-        "hipaa": ["164.308(a)(3)"]
+        "cmmc_l2": [
+          "PS.L2-3.9.2"
+        ],
+        "nist_800_171": [
+          "3.9.2"
+        ],
+        "nist_800_53": [
+          "PS-4"
+        ],
+        "iso27001": [
+          "A.6.5"
+        ],
+        "hipaa": [
+          "164.308(a)(3)"
+        ]
       }
     },
     {
@@ -333,11 +747,22 @@
       "category": "Resilience",
       "description": "A documented plan exists to maintain or restore critical operations during and after a disruption.",
       "frameworks": {
-        "iso27001": ["A.5.29", "A.5.30"],
-        "soc2": ["A1.2"],
-        "nist_800_53": ["CP-2"],
-        "hipaa": ["164.308(a)(7)"],
-        "nis2": ["Art.21(2)(c)"]
+        "iso27001": [
+          "A.5.29",
+          "A.5.30"
+        ],
+        "soc2": [
+          "A1.2"
+        ],
+        "nist_800_53": [
+          "CP-2"
+        ],
+        "hipaa": [
+          "164.308(a)(7)"
+        ],
+        "nis2": [
+          "Art.21(2)(c)"
+        ]
       }
     },
     {
@@ -346,11 +771,22 @@
       "category": "Data Protection",
       "description": "Storage media is securely sanitized or destroyed before disposal or reuse.",
       "frameworks": {
-        "cmmc_l2": ["MP.L2-3.8.3"],
-        "nist_800_171": ["3.8.3"],
-        "nist_800_53": ["MP-6"],
-        "iso27001": ["A.7.14", "A.8.10"],
-        "hipaa": ["164.310(d)(1)"]
+        "cmmc_l2": [
+          "MP.L2-3.8.3"
+        ],
+        "nist_800_171": [
+          "3.8.3"
+        ],
+        "nist_800_53": [
+          "MP-6"
+        ],
+        "iso27001": [
+          "A.7.14",
+          "A.8.10"
+        ],
+        "hipaa": [
+          "164.310(d)(1)"
+        ]
       }
     }
   ]
