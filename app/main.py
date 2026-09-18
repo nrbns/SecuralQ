@@ -102,6 +102,7 @@ from app.configuration.configuration_api import router as configuration_router
 from app.live_ssp_api import router as live_ssp_router
 from app.compliance_doc_library_api import router as compliance_doc_library_router
 from app.log_management_api import router as log_management_router
+from app.data_governance_api import router as data_governance_router
 from app.lifecycle_api import router as lifecycle_router
 from app.system_health_api import router as system_health_router
 from app.commercial_ext import ensure_org_schema
@@ -187,6 +188,12 @@ async def lifespan(app: FastAPI):
         import app.combo_assessment  # noqa: F401 — register combo_assessment handler
 
         ensure_scans_schema()
+        try:
+            from app.data_governance import ensure_schema as ensure_dg_schema
+
+            ensure_dg_schema()
+        except Exception:
+            pass
         try:
             from app.bootstrap import bootstrap
 
@@ -407,6 +414,7 @@ app.include_router(configuration_router)
 app.include_router(live_ssp_router)
 app.include_router(compliance_doc_library_router)
 app.include_router(log_management_router)
+app.include_router(data_governance_router)
 app.include_router(lifecycle_router)
 app.include_router(system_health_router)
 

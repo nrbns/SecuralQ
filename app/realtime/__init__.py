@@ -17,12 +17,23 @@ from app.realtime.sentinel_ops import (
     ping_master,
     sentinel_ready_report,
 )
+from app.realtime.fleet_aggregator import (
+    fleet_summary,
+    maybe_publish_fleet_health,
+    record_agent_observation,
+)
+from app.realtime.partitioner import partition_id, workload_stream_key
 
 __all__ = [
     "OnceOnlyResult",
+    "fleet_summary",
     "invalidate_redis_clients",
+    "maybe_publish_fleet_health",
+    "partition_id",
     "ping_master",
     "prove_consumer_failover_once_only",
     "prove_duplicate_delivery_skipped",
+    "record_agent_observation",
     "sentinel_ready_report",
+    "workload_stream_key",
 ]

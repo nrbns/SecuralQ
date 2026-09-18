@@ -22,6 +22,10 @@ _FRAMEWORK_ALIASES = {
     "cmmc": "cmmc_l2",
     "800-53": "nist_800_53",
     "800-171": "nist_800_171",
+    "dpdp": "dpdp_rules_2025",
+    "india_dpdp": "dpdp_rules_2025",
+    "dpdp_act": "dpdp_act_2023",
+    "dpdp_rules": "dpdp_rules_2025",
 }
 
 _STATUS_SCORE = {
@@ -36,15 +40,23 @@ def list_frameworks() -> list[dict[str, Any]]:
     out = []
     for path in sorted(_FRAMEWORKS_DIR.glob("*.json")):
         data = json.loads(path.read_text(encoding="utf-8"))
-        out.append(
-            {
-                "id": data["id"],
-                "name": data["name"],
-                "version": data.get("version", ""),
-                "control_count": len(data.get("controls") or []),
-                "description": data.get("description") or "",
-            }
-        )
+        row = {
+            "id": data["id"],
+            "name": data["name"],
+            "version": data.get("version", ""),
+            "control_count": len(data.get("controls") or []),
+            "description": data.get("description") or "",
+        }
+        for key in (
+            "jurisdiction",
+            "family",
+            "notified_on",
+            "legal_disclaimer",
+            "phased_commencement",
+        ):
+            if data.get(key) is not None:
+                row[key] = data.get(key)
+        out.append(row)
     return out
 
 

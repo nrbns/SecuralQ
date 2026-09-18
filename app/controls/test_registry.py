@@ -78,6 +78,8 @@ CONTROL_TEST_REGISTRY: list[dict[str, Any]] = [
             ("cis_controls", "CIS-1"),
             ("iso27001", "A.5.9"),
             ("nist_csf", "ID.AM-01"),
+            ("dpdp_rules_2025", "Rule-Inventory"),
+            ("dpdp_act_2023", "Act-8"),
         ],
         remediation_hint="Enroll assets and agents so inventory is continuously confirmed.",
     ),
@@ -96,6 +98,8 @@ CONTROL_TEST_REGISTRY: list[dict[str, Any]] = [
             ("cmmc_l2", "RA.L2-3.11.2"),
             ("pci_dss", "6.3"),
             ("pci_dss", "11.3"),
+            ("dpdp_rules_2025", "Rule-6"),
+            ("dpdp_act_2023", "Act-8"),
         ],
         remediation_hint="Track and remediate critical/high findings within SLA windows.",
     ),
@@ -130,6 +134,8 @@ CONTROL_TEST_REGISTRY: list[dict[str, Any]] = [
             ("nist_800_171", "3.4.7"),
             ("cmmc_l2", "SC.L2-3.13.1"),
             ("cmmc_l2", "CM.L2-3.4.2"),
+            ("dpdp_rules_2025", "Rule-6-Access"),
+            ("dpdp_rules_2025", "Rule-6"),
         ],
         remediation_hint=(
             "Enable the host firewall (ufw/firewalld/Windows Firewall). "
@@ -148,6 +154,7 @@ CONTROL_TEST_REGISTRY: list[dict[str, Any]] = [
             ("nist_800_53", "SI-3"),
             ("nist_800_171", "3.14.2"),
             ("cmmc_l2", "SI.L2-3.14.2"),
+            ("dpdp_rules_2025", "Rule-6"),
         ],
         remediation_hint=(
             "Enable Microsoft Defender realtime protection on Windows hosts. "
@@ -187,6 +194,9 @@ CONTROL_TEST_REGISTRY: list[dict[str, Any]] = [
             ("nist_800_53", "SC-28"),
             ("nist_800_171", "3.13.16"),
             ("cmmc_l2", "SC.L2-3.13.16"),
+            ("dpdp_rules_2025", "Rule-6-Encryption"),
+            ("dpdp_rules_2025", "Rule-6"),
+            ("dpdp_act_2023", "Act-8"),
         ],
         remediation_hint=(
             "Enable full-disk encryption (BitLocker / LUKS / FileVault) on the host, "

@@ -151,6 +151,8 @@ CATALOG: list[dict[str, Any]] = [
     {"id": "pci_dss", "name": "PCI DSS v4.0.1", "category": "compliance", "status": "shipped"},
     {"id": "hipaa", "name": "HIPAA Security Rule", "category": "compliance", "status": "shipped"},
     {"id": "gdpr", "name": "GDPR", "category": "compliance", "status": "shipped"},
+    {"id": "dpdp_act_2023", "name": "India DPDP Act 2023", "category": "compliance", "status": "shipped", "hint": "Evidence-backed readiness — not legal compliance"},
+    {"id": "dpdp_rules_2025", "name": "India DPDP Rules 2025", "category": "compliance", "status": "shipped", "hint": "Phased commencement from 13 Nov 2025"},
     {"id": "nis2", "name": "NIS2 Directive", "category": "compliance", "status": "shipped"},
     {"id": "owasp_asvs", "name": "OWASP ASVS 5.0", "category": "compliance", "status": "shipped"},
     {"id": "owasp_top10", "name": "OWASP Top 10:2025", "category": "compliance", "status": "shipped"},

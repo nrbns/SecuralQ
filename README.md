@@ -170,6 +170,7 @@ Enroll in **Agents** → set `SECURAIQ_SERVER` + `SECURAIQ_TOKEN` → start pack
 
 - Web scans target **public web** URLs; network discovery is a **separate** engine — no silent internal mix-in.
 - Compliance scores **assess**; they do **not** certify.
+- **India DPDP** (`dpdp_act_2023` / `dpdp_rules_2025`) is an evidence-backed readiness pack with phased `effective_from` dates — not a legal compliance determination ([docs/DPDP.md](docs/DPDP.md)).
 - Do not claim “N thousand agents” without measured load results ([production-readiness](docs/production-readiness.md)).
 
 ---

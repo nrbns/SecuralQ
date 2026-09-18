@@ -2,7 +2,7 @@
 control inside each, actually works end-to-end through the real pipeline --
 not just a spot check on one or two frameworks.
 
-For each of the 14 catalogs (657 controls total as of this writing) this
+For each of the catalogs (controls across all frameworks) this
 file exercises the real code path a user hits: run a gap analysis against
 every single control, confirm the assessment round-trips, generate the
 framework-correct compliance document and action plan, build an audit pack,
@@ -53,9 +53,11 @@ GENERIC_EVIDENCE = (
 def test_catalog_covers_all_known_frameworks():
     """Sanity check on the fixture itself -- if a framework file is added or
     removed, this test (and the parametrized ones below) picks it up."""
-    assert len(ALL_FRAMEWORK_IDS) == 14
+    assert len(ALL_FRAMEWORK_IDS) == 16
     assert "cmmc_l2" in ALL_FRAMEWORK_IDS
     assert "iso27001" in ALL_FRAMEWORK_IDS
+    assert "dpdp_act_2023" in ALL_FRAMEWORK_IDS
+    assert "dpdp_rules_2025" in ALL_FRAMEWORK_IDS
 
 
 @pytest.mark.parametrize("framework_id", ALL_FRAMEWORK_IDS)

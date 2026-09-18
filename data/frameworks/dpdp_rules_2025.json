@@ -1,0 +1,516 @@
+{
+  "id": "dpdp_rules_2025",
+  "name": "India DPDP Rules 2025",
+  "version": "G.S.R. 846(E) / 2025",
+  "jurisdiction": "IN",
+  "family": "India DPDP",
+  "notified_on": "2025-11-13",
+  "phased_commencement": {
+    "gazette_publication": "2025-11-13",
+    "phase_a": {
+      "effective_from": "2025-11-13",
+      "rules": [
+        "1",
+        "2",
+        "17",
+        "18",
+        "19",
+        "20",
+        "21"
+      ]
+    },
+    "phase_b": {
+      "effective_from": "2026-11-13",
+      "rules": [
+        "4"
+      ]
+    },
+    "phase_c": {
+      "effective_from": "2027-05-13",
+      "rules": [
+        "3",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9",
+        "10",
+        "11",
+        "12",
+        "13",
+        "14",
+        "15",
+        "16",
+        "22",
+        "23"
+      ]
+    },
+    "note": "Rule 1(2)–(4): Rules 1, 2, 17–21 on Gazette publication; Rule 4 one year after; Rules 3, 5–16, 22 and 23 eighteen months after. Dates are computed from 13 November 2025 publication."
+  },
+  "description": "Digital Personal Data Protection Rules, 2025 — operational SecuraIQ control pack. Each control carries effective_from so SecuraIQ can evaluate readiness against the applicable commencement phase rather than treating every rule as immediately enforceable.",
+  "legal_disclaimer": "SecuraIQ produces an evidence-backed readiness assessment for authorised labs and customer-owned systems — not a determination that an organisation is legally 'DPDP compliant'. Significant Data Fiduciary (SDF) status and other applicability questions require human/legal review against the Act, Rules, and the organisation's circumstances. Official source of truth: MeitY / Gazette of India.",
+  "resources": [
+    {
+      "title": "Digital Personal Data Protection Rules, 2025 (MeitY / Gazette)",
+      "url": "https://www.meity.gov.in/documents/act-and-policies/digital-personal-data-protection-rules-2025-gDOxUjMtQWa",
+      "source": "Official (meity.gov.in)",
+      "note": "G.S.R. 846(E), 13 November 2025. Confirm corrigenda before relying on any rule text."
+    }
+  ],
+  "controls": [
+    {
+      "id": "Rule-1",
+      "title": "Short title and commencement tracking",
+      "domain": "Data governance",
+      "keywords": [
+        "commencement",
+        "phased",
+        "Gazette"
+      ],
+      "description": "Track which Rules are in force for the organisation's assessment date.",
+      "effective_from": "2025-11-13",
+      "source_ref": "DPDP Rules 2025 r.1"
+    },
+    {
+      "id": "Rule-2",
+      "title": "Definitions applied consistently",
+      "domain": "Data governance",
+      "keywords": [
+        "definitions",
+        "Data Fiduciary",
+        "Data Principal",
+        "verifiable consent"
+      ],
+      "description": "Use Act/Rules definitions consistently in policies, notices, and records.",
+      "effective_from": "2025-11-13",
+      "source_ref": "DPDP Rules 2025 r.2"
+    },
+    {
+      "id": "Rule-3",
+      "title": "Notice clear, standalone, and itemised",
+      "domain": "Notice & consent",
+      "keywords": [
+        "notice",
+        "standalone",
+        "itemised description",
+        "purpose",
+        "withdrawal link"
+      ],
+      "description": "Notices must be independently understandable; include itemised personal data and specified purposes; provide links/means for withdrawal, rights, and Board complaints.",
+      "effective_from": "2027-05-13",
+      "evidence_hints": [
+        "notice screenshot",
+        "itemised data list",
+        "purpose list",
+        "withdrawal URL"
+      ],
+      "source_ref": "DPDP Rules 2025 r.3"
+    },
+    {
+      "id": "Rule-4",
+      "title": "Consent Manager registration path",
+      "domain": "Notice & consent",
+      "keywords": [
+        "Consent Manager",
+        "registration",
+        "Board"
+      ],
+      "description": "If using a Consent Manager, ensure Board registration and First Schedule obligations are met.",
+      "effective_from": "2026-11-13",
+      "applicability": {
+        "uses_consent_manager": true
+      },
+      "evidence_hints": [
+        "Consent Manager registration",
+        "platform records"
+      ],
+      "source_ref": "DPDP Rules 2025 r.4"
+    },
+    {
+      "id": "Rule-5",
+      "title": "State subsidy/benefit processing controls",
+      "domain": "Data governance",
+      "keywords": [
+        "State",
+        "subsidy",
+        "benefit",
+        "licence",
+        "permit"
+      ],
+      "description": "Where processing for State subsidy/benefit/service/certificate/licence/permit, follow Rule 5 standards.",
+      "effective_from": "2027-05-13",
+      "applicability": {
+        "state_instrumentality_or_agent": true
+      },
+      "source_ref": "DPDP Rules 2025 r.5"
+    },
+    {
+      "id": "Rule-6",
+      "title": "Reasonable security safeguards",
+      "domain": "Security safeguards",
+      "keywords": [
+        "encryption",
+        "access control",
+        "logging",
+        "monitoring",
+        "backup",
+        "processor contract"
+      ],
+      "description": "Minimum safeguards include securing data (encryption/obfuscation/masking/tokens), access controls, visibility/logs for unauthorised access detection, continuity backups, processor contractual safeguards, and organisational measures.",
+      "effective_from": "2027-05-13",
+      "evidence_hints": [
+        "encryption evidence",
+        "IAM/MFA",
+        "access logs",
+        "backup/restore drill",
+        "processor security clauses"
+      ],
+      "source_ref": "DPDP Rules 2025 r.6"
+    },
+    {
+      "id": "Rule-6-Encryption",
+      "title": "Personal data secured at rest/in transit",
+      "domain": "Security safeguards",
+      "keywords": [
+        "encryption",
+        "masking",
+        "tokenisation",
+        "obfuscation"
+      ],
+      "description": "Demonstrate securing of personal data through encryption, obfuscation, masking, or virtual tokens.",
+      "effective_from": "2027-05-13",
+      "evidence_hints": [
+        "disk encryption",
+        "TLS",
+        "field-level controls"
+      ],
+      "source_ref": "DPDP Rules 2025 r.6(1)(a)"
+    },
+    {
+      "id": "Rule-6-Access",
+      "title": "Access control and authentication for personal data",
+      "domain": "Security safeguards",
+      "keywords": [
+        "access control",
+        "authentication",
+        "least privilege",
+        "MFA"
+      ],
+      "description": "Appropriate access controls covering processing by the Fiduciary and its Processors.",
+      "effective_from": "2027-05-13",
+      "evidence_hints": [
+        "RBAC",
+        "MFA config",
+        "privileged account inventory",
+        "access review"
+      ],
+      "source_ref": "DPDP Rules 2025 r.6(1)(b)"
+    },
+    {
+      "id": "Rule-6-Logging",
+      "title": "Logging and monitoring of personal data access",
+      "domain": "Security safeguards",
+      "keywords": [
+        "logging",
+        "monitoring",
+        "unauthorised access",
+        "SIEM"
+      ],
+      "description": "Maintain visibility via logs/monitoring/review to detect, investigate, and remediate unauthorised access.",
+      "effective_from": "2027-05-13",
+      "evidence_hints": [
+        "log sources",
+        "alert rules",
+        "investigation tickets"
+      ],
+      "source_ref": "DPDP Rules 2025 r.6(1)(c)"
+    },
+    {
+      "id": "Rule-6-Backup",
+      "title": "Backup and continuity for personal data systems",
+      "domain": "Security safeguards",
+      "keywords": [
+        "backup",
+        "recovery",
+        "continuity",
+        "resilience"
+      ],
+      "description": "Ensure continuity of processing / resilience including backups for systems processing personal data.",
+      "effective_from": "2027-05-13",
+      "evidence_hints": [
+        "backup jobs",
+        "restore test evidence"
+      ],
+      "source_ref": "DPDP Rules 2025 r.6(1)(d)"
+    },
+    {
+      "id": "Rule-7",
+      "title": "Intimation of personal data breach",
+      "domain": "Breach management",
+      "keywords": [
+        "breach",
+        "Board",
+        "Data Principal",
+        "72 hours",
+        "notification"
+      ],
+      "description": "On awareness of a personal data breach: intimate affected Data Principals without delay; intimate the Board without delay and with detailed follow-up within 72 hours (or longer period allowed).",
+      "effective_from": "2027-05-13",
+      "evidence_hints": [
+        "breach playbook",
+        "notification templates",
+        "timeline evidence"
+      ],
+      "source_ref": "DPDP Rules 2025 r.7"
+    },
+    {
+      "id": "Rule-8",
+      "title": "Time periods for specified purpose erasure",
+      "domain": "Retention / deletion",
+      "keywords": [
+        "retention",
+        "erasure",
+        "Third Schedule",
+        "purpose complete"
+      ],
+      "description": "Erase personal data when Third Schedule time periods / purpose-completion rules require, unless law requires retention.",
+      "effective_from": "2027-05-13",
+      "evidence_hints": [
+        "retention schedule",
+        "erasure jobs",
+        "deletion verification"
+      ],
+      "source_ref": "DPDP Rules 2025 r.8"
+    },
+    {
+      "id": "Rule-8-Logs",
+      "title": "Processing/traffic log retention minimum",
+      "domain": "Retention / deletion",
+      "keywords": [
+        "traffic data",
+        "logs",
+        "one year",
+        "Seventh Schedule"
+      ],
+      "description": "Retain processing/traffic/other logs for at least one year (Seventh Schedule purposes) then erase unless law requires otherwise.",
+      "effective_from": "2027-05-13",
+      "evidence_hints": [
+        "log retention config",
+        "purge evidence"
+      ],
+      "source_ref": "DPDP Rules 2025 r.8(3)"
+    },
+    {
+      "id": "Rule-9",
+      "title": "Contact information of Data Protection Officer / responsible contact",
+      "domain": "Data governance",
+      "keywords": [
+        "DPO",
+        "contact",
+        "Data Fiduciary contact"
+      ],
+      "description": "Publish contact details of DPO (if any) or other person able to answer Data Principal questions.",
+      "effective_from": "2027-05-13",
+      "evidence_hints": [
+        "published contact",
+        "DPO record"
+      ],
+      "source_ref": "DPDP Rules 2025 r.9"
+    },
+    {
+      "id": "Rule-10",
+      "title": "Verifiable consent for processing children's data",
+      "domain": "Children",
+      "keywords": [
+        "child",
+        "verifiable consent",
+        "parent",
+        "age verification"
+      ],
+      "description": "Adopt technical/organisational measures for verifiable parental consent and due diligence that the parent is an adult identifiable if required.",
+      "effective_from": "2027-05-13",
+      "applicability": {
+        "children_processing": true
+      },
+      "evidence_hints": [
+        "age assurance",
+        "parent verification",
+        "consent artifacts"
+      ],
+      "source_ref": "DPDP Rules 2025 r.10"
+    },
+    {
+      "id": "Rule-11",
+      "title": "Verifiable consent for persons with disability (guardian)",
+      "domain": "Children",
+      "keywords": [
+        "guardian",
+        "disability",
+        "verifiable consent"
+      ],
+      "description": "When obtaining guardian consent for a person with disability, verify guardian appointment under applicable law.",
+      "effective_from": "2027-05-13",
+      "applicability": {
+        "processes_persons_with_disability_via_guardian": true
+      },
+      "source_ref": "DPDP Rules 2025 r.11"
+    },
+    {
+      "id": "Rule-12",
+      "title": "Exemptions relating to processing of children's data",
+      "domain": "Children",
+      "keywords": [
+        "children exemption",
+        "Second Schedule",
+        "educational"
+      ],
+      "description": "If relying on Second Schedule exemptions, document class of Fiduciary and restricted purposes.",
+      "effective_from": "2027-05-13",
+      "applicability": {
+        "children_processing": true
+      },
+      "source_ref": "DPDP Rules 2025 r.12"
+    },
+    {
+      "id": "Rule-13",
+      "title": "Additional obligations of Significant Data Fiduciary",
+      "domain": "Significant Data Fiduciary",
+      "keywords": [
+        "SDF",
+        "DPIA",
+        "audit",
+        "algorithmic",
+        "cross-border restriction"
+      ],
+      "description": "SDF (only if applicable): annual DPIA + audit; algorithmic due diligence; process government-specified data without transfer outside India when required.",
+      "effective_from": "2027-05-13",
+      "applicability": {
+        "significant_data_fiduciary": "conditional"
+      },
+      "evidence_hints": [
+        "SDF notice",
+        "DPIA",
+        "independent audit",
+        "transfer restrictions"
+      ],
+      "source_ref": "DPDP Rules 2025 r.13"
+    },
+    {
+      "id": "Rule-14",
+      "title": "Rights of Data Principals — request mechanism",
+      "domain": "Data Principal rights",
+      "keywords": [
+        "rights request",
+        "access",
+        "correction",
+        "erasure",
+        "grievance"
+      ],
+      "description": "Publish means and particulars for Data Principals to exercise rights; identify and respond to requests.",
+      "effective_from": "2027-05-13",
+      "evidence_hints": [
+        "rights portal",
+        "request tracker",
+        "SLA metrics"
+      ],
+      "source_ref": "DPDP Rules 2025 r.14"
+    },
+    {
+      "id": "Rule-15",
+      "title": "Consent Manager obligations (platform)",
+      "domain": "Notice & consent",
+      "keywords": [
+        "Consent Manager",
+        "interop",
+        "consent record",
+        "seven years"
+      ],
+      "description": "Consent Managers must enable give/manage/review/withdraw consent and retain required records (at least seven years unless otherwise agreed/required).",
+      "effective_from": "2027-05-13",
+      "applicability": {
+        "uses_consent_manager": true
+      },
+      "source_ref": "DPDP Rules 2025 r.15 / First Schedule"
+    },
+    {
+      "id": "Rule-16",
+      "title": "Processing for research/archiving/statistics standards",
+      "domain": "Data governance",
+      "keywords": [
+        "research",
+        "archiving",
+        "statistics",
+        "Second Schedule standards"
+      ],
+      "description": "Where processing for research/archiving/statistical purposes under applicable standards, document necessity and safeguards.",
+      "effective_from": "2027-05-13",
+      "applicability": {
+        "research_archiving_stats": true
+      },
+      "source_ref": "DPDP Rules 2025 r.16"
+    },
+    {
+      "id": "Rule-17",
+      "title": "Calling of information by Central Government",
+      "domain": "Data governance",
+      "keywords": [
+        "Central Government",
+        "information request"
+      ],
+      "description": "Have a process to respond to lawful Central Government information calls under the Rules.",
+      "effective_from": "2025-11-13",
+      "source_ref": "DPDP Rules 2025 r.17"
+    },
+    {
+      "id": "Rule-22",
+      "title": "Techno-legal measures / Board proceedings digitisation",
+      "domain": "Data governance",
+      "keywords": [
+        "techno-legal",
+        "Board",
+        "digital proceedings"
+      ],
+      "description": "Track techno-legal measures expectations as Board digitisation provisions commence.",
+      "effective_from": "2027-05-13",
+      "source_ref": "DPDP Rules 2025 r.22"
+    },
+    {
+      "id": "Rule-Inventory",
+      "title": "Personal data inventory and classification",
+      "domain": "Data governance",
+      "keywords": [
+        "data inventory",
+        "classification",
+        "personal data",
+        "data map"
+      ],
+      "description": "Maintain an inventory of personal data elements, systems, purposes, and classifications — prerequisite for notice, retention, and rights.",
+      "effective_from": "2027-05-13",
+      "evidence_hints": [
+        "data inventory records",
+        "classification tags",
+        "system mapping"
+      ],
+      "source_ref": "Operational prerequisite (Act duties + Rules 3/6/8/14)"
+    },
+    {
+      "id": "Rule-Processors",
+      "title": "Processor inventory and contractual safeguards",
+      "domain": "Processor management",
+      "keywords": [
+        "processor inventory",
+        "sub-processor",
+        "contract",
+        "security requirements"
+      ],
+      "description": "Inventory Data Processors/sub-processors; ensure contracts include purpose, data categories, and reasonable security safeguards.",
+      "effective_from": "2027-05-13",
+      "evidence_hints": [
+        "processor register",
+        "DPAs",
+        "offboarding checklist"
+      ],
+      "source_ref": "DPDP Rules 2025 r.6(1)(f) + Act s.8"
+    }
+  ]
+}

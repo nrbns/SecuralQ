@@ -23,6 +23,11 @@ def c(
     sprs_weight: int | None = None,
     cmmc_level1: bool | None = None,
     poam_eligible: bool | None = None,
+    *,
+    effective_from: str | None = None,
+    applicability: dict | None = None,
+    evidence_hints: list[str] | None = None,
+    source_ref: str | None = None,
 ) -> dict:
     row: dict = {"id": cid, "title": title, "domain": domain, "keywords": keywords}
     if description:
@@ -34,7 +39,31 @@ def c(
         row["cmmc_level1"] = cmmc_level1
     if poam_eligible is not None:
         row["poam_eligible"] = poam_eligible
+    # DPDP / phased-commencement metadata (and reusable by other jurisdictions).
+    if effective_from:
+        row["effective_from"] = effective_from
+    if applicability:
+        row["applicability"] = applicability
+    if evidence_hints:
+        row["evidence_hints"] = list(evidence_hints)
+    if source_ref:
+        row["source_ref"] = source_ref
     return row
+
+
+_DPDP_LEGAL_DISCLAIMER = (
+    "SecuraIQ produces an evidence-backed readiness assessment for authorised labs and "
+    "customer-owned systems — not a determination that an organisation is legally "
+    "'DPDP compliant'. Significant Data Fiduciary (SDF) status and other applicability "
+    "questions require human/legal review against the Act, Rules, and the organisation's "
+    "circumstances. Official source of truth: MeitY / Gazette of India."
+)
+
+# DPDP Rules, 2025 (G.S.R. 846(E)) — Gazette publication 13 November 2025.
+_DPDP_GAZETTE = "2025-11-13"
+_DPDP_PHASE_A = "2025-11-13"  # Rules 1, 2, 17–21
+_DPDP_PHASE_B = "2026-11-13"  # Rule 4 (one year after publication)
+_DPDP_PHASE_C = "2027-05-13"  # Rules 3, 5–16, 22, 23 (eighteen months after)
 
 
 def iso27001() -> dict:
@@ -934,6 +963,301 @@ def owasp_top10() -> dict:
     }
 
 
+def dpdp_act_2023() -> dict:
+    """India DPDP Act 2023 — operational control pack (not a substitute for the Act text)."""
+    sdf = {"significant_data_fiduciary": "conditional"}
+    return {
+        "id": "dpdp_act_2023",
+        "name": "India DPDP Act 2023",
+        "version": "Act No. 22 of 2023",
+        "jurisdiction": "IN",
+        "family": "India DPDP",
+        "notified_on": "2023-08-11",
+        "description": (
+            "Digital Personal Data Protection Act, 2023 — operational SecuraIQ control pack "
+            "covering fiduciary duties, children's data, Significant Data Fiduciary "
+            "obligations (conditional), Data Principal rights, and breach-related duties. "
+            "Use with dpdp_rules_2025 for procedural detail and phased commencement."
+        ),
+        "legal_disclaimer": _DPDP_LEGAL_DISCLAIMER,
+        "resources": [
+            {
+                "title": "Digital Personal Data Protection Act, 2023 (MeitY)",
+                "url": "https://www.meity.gov.in/",
+                "source": "Official (meity.gov.in)",
+                "note": "Primary statute. Confirm current commencement notifications before treating any section as enforceable.",
+            }
+        ],
+        "controls": [
+            c("Act-4", "Grounds for processing personal data", "Data governance",
+              ["lawful processing", "consent", "legitimate use", "purpose"],
+              "Process personal data only for a lawful purpose under the Act (consent or legitimate use).",
+              evidence_hints=["processing activity register", "purpose statements", "lawful-basis records"],
+              source_ref="DPDP Act 2023 s.4"),
+            c("Act-5", "Notice for consent-based processing", "Notice & consent",
+              ["notice", "consent", "informed", "purpose", "itemised"],
+              "Before seeking consent, give the Data Principal the notice required by the Act/Rules.",
+              evidence_hints=["privacy notice", "consent capture UI", "notice version history"],
+              source_ref="DPDP Act 2023 s.5"),
+            c("Act-6", "Legitimate uses", "Data governance",
+              ["legitimate use", "employment", "medical emergency", "state function"],
+              "Document when processing relies on a legitimate use rather than consent.",
+              evidence_hints=["legitimate-use register", "policy exceptions"],
+              source_ref="DPDP Act 2023 s.6"),
+            c("Act-7", "Consent withdrawal and effect", "Notice & consent",
+              ["withdraw consent", "withdrawal", "comparable ease"],
+              "Enable withdrawal of consent with ease comparable to giving consent; cease processing that depended on that consent.",
+              evidence_hints=["withdrawal mechanism", "withdrawal logs", "downstream processor notices"],
+              source_ref="DPDP Act 2023 s.7"),
+            c("Act-8", "General obligations of Data Fiduciary", "Security safeguards",
+              ["Data Fiduciary", "security safeguards", "purpose limitation", "accuracy", "erasure"],
+              "Implement organisational/technical measures: purpose limitation, data accuracy, security safeguards, erasure when purpose ends (unless retention required by law).",
+              evidence_hints=["security baseline", "access control", "encryption", "retention schedule", "deletion evidence"],
+              source_ref="DPDP Act 2023 s.8"),
+            c("Act-9", "Processing of personal data of children", "Children",
+              ["child", "parental consent", "verifiable consent", "tracking"],
+              "Obtain verifiable parental/guardian consent before processing a child's personal data; observe restrictions on tracking/behavioural monitoring and targeted advertising.",
+              applicability={"children_processing": True},
+              evidence_hints=["age gate", "parental consent flow", "restriction controls"],
+              source_ref="DPDP Act 2023 s.9"),
+            c("Act-10", "Additional obligations of Significant Data Fiduciary", "Significant Data Fiduciary",
+              ["Significant Data Fiduciary", "SDF", "DPO", "independent audit", "DPIA"],
+              "If notified/classified as SDF: appoint DPO, appoint independent data auditor, undertake DPIA and periodic audits as required.",
+              applicability=sdf,
+              evidence_hints=["SDF determination record", "DPO appointment", "audit reports", "DPIA"],
+              source_ref="DPDP Act 2023 s.10"),
+            c("Act-11", "Right to access information", "Data Principal rights",
+              ["right to access", "Data Principal", "summary of processing"],
+              "Provide Data Principals a means to obtain a summary of personal data being processed and of processing activities.",
+              evidence_hints=["DSAR portal", "request tickets", "response SLA metrics"],
+              source_ref="DPDP Act 2023 s.11"),
+            c("Act-12", "Right to correction and erasure", "Data Principal rights",
+              ["correction", "erasure", "deletion", "update"],
+              "Enable correction, completion, updating, and erasure of personal data as provided under the Act.",
+              evidence_hints=["correction workflow", "erasure workflow", "deletion verification"],
+              source_ref="DPDP Act 2023 s.12"),
+            c("Act-13", "Right of grievance redressal", "Data Principal rights",
+              ["grievance", "complaint", "redressal", "response"],
+              "Publish and operate a grievance redressal mechanism for Data Principals.",
+              evidence_hints=["grievance channel", "SLA tracking", "closure evidence"],
+              source_ref="DPDP Act 2023 s.13"),
+            c("Act-14", "Right to nominate", "Data Principal rights",
+              ["nominate", "nominee", "death", "incapacity"],
+              "Allow Data Principals to nominate another individual to exercise rights in case of death or incapacity.",
+              evidence_hints=["nomination UI", "nominee records"],
+              source_ref="DPDP Act 2023 s.14"),
+            c("Act-15", "Duties of Data Principal", "Data Principal rights",
+              ["Data Principal duties", "false information", "impersonation"],
+              "Ensure request workflows discourage false statements / impersonation and record identity assurance steps.",
+              evidence_hints=["identity verification steps", "abuse controls"],
+              source_ref="DPDP Act 2023 s.15"),
+            c("Act-16", "Transfer of personal data outside India", "Processor management",
+              ["cross-border", "transfer", "blacklisted country", "outside India"],
+              "Do not transfer personal data to countries/territories restricted by the Central Government.",
+              evidence_hints=["transfer map", "processor locations", "restriction register"],
+              source_ref="DPDP Act 2023 s.16"),
+            c("Act-8-Processor", "Engagement of Data Processor", "Processor management",
+              ["Data Processor", "contract", "processor agreement", "instructions"],
+              "Where a Data Processor is engaged, ensure processing is under a valid contract/arrangement and security obligations flow down.",
+              evidence_hints=["processor inventory", "contracts", "security schedules", "offboarding"],
+              source_ref="DPDP Act 2023 s.8 (processor)"),
+            c("Act-Breach", "Personal data breach readiness (Act duties)", "Breach management",
+              ["personal data breach", "Board", "intimations", "incident"],
+              "Maintain capability to detect, assess, and intimate personal data breaches as required once corresponding Rules apply.",
+              evidence_hints=["incident runbook", "breach register", "notification templates"],
+              source_ref="DPDP Act 2023 (breach duties; see Rules)"),
+        ],
+    }
+
+
+def dpdp_rules_2025() -> dict:
+    """India DPDP Rules 2025 — procedural controls with phased effective_from dates."""
+    sdf = {"significant_data_fiduciary": "conditional"}
+    return {
+        "id": "dpdp_rules_2025",
+        "name": "India DPDP Rules 2025",
+        "version": "G.S.R. 846(E) / 2025",
+        "jurisdiction": "IN",
+        "family": "India DPDP",
+        "notified_on": _DPDP_GAZETTE,
+        "phased_commencement": {
+            "gazette_publication": _DPDP_GAZETTE,
+            "phase_a": {"effective_from": _DPDP_PHASE_A, "rules": ["1", "2", "17", "18", "19", "20", "21"]},
+            "phase_b": {"effective_from": _DPDP_PHASE_B, "rules": ["4"]},
+            "phase_c": {
+                "effective_from": _DPDP_PHASE_C,
+                "rules": ["3", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "22", "23"],
+            },
+            "note": (
+                "Rule 1(2)–(4): Rules 1, 2, 17–21 on Gazette publication; Rule 4 one year after; "
+                "Rules 3, 5–16, 22 and 23 eighteen months after. Dates are computed from "
+                "13 November 2025 publication."
+            ),
+        },
+        "description": (
+            "Digital Personal Data Protection Rules, 2025 — operational SecuraIQ control pack. "
+            "Each control carries effective_from so SecuraIQ can evaluate readiness against the "
+            "applicable commencement phase rather than treating every rule as immediately enforceable."
+        ),
+        "legal_disclaimer": _DPDP_LEGAL_DISCLAIMER,
+        "resources": [
+            {
+                "title": "Digital Personal Data Protection Rules, 2025 (MeitY / Gazette)",
+                "url": "https://www.meity.gov.in/documents/act-and-policies/digital-personal-data-protection-rules-2025-gDOxUjMtQWa",
+                "source": "Official (meity.gov.in)",
+                "note": "G.S.R. 846(E), 13 November 2025. Confirm corrigenda before relying on any rule text.",
+            }
+        ],
+        "controls": [
+            c("Rule-1", "Short title and commencement tracking", "Data governance",
+              ["commencement", "phased", "Gazette"],
+              "Track which Rules are in force for the organisation's assessment date.",
+              effective_from=_DPDP_PHASE_A, source_ref="DPDP Rules 2025 r.1"),
+            c("Rule-2", "Definitions applied consistently", "Data governance",
+              ["definitions", "Data Fiduciary", "Data Principal", "verifiable consent"],
+              "Use Act/Rules definitions consistently in policies, notices, and records.",
+              effective_from=_DPDP_PHASE_A, source_ref="DPDP Rules 2025 r.2"),
+            c("Rule-3", "Notice clear, standalone, and itemised", "Notice & consent",
+              ["notice", "standalone", "itemised description", "purpose", "withdrawal link"],
+              "Notices must be independently understandable; include itemised personal data and specified purposes; provide links/means for withdrawal, rights, and Board complaints.",
+              effective_from=_DPDP_PHASE_C,
+              evidence_hints=["notice screenshot", "itemised data list", "purpose list", "withdrawal URL"],
+              source_ref="DPDP Rules 2025 r.3"),
+            c("Rule-4", "Consent Manager registration path", "Notice & consent",
+              ["Consent Manager", "registration", "Board"],
+              "If using a Consent Manager, ensure Board registration and First Schedule obligations are met.",
+              effective_from=_DPDP_PHASE_B,
+              applicability={"uses_consent_manager": True},
+              evidence_hints=["Consent Manager registration", "platform records"],
+              source_ref="DPDP Rules 2025 r.4"),
+            c("Rule-5", "State subsidy/benefit processing controls", "Data governance",
+              ["State", "subsidy", "benefit", "licence", "permit"],
+              "Where processing for State subsidy/benefit/service/certificate/licence/permit, follow Rule 5 standards.",
+              effective_from=_DPDP_PHASE_C,
+              applicability={"state_instrumentality_or_agent": True},
+              source_ref="DPDP Rules 2025 r.5"),
+            c("Rule-6", "Reasonable security safeguards", "Security safeguards",
+              ["encryption", "access control", "logging", "monitoring", "backup", "processor contract"],
+              "Minimum safeguards include securing data (encryption/obfuscation/masking/tokens), access controls, visibility/logs for unauthorised access detection, continuity backups, processor contractual safeguards, and organisational measures.",
+              effective_from=_DPDP_PHASE_C,
+              evidence_hints=["encryption evidence", "IAM/MFA", "access logs", "backup/restore drill", "processor security clauses"],
+              source_ref="DPDP Rules 2025 r.6"),
+            c("Rule-6-Encryption", "Personal data secured at rest/in transit", "Security safeguards",
+              ["encryption", "masking", "tokenisation", "obfuscation"],
+              "Demonstrate securing of personal data through encryption, obfuscation, masking, or virtual tokens.",
+              effective_from=_DPDP_PHASE_C,
+              evidence_hints=["disk encryption", "TLS", "field-level controls"],
+              source_ref="DPDP Rules 2025 r.6(1)(a)"),
+            c("Rule-6-Access", "Access control and authentication for personal data", "Security safeguards",
+              ["access control", "authentication", "least privilege", "MFA"],
+              "Appropriate access controls covering processing by the Fiduciary and its Processors.",
+              effective_from=_DPDP_PHASE_C,
+              evidence_hints=["RBAC", "MFA config", "privileged account inventory", "access review"],
+              source_ref="DPDP Rules 2025 r.6(1)(b)"),
+            c("Rule-6-Logging", "Logging and monitoring of personal data access", "Security safeguards",
+              ["logging", "monitoring", "unauthorised access", "SIEM"],
+              "Maintain visibility via logs/monitoring/review to detect, investigate, and remediate unauthorised access.",
+              effective_from=_DPDP_PHASE_C,
+              evidence_hints=["log sources", "alert rules", "investigation tickets"],
+              source_ref="DPDP Rules 2025 r.6(1)(c)"),
+            c("Rule-6-Backup", "Backup and continuity for personal data systems", "Security safeguards",
+              ["backup", "recovery", "continuity", "resilience"],
+              "Ensure continuity of processing / resilience including backups for systems processing personal data.",
+              effective_from=_DPDP_PHASE_C,
+              evidence_hints=["backup jobs", "restore test evidence"],
+              source_ref="DPDP Rules 2025 r.6(1)(d)"),
+            c("Rule-7", "Intimation of personal data breach", "Breach management",
+              ["breach", "Board", "Data Principal", "72 hours", "notification"],
+              "On awareness of a personal data breach: intimate affected Data Principals without delay; intimate the Board without delay and with detailed follow-up within 72 hours (or longer period allowed).",
+              effective_from=_DPDP_PHASE_C,
+              evidence_hints=["breach playbook", "notification templates", "timeline evidence"],
+              source_ref="DPDP Rules 2025 r.7"),
+            c("Rule-8", "Time periods for specified purpose erasure", "Retention / deletion",
+              ["retention", "erasure", "Third Schedule", "purpose complete"],
+              "Erase personal data when Third Schedule time periods / purpose-completion rules require, unless law requires retention.",
+              effective_from=_DPDP_PHASE_C,
+              evidence_hints=["retention schedule", "erasure jobs", "deletion verification"],
+              source_ref="DPDP Rules 2025 r.8"),
+            c("Rule-8-Logs", "Processing/traffic log retention minimum", "Retention / deletion",
+              ["traffic data", "logs", "one year", "Seventh Schedule"],
+              "Retain processing/traffic/other logs for at least one year (Seventh Schedule purposes) then erase unless law requires otherwise.",
+              effective_from=_DPDP_PHASE_C,
+              evidence_hints=["log retention config", "purge evidence"],
+              source_ref="DPDP Rules 2025 r.8(3)"),
+            c("Rule-9", "Contact information of Data Protection Officer / responsible contact", "Data governance",
+              ["DPO", "contact", "Data Fiduciary contact"],
+              "Publish contact details of DPO (if any) or other person able to answer Data Principal questions.",
+              effective_from=_DPDP_PHASE_C,
+              evidence_hints=["published contact", "DPO record"],
+              source_ref="DPDP Rules 2025 r.9"),
+            c("Rule-10", "Verifiable consent for processing children's data", "Children",
+              ["child", "verifiable consent", "parent", "age verification"],
+              "Adopt technical/organisational measures for verifiable parental consent and due diligence that the parent is an adult identifiable if required.",
+              effective_from=_DPDP_PHASE_C,
+              applicability={"children_processing": True},
+              evidence_hints=["age assurance", "parent verification", "consent artifacts"],
+              source_ref="DPDP Rules 2025 r.10"),
+            c("Rule-11", "Verifiable consent for persons with disability (guardian)", "Children",
+              ["guardian", "disability", "verifiable consent"],
+              "When obtaining guardian consent for a person with disability, verify guardian appointment under applicable law.",
+              effective_from=_DPDP_PHASE_C,
+              applicability={"processes_persons_with_disability_via_guardian": True},
+              source_ref="DPDP Rules 2025 r.11"),
+            c("Rule-12", "Exemptions relating to processing of children's data", "Children",
+              ["children exemption", "Second Schedule", "educational"],
+              "If relying on Second Schedule exemptions, document class of Fiduciary and restricted purposes.",
+              effective_from=_DPDP_PHASE_C,
+              applicability={"children_processing": True},
+              source_ref="DPDP Rules 2025 r.12"),
+            c("Rule-13", "Additional obligations of Significant Data Fiduciary", "Significant Data Fiduciary",
+              ["SDF", "DPIA", "audit", "algorithmic", "cross-border restriction"],
+              "SDF (only if applicable): annual DPIA + audit; algorithmic due diligence; process government-specified data without transfer outside India when required.",
+              effective_from=_DPDP_PHASE_C,
+              applicability=sdf,
+              evidence_hints=["SDF notice", "DPIA", "independent audit", "transfer restrictions"],
+              source_ref="DPDP Rules 2025 r.13"),
+            c("Rule-14", "Rights of Data Principals — request mechanism", "Data Principal rights",
+              ["rights request", "access", "correction", "erasure", "grievance"],
+              "Publish means and particulars for Data Principals to exercise rights; identify and respond to requests.",
+              effective_from=_DPDP_PHASE_C,
+              evidence_hints=["rights portal", "request tracker", "SLA metrics"],
+              source_ref="DPDP Rules 2025 r.14"),
+            c("Rule-15", "Consent Manager obligations (platform)", "Notice & consent",
+              ["Consent Manager", "interop", "consent record", "seven years"],
+              "Consent Managers must enable give/manage/review/withdraw consent and retain required records (at least seven years unless otherwise agreed/required).",
+              effective_from=_DPDP_PHASE_C,
+              applicability={"uses_consent_manager": True},
+              source_ref="DPDP Rules 2025 r.15 / First Schedule"),
+            c("Rule-16", "Processing for research/archiving/statistics standards", "Data governance",
+              ["research", "archiving", "statistics", "Second Schedule standards"],
+              "Where processing for research/archiving/statistical purposes under applicable standards, document necessity and safeguards.",
+              effective_from=_DPDP_PHASE_C,
+              applicability={"research_archiving_stats": True},
+              source_ref="DPDP Rules 2025 r.16"),
+            c("Rule-17", "Calling of information by Central Government", "Data governance",
+              ["Central Government", "information request"],
+              "Have a process to respond to lawful Central Government information calls under the Rules.",
+              effective_from=_DPDP_PHASE_A, source_ref="DPDP Rules 2025 r.17"),
+            c("Rule-22", "Techno-legal measures / Board proceedings digitisation", "Data governance",
+              ["techno-legal", "Board", "digital proceedings"],
+              "Track techno-legal measures expectations as Board digitisation provisions commence.",
+              effective_from=_DPDP_PHASE_C, source_ref="DPDP Rules 2025 r.22"),
+            c("Rule-Inventory", "Personal data inventory and classification", "Data governance",
+              ["data inventory", "classification", "personal data", "data map"],
+              "Maintain an inventory of personal data elements, systems, purposes, and classifications — prerequisite for notice, retention, and rights.",
+              effective_from=_DPDP_PHASE_C,
+              evidence_hints=["data inventory records", "classification tags", "system mapping"],
+              source_ref="Operational prerequisite (Act duties + Rules 3/6/8/14)"),
+            c("Rule-Processors", "Processor inventory and contractual safeguards", "Processor management",
+              ["processor inventory", "sub-processor", "contract", "security requirements"],
+              "Inventory Data Processors/sub-processors; ensure contracts include purpose, data categories, and reasonable security safeguards.",
+              effective_from=_DPDP_PHASE_C,
+              evidence_hints=["processor register", "DPAs", "offboarding checklist"],
+              source_ref="DPDP Rules 2025 r.6(1)(f) + Act s.8"),
+        ],
+    }
+
+
 def main() -> None:
     ROOT.mkdir(parents=True, exist_ok=True)
     for builder in (
@@ -951,6 +1275,8 @@ def main() -> None:
         cmmc_l2,
         nis2,
         owasp_top10,
+        dpdp_act_2023,
+        dpdp_rules_2025,
     ):
         dump(builder())
 

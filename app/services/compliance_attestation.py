@@ -105,6 +105,30 @@ FRAMEWORK_ATTESTATION_PROFILES: dict[str, dict[str, Any]] = {
         "mandated": False,
         "cadence_note": "GDPR sets no fixed review interval -- annual review, or review on material change to processing, is standard practice.",
     },
+    "dpdp_act_2023": {
+        "attestation_label": "DPDP Act readiness review sign-off",
+        "reassessment_label": "DPDP Act control reassessment",
+        "affirmation_cycle_days": ANNUAL_DAYS,
+        "reassessment_cycle_days": ANNUAL_DAYS,
+        "mandated": False,
+        "cadence_note": (
+            "SecuraIQ records an evidence-backed readiness review — not a Board determination "
+            "of legal compliance. Align reassessment to Rules commencement phases and material "
+            "changes in processing. SDF applicability must be set by human/legal review."
+        ),
+    },
+    "dpdp_rules_2025": {
+        "attestation_label": "DPDP Rules readiness review sign-off",
+        "reassessment_label": "DPDP Rules control reassessment",
+        "affirmation_cycle_days": ANNUAL_DAYS,
+        "reassessment_cycle_days": ANNUAL_DAYS,
+        "mandated": False,
+        "cadence_note": (
+            "Rules commenced in phases from Gazette publication 13 Nov 2025 (Rules 1, 2, 17–21), "
+            "Rule 4 one year later, and Rules 3, 5–16, 22–23 eighteen months later. Review against "
+            "the applicable effective_from dates — SecuraIQ does not declare legal compliance."
+        ),
+    },
     "nis2": {
         "attestation_label": "Risk-management measures review sign-off",
         "reassessment_label": "Article 21 risk-management review",

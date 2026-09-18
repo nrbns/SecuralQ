@@ -101,6 +101,24 @@ FRAMEWORK_DOCS: dict[str, dict[str, str]] = {
         ),
         "plan_caveat": "not a supervisory-authority-accepted remediation record",
     },
+    "dpdp_act_2023": {
+        "report_kind": "DPDP Act Readiness Report",
+        "plan_kind": "Corrective Action Plan",
+        "report_caveat": (
+            "not a determination of legal compliance under the Digital Personal Data Protection "
+            "Act, 2023, and not a filing with the Data Protection Board of India"
+        ),
+        "plan_caveat": "not a Board-accepted remediation record",
+    },
+    "dpdp_rules_2025": {
+        "report_kind": "DPDP Rules Readiness Report",
+        "plan_kind": "Corrective Action Plan",
+        "report_caveat": (
+            "not a determination of legal compliance under the Digital Personal Data Protection "
+            "Rules, 2025 — evaluate controls against each rule's effective_from / phased commencement"
+        ),
+        "plan_caveat": "not a Board-accepted remediation record",
+    },
     "nis2": {
         "report_kind": "Article 21 Risk-Management Measures Report",
         "plan_kind": "Corrective Action Plan",

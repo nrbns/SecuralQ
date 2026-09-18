@@ -1,0 +1,297 @@
+{
+  "id": "dpdp_act_2023",
+  "name": "India DPDP Act 2023",
+  "version": "Act No. 22 of 2023",
+  "jurisdiction": "IN",
+  "family": "India DPDP",
+  "notified_on": "2023-08-11",
+  "description": "Digital Personal Data Protection Act, 2023 — operational SecuraIQ control pack covering fiduciary duties, children's data, Significant Data Fiduciary obligations (conditional), Data Principal rights, and breach-related duties. Use with dpdp_rules_2025 for procedural detail and phased commencement.",
+  "legal_disclaimer": "SecuraIQ produces an evidence-backed readiness assessment for authorised labs and customer-owned systems — not a determination that an organisation is legally 'DPDP compliant'. Significant Data Fiduciary (SDF) status and other applicability questions require human/legal review against the Act, Rules, and the organisation's circumstances. Official source of truth: MeitY / Gazette of India.",
+  "resources": [
+    {
+      "title": "Digital Personal Data Protection Act, 2023 (MeitY)",
+      "url": "https://www.meity.gov.in/",
+      "source": "Official (meity.gov.in)",
+      "note": "Primary statute. Confirm current commencement notifications before treating any section as enforceable."
+    }
+  ],
+  "controls": [
+    {
+      "id": "Act-4",
+      "title": "Grounds for processing personal data",
+      "domain": "Data governance",
+      "keywords": [
+        "lawful processing",
+        "consent",
+        "legitimate use",
+        "purpose"
+      ],
+      "description": "Process personal data only for a lawful purpose under the Act (consent or legitimate use).",
+      "evidence_hints": [
+        "processing activity register",
+        "purpose statements",
+        "lawful-basis records"
+      ],
+      "source_ref": "DPDP Act 2023 s.4"
+    },
+    {
+      "id": "Act-5",
+      "title": "Notice for consent-based processing",
+      "domain": "Notice & consent",
+      "keywords": [
+        "notice",
+        "consent",
+        "informed",
+        "purpose",
+        "itemised"
+      ],
+      "description": "Before seeking consent, give the Data Principal the notice required by the Act/Rules.",
+      "evidence_hints": [
+        "privacy notice",
+        "consent capture UI",
+        "notice version history"
+      ],
+      "source_ref": "DPDP Act 2023 s.5"
+    },
+    {
+      "id": "Act-6",
+      "title": "Legitimate uses",
+      "domain": "Data governance",
+      "keywords": [
+        "legitimate use",
+        "employment",
+        "medical emergency",
+        "state function"
+      ],
+      "description": "Document when processing relies on a legitimate use rather than consent.",
+      "evidence_hints": [
+        "legitimate-use register",
+        "policy exceptions"
+      ],
+      "source_ref": "DPDP Act 2023 s.6"
+    },
+    {
+      "id": "Act-7",
+      "title": "Consent withdrawal and effect",
+      "domain": "Notice & consent",
+      "keywords": [
+        "withdraw consent",
+        "withdrawal",
+        "comparable ease"
+      ],
+      "description": "Enable withdrawal of consent with ease comparable to giving consent; cease processing that depended on that consent.",
+      "evidence_hints": [
+        "withdrawal mechanism",
+        "withdrawal logs",
+        "downstream processor notices"
+      ],
+      "source_ref": "DPDP Act 2023 s.7"
+    },
+    {
+      "id": "Act-8",
+      "title": "General obligations of Data Fiduciary",
+      "domain": "Security safeguards",
+      "keywords": [
+        "Data Fiduciary",
+        "security safeguards",
+        "purpose limitation",
+        "accuracy",
+        "erasure"
+      ],
+      "description": "Implement organisational/technical measures: purpose limitation, data accuracy, security safeguards, erasure when purpose ends (unless retention required by law).",
+      "evidence_hints": [
+        "security baseline",
+        "access control",
+        "encryption",
+        "retention schedule",
+        "deletion evidence"
+      ],
+      "source_ref": "DPDP Act 2023 s.8"
+    },
+    {
+      "id": "Act-9",
+      "title": "Processing of personal data of children",
+      "domain": "Children",
+      "keywords": [
+        "child",
+        "parental consent",
+        "verifiable consent",
+        "tracking"
+      ],
+      "description": "Obtain verifiable parental/guardian consent before processing a child's personal data; observe restrictions on tracking/behavioural monitoring and targeted advertising.",
+      "applicability": {
+        "children_processing": true
+      },
+      "evidence_hints": [
+        "age gate",
+        "parental consent flow",
+        "restriction controls"
+      ],
+      "source_ref": "DPDP Act 2023 s.9"
+    },
+    {
+      "id": "Act-10",
+      "title": "Additional obligations of Significant Data Fiduciary",
+      "domain": "Significant Data Fiduciary",
+      "keywords": [
+        "Significant Data Fiduciary",
+        "SDF",
+        "DPO",
+        "independent audit",
+        "DPIA"
+      ],
+      "description": "If notified/classified as SDF: appoint DPO, appoint independent data auditor, undertake DPIA and periodic audits as required.",
+      "applicability": {
+        "significant_data_fiduciary": "conditional"
+      },
+      "evidence_hints": [
+        "SDF determination record",
+        "DPO appointment",
+        "audit reports",
+        "DPIA"
+      ],
+      "source_ref": "DPDP Act 2023 s.10"
+    },
+    {
+      "id": "Act-11",
+      "title": "Right to access information",
+      "domain": "Data Principal rights",
+      "keywords": [
+        "right to access",
+        "Data Principal",
+        "summary of processing"
+      ],
+      "description": "Provide Data Principals a means to obtain a summary of personal data being processed and of processing activities.",
+      "evidence_hints": [
+        "DSAR portal",
+        "request tickets",
+        "response SLA metrics"
+      ],
+      "source_ref": "DPDP Act 2023 s.11"
+    },
+    {
+      "id": "Act-12",
+      "title": "Right to correction and erasure",
+      "domain": "Data Principal rights",
+      "keywords": [
+        "correction",
+        "erasure",
+        "deletion",
+        "update"
+      ],
+      "description": "Enable correction, completion, updating, and erasure of personal data as provided under the Act.",
+      "evidence_hints": [
+        "correction workflow",
+        "erasure workflow",
+        "deletion verification"
+      ],
+      "source_ref": "DPDP Act 2023 s.12"
+    },
+    {
+      "id": "Act-13",
+      "title": "Right of grievance redressal",
+      "domain": "Data Principal rights",
+      "keywords": [
+        "grievance",
+        "complaint",
+        "redressal",
+        "response"
+      ],
+      "description": "Publish and operate a grievance redressal mechanism for Data Principals.",
+      "evidence_hints": [
+        "grievance channel",
+        "SLA tracking",
+        "closure evidence"
+      ],
+      "source_ref": "DPDP Act 2023 s.13"
+    },
+    {
+      "id": "Act-14",
+      "title": "Right to nominate",
+      "domain": "Data Principal rights",
+      "keywords": [
+        "nominate",
+        "nominee",
+        "death",
+        "incapacity"
+      ],
+      "description": "Allow Data Principals to nominate another individual to exercise rights in case of death or incapacity.",
+      "evidence_hints": [
+        "nomination UI",
+        "nominee records"
+      ],
+      "source_ref": "DPDP Act 2023 s.14"
+    },
+    {
+      "id": "Act-15",
+      "title": "Duties of Data Principal",
+      "domain": "Data Principal rights",
+      "keywords": [
+        "Data Principal duties",
+        "false information",
+        "impersonation"
+      ],
+      "description": "Ensure request workflows discourage false statements / impersonation and record identity assurance steps.",
+      "evidence_hints": [
+        "identity verification steps",
+        "abuse controls"
+      ],
+      "source_ref": "DPDP Act 2023 s.15"
+    },
+    {
+      "id": "Act-16",
+      "title": "Transfer of personal data outside India",
+      "domain": "Processor management",
+      "keywords": [
+        "cross-border",
+        "transfer",
+        "blacklisted country",
+        "outside India"
+      ],
+      "description": "Do not transfer personal data to countries/territories restricted by the Central Government.",
+      "evidence_hints": [
+        "transfer map",
+        "processor locations",
+        "restriction register"
+      ],
+      "source_ref": "DPDP Act 2023 s.16"
+    },
+    {
+      "id": "Act-8-Processor",
+      "title": "Engagement of Data Processor",
+      "domain": "Processor management",
+      "keywords": [
+        "Data Processor",
+        "contract",
+        "processor agreement",
+        "instructions"
+      ],
+      "description": "Where a Data Processor is engaged, ensure processing is under a valid contract/arrangement and security obligations flow down.",
+      "evidence_hints": [
+        "processor inventory",
+        "contracts",
+        "security schedules",
+        "offboarding"
+      ],
+      "source_ref": "DPDP Act 2023 s.8 (processor)"
+    },
+    {
+      "id": "Act-Breach",
+      "title": "Personal data breach readiness (Act duties)",
+      "domain": "Breach management",
+      "keywords": [
+        "personal data breach",
+        "Board",
+        "intimations",
+        "incident"
+      ],
+      "description": "Maintain capability to detect, assess, and intimate personal data breaches as required once corresponding Rules apply.",
+      "evidence_hints": [
+        "incident runbook",
+        "breach register",
+        "notification templates"
+      ],
+      "source_ref": "DPDP Act 2023 (breach duties; see Rules)"
+    }
+  ]
+}

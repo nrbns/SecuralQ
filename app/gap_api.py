@@ -48,11 +48,29 @@ async def frameworks():
 
 
 @router.get("/frameworks/{framework_id}")
-async def framework_detail(framework_id: str):
+async def framework_detail(framework_id: str, as_of: str | None = None):
     try:
-        return load_framework(framework_id)
+        data = load_framework(framework_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if as_of:
+        from app.compliance.effective_dates import framework_commencement_summary
+
+        data = dict(data)
+        data["commencement"] = framework_commencement_summary(data, as_of=as_of)
+    return data
+
+
+@router.get("/frameworks/{framework_id}/commencement")
+async def framework_commencement(framework_id: str, as_of: str | None = None):
+    """Report which controls are in force for ``as_of`` (DPDP phased Rules, etc.)."""
+    try:
+        data = load_framework(framework_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    from app.compliance.effective_dates import framework_commencement_summary
+
+    return framework_commencement_summary(data, as_of=as_of)
 
 
 @router.get("/gap/assessments")

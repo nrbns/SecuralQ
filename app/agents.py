@@ -870,6 +870,19 @@ def checkin(agent_id: str, payload: dict[str, Any]) -> dict[str, Any]:
             )
     except Exception:
         pass
+    # Fleet aggregate for SSE (not every heartbeat to the browser).
+    try:
+        from app.realtime.fleet_aggregator import record_agent_observation
+
+        record_agent_observation(
+            str(agent.get("user_id") or "local"),
+            agent_id,
+            status="online",
+            org_id=str(agent.get("org_id") or ""),
+            publish=True,
+        )
+    except Exception:
+        pass
     # RT-05 — merge newest ACKed buffered host telemetry into effective payload
     # (offline spool re-apply for inventory / host controls).
     try:

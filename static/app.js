@@ -3665,6 +3665,9 @@ const REALTIME_LIVE_TYPES = new Set([
   "compliance.updated",
   "compliance.control_failed",
   "compliance.control_passed",
+  "fleet.health.changed",
+  "fleet.risk.changed",
+  "fleet.compliance.changed",
   "configuration",
   "configuration.drift_detected",
   "control.failed",
@@ -3745,6 +3748,9 @@ function describeRealtimeEvent(type, push) {
           p.percent_delta != null ? ` (${p.percent_delta > 0 ? "+" : ""}${p.percent_delta})` : ""
         }`
       : "Compliance updated",
+    "fleet.health.changed": p.online != null
+      ? `Fleet online ${p.online}/${p.total ?? "—"} (off ${p.offline ?? 0}, warn ${p.warning ?? 0})`
+      : "Fleet health changed",
     compliance: "Compliance signal",
     "risk.changed": p.score != null
       ? `Risk ${p.previous_score != null ? `${p.previous_score} → ${p.score}` : p.score}${
