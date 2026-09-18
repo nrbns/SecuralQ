@@ -2106,6 +2106,11 @@ def agent_resource_caps() -> dict[str, Any]:
         "max_concurrent_commands": int(getattr(settings, "agent_max_concurrent_commands", 2) or 2),
         "checkin_min_interval_sec": int(getattr(settings, "agent_checkin_min_interval_sec", 30) or 30),
     }
+
+
+def _get_command_row(user_id: str, agent_id: str, command_id: str) -> dict[str, Any] | None:
+    """Load one agent command if visible to ``user_id`` (tenant-safe)."""
+    ensure_schema()
     c = get_conn()
     row = c.execute(
         "SELECT * FROM securaiq_agent_commands WHERE id = ? AND agent_id = ?", (command_id, agent_id)

@@ -266,13 +266,17 @@ Packaging scaffolds may ship for **lab/owned hosts**; commercial “signed enter
 ### P0 — Prove and harden the existing loop
 
 1. [x] Keep `scripts/realtime_acceptance_demo.py --local` green in CI (`phase1-realtime-gate`).
+   - **2026-09-18:** Restored `_get_command_row` in `app/agents.py` (body had been orphaned inside `agent_resource_caps`). Firewall golden loop **11/11 PASS** again (`--local --firewall-only`). Entry: `tests/realtime_acceptance_demo.py` re-exports the same harness.
 2. [x] Document runbook: Redis URL vs in-process; Sentinel compose profile; DLQ admin (`deploy/redis/README.md`, `scripts/realtime_phase1_proof.py --document`).
 3. [x] Emit missing dotted aliases on existing publish sites (`control.passed`, `evidence.created`, command lifecycle, `agent.online`) without breaking flat `type` — `publish_aliased` in `app/realtime_events.py`.
 4. [x] RealtimeManager: `subscribe` / `deduplicate` / `invalidate` for Agents + Controls + Evidence + Risk (`static/app.js`).
+   - LIVE ticker now shows **LIVE / RECONNECTING / DEGRADED / OFFLINE** plus last-event time, events/sec, reconnect count.
 5. [x] Publish `license.updated` on issue/validate/revoke; `agent.update.available` on update publish.
 6. [x] Live security stream shows human labels + event type badges for the full closed-loop vocabulary.
 7. [x] CI once-only / XAUTOCLAIM / SSE replay proofs (`tests/test_realtime_phase1_proof.py`, `app/realtime/`).
 8. [x] Ops: Sentinel failover **procedure + measure script** (`docs/ops/SENTINEL-FAILOVER-LAB.md`, `scripts/sentinel_failover_measure.py`) — fill measured seconds after `docker compose stop redis-primary` (lab stub only — not Cluster cert).
+
+**Still not claimed as commercial HA:** Redis Sentinel measured failover on a real cluster, multi-worker production soak, Authenticode/notarization.
 
 ### P1 — Make the chain complete product-wise (Sprint 2–4; do not expand scanners first)
 

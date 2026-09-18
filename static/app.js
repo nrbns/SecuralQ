@@ -2711,14 +2711,44 @@ function paintLiveDeck(state, phaseText, activity, data) {
   apply(rail);
   if (livePhaseEl && phaseText) livePhaseEl.textContent = phaseText;
   if (liveActivityEl && activity !== undefined) liveActivityEl.textContent = activity || "";
+  const mgr = window.RealtimeManager || {};
+  const conn = String(mgr.state || window.__securaiqRtConnState || "");
   const tickerState = document.getElementById("tickerState");
   if (tickerState) {
-    tickerState.textContent = state === "live-busy" ? "BUSY" : state === "live-on" ? "LIVE" : "HOLD";
+    if (conn === "reconnecting") tickerState.textContent = "RECONNECTING";
+    else if (conn === "degraded") tickerState.textContent = "DEGRADED";
+    else if (conn === "offline" || conn === "failed") tickerState.textContent = "OFFLINE";
+    else if (state === "live-busy") tickerState.textContent = "BUSY";
+    else if (state === "live-on" || conn === "connected" || conn === "reconnected")
+      tickerState.textContent = "LIVE";
+    else tickerState.textContent = "HOLD";
   }
   const railText = document.getElementById("railLiveText");
   if (railText) {
     railText.textContent =
-      state === "live-busy" ? phaseText || "Pipeline" : state === "live-on" ? "Feed live" : "Feed hold";
+      conn === "reconnecting"
+        ? "Reconnecting"
+        : state === "live-busy"
+          ? phaseText || "Pipeline"
+          : state === "live-on"
+            ? "Feed live"
+            : "Feed hold";
+  }
+  const lastEvEl = document.getElementById("tickerLastEvent");
+  if (lastEvEl) {
+    const at = Number(mgr.lastEventAt || 0);
+    if (at > 0) {
+      const lagMs = Math.max(0, Date.now() - at);
+      const t = new Date(at).toLocaleTimeString();
+      const eps =
+        typeof mgr.eventsPerSec === "function" ? mgr.eventsPerSec() : 0;
+      const rc = Number(mgr.reconnects || 0);
+      lastEvEl.textContent = `${t} · ${eps}/s · r${rc}`;
+      lastEvEl.title = `Last event ${t} · ${eps} events/sec (60s) · reconnects ${rc} · lag ${lagMs}ms`;
+    } else {
+      lastEvEl.textContent = "No events yet";
+      lastEvEl.title = "Last realtime event";
+    }
   }
   const rt = data || window.__securaiqRealtime || {};
   const jobsBusy = Number(rt.jobs_running || 0) + Number(rt.jobs_pending || 0);
@@ -2839,6 +2869,10 @@ function stripLiveMarkers(text) {
 window.RealtimeManager = {
   state: (window.RealtimeManager && window.RealtimeManager.state) || "offline",
   lastEventId: (window.RealtimeManager && window.RealtimeManager.lastEventId) || "",
+  lastEventAt: (window.RealtimeManager && window.RealtimeManager.lastEventAt) || 0,
+  reconnects: (window.RealtimeManager && window.RealtimeManager.reconnects) || 0,
+  eventCount: (window.RealtimeManager && window.RealtimeManager.eventCount) || 0,
+  _eventWindow: (window.RealtimeManager && window.RealtimeManager._eventWindow) || [],
   _hadOpen: !!(window.RealtimeManager && window.RealtimeManager._hadOpen),
   _failCount: (window.RealtimeManager && window.RealtimeManager._failCount) || 0,
   _subs: (window.RealtimeManager && window.RealtimeManager._subs) || Object.create(null),
@@ -2846,20 +2880,48 @@ window.RealtimeManager = {
   _seenOrder: (window.RealtimeManager && window.RealtimeManager._seenOrder) || [],
   _seenCap: 400,
   setConnState(state, phase, activity) {
+    const prev = this.state;
     this.state = state;
     window.__securaiqRtConnState = state;
+    if (state === "reconnecting" && prev !== "reconnecting") {
+      this.reconnects = (this.reconnects || 0) + 1;
+    }
     if (streaming || window.__securaiqStreaming) return;
     if (state === "connected" || state === "reconnected") {
-      setLiveState("live-on", phase || "Live", activity || "");
+      setLiveState("live-on", phase || "● LIVE", activity || "");
     } else if (state === "reconnecting") {
-      setLiveState("live-off", "Reconnecting…", activity || "");
+      setLiveState("live-busy", "◌ RECONNECTING", activity || "");
+    } else if (state === "degraded") {
+      setLiveState("live-busy", "⚠ DEGRADED", activity || "");
     } else if (state === "failed" || state === "offline") {
-      setLiveState("live-off", "Offline — last known state", activity || "");
+      setLiveState("live-off", "○ OFFLINE", activity || "");
     }
   },
   noteEventId(id) {
     const eid = String(id || "").trim();
     if (eid) this.lastEventId = eid;
+    const now = Date.now();
+    this.lastEventAt = now;
+    this.eventCount = (this.eventCount || 0) + 1;
+    if (!Array.isArray(this._eventWindow)) this._eventWindow = [];
+    this._eventWindow.push(now);
+    const cutoff = now - 60000;
+    while (this._eventWindow.length && this._eventWindow[0] < cutoff) {
+      this._eventWindow.shift();
+    }
+    try {
+      paintLiveDeck(
+        document.getElementById("liveTicker")?.getAttribute("data-state") || "live-on",
+        null,
+        undefined
+      );
+    } catch {
+      /* ignore */
+    }
+  },
+  eventsPerSec() {
+    const n = (this._eventWindow && this._eventWindow.length) || 0;
+    return Math.round((n / 60) * 10) / 10;
   },
   lastEventIdFn() {
     return this.lastEventId || "";
