@@ -38,3 +38,38 @@ def test_display_asset_label_with_os():
     label = display_asset_label(name="pc-01", ip="192.168.1.20", hostname="pc-01", os="Windows")
     assert "pc-01" in label
     assert "Windows" in label
+
+
+# --- code_scan / semgrep / securaiq_code pass a local path, not a network
+# host, as the "target" — resolve_target_labels must not run it through
+# hostname/URL parsing (which mangled "E:\Regen Browser" into asset name
+# "e": the drive letter before the first ":", same rule that correctly
+# extracts "host" from "host:port/path").
+
+
+def test_resolve_target_labels_windows_path_uses_folder_name():
+    labels = resolve_target_labels(r"E:\Regen Browser")
+    assert labels["asset_name"] == "Regen Browser"
+    assert labels["ip"] == ""
+    assert labels["asset_name"] != "e"
+    assert labels["asset_name"] != "E"
+
+
+def test_resolve_target_labels_windows_path_forward_slashes():
+    labels = resolve_target_labels("E:/Regen Browser")
+    assert labels["asset_name"] == "Regen Browser"
+
+
+def test_resolve_target_labels_posix_path_uses_folder_name():
+    labels = resolve_target_labels("/home/user/my-project")
+    assert labels["asset_name"] == "my-project"
+    assert labels["ip"] == ""
+
+
+def test_resolve_target_labels_still_treats_real_hosts_as_hosts():
+    """Guard against the fix overcorrecting — a bare hostname/IP target
+    (the common case for network scans) must be unaffected."""
+    labels = resolve_target_labels("192.168.56.101")
+    assert labels["ip"] == "192.168.56.101"
+    labels2 = resolve_target_labels("scanme.example.com")
+    assert labels2["hostname"] == "scanme.example.com"

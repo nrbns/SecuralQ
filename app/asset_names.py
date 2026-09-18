@@ -187,6 +187,34 @@ def is_better_asset_name(new_name: str, old_name: str) -> bool:
     return len(new_name) > len(old_name) and not is_ipv4(new_name)
 
 
+_WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def _looks_like_local_path(t: str) -> bool:
+    """True for a filesystem path (code_scan/semgrep/securaiq_code target),
+    never for a network host/URL."""
+    if not t or "://" in t:
+        return False
+    if _WINDOWS_DRIVE_RE.match(t) or t.startswith("\\\\") or t.startswith("//"):
+        return True
+    if t.startswith("/") or t.startswith("~") or t.startswith("./") or t.startswith("../"):
+        return True
+    try:
+        from pathlib import Path
+
+        return Path(t).is_absolute()
+    except Exception:
+        return False
+
+
+def _path_asset_label(t: str) -> str:
+    """Human label for a local path target: its last path segment (folder
+    or file name), falling back to the full path if that's empty."""
+    norm = t.replace("\\", "/").rstrip("/")
+    base = norm.rsplit("/", 1)[-1] if norm else ""
+    return base or t
+
+
 def resolve_target_labels(target: str, *, ptr: str | None = None, resolve_ptr: bool = False) -> dict[str, str]:
     """Derive ip, hostname, and canonical asset name from a scan/tool target."""
     from app.scanners.nuclei import _hostname_from_target
@@ -194,6 +222,23 @@ def resolve_target_labels(target: str, *, ptr: str | None = None, resolve_ptr: b
     t = (target or "").strip()
     ip = ""
     hostname = ""
+    # code_scan / semgrep / securaiq_code pass a local filesystem path here,
+    # not a network host. Running a Windows path like "E:\Regen Browser"
+    # through the hostname/URL parsing below (built for "host:port/path"
+    # network targets) splits on ":" and "/" the way it would for a URL and
+    # mangles the whole path into a single-letter asset name — the drive
+    # letter before the first ":". Detect a local path up front and label it
+    # from the path itself instead.
+    if _looks_like_local_path(t):
+        asset_name = canonical_asset_name(name=_path_asset_label(t))
+        display = display_asset_label(name=asset_name)
+        return {
+            "ip": "",
+            "hostname": "",
+            "host": t,
+            "asset_name": asset_name,
+            "display_name": display,
+        }
     if t.startswith("http://") or t.startswith("https://"):
         hostname = (_hostname_from_target(t) or "").strip().rstrip(".")
         if is_ipv4(hostname):

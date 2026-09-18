@@ -388,6 +388,16 @@ def start_background_jobs() -> None:
     ).fetchall():
         _queue.put_nowait(row["id"])
 
+    # Self-heal any scan left stuck at a non-terminal status by a job that
+    # already errored out or vanished in a previous process (see
+    # app.scan_engine.models.reconcile_orphaned_scans for why this can happen).
+    try:
+        from app.scan_engine.models import reconcile_orphaned_scans
+
+        reconcile_orphaned_scans()
+    except Exception:
+        pass
+
     _worker_task = asyncio.create_task(_worker_loop())
     _scheduler_task = asyncio.create_task(_scheduler_loop())
 
@@ -557,6 +567,89 @@ async def _job_thehive_sync(payload: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _start_report_scan(user_id: str, *, target: str, scanner: str) -> dict[str, Any] | None:
+    """Create a scans-table row for a non-network 'scan' (hardening audit,
+    cloud posture sync, etc.) so the run shows up in Reports/Scans exactly
+    like a network or code scan does, instead of only leaving behind
+    whatever vulnerabilities it happened to write. Never raises — a Reports
+    entry is a nice-to-have, not something that should block the real sync/
+    audit job if scan-row creation fails for some reason."""
+    try:
+        from app.scan_engine.models import create_scan, update_scan
+
+        scan = create_scan(
+            user_id=user_id,
+            target=target[:500],
+            scanner=scanner,
+            profile="full",
+            authorized=True,
+        )
+        update_scan(scan["id"], status="running", started_at=now())
+        return scan
+    except Exception:
+        return None
+
+
+def _finish_report_scan(
+    scan: dict[str, Any] | None,
+    *,
+    ok: bool,
+    error: str = "",
+    summary: dict[str, Any] | None = None,
+    summary_lines: list[str] | None = None,
+) -> None:
+    """Close out a scan row opened by _start_report_scan and write a plain
+    report.md from whatever summary lines the caller has. Hardening audits
+    and cloud posture syncs don't share a per-finding schema with network
+    scans (no findings_for_scan() tagging here), so this reports the real
+    job result fields honestly rather than reusing the VA per-finding
+    report format for data it doesn't have."""
+    if not scan or not scan.get("id"):
+        return
+    scan_id = scan["id"]
+    try:
+        from pathlib import Path
+
+        from app.scan_engine.models import get_scan, update_scan
+
+        update_scan(
+            scan_id,
+            status="completed" if ok else "failed",
+            completed_at=now(),
+            summary_json=summary or {},
+            error="" if ok else str(error)[:2000],
+        )
+        fresh = get_scan(scan_id) or scan
+        ev_dir = Path(fresh.get("evidence_dir") or "")
+        if str(ev_dir):
+            ev_dir.mkdir(parents=True, exist_ok=True)
+            lines = [
+                f"# SecuraIQ — {fresh.get('scanner') or 'scan'} report",
+                "",
+                f"- **Scan ID:** `{scan_id}`",
+                f"- **Target:** `{fresh.get('target') or '—'}`",
+                f"- **Status:** {fresh.get('status') or '—'}",
+                f"- **Created:** {fresh.get('created_at')}",
+                f"- **Completed:** {fresh.get('completed_at')}",
+                "",
+                "## Result",
+                "",
+            ]
+            lines.extend(f"- {line}" for line in (summary_lines or []))
+            if not ok and error:
+                lines.extend(["", f"**Error:** {error}"])
+            lines.append("")
+            (ev_dir / "report.md").write_text("\n".join(lines), encoding="utf-8")
+    except Exception:
+        pass
+    try:
+        from app.realtime_bus import publish
+
+        publish(type="scan", id=scan_id, status="completed" if ok else "failed")
+    except Exception:
+        pass
+
+
 @register_job("cloud_posture_sync")
 async def _job_cloud_posture_sync(payload: dict[str, Any]) -> dict[str, Any]:
     """Pull AWS/Azure/GCP posture findings into vulnerabilities."""
@@ -564,9 +657,32 @@ async def _job_cloud_posture_sync(payload: dict[str, Any]) -> dict[str, Any]:
 
     t0 = time.time()
     uid = payload.get("user_id", "local")
-    result = await sync_all(uid)
+    scan = _start_report_scan(uid, target="Cloud posture (AWS/Azure/GCP)", scanner="cloud_posture")
+    try:
+        result = await sync_all(uid)
+    except Exception as exc:
+        _finish_report_scan(scan, ok=False, error=str(exc))
+        raise
     result["software_ingested"] = _refresh_software(uid, "vulns")
     result["duration_sec"] = round(time.time() - t0, 2)
+    # sync_all() returns {"vendors": {name: {"ok"/"skipped": ..., "count"/"error": ...}}, "imported": N}
+    vendors = result.get("vendors") if isinstance(result.get("vendors"), dict) else {}
+    vendor_lines = []
+    for name, v in vendors.items():
+        if not isinstance(v, dict):
+            continue
+        if v.get("skipped"):
+            vendor_lines.append(f"{name}: not configured — skipped")
+        elif v.get("ok"):
+            vendor_lines.append(f"{name}: ok — {v.get('count', 0)} finding(s)")
+        else:
+            vendor_lines.append(f"{name}: error — {v.get('error') or 'unknown'}")
+    _finish_report_scan(
+        scan,
+        ok=True,
+        summary={"findings_created": result.get("imported") or 0},
+        summary_lines=[f"Findings imported: {result.get('imported', 0)}", *vendor_lines],
+    )
     return result
 
 
@@ -590,14 +706,32 @@ async def _job_hardeningkitty_audit(payload: dict[str, Any]) -> dict[str, Any]:
 
     t0 = time.time()
     uid = payload.get("user_id", "local")
-    result = await run_audit(
-        mode=payload.get("mode") or "Audit",
-        finding_list=payload.get("finding_list") or None,
-        import_findings=bool(payload.get("import_findings", True)),
-        user_id=uid,
-    )
+    scan = _start_report_scan(uid, target="localhost (Windows hardening)", scanner="hardeningkitty")
+    try:
+        result = await run_audit(
+            mode=payload.get("mode") or "Audit",
+            finding_list=payload.get("finding_list") or None,
+            import_findings=bool(payload.get("import_findings", True)),
+            user_id=uid,
+        )
+    except Exception as exc:
+        _finish_report_scan(scan, ok=False, error=str(exc))
+        raise
     result["software_ingested"] = _refresh_software(uid, "vulns")
     result["duration_sec"] = round(time.time() - t0, 2)
+    _finish_report_scan(
+        scan,
+        ok=True,
+        summary={"findings_created": result.get("imported", 0)},
+        summary_lines=[
+            f"Mode: {result.get('mode')}",
+            f"Finding list: {result.get('list_name')}",
+            f"Score: {result.get('score')}",
+            f"Passed: {result.get('passed')}",
+            f"Failed: {result.get('failed')}",
+            f"Findings imported: {result.get('imported')}",
+        ],
+    )
     return result
 
 

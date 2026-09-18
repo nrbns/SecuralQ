@@ -63,6 +63,24 @@ def _forward_http(payload: dict[str, Any]) -> None:
         pass
 
 
+def _forward_azure_sentinel(payload: dict[str, Any]) -> None:
+    try:
+        from app.connectors import azure_sentinel
+
+        if not azure_sentinel.is_configured():
+            return
+        event = {
+            "TimeGenerated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(payload.get("ts") or time.time())),
+            "Product": "securaiq",
+            "Action": payload.get("action"),
+            "UserId": payload.get("user_id"),
+            "Detail": json.dumps(payload.get("detail") or {}, default=str)[:32000],
+        }
+        azure_sentinel.send_events_sync([event])
+    except Exception:
+        pass
+
+
 def log_security_event(action: str, user_id: str | None, detail: dict[str, Any] | None = None) -> None:
     """Structured JSON audit line — call this from app.db.audit() so every
     existing audit() call site in the codebase gets this for free."""
@@ -95,3 +113,6 @@ def log_security_event(action: str, user_id: str | None, detail: dict[str, Any] 
 
     if settings.siem_forward_url:
         threading.Thread(target=_forward_http, args=(event,), daemon=True).start()
+
+    if settings.siem_azure_sentinel_enabled:
+        threading.Thread(target=_forward_azure_sentinel, args=(event,), daemon=True).start()

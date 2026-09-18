@@ -54,7 +54,10 @@ class NmapScanner(Scanner):
                     break
         if not path:
             return False, "nmap not found on PATH — install Nmap to run live scans"
-        # Probe startup: missing Npcap on Windows yields STATUS_DLL_NOT_FOUND (0xC0000135).
+        # Probe startup: a missing DLL on Windows (Npcap driver, or a VC++
+        # runtime like MSVCP120.dll that nmap.exe itself links against) makes
+        # the OS loader fail before nmap's own code runs, yielding
+        # STATUS_DLL_NOT_FOUND (0xC0000135) as the process exit code.
         try:
             import subprocess
 
@@ -69,10 +72,14 @@ class NmapScanner(Scanner):
             if code in (0xC0000135, 3221225781, -1073741515):
                 return (
                     False,
-                    "nmap installed but cannot start — install Npcap (https://npcap.com) then restart SecuraIQ",
+                    "nmap is installed but Windows can't load it — a required DLL is missing. "
+                    "Usually either Npcap (https://npcap.com) or the Microsoft Visual C++ "
+                    "Redistributable for Visual Studio 2013 (provides MSVCP120.dll — "
+                    "https://aka.ms/highdpimfc2013x64enu for 64-bit nmap). Install whichever "
+                    "is missing, then restart SecuraIQ.",
                 )
             if code != 0 and not (probe.stdout or "").strip():
-                return False, f"nmap probe failed (exit {code}) — check Npcap / permissions"
+                return False, f"nmap probe failed (exit {code}) — check Npcap / VC++ runtime / permissions"
         except Exception as exc:
             return False, f"nmap probe failed: {exc}"
         return True, path

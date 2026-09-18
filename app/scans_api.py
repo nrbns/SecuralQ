@@ -343,6 +343,19 @@ async def scans_get(scan_id: str, user: Annotated[AuthUser, Depends(require_user
     return scan
 
 
+@router.delete("/{scan_id}")
+async def scans_delete(scan_id: str, user: Annotated[AuthUser, Depends(require_user)]):
+    """Manually remove a live scan (its history row + evidence on disk).
+    Archived scans have their own delete path: DELETE /api/archive/scans/{id}."""
+    ensure_scans_schema()
+    from app.scan_engine.models import delete_scan
+
+    require_perm(user, "asset.write", org_id=None)
+    if not delete_scan(user.id, scan_id):
+        raise HTTPException(status_code=404, detail="Scan not found")
+    return {"ok": True, "id": scan_id}
+
+
 @router.post("")
 async def scans_create(
     req: ScanCreate,

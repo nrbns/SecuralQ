@@ -157,6 +157,38 @@ def get_scan_for_user(user_id: str, scan_id: str) -> dict[str, Any] | None:
     return scan
 
 
+def delete_scan(user_id: str, scan_id: str) -> bool:
+    """Permanently delete one live (non-archived) scan and its evidence
+    directory. Tenant-scoped via get_scan_for_user's visibility check, same
+    pattern as delete_vulnerability/delete_remediation/delete_asset — a user
+    can't delete another org's scan by guessing its id."""
+    import shutil
+
+    scan = get_scan_for_user(user_id, scan_id)
+    if not scan:
+        return False
+    cur = get_conn().execute("DELETE FROM scans WHERE id = ?", (scan_id,))
+    get_conn().commit()
+    if not cur.rowcount:
+        return False
+    ev = scan.get("evidence_dir") or ""
+    if ev:
+        try:
+            shutil.rmtree(ev, ignore_errors=True)
+        except Exception:
+            pass
+    from app.db import audit
+
+    audit("scan_delete", user_id, {"id": scan_id, "target": scan.get("target"), "scanner": scan.get("scanner")})
+    try:
+        from app.realtime_bus import publish
+
+        publish(type="scan", id=scan_id, user_id=user_id, action="delete")
+    except Exception:
+        pass
+    return True
+
+
 def list_scans(
     user_id: str,
     *,
@@ -235,6 +267,52 @@ def set_progress(scan_id: str, step_id: str, status: str = "done") -> None:
         publish(type="scan", id=scan_id, step=step_id, status=status)
     except Exception:
         pass
+
+
+def reconcile_orphaned_scans() -> int:
+    """Self-heal scans left stuck at a non-terminal status forever.
+
+    Before the safety-net wrapper in app.scan_engine.jobs.handle_scan_execute
+    existed, an unexpected exception during execute_scan() left the scan row
+    sitting at whatever status it last reached (often 'queued') forever: the
+    jobs table recorded the real 'error', but nothing ever wrote that back to
+    the scan the UI actually reads from. This runs once at boot to move any
+    pre-existing ghosts to an honest terminal state — never fabricates a
+    result, only marks what's already true: the job that was supposed to run
+    this scan did not finish it.
+    """
+    ensure_scans_schema()
+    c = get_conn()
+    rows = c.execute(
+        "SELECT id, job_id FROM scans WHERE status NOT IN ('completed', 'failed', 'blocked')"
+    ).fetchall()
+    fixed = 0
+    for row in rows:
+        d = dict(row)
+        scan_id = d["id"]
+        job_id = d.get("job_id")
+        job_status = None
+        if job_id:
+            jrow = c.execute("SELECT status FROM jobs WHERE id = ?", (job_id,)).fetchone()
+            job_status = jrow["status"] if jrow else None
+        # A job that already ended in 'error', or a scan whose job row is
+        # simply gone, can't still be "in progress" — leave alone anything
+        # whose job is genuinely pending/running (the boot-time requeue in
+        # app.jobs.start_background_jobs handles those separately).
+        if job_status == "error" or (job_id and job_status is None):
+            c.execute(
+                "UPDATE scans SET status='failed', error=?, completed_at=? WHERE id=?",
+                (
+                    "Scan worker stopped unexpectedly before this scan finished "
+                    "(recovered on app restart — see job history for the original error).",
+                    now(),
+                    scan_id,
+                ),
+            )
+            fixed += 1
+    if fixed:
+        c.commit()
+    return fixed
 
 
 def _hydrate(d: dict[str, Any] | None) -> dict[str, Any] | None:

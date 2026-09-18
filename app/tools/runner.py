@@ -1725,21 +1725,41 @@ async def _tool_code_scan(
     if root.is_file():
         files = [root]
     else:
-        for p in root.rglob("*"):
+        # os.walk (not Path.rglob) so one unreadable subdirectory — a
+        # permission-restricted folder, a broken junction/reparse point, a
+        # file that vanishes mid-walk — doesn't abort the whole scan.
+        # rglob's generator raises PermissionError/OSError straight out of
+        # the loop on the first such directory, which the generic exception
+        # handler around every tool run then reports as "Finished with
+        # errors" with zero findings, even though the rest of the tree
+        # (often nearly all of it) was perfectly readable. This is exactly
+        # what real installed-application directories tend to contain
+        # (browsers, IDEs, anything with vendor caches/crash-report dirs)
+        # unlike a typical git checkout, so it's the common case here, not
+        # an edge case.
+        import os
+
+        def _on_walk_error(_exc: OSError) -> None:
+            pass  # skip the unreadable directory, keep walking its siblings
+
+        for dirpath, dirnames, filenames in os.walk(str(root), onerror=_on_walk_error):
             if len(files) >= _CODE_SCAN_MAX_FILES:
                 break
-            if not p.is_file():
-                continue
-            if any(part in _CODE_SCAN_SKIP_DIRS for part in p.parts):
-                continue
-            if p.suffix.lower() not in _CODE_SCAN_EXTS and p.name not in ("requirements.txt", "package.json"):
-                continue
-            try:
-                if p.stat().st_size > _CODE_SCAN_MAX_FILE_BYTES:
+            dirnames[:] = [d for d in dirnames if d not in _CODE_SCAN_SKIP_DIRS]
+            for name in filenames:
+                if len(files) >= _CODE_SCAN_MAX_FILES:
+                    break
+                p = Path(dirpath) / name
+                if any(part in _CODE_SCAN_SKIP_DIRS for part in p.parts):
                     continue
-            except OSError:
-                continue
-            files.append(p)
+                if p.suffix.lower() not in _CODE_SCAN_EXTS and p.name not in ("requirements.txt", "package.json"):
+                    continue
+                try:
+                    if p.stat().st_size > _CODE_SCAN_MAX_FILE_BYTES:
+                        continue
+                except OSError:
+                    continue
+                files.append(p)
 
     secret_findings: list[dict[str, Any]] = []
     pattern_findings: list[dict[str, Any]] = []
