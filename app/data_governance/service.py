@@ -278,7 +278,9 @@ def upsert_data_element(user_id: str, payload: dict[str, Any]) -> dict[str, Any]
             (eid, user_id, *args[:-1], created, ts),
         )
     c.commit()
-    return _row(c.execute("SELECT * FROM dg_data_elements WHERE id = ?", (eid,)).fetchone())
+    row = _row(c.execute("SELECT * FROM dg_data_elements WHERE id = ?", (eid,)).fetchone())
+    _publish_privacy(user_id, "privacy.inventory.changed", element_id=eid)
+    return row
 
 
 def list_data_elements(user_id: str, *, limit: int = 500) -> list[dict[str, Any]]:
@@ -328,7 +330,9 @@ def upsert_processing_activity(user_id: str, payload: dict[str, Any]) -> dict[st
             (eid, user_id, name, purpose, basis, elems, systems, meta_s, created, ts),
         )
     c.commit()
-    return _row(c.execute("SELECT * FROM dg_processing_activities WHERE id = ?", (eid,)).fetchone())
+    row = _row(c.execute("SELECT * FROM dg_processing_activities WHERE id = ?", (eid,)).fetchone())
+    _publish_privacy(user_id, "privacy.inventory.changed", activity_id=eid)
+    return row
 
 def list_processing_activities(user_id: str, *, limit: int = 500) -> list[dict[str, Any]]:
     ensure_schema()
@@ -378,7 +382,9 @@ def upsert_data_flow(user_id: str, payload: dict[str, Any]) -> dict[str, Any]:
             (eid, user_id, name, frm, to, elems, proc, xb, meta_s, created, ts),
         )
     c.commit()
-    return _row(c.execute("SELECT * FROM dg_data_flows WHERE id = ?", (eid,)).fetchone())
+    row = _row(c.execute("SELECT * FROM dg_data_flows WHERE id = ?", (eid,)).fetchone())
+    _publish_privacy(user_id, "privacy.inventory.changed", flow_id=eid)
+    return row
 
 def list_data_flows(user_id: str, *, limit: int = 500) -> list[dict[str, Any]]:
     ensure_schema()
@@ -432,7 +438,9 @@ def upsert_processor(user_id: str, payload: dict[str, Any]) -> dict[str, Any]:
             (eid, user_id, *vals, created, ts),
         )
     c.commit()
-    return _row(c.execute("SELECT * FROM dg_processors WHERE id = ?", (eid,)).fetchone())
+    row = _row(c.execute("SELECT * FROM dg_processors WHERE id = ?", (eid,)).fetchone())
+    _publish_privacy(user_id, "privacy.processor.changed", processor_id=eid)
+    return row
 
 def list_processors(user_id: str, *, limit: int = 500) -> list[dict[str, Any]]:
     ensure_schema()
@@ -482,7 +490,9 @@ def upsert_retention_policy(user_id: str, payload: dict[str, Any]) -> dict[str, 
             (eid, user_id, name, purpose, days, method, backup, elems, meta_s, created, ts),
         )
     c.commit()
-    return _row(c.execute("SELECT * FROM dg_retention_policies WHERE id = ?", (eid,)).fetchone())
+    row = _row(c.execute("SELECT * FROM dg_retention_policies WHERE id = ?", (eid,)).fetchone())
+    _publish_privacy(user_id, "privacy.retention.changed", retention_id=eid)
+    return row
 
 def list_retention_policies(user_id: str, *, limit: int = 500) -> list[dict[str, Any]]:
     ensure_schema()
@@ -534,7 +544,9 @@ def upsert_principal_request(user_id: str, payload: dict[str, Any]) -> dict[str,
             (eid, user_id, rtype, pref, status, sla, received, closed, notes, meta_s, created, ts),
         )
     c.commit()
-    return _row(c.execute("SELECT * FROM dg_principal_requests WHERE id = ?", (eid,)).fetchone())
+    row = _row(c.execute("SELECT * FROM dg_principal_requests WHERE id = ?", (eid,)).fetchone())
+    _publish_privacy(user_id, "privacy.request.changed", request_id=eid)
+    return row
 
 def list_principal_requests(user_id: str, *, limit: int = 500) -> list[dict[str, Any]]:
     ensure_schema()
@@ -629,4 +641,94 @@ def family_posture(user_id: str) -> dict[str, Any]:
             "Percentages reflect declared data-governance records completeness, "
             "not live control PASS/FAIL and not legal compliance."
         ),
+    }
+
+
+def _publish_privacy(user_id: str, event_type: str, **extra: Any) -> None:
+    try:
+        from app.realtime_bus import publish
+
+        publish(
+            type=event_type,
+            event_type=event_type,
+            user_id=user_id,
+            **extra,
+        )
+    except Exception:
+        pass
+    try:
+        from app.realtime.fleet_aggregator import publish_fleet_metric
+
+        posture = family_posture(user_id)
+        publish_fleet_metric(
+            user_id,
+            "compliance",
+            value=posture.get("overall_percent"),
+            assessment_kind="inventory_completeness",
+            sdf_status=posture.get("sdf_status"),
+        )
+    except Exception:
+        pass
+
+
+def dpdp_overview(user_id: str, *, as_of: str | None = None) -> dict[str, Any]:
+    """Combined DPDP dashboard payload: inventory posture + phased Rules + gap scores."""
+    from app.compliance.effective_dates import framework_commencement_summary
+    from app.gap_analysis import list_assessments, load_framework
+
+    posture = family_posture(user_id)
+    profile = get_org_privacy_profile(user_id)
+    rules = load_framework("dpdp_rules_2025")
+    act = load_framework("dpdp_act_2023")
+    commencement = framework_commencement_summary(rules, as_of=as_of)
+
+    assessments = list_assessments(user_id)
+    fw_scores: list[dict[str, Any]] = []
+    for fid in ("dpdp_act_2023", "dpdp_rules_2025"):
+        match = next((a for a in assessments if (a.get("framework_id") or "") == fid), None)
+        fw_scores.append(
+            {
+                "framework_id": fid,
+                "assessed": bool(match),
+                "compliance_percent": (match or {}).get("compliance_percent"),
+                "assessment_id": (match or {}).get("id"),
+                "updated_at": (match or {}).get("created_at"),
+            }
+        )
+
+    return {
+        "ok": True,
+        "family": "India DPDP",
+        "jurisdiction": profile.get("jurisdiction") or "IN",
+        "sdf_status": profile.get("sdf_status") or "unknown",
+        "inventory_posture": posture,
+        "commencement": commencement,
+        "frameworks": fw_scores,
+        "act": {"id": act.get("id"), "name": act.get("name"), "control_count": len(act.get("controls") or [])},
+        "rules": {
+            "id": rules.get("id"),
+            "name": rules.get("name"),
+            "control_count": len(rules.get("controls") or []),
+            "notified_on": rules.get("notified_on"),
+            "phased_commencement": rules.get("phased_commencement"),
+        },
+        "data_map": {
+            "elements": list_data_elements(user_id, limit=200),
+            "flows": list_data_flows(user_id, limit=200),
+            "processors": list_processors(user_id, limit=200),
+        },
+        "legal_disclaimer": _LEGAL,
+        "hierarchy": [
+            "framework",
+            "requirement",
+            "control",
+            "test",
+            "data_source",
+            "observation",
+            "evidence",
+            "result",
+            "risk",
+            "remediation",
+            "verification",
+        ],
     }

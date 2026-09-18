@@ -19,6 +19,10 @@ def tests_for_event_type(event_type: str) -> tuple[str, ...]:
         return _SOFTWARE_TESTS
     if et.startswith("configuration.") or et == "configuration.drift_detected":
         return _CONFIG_TESTS
+    if et.startswith("privacy.") or et.startswith("data_governance"):
+        # Privacy inventory changes affect asset/inventory-style evidence only —
+        # never invent PASS for notice/consent from endpoint telemetry.
+        return ("asset_inventory",)
     if et.startswith("control.") or et == "compliance" or et == "compliance.updated":
         return ()
     return ()

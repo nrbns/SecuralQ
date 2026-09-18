@@ -10,6 +10,7 @@ Not a determination of legal compliance.
 from __future__ import annotations
 
 from app.data_governance.service import (
+    dpdp_overview,
     ensure_schema,
     family_posture,
     get_org_privacy_profile,
@@ -29,6 +30,7 @@ from app.data_governance.service import (
 )
 
 __all__ = [
+    "dpdp_overview",
     "ensure_schema",
     "family_posture",
     "get_org_privacy_profile",

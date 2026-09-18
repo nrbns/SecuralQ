@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from app.auth import AuthUser
 from app.commercial_api import require_user
 from app.data_governance import (
+    dpdp_overview,
     family_posture,
     get_org_privacy_profile,
     list_data_elements,
@@ -127,6 +128,15 @@ async def api_put_profile(
 async def api_posture(user: Annotated[AuthUser, Depends(require_user)]):
     """DPDP-style family dashboard from declared inventory (not legal compliance)."""
     return family_posture(user.id)
+
+
+@router.get("/dpdp-overview")
+async def api_dpdp_overview(
+    user: Annotated[AuthUser, Depends(require_user)],
+    as_of: str | None = None,
+):
+    """India DPDP dashboard: inventory posture, phased Rules commencement, gap scores."""
+    return dpdp_overview(user.id, as_of=as_of)
 
 
 @router.get("/data-map")

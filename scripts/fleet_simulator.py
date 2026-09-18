@@ -97,11 +97,18 @@ def main() -> int:
         action="store_true",
         help="Run 100 → 1k → 5k → 10k (local aggregator only; may be heavy)",
     )
+    ap.add_argument(
+        "--extended-ladder",
+        action="store_true",
+        help="Also run 25k → 50k → 100k simulator rungs (CPU/RAM heavy; still not production proof)",
+    )
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
 
-    if args.ladder:
+    if args.ladder or args.extended_ladder:
         sizes = [100, 1000, 5000, 10000]
+        if args.extended_ladder:
+            sizes.extend([25000, 50000, 100000])
         rows = []
         for n in sizes:
             rows.append(_run_batch(n, partitions=args.partitions, ticks=1))

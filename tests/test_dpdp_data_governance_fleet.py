@@ -112,6 +112,46 @@ def test_fleet_aggregator_publishes_summary_not_per_agent(tmp_path, monkeypatch)
     assert sum(1 for p in pubs if "heartbeat" in str(p.get("type") or "")) == 0
 
 
+def test_dpdp_overview_and_privacy_events(tmp_path, monkeypatch):
+    configure_isolated_settings(monkeypatch, tmp_path)
+    from app.data_governance import dpdp_overview, upsert_data_element
+    from app.tenancy import ensure_tenant_schema
+
+    ensure_tenant_schema()
+    pubs: list[dict] = []
+    monkeypatch.setattr("app.realtime_bus.publish", lambda **kw: pubs.append(kw))
+    from app.gap_analysis import ensure_gap_schema
+
+    ensure_gap_schema()
+    upsert_data_element("u-ov", {"name": "Email", "classification": "personal_data"})
+    ov = dpdp_overview("u-ov", as_of="2025-11-13")
+    assert ov["ok"] is True
+    assert ov["family"] == "India DPDP"
+    assert ov["commencement"]["not_yet_in_force"] > 0
+    assert "data_map" in ov
+    assert any(p.get("type") == "privacy.inventory.changed" for p in pubs)
+
+
+def test_event_registry_and_workload_streams_noop():
+    from app.realtime.event_registry import event_catalog, is_fleet_aggregate, is_high_volume
+    from app.realtime.workload_streams import configured_workloads, ensure_workload_streams
+
+    cat = event_catalog()
+    assert "fleet.health.changed" in cat["fleet_aggregates"]
+    assert is_fleet_aggregate("fleet.health.changed")
+    assert is_high_volume("agent.heartbeat")
+    assert "telemetry" in configured_workloads()
+    out = ensure_workload_streams(partitions=0)
+    assert out.get("ok") is True
+
+
+def test_privacy_recompute_maps_to_inventory_only():
+    from app.controls.recompute import tests_for_event_type
+
+    assert tests_for_event_type("privacy.inventory.changed") == ("asset_inventory",)
+    assert tests_for_event_type("privacy.processor.changed") == ("asset_inventory",)
+
+
 def test_partitioner_stable():
     from app.realtime.partitioner import claimable_partitions, partition_id, workload_stream_key
 

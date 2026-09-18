@@ -104,6 +104,24 @@ def build_system_health() -> dict[str, Any]:
     except Exception as exc:
         checks["agent_mtls"] = {"status": "unknown", "detail": str(exc)[:80]}
 
+    try:
+        from app.realtime.event_registry import event_catalog
+        from app.realtime.fleet_aggregator import fleet_summary
+        from app.realtime.partitioner import WORKLOADS
+
+        checks["fleet_aggregation"] = {
+            "status": "healthy",
+            "detail": {
+                "event_catalog": event_catalog(),
+                "workloads": list(WORKLOADS),
+                "note": "UI should subscribe to fleet aggregates, not every heartbeat",
+            },
+        }
+        # Sample local user aggregate if any (lab)
+        _ = fleet_summary("local")
+    except Exception as exc:
+        checks["fleet_aggregation"] = {"status": "unknown", "detail": str(exc)[:120]}
+
     overall = "healthy"
     for v in checks.values():
         s = (v.get("status") or "").lower()

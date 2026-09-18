@@ -3009,6 +3009,9 @@ window.RealtimeManager = {
       compliance_center: () =>
         typeof window.renderComplianceCenterPage === "function" &&
         window.renderComplianceCenterPage({ quiet: true }),
+      privacy: () =>
+        typeof window.renderPrivacyPage === "function" &&
+        window.renderPrivacyPage({ quiet: true }),
       command: () => typeof loadCommandCenter === "function" && loadCommandCenter(),
       license: () => typeof window.renderAgentsLicensePanel === "function" && window.renderAgentsLicensePanel(),
       assets: () => typeof window.renderAssetsPage === "function" && window.renderAssetsPage({ quiet: true }),
@@ -3034,7 +3037,7 @@ window.RealtimeManager = {
       } else if (view === p.replace("_center", "") || view === p) {
         this.invalidate(p, { pushType: t, push });
       } else if (
-        ["control_center", "evidence", "risks", "remediations", "compliance", "compliance_center", "license"].includes(
+        ["control_center", "evidence", "risks", "remediations", "compliance", "compliance_center", "privacy", "license"].includes(
           p
         ) &&
         (view === p || (p === "compliance" && view === "compliance_center"))
@@ -3068,6 +3071,7 @@ window.RealtimeManager = {
         }
       }, 1200);
       if (view === "compliance_center") this.invalidate("compliance_center");
+      if (view === "privacy") this.invalidate("privacy");
       if (view === "risks") this.invalidate("risks");
       if (view === "remediations" || t.startsWith("remediation")) {
         if (view === "remediations") this.invalidate("remediations");
@@ -3823,10 +3827,17 @@ function realtimePanelsForType(type) {
     panels.add("agents_panel");
     panels.add("agent_detail");
   }
-  if (t.startsWith("control.") || t.startsWith("compliance") || t.startsWith("configuration")) {
+  if (
+    t.startsWith("control.") ||
+    t.startsWith("compliance") ||
+    t.startsWith("configuration") ||
+    t.startsWith("privacy.") ||
+    t.startsWith("fleet.")
+  ) {
     panels.add("control_center");
     panels.add("compliance");
     panels.add("compliance_center");
+    panels.add("privacy");
   }
   if (t.startsWith("evidence")) panels.add("evidence");
   if (t.startsWith("risk")) {
@@ -9032,6 +9043,7 @@ function syncLiveWorkspace(opts) {
     if (isLivePush || view === "campaigns") rt(window.renderCampaignsPage);
     if (isLivePush || view === "evidence") rt(window.renderEvidencePage);
     if (isLivePush || view === "compliance_center") rt(window.renderComplianceCenterPage);
+    if (isLivePush || view === "privacy") rt(window.renderPrivacyPage);
     if (isLivePush || view === "control_center") rt(window.renderControlCenterPage);
     if (isLivePush || view === "graph") rt(window.renderGraphPage);
     if (isLivePush || view === "integrations") rt(window.renderIntegrationsPage);
@@ -10885,6 +10897,7 @@ function resolveNotifLink(link) {
   if (s.includes("/remediat")) return { workspace: "remediations" };
   if (s.includes("/vuln")) return { workspace: "vulns" };
   if (s.includes("/compliance")) return { workspace: "compliance_center" };
+  if (s.includes("/dpdp") || s.includes("/privacy")) return { workspace: "privacy" };
   if (s.includes("/evidence")) return { workspace: "evidence" };
   if (s.includes("/incident") || s.includes("/soc")) return { workspace: "soc" };
   if (s.includes("/asset")) return { workspace: "assets" };

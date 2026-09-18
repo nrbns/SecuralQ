@@ -351,6 +351,7 @@
       orgs: "viewOrgs",
       frameworks: "viewFrameworks",
       compliance_center: "viewComplianceCenter",
+      privacy: "viewPrivacy",
       control_center: "viewControlCenter",
       impact: "viewImpact",
       exceptions: "viewExceptions",
@@ -403,6 +404,7 @@
         orgs: "Organizations",
         frameworks: "Frameworks",
         compliance_center: "Compliance Center",
+        privacy: "India DPDP",
         control_center: "Control Center",
         impact: "Cross-Framework Impact",
         exceptions: "Exceptions",
@@ -441,6 +443,7 @@
       renderFrameworksPage();
     }
     if (view === "compliance_center") renderComplianceCenterPage();
+    if (view === "privacy") renderPrivacyPage();
     if (view === "control_center") renderControlCenterPage();
     if (view === "impact") renderImpactPage();
     if (view === "exceptions") renderExceptionsPage();
@@ -10927,6 +10930,219 @@
     });
   }
   window.renderComplianceCenterPage = renderComplianceCenterPage;
+
+  async function renderPrivacyPage() {
+    const body = qs("privacyPageBody");
+    if (!body) return;
+    const res = await fetch("/api/data-governance/dpdp-overview", { headers: authHeaders() });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      body.innerHTML = `<p class="hint">Could not load DPDP overview (${res.status})</p>`;
+      return;
+    }
+    const posture = data.inventory_posture || {};
+    const families = posture.families || {};
+    const commencement = data.commencement || {};
+    const gaps = posture.critical_gaps || [];
+    const map = data.data_map || {};
+    const elements = map.elements || [];
+    const flows = map.flows || [];
+    const processors = map.processors || [];
+    const fwRows = (data.frameworks || [])
+      .map((f) => {
+        const pct = f.assessed && f.compliance_percent != null ? `${f.compliance_percent}%` : "not assessed";
+        return `<li><strong>${escapeHtml(f.framework_id)}</strong>: ${escapeHtml(String(pct))}</li>`;
+      })
+      .join("");
+    const familyRows = Object.entries(families)
+      .map(
+        ([k, v]) =>
+          `<li><span>${escapeHtml(k.replace(/_/g, " "))}</span><strong>${escapeHtml(String(v))}%</strong></li>`
+      )
+      .join("");
+    const flowHtml = flows.length
+      ? flows
+          .slice(0, 40)
+          .map(
+            (f) =>
+              `<li><strong>${escapeHtml(f.name || "flow")}</strong>
+                <span class="hint">${escapeHtml(f.from_system || "?")} → ${escapeHtml(f.to_system || "?")}${
+                f.cross_border ? " · cross-border" : ""
+              }</span></li>`
+          )
+          .join("")
+      : `<li class="hint">No data flows declared yet</li>`;
+    const elemHtml = elements.length
+      ? elements
+          .slice(0, 40)
+          .map(
+            (e) =>
+              `<li class="dpdp-elem" data-elem-id="${escapeHtml(e.id || "")}">
+                <strong>${escapeHtml(e.name || "element")}</strong>
+                <span class="hint">${escapeHtml(e.classification || "")} · ${escapeHtml(
+                e.storage_system || "no storage"
+              )} · ${escapeHtml(e.purpose || "no purpose")}</span>
+              </li>`
+          )
+          .join("")
+      : `<li class="hint">No personal-data elements declared — add inventory to start the data map</li>`;
+    const procHtml = processors.length
+      ? processors
+          .slice(0, 30)
+          .map(
+            (p) =>
+              `<li><strong>${escapeHtml(p.name || "processor")}</strong>
+                <span class="hint">${escapeHtml(p.contract_ref || "no contract")} · ${escapeHtml(
+                p.security_requirements || "no security schedule"
+              )}</span></li>`
+          )
+          .join("")
+      : `<li class="hint">No processors declared</li>`;
+
+    body.innerHTML = `
+      <p class="hint" style="margin:0 0 0.75rem">${escapeHtml(
+        data.legal_disclaimer ||
+          "Evidence-backed readiness assessment — not a legal determination of DPDP compliance."
+      )}</p>
+      <div class="fw-hero">
+        <div class="fw-hero-score">
+          <span class="fw-hero-label">Inventory posture</span>
+          <strong>${posture.overall_percent != null ? `${posture.overall_percent}%` : "—"}</strong>
+          <em class="hint">Declared records completeness · not legal PASS/FAIL</em>
+        </div>
+        <ul class="fw-hero-stats">
+          <li><span>SDF status</span><strong>${escapeHtml(data.sdf_status || "unknown")}</strong></li>
+          <li><span>Rules in force</span><strong>${commencement.in_force ?? "—"} / ${
+      commencement.total_controls ?? "—"
+    }</strong></li>
+          <li><span>Not yet in force</span><strong>${commencement.not_yet_in_force ?? "—"}</strong></li>
+          <li><span>As of</span><strong>${escapeHtml(commencement.as_of || "today")}</strong></li>
+        </ul>
+      </div>
+      <div class="cc-panel" style="margin-top:0.85rem">
+        <header><h2>Family coverage</h2></header>
+        <ul class="fw-hero-stats">${familyRows || `<li class="hint">No family scores yet</li>`}</ul>
+      </div>
+      <div class="cc-panel" style="margin-top:0.85rem">
+        <header style="display:flex;flex-wrap:wrap;gap:0.5rem;align-items:center;justify-content:space-between">
+          <h2>Critical gaps</h2>
+          <div style="display:flex;flex-wrap:wrap;gap:0.4rem">
+            <button type="button" class="btn-secondary" data-workspace="frameworks">Run gap analysis</button>
+            <button type="button" class="btn-secondary" id="dpdpRefreshBtn">Refresh</button>
+          </div>
+        </header>
+        <ul>${
+          gaps.length
+            ? gaps.map((g) => `<li>${escapeHtml(g)}</li>`).join("")
+            : `<li class="hint">No critical inventory gaps listed</li>`
+        }</ul>
+        <p class="hint" style="margin-top:0.5rem">Framework gap scores (when assessed):</p>
+        <ul>${fwRows || `<li class="hint">No DPDP gap assessments yet</li>`}</ul>
+      </div>
+      <div class="cc-panel" style="margin-top:0.85rem">
+        <header><h2>Data map</h2></header>
+        <p class="hint">Declared systems and flows — click an element for detail. Agents cannot invent legal purpose; this is human/integration-declared context.</p>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(16rem,1fr));gap:1rem;margin-top:0.75rem">
+          <div>
+            <h3 style="font-size:0.95rem;margin:0 0 0.35rem">Personal data elements</h3>
+            <ul id="dpdpElemList">${elemHtml}</ul>
+          </div>
+          <div>
+            <h3 style="font-size:0.95rem;margin:0 0 0.35rem">Flows</h3>
+            <ul>${flowHtml}</ul>
+          </div>
+          <div>
+            <h3 style="font-size:0.95rem;margin:0 0 0.35rem">Processors</h3>
+            <ul>${procHtml}</ul>
+          </div>
+        </div>
+        <div id="dpdpElemDetail" class="cc-panel" style="margin-top:0.75rem;display:none"></div>
+      </div>
+      <div class="cc-panel" style="margin-top:0.85rem">
+        <header><h2>Add inventory (quick)</h2></header>
+        <form id="dpdpQuickElem" class="inline-form" style="flex-wrap:wrap;gap:0.5rem">
+          <input name="name" placeholder="Data element (e.g. Email)" required style="min-width:10rem" />
+          <input name="classification" placeholder="Classification" value="personal_data" style="max-width:10rem" />
+          <input name="storage_system" placeholder="Storage (e.g. PostgreSQL)" style="min-width:10rem" />
+          <input name="purpose" placeholder="Purpose" style="min-width:10rem" />
+          <button type="submit" class="btn-secondary">Add element</button>
+        </form>
+        <form id="dpdpSdfForm" class="inline-form" style="flex-wrap:wrap;gap:0.5rem;margin-top:0.75rem">
+          <label class="hint">SDF applicability
+            <select name="sdf_status">
+              <option value="unknown"${data.sdf_status === "unknown" ? " selected" : ""}>unknown (default)</option>
+              <option value="not_applicable"${data.sdf_status === "not_applicable" ? " selected" : ""}>not_applicable</option>
+              <option value="applicable_pending_review"${
+                data.sdf_status === "applicable_pending_review" ? " selected" : ""
+              }>applicable_pending_review</option>
+              <option value="applicable"${data.sdf_status === "applicable" ? " selected" : ""}>applicable (after legal review)</option>
+            </select>
+          </label>
+          <button type="submit" class="btn-secondary">Save SDF status</button>
+        </form>
+      </div>
+    `;
+
+    body.querySelector("#dpdpRefreshBtn")?.addEventListener("click", () => renderPrivacyPage());
+    body.querySelectorAll("[data-workspace]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const v = btn.getAttribute("data-workspace");
+        if (v && typeof window.showWorkspace === "function") window.showWorkspace(v);
+      });
+    });
+    body.querySelectorAll(".dpdp-elem").forEach((li) => {
+      li.style.cursor = "pointer";
+      li.addEventListener("click", () => {
+        const id = li.getAttribute("data-elem-id");
+        const el = elements.find((x) => String(x.id) === String(id));
+        const detail = body.querySelector("#dpdpElemDetail");
+        if (!detail || !el) return;
+        detail.style.display = "block";
+        detail.innerHTML = `
+          <h3 style="margin:0 0 0.35rem">${escapeHtml(el.name || "Element")}</h3>
+          <ul class="fw-hero-stats">
+            <li><span>Classification</span><strong>${escapeHtml(el.classification || "—")}</strong></li>
+            <li><span>Purpose</span><strong>${escapeHtml(el.purpose || "—")}</strong></li>
+            <li><span>Source</span><strong>${escapeHtml(el.source_system || "—")}</strong></li>
+            <li><span>Storage</span><strong>${escapeHtml(el.storage_system || "—")}</strong></li>
+            <li><span>Owner</span><strong>${escapeHtml(el.owner || "—")}</strong></li>
+            <li><span>Retention days</span><strong>${escapeHtml(
+              el.retention_days != null ? String(el.retention_days) : "—"
+            )}</strong></li>
+          </ul>`;
+      });
+    });
+    body.querySelector("#dpdpQuickElem")?.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const fd = new FormData(ev.target);
+      const payload = Object.fromEntries(fd.entries());
+      const r = await fetch("/api/data-governance/elements", {
+        method: "POST",
+        headers: { ...authHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) {
+        alert(`Could not save element (${r.status})`);
+        return;
+      }
+      renderPrivacyPage();
+    });
+    body.querySelector("#dpdpSdfForm")?.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const fd = new FormData(ev.target);
+      const r = await fetch("/api/data-governance/profile", {
+        method: "PUT",
+        headers: { ...authHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ sdf_status: fd.get("sdf_status"), jurisdiction: "IN" }),
+      });
+      if (!r.ok) {
+        alert(`Could not save SDF status (${r.status})`);
+        return;
+      }
+      renderPrivacyPage();
+    });
+  }
+  window.renderPrivacyPage = renderPrivacyPage;
 
   let _controlCenterTab = "controls";
 

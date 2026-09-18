@@ -42,9 +42,12 @@ Live security tests (firewall, encryption, Defender, vuln/patch/inventory) bind 
 ```text
 /api/data-governance/profile
 /api/data-governance/posture
+/api/data-governance/dpdp-overview
 /api/data-governance/data-map
 /api/data-governance/elements|activities|flows|processors|retention|requests
 ```
+
+UI: **Compliance → India DPDP** workspace (`data-workspace="privacy"`) shows inventory posture, phased Rules commencement, critical gaps, and the data map.
 
 SDF status defaults to `unknown` and is never auto-declared `applicable`.
 
@@ -55,6 +58,7 @@ SecuraIQ produces an **evidence-backed readiness assessment**. It does **not** d
 ## Fleet scale direction
 
 - Check-ins update `app/realtime/fleet_aggregator.py` and publish `fleet.health.changed` aggregates (not 100k heartbeats to the browser).
-- Partition helpers live in `app/realtime/partitioner.py` for future multi-stream fan-out.
-- Incremental control recompute remains `app/controls/recompute.py`.
-- Measure with `scripts/fleet_simulator.py` + `scripts/realtime_load_test.py`. **No 5K+ claim until `docs/ops/CAPACITY-LAB.md` is filled.**
+- Partition helpers: `app/realtime/partitioner.py`; optional workload streams: `app/realtime/workload_streams.py`.
+- Event vocabulary: `app/realtime/event_registry.py` (fleet aggregates vs high-volume).
+- Incremental recompute: `app/controls/recompute.py` (`privacy.*` → inventory tests only — never invents notice/consent PASS).
+- Measure with `scripts/fleet_simulator.py --ladder` / `--extended-ladder` + `scripts/realtime_load_test.py`. **No 5K+ / 100K claim until `docs/ops/CAPACITY-LAB.md` is filled.**

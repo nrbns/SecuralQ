@@ -23,9 +23,13 @@ from app.realtime.fleet_aggregator import (
     record_agent_observation,
 )
 from app.realtime.partitioner import partition_id, workload_stream_key
+from app.realtime.event_registry import event_catalog
+from app.realtime.workload_streams import ensure_workload_streams
 
 __all__ = [
     "OnceOnlyResult",
+    "event_catalog",
+    "ensure_workload_streams",
     "fleet_summary",
     "invalidate_redis_clients",
     "maybe_publish_fleet_health",
