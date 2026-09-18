@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Multi-worker / Redis fan-out smoke checklist + Phase 1 pointers.
+"""Multi-worker / Redis fan-out smoke + in-process soak.
 
 Usage:
   python scripts/realtime_multiworker_smoke.py --document
   python scripts/realtime_multiworker_smoke.py --check-client
   python scripts/realtime_multiworker_smoke.py --simulate
+  python scripts/realtime_multiworker_smoke.py --inprocess-soak
+  python scripts/realtime_multiworker_smoke.py --inprocess-soak --subscribers 4 --events 30
 
 For the full Phase 1 release gate + Sentinel runbook see:
   python scripts/realtime_phase1_proof.py --document
@@ -50,15 +52,16 @@ SecuraIQ multi-worker realtime smoke (lab)
      POST /api/admin/realtime/dlq/replay
      POST /api/admin/realtime/dlq/purge
 
-6) Phase 1 release gate:
+6) Phase 1 release gate + CI-safe soak (no Docker):
      python scripts/realtime_phase1_proof.py --simulate
+     python scripts/realtime_multiworker_smoke.py --inprocess-soak
      python scripts/realtime_acceptance_demo.py --local
-     pytest -v tests/test_realtime_phase1_proof.py tests/test_realtime_acceptance_local.py
+     pytest -v tests/test_realtime_phase1_proof.py tests/test_realtime_ops_remaining.py
 
 This is NOT:
   - Redis Sentinel failover certification (use phase1_proof --document for ops steps)
   - 5k agent load proof
-  - mTLS / owned-host closed-loop proof
+  - mTLS / owned-host closed-loop proof / Authenticode
 
 Use scripts/realtime_acceptance_demo.py --local for the firewall/Defender/SSH loop.
 """.strip()
@@ -89,16 +92,33 @@ def simulate() -> int:
     return phase1_simulate()
 
 
+def inprocess_soak(subscribers: int, events: int) -> int:
+    from app.realtime.ops_proofs import run_inprocess_soak
+
+    out = run_inprocess_soak(subscribers=subscribers, events=events)
+    print(json.dumps(out, indent=2))
+    return 0 if out.get("ok") else 1
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--document", action="store_true", help="Print multi-worker smoke steps")
     ap.add_argument("--check-client", action="store_true", help="Probe redis_client factory")
     ap.add_argument("--simulate", action="store_true", help="Run Phase 1 once-only simulation")
+    ap.add_argument(
+        "--inprocess-soak",
+        action="store_true",
+        help="CI-safe multi-subscriber SSE fan-out + dedupe soak (no Redis)",
+    )
+    ap.add_argument("--subscribers", type=int, default=3)
+    ap.add_argument("--events", type=int, default=20)
     args = ap.parse_args()
     if args.check_client:
         return check_client()
     if args.simulate:
         return simulate()
+    if args.inprocess_soak:
+        return inprocess_soak(args.subscribers, args.events)
     return document()
 
 

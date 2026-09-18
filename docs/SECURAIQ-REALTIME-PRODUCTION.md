@@ -276,11 +276,17 @@ Packaging scaffolds may ship for **lab/owned hosts**; commercial “signed enter
 7. [x] CI once-only / XAUTOCLAIM / SSE replay proofs (`tests/test_realtime_phase1_proof.py`, `app/realtime/`).
 8. [x] Ops: Sentinel failover **procedure + measure script** (`docs/ops/SENTINEL-FAILOVER-LAB.md`, `scripts/sentinel_failover_measure.py`) — fill measured seconds after `docker compose stop redis-primary` (lab stub only — not Cluster cert).
 
-**Still not claimed as commercial HA:** Redis Sentinel measured failover on a real cluster, multi-worker production soak, Authenticode/notarization.
+**Still not claimed as commercial HA (needs Docker + secrets on ops host):**
+- Live `docker compose --profile redis-ha` + `--inject-stop --record` promote timing
+- Multi-uvicorn workers against real Redis Streams fan-out soak
+- Authenticode / Apple notarization with org certificates
 
-**P0 failure matrix (lab):** `python scripts/realtime_failure_acceptance.py` — duplicate, gap/contiguous ACK, offline buffer, SSE Last-Event-ID, tenant SSE filter, command reject/timeout, bad signature, replay nonce, cert revoke, DLQ rules/replay, metrics (`GET /api/admin/realtime/metrics`), DLQ discard/retry with audit. CI: `tests/test_realtime_failure_scenarios.py`.
+**CI-complete remaining ops proofs (no Docker/secrets):**
+```bash
+python scripts/realtime_ops_remaining_proof.py
+# Sentinel pipeline self-test · multiworker in-process soak · once-only/XAUTOCLAIM sim · signing scaffolds
+```
 
-**One-shot lab complete proof:** `python scripts/realtime_complete_proof.py` → golden 11/11 + failure 16/16. Host controls now emit `control.evaluating` before PASS/FAIL so the Live Security Timeline shows the full chain without refresh.
 
 ### P1 — Make the chain complete product-wise (Sprint 2–4; do not expand scanners first)
 

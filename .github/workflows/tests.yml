@@ -65,11 +65,15 @@ jobs:
           tests/test_realtime_bus.py
           tests/test_realtime_rt02_rt06.py
           tests/test_realtime_p0_ui_events.py
+          tests/test_realtime_ops_remaining.py
+          tests/test_realtime_failure_scenarios.py
           tests/test_sprints_2_6_foundations.py
       - name: Backup-restore drill (#229)
         run: python scripts/backup_restore_drill.py
       - name: Sentinel HA measure dry-run
         run: python scripts/sentinel_failover_measure.py --dry-run
+      - name: Remaining ops proof (soak + sentinel pipeline + signing scaffolds)
+        run: python scripts/realtime_ops_remaining_proof.py
       - name: Release test #1 — firewall golden loop (--firewall-only)
         run: python scripts/realtime_acceptance_demo.py --local --firewall-only
       - name: Acceptance demo --local (firewall + Defender + SSH)

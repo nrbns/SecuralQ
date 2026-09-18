@@ -186,6 +186,46 @@ def record(*, inject_stop: bool = False) -> int:
     return 0 if check.get("ok") else 1
 
 
+def simulate_pipeline_self_test() -> int:
+    """Prove measurement write path without Docker (clearly labeled simulated).
+
+    Does **not** claim a real Sentinel promote. CI-safe.
+    """
+    LOG.parent.mkdir(parents=True, exist_ok=True)
+    t0 = time.perf_counter()
+    check = _check_sentinel()
+    simulated_ms = round((time.perf_counter() - t0) * 1000, 1)
+    row = {
+        "ts_utc": datetime.now(timezone.utc).isoformat(),
+        "mode": "pipeline_self_test",
+        "simulated": True,
+        "check": {
+            **check,
+            "reconnect_ms": simulated_ms,
+            "promote_wait_ms": simulated_ms,
+            "ok": True,
+            "note": "simulated — Redis may be unset; not a live failover measurement",
+        },
+        "inject_stop": {"attempted": False, "simulated": True},
+        "metrics_before": collect_stream_metrics(),
+        "metrics_after": collect_stream_metrics(),
+        "events_sent": None,
+        "events_processed": None,
+        "events_duplicated": None,
+        "events_lost": None,
+        "events_replayed": None,
+        "disclaimer": "SIMULATED pipeline self-test — not commercial HA certification",
+        "note": (
+            "This row proves the measurement logger + schema. "
+            "Replace with --inject-stop --record on a host with docker compose redis-ha."
+        ),
+    }
+    with LOG.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(row) + "\n")
+    print(json.dumps(row, indent=2))
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--dry-run", action="store_true")
@@ -193,6 +233,11 @@ def main() -> int:
         "--metrics-only",
         action="store_true",
         help="Print Streams/DLQ snapshot without failover inject (CI-safe)",
+    )
+    ap.add_argument(
+        "--pipeline-self-test",
+        action="store_true",
+        help="Write a clearly labeled simulated measurement row (CI, no Docker)",
     )
     ap.add_argument("--record", action="store_true")
     ap.add_argument(
@@ -203,6 +248,8 @@ def main() -> int:
     args = ap.parse_args()
     if args.metrics_only:
         return metrics_only()
+    if args.pipeline_self_test:
+        return simulate_pipeline_self_test()
     if args.record or args.inject_stop:
         return record(inject_stop=bool(args.inject_stop))
     return dry_run()

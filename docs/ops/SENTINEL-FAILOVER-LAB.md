@@ -50,7 +50,10 @@ Unsafe: “Production Redis HA certified” / “multi-AZ failover SLO”.
 | Mode | Command | Proves |
 |------|---------|--------|
 | Dry-run | `python scripts/sentinel_failover_measure.py --dry-run` | Script + docs path exist |
+| Pipeline self-test | `python scripts/sentinel_failover_measure.py --pipeline-self-test` | Measurement jsonl schema (row marked `simulated: true`) |
 | Metrics | `python scripts/sentinel_failover_measure.py --metrics-only` | Streams/DLQ snapshot when Redis up (no failover) |
 | Measured | `--inject-stop --record` | Lab reconnect timing + optional stream metrics |
 
 Fill `events_sent` / `events_lost` / `duplicates` / `replayed` only from a live worker run — never invent.
+
+Also: `python scripts/realtime_ops_remaining_proof.py` bundles Sentinel self-test + multiworker soak + signing scaffolds for CI.

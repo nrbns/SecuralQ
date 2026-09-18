@@ -17,7 +17,9 @@ python scripts/realtime_acceptance_demo.py --local --firewall-only
 python scripts/realtime_failure_acceptance.py
 ```
 
-Still **not** claimed: measured Redis Sentinel HA, Authenticode/notarization.
+Still **not** claimed without ops host: live Docker Sentinel `--inject-stop --record`, multi-uvicorn Redis soak, Authenticode/notarization secrets.
+
+CI-complete remaining ops: `python scripts/realtime_ops_remaining_proof.py`
 
 ---
 
