@@ -74,6 +74,8 @@ jobs:
         run: python scripts/sentinel_failover_measure.py --dry-run
       - name: Remaining ops proof (soak + sentinel pipeline + signing scaffolds)
         run: python scripts/realtime_ops_remaining_proof.py
+      - name: Remaining full proof (failover sim + lab codesign + optional Redis)
+        run: python scripts/realtime_remaining_full_proof.py
       - name: Release test #1 — firewall golden loop (--firewall-only)
         run: python scripts/realtime_acceptance_demo.py --local --firewall-only
       - name: Acceptance demo --local (firewall + Defender + SSH)

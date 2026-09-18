@@ -167,11 +167,14 @@ def get_sync_redis(
         else:
             import redis
 
+            # protocol=2 (RESP2) keeps Redis 5.x Windows lab builds working;
+            # redis-py 5+ defaults to HELLO/RESP3 which older servers reject.
             client = redis.from_url(
                 redis_url(),
                 decode_responses=decode_responses,
                 socket_connect_timeout=socket_connect_timeout,
                 socket_timeout=socket_timeout,
+                protocol=2,
             )
     except Exception as exc:
         _log.debug("redis sync client failed: %s", exc)
@@ -210,7 +213,11 @@ async def get_async_redis(*, decode_responses: bool = True) -> Any | None:
             )
         import redis.asyncio as aioredis
 
-        return aioredis.from_url(redis_url(), decode_responses=decode_responses)
+        return aioredis.from_url(
+            redis_url(),
+            decode_responses=decode_responses,
+            protocol=2,
+        )
     except Exception as exc:
         _log.debug("redis async client failed: %s", exc)
         return None

@@ -12,6 +12,11 @@ data/evidence/
 data/archive/
 data/server-*.log
 tools/ollama/
+tools/redis-win/
+tools/lab-certs/*.pfx
+tools/lab-certs/*.cer
+tools/lab-certs/*.p12
+data/ops/*.jsonl
 vendor/HardeningKitty/
 data/hardeningkitty/
 chat_test_output.txt
