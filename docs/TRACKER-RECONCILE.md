@@ -12,7 +12,7 @@
 
 ### Honest caveats (still DONE for engineering)
 
-- **#256 SAML** — ACS is **fail-closed** (never accepts without XML-DSig). Production IdP login still needs `SAML_IDP_X509_CERT` + `pip install signxml` before marketing enterprise SSO.
+- **#256 SAML** — ACS is **fail-closed** + verifies XML-DSig via `signxml`, extracts NameID, issues session for matching local user (form POST, no prior login). Still needs `SAML_IDP_X509_CERT` + `pip install -r requirements-saml.txt` before marketing enterprise SSO.
 - **#221** — Generic executive PPTX export only; branded Swana Techno/SecuraIQ investor deck is Phase 6 content.
 - **DPDP** — frameworks + data-governance + canonical mappings shipped; never claim legal “DPDP compliant” without counsel.
 

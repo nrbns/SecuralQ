@@ -1,0 +1,11 @@
+"""Optional deps for production SAML ACS signature verification (#256).
+
+Install only when wiring a real IdP:
+
+  pip install -r requirements-saml.txt
+
+Without these packages, ACS remains fail-closed (never accepts assertions).
+"""
+
+signxml>=3.2.0
+lxml>=5.0.0

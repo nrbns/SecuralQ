@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from app.auth import AuthUser
-from app.commercial_api import require_user
+from app.commercial_api import _attach_session_cookie, require_user
 from app.rbac import require_perm
 
 router = APIRouter(prefix="/api", tags=["commercial-lifecycle"])
@@ -154,20 +155,53 @@ async def api_saml_metadata():
     return Response(content=sp_metadata(), media_type="application/samlmetadata+xml")
 
 
-class SamlAcsBody(BaseModel):
-    SAMLResponse: str = ""
-    saml_response: str = ""
-    RelayState: str = ""
-
-
 @router.post("/auth/saml/acs")
-async def api_saml_acs(req: SamlAcsBody, user: Annotated[AuthUser, Depends(require_user)]):
+async def api_saml_acs(request: Request):
+    """Public ACS — IdPs POST form-urlencoded SAMLResponse (no prior session).
+
+    Fail-closed: only verified signatures can create a session cookie.
+    """
+    from app.auth import login_via_saml_nameid
     from app.saml_scaffold import receive_acs
 
+    ct = (request.headers.get("content-type") or "").lower()
+    if "application/json" in ct:
+        body = await request.json()
+        payload = body if isinstance(body, dict) else {}
+    else:
+        form = await request.form()
+        payload = {str(k): str(v) for k, v in form.items()}
+
     try:
-        return receive_acs(req.model_dump(), actor=user.id)
+        result = receive_acs(payload, actor=None)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if not result.get("accepted"):
+        return JSONResponse(result)
+
+    nameid = str(result.get("nameid") or "").strip()
+    if not nameid:
+        raise HTTPException(status_code=400, detail="Verified assertion missing NameID")
+
+    ip = request.client.host if request.client else ""
+    try:
+        outcome = login_via_saml_nameid(nameid, ip=ip)
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+    if isinstance(outcome, dict) and outcome.get("mfa_required"):
+        return JSONResponse({**result, **outcome, "session": False})
+
+    user, token = outcome  # type: ignore[misc]
+    body_out = {
+        **result,
+        "session": True,
+        "user": {"id": user.id, "username": user.username, "role": user.role},
+    }
+    resp = JSONResponse(body_out)
+    _attach_session_cookie(resp, token)
+    return resp
 
 
 @router.get("/export/pptx")

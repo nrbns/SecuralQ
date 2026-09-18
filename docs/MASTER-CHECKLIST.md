@@ -39,7 +39,7 @@ Legend: ✅ done · 🔒 Phase 6 / outside engineering (not a code PARTIAL)
 | ID | Status |
 |----|--------|
 | #255 #257 #259 | ✅ Argon2 rehash, WebAuthn+SCIM scaffolds with APIs/tests, KMS, MSSP |
-| #256 | ✅ SAML metadata/ACS **fail-closed** (never accepts without XML-DSig). Production IdP login needs `SAML_IDP_X509_CERT` + `pip install signxml` |
+| #256 | ✅ SAML metadata + public ACS **fail-closed** with XML-DSig (`signxml`). Verified signature → NameID session (no JIT user create). Install `requirements-saml.txt` + set `SAML_IDP_X509_CERT` before wiring a real IdP |
 | #258 | 🔒 Apple notarization credentials (scripts ready) |
 | #221 | ✅ Generic executive PPTX export (`app/pptx_export.py`) — **not** the Swana Techno investor deck (Phase 6 content) |
 

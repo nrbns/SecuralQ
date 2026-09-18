@@ -278,6 +278,53 @@ def login(
     return AuthUser(id=row["id"], username=row["username"], role=row["role"]), token
 
 
+def login_via_saml_nameid(
+    nameid: str,
+    *,
+    ip: str = "",
+) -> tuple[AuthUser, str] | dict[str, Any]:
+    """Issue a session for a verified SAML NameID (username or email match).
+
+    Does **not** auto-create users. MFA-enabled accounts still require the
+    existing MFA step-up (same shape as password login).
+    """
+    from app.login_attempts import assert_not_locked, record_login_attempt
+    from app.mfa import create_mfa_pending
+
+    nid = (nameid or "").strip().lower()
+    if len(nid) < 3:
+        raise ValueError("SAML NameID too short")
+    assert_not_locked(nid)
+
+    c = get_conn()
+    row = c.execute(
+        "SELECT * FROM users WHERE lower(username) = ? OR lower(email) = ?",
+        (nid, nid),
+    ).fetchone()
+    if not row:
+        record_login_attempt(nid, ip=ip, success=False, mfa_stage=0)
+        audit("saml_login_failed", f"unknown:{nid}", {"ip": ip, "reason": "no_user"})
+        raise ValueError("No local user matches SAML NameID — provision the account first")
+
+    uname = row["username"]
+    mfa_on = bool(row["mfa_enabled"])
+    if mfa_on:
+        pending = create_mfa_pending(row["id"])
+        audit("saml_mfa_required", row["id"], {"ip": ip})
+        return {"mfa_required": True, "mfa_token": pending, "recovery_codes_accepted": True}
+
+    token = secrets.token_urlsafe(32)
+    expires = now() + _session_ttl_days() * 86400
+    c.execute(
+        "INSERT INTO sessions (token, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
+        (hash_token(token), row["id"], expires, now()),
+    )
+    c.commit()
+    record_login_attempt(uname, ip=ip, success=True, mfa_stage=0)
+    audit("saml_login", row["id"], {"username": uname, "ip": ip, "nameid": nid})
+    return AuthUser(id=row["id"], username=row["username"], role=row["role"]), token
+
+
 def complete_mfa_login(
     mfa_token: str,
     totp: str | None = None,
