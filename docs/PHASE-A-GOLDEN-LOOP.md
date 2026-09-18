@@ -6,6 +6,21 @@
 SEE → UNDERSTAND → PRIORITIZE → ACT → VERIFY → PROVE
 ```
 
+**Lab realtime product loop: COMPLETE** (2026-09-18)
+
+Prove with:
+
+```bash
+python scripts/realtime_complete_proof.py
+# or separately:
+python scripts/realtime_acceptance_demo.py --local --firewall-only
+python scripts/realtime_failure_acceptance.py
+```
+
+Still **not** claimed: measured Redis Sentinel HA, Authenticode/notarization.
+
+---
+
 ## Freeze rule
 
 Do **not** expand Phase C/D (attack graph depth, cloud/identity/SBOM/AppSec

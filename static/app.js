@@ -3011,6 +3011,8 @@ window.RealtimeManager = {
         window.renderComplianceCenterPage({ quiet: true }),
       command: () => typeof loadCommandCenter === "function" && loadCommandCenter(),
       license: () => typeof window.renderAgentsLicensePanel === "function" && window.renderAgentsLicensePanel(),
+      assets: () => typeof window.renderAssetsPage === "function" && window.renderAssetsPage({ quiet: true }),
+      vulns: () => typeof window.renderVulnsPage === "function" && window.renderVulnsPage({ quiet: true }),
     };
     const fn = runners[panel];
     if (fn) {
@@ -3667,6 +3669,8 @@ const REALTIME_LIVE_TYPES = new Set([
   "configuration.drift_detected",
   "control.failed",
   "control.passed",
+  "control.evaluating",
+  "control.test.started",
   "control.unknown",
   "control.test.completed",
   "command.pending",
@@ -3730,6 +3734,8 @@ function describeRealtimeEvent(type, push) {
     "command.rollback": "Command rollback",
     "control.failed": `Control FAIL${test ? `: ${test}` : ""}`,
     "control.passed": `Control PASS${test ? `: ${test}` : ""}`,
+    "control.evaluating": `Control evaluating${test ? `: ${test}` : ""}`,
+    "control.test.started": `Control test started${test ? `: ${test}` : ""}`,
     "control.unknown": `Control UNKNOWN${test ? `: ${test}` : ""}`,
     "control.test.completed": `Control tested${test ? `: ${test}` : ""}`,
     "evidence.created": "Evidence recorded",
@@ -3826,8 +3832,10 @@ function realtimePanelsForType(type) {
     panels.add("agents_panel");
   }
   if (t === "license.updated" || t === "agent.update.available") panels.add("license");
-  if (t.startsWith("software") || t === "inventory" || t === "vuln" || t === "vuln_batch") {
+  if (t.startsWith("software") || t === "inventory" || t === "vuln" || t === "vuln_batch" || t === "asset") {
     panels.add("command");
+    panels.add("assets");
+    if (t === "vuln" || t === "vuln_batch") panels.add("vulns");
   }
   return [...panels];
 }

@@ -1085,6 +1085,28 @@ def evaluate_agent_host_controls(
             if only_tests is not None and test_name not in only_tests:
                 continue
             try:
+                # Emit evaluating so UI timeline shows work-in-progress before PASS/FAIL.
+                try:
+                    from app.realtime_events import publish_aliased
+
+                    publish_aliased(
+                        "control.evaluating",
+                        aliases=["control.test.started"],
+                        status="evaluating",
+                        test=test_name,
+                        agent_id=agent_id,
+                        asset_id=asset,
+                        user_id=user_id,
+                        source="securaiq_agent",
+                        hostname=hostname,
+                        observed_at=collected_at,
+                        _from_processor=True,
+                    )
+                    out["events"].append(
+                        {"type": "control.evaluating", "status": "evaluating", "test": test_name}
+                    )
+                except Exception:
+                    pass
                 prev = _last_agent_host_status(user_id, agent_id, test_name)
                 result = fn()
                 result["tested_at"] = collected_at
