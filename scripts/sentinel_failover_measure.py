@@ -66,19 +66,43 @@ def collect_stream_metrics() -> dict[str, Any]:
 
 def _check_sentinel() -> dict:
     try:
+        from app.realtime.sentinel_ops import ping_master
         from app.redis_client import reconnect_after_failover, redis_ping
 
         t0 = time.perf_counter()
         reconnect_after_failover()
         ok = False
+        err = None
         try:
             ok = bool(redis_ping())
-        except Exception:
+            if not ok:
+                # Fall back to sentinel_ops detail when URL/Sentinel unset
+                report = ping_master()
+                ok = bool(report.get("ok"))
+                err = None if ok else (report.get("error") or "ping_failed")
+        except Exception as exc:
             ok = False
+            err = str(exc)[:300]
         ms = round((time.perf_counter() - t0) * 1000, 1)
-        return {"ok": ok, "reconnect_ms": ms, "error": None if ok else "ping_failed"}
+        return {"ok": ok, "reconnect_ms": ms, "error": err}
     except Exception as exc:
         return {"ok": False, "reconnect_ms": None, "error": str(exc)[:300]}
+
+
+def _inprocess_failover_chain() -> dict[str, Any]:
+    """Reconnect + XAUTOCLAIM reclaim + SSE Last-Event-ID resume (no Docker)."""
+    try:
+        from scripts.realtime_remaining_full_proof import step_sentinel_failover_simulated
+
+        return step_sentinel_failover_simulated()
+    except Exception as exc:
+        return {
+            "name": "sentinel_failover_chain_simulated",
+            "ok": False,
+            "simulated": True,
+            "error": str(exc)[:400],
+            "disclaimer": "SIMULATED — not commercial HA certification",
+        }
 
 
 def _wait_promoted(*, timeout_sec: float = 90.0) -> dict:
@@ -191,13 +215,15 @@ def record(*, inject_stop: bool = False) -> int:
 
 
 def simulate_pipeline_self_test() -> int:
-    """Prove measurement write path without Docker (clearly labeled simulated).
+    """Prove measurement write path + in-process failover chain (no Docker).
 
-    Does **not** claim a real Sentinel promote. CI-safe.
+    Does **not** claim a real Sentinel promote. CI-safe. Clearly labeled
+    ``simulated: true``. Live inject remains ``--inject-stop --record``.
     """
     LOG.parent.mkdir(parents=True, exist_ok=True)
     t0 = time.perf_counter()
     check = _check_sentinel()
+    chain = _inprocess_failover_chain()
     simulated_ms = round((time.perf_counter() - t0) * 1000, 1)
     row = {
         "ts_utc": datetime.now(timezone.utc).isoformat(),
@@ -205,11 +231,15 @@ def simulate_pipeline_self_test() -> int:
         "simulated": True,
         "check": {
             **check,
-            "reconnect_ms": simulated_ms,
+            # Preserve real reconnect attempt error; force schema ok for CI path
+            "pipeline_ok": True,
             "promote_wait_ms": simulated_ms,
-            "ok": True,
-            "note": "simulated — Redis may be unset; not a live failover measurement",
+            "note": (
+                "simulated — Redis/Docker may be unset; not a live Sentinel promote. "
+                "inprocess chain proves reconnect helper + XAUTOCLAIM + SSE resume."
+            ),
         },
+        "inprocess_failover_chain": chain,
         "inject_stop": {"attempted": False, "simulated": True},
         "metrics_before": collect_stream_metrics(),
         "metrics_after": collect_stream_metrics(),
@@ -218,16 +248,35 @@ def simulate_pipeline_self_test() -> int:
         "events_duplicated": None,
         "events_lost": None,
         "events_replayed": None,
+        "xautoclaim_reclaim_ok": bool(chain.get("reclaim_ok")),
+        "sse_resume_ok": bool(chain.get("sse_resume_ok")),
+        "reconnect_ms": chain.get("reconnect_ms") or check.get("reconnect_ms"),
         "disclaimer": "SIMULATED pipeline self-test — not commercial HA certification",
         "note": (
-            "This row proves the measurement logger + schema. "
+            "This row proves the measurement logger + in-process failover chain. "
             "Replace with --inject-stop --record on a host with docker compose redis-ha."
         ),
     }
+    # CI exit: chain must pass; live Redis ping is optional
+    row["ok"] = bool(chain.get("ok"))
     with LOG.open("a", encoding="utf-8") as f:
         f.write(json.dumps(row) + "\n")
     print(json.dumps(row, indent=2))
-    return 0
+    if NOTE.is_file() and row["ok"]:
+        append = (
+            f"\n### In-process self-test {row['ts_utc']}\n\n"
+            f"- simulated: `true`\n"
+            f"- chain_ok: `{row['ok']}`\n"
+            f"- reconnect_ms: `{row.get('reconnect_ms')}`\n"
+            f"- xautoclaim_reclaim_ok: `{row.get('xautoclaim_reclaim_ok')}`\n"
+            f"- sse_resume_ok: `{row.get('sse_resume_ok')}`\n"
+            f"- live_redis_ping: `{check.get('ok')}` error=`{check.get('error')}`\n"
+            f"- disclaimer: in-process only — not Docker Sentinel promote\n"
+        )
+        text = NOTE.read_text(encoding="utf-8")
+        if row["ts_utc"] not in text:
+            NOTE.write_text(text.rstrip() + "\n" + append, encoding="utf-8")
+    return 0 if row["ok"] else 1
 
 
 def main() -> int:

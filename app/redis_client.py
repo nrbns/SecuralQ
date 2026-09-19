@@ -125,6 +125,28 @@ def reconnect_after_failover(
     )
 
 
+def redis_ping(*, timeout: float = 1.5) -> bool:
+    """True when the configured Redis/Sentinel master answers PING."""
+    client = get_sync_redis(
+        decode_responses=True,
+        socket_connect_timeout=timeout,
+        socket_timeout=timeout,
+        cached=False,
+    )
+    if client is None:
+        return False
+    try:
+        return bool(client.ping())
+    except Exception:
+        reset_clients_for_tests()
+        return False
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
+
+
 def get_sync_redis(
     *,
     decode_responses: bool = True,
