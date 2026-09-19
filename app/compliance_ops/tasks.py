@@ -593,3 +593,104 @@ def calendar_month(user_id: str, *, year: int, month: int) -> dict[str, Any]:
         "days": by_day,
         "task_count": len(tasks),
     }
+
+
+def board_view(user_id: str) -> dict[str, Any]:
+    """Kanban columns for Compliance Operations."""
+    ensure_compliance_ops_schema()
+    tasks = list_tasks(user_id, limit=400)
+    columns = [
+        ("backlog", "Backlog"),
+        ("upcoming", "Upcoming"),
+        ("in_progress", "In progress"),
+        ("review", "Review"),
+        ("approval", "Approval"),
+        ("completed", "Completed"),
+    ]
+    by_status: dict[str, list[dict[str, Any]]] = {k: [] for k, _ in columns}
+    for t in tasks:
+        st = str(t.get("status") or "upcoming")
+        if st == "cancelled":
+            continue
+        by_status.setdefault(st, []).append(t)
+    return {
+        "ok": True,
+        "columns": [
+            {
+                "id": cid,
+                "label": label,
+                "tasks": by_status.get(cid, [])[:60],
+                "count": len(by_status.get(cid, [])),
+            }
+            for cid, label in columns
+        ],
+        "note": "Board is a work view — not a certification score.",
+    }
+
+
+def transition_task(user_id: str, task_id: str, status: str) -> dict[str, Any]:
+    """Move a task to a board column (validated status)."""
+    st = (status or "").strip().lower()
+    if st not in STATUSES:
+        raise ValueError(f"invalid status: {status}")
+    return update_task(user_id, task_id, {"status": st})
+
+
+def submit_for_review(user_id: str, task_id: str, *, note: str = "") -> dict[str, Any]:
+    """Owner finished work → Review (evidence required when configured)."""
+    ensure_compliance_ops_schema()
+    task = get_task(user_id, task_id)
+    if not task:
+        raise ValueError("task not found")
+    if int(task.get("evidence_required") or 0) and not int(task.get("evidence_attached") or 0):
+        raise ValueError("Cannot submit for review — required evidence missing.")
+    if note:
+        _record_event(task_id, user_id, "review_note", note[:500])
+    out = update_task(user_id, task_id, {"status": "review"})
+    reviewer = task.get("reviewer_id") or task.get("manager_id") or user_id
+    _notify(
+        str(reviewer),
+        f"Compliance review needed — {task.get('title')}",
+        note or "Submitted for review",
+    )
+    _publish("compliance.task.review", user_id, task_id=task_id, title=task.get("title"))
+    return out
+
+
+def approve_task(user_id: str, task_id: str, *, note: str = "") -> dict[str, Any]:
+    """Reviewer/approver signs off → completed (or approval column first)."""
+    ensure_compliance_ops_schema()
+    task = get_task(user_id, task_id)
+    if not task:
+        raise ValueError("task not found")
+    if task.get("status") not in {"review", "approval", "in_progress"}:
+        raise ValueError("Task must be in review or approval to approve")
+    if int(task.get("evidence_required") or 0) and not int(task.get("evidence_attached") or 0):
+        raise ValueError("Cannot approve — required evidence missing.")
+    _record_event(task_id, user_id, "approved", note or "approved")
+    _notify(
+        str(task.get("owner_id") or user_id),
+        f"Compliance task approved — {task.get('title')}",
+        note or "Approved",
+    )
+    _publish("compliance.task.approved", user_id, task_id=task_id, title=task.get("title"))
+    # Force-complete past the approval_required gate
+    if task.get("status") != "approval" and int(task.get("approval_required") or 0):
+        update_task(user_id, task_id, {"status": "approval"})
+    return complete_task(user_id, task_id, force=True)
+
+
+def reject_task(user_id: str, task_id: str, *, reason: str = "") -> dict[str, Any]:
+    """Send back to in_progress for rework."""
+    ensure_compliance_ops_schema()
+    task = get_task(user_id, task_id)
+    if not task:
+        raise ValueError("task not found")
+    _record_event(task_id, user_id, "rejected", reason or "rejected")
+    _notify(
+        str(task.get("owner_id") or user_id),
+        f"Compliance task returned — {task.get('title')}",
+        reason or "Returned for rework",
+    )
+    _publish("compliance.task.rejected", user_id, task_id=task_id, title=task.get("title"))
+    return update_task(user_id, task_id, {"status": "in_progress"})

@@ -1532,6 +1532,25 @@ def evaluate_agent_host_controls(
                             if rem:
                                 out["remediation_id"] = rem.get("id")
 
+                    # Compliance Operations: open/refresh automated task for FAIL
+                    try:
+                        from app.compliance_ops.bridge import upsert_task_from_control_result
+
+                        co_task = upsert_task_from_control_result(
+                            user_id,
+                            test_name=test_name,
+                            status="fail",
+                            summary=str(result.get("summary") or ""),
+                            agent_id=agent_id,
+                            hostname=hostname or "",
+                            framework_id=primary[0] if primary else None,
+                            control_id=primary[1] if primary else None,
+                        )
+                        if co_task and co_task.get("id"):
+                            out["compliance_task_id"] = co_task["id"]
+                    except Exception:
+                        pass
+
                 elif status == "pass" and prev == "fail":
                     # RT-11 verify: prior FAIL → PASS evidence + risk-reduction hint
                     try:
@@ -1573,6 +1592,22 @@ def evaluate_agent_host_controls(
                     except Exception:
                         if test_name == TEST_HOST_FIREWALL:
                             _close_host_firewall_remediation(user_id, agent_id)
+
+                    try:
+                        from app.compliance_ops.bridge import upsert_task_from_control_result
+
+                        co_done = upsert_task_from_control_result(
+                            user_id,
+                            test_name=test_name,
+                            status="pass",
+                            summary=str(result.get("summary") or ""),
+                            agent_id=agent_id,
+                            hostname=hostname or "",
+                        )
+                        if co_done and co_done.get("id"):
+                            out["compliance_task_id"] = co_done["id"]
+                    except Exception:
+                        pass
 
                 # Close host remediation verification from observed host state
                 if status in ("pass", "fail") and test_name in (

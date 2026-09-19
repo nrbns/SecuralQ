@@ -445,7 +445,10 @@
       renderFrameworksPage();
     }
     if (view === "compliance_center") renderComplianceCenterPage();
-    if (view === "compliance_ops") renderComplianceOpsPage();
+    if (view === "compliance_ops") {
+      if (opts.coTab) window.__securaiqCoTab = opts.coTab;
+      renderComplianceOpsPage();
+    }
     if (view === "privacy") renderPrivacyPage();
     if (view === "control_center") renderControlCenterPage();
     if (view === "impact") renderImpactPage();
@@ -10971,20 +10974,28 @@
   async function renderComplianceOpsPage() {
     const body = qs("complianceOpsPageBody");
     if (!body) return;
+    const tab = window.__securaiqCoTab || "calendar";
     body.innerHTML = `<p class="hint">Loading Compliance Operations…</p>`;
     const now = new Date();
     const y = now.getUTCFullYear();
     const m = now.getUTCMonth() + 1;
-    const [sumRes, workRes, calRes, taskRes] = await Promise.all([
+    const fetches = [
       fetch("/api/compliance-ops/summary", { headers: authHeaders() }),
       fetch("/api/compliance-ops/my-work", { headers: authHeaders() }),
       fetch(`/api/compliance-ops/calendar?year=${y}&month=${m}`, { headers: authHeaders() }),
       fetch("/api/compliance-ops/tasks?limit=100", { headers: authHeaders() }),
-    ]);
+    ];
+    if (tab === "board") {
+      fetches.push(fetch("/api/compliance-ops/board", { headers: authHeaders() }));
+    }
+    const results = await Promise.all(fetches);
+    const [sumRes, workRes, calRes, taskRes] = results;
+    const boardRes = tab === "board" ? results[4] : null;
     const summary = sumRes.ok ? await sumRes.json().catch(() => ({})) : {};
     const work = workRes.ok ? await workRes.json().catch(() => ({})) : {};
     const cal = calRes.ok ? await calRes.json().catch(() => ({})) : {};
     const taskData = taskRes.ok ? await taskRes.json().catch(() => ({})) : {};
+    const board = boardRes && boardRes.ok ? await boardRes.json().catch(() => ({})) : {};
     const counts = summary.counts || {};
     const wc = work.counts || {};
     const depts = summary.departments || [];
@@ -10993,7 +11004,7 @@
 
     const dayCells = [];
     const first = new Date(Date.UTC(y, m - 1, 1));
-    const startPad = first.getUTCDay(); // 0 Sun
+    const startPad = first.getUTCDay();
     const dim = new Date(Date.UTC(y, m, 0)).getUTCDate();
     for (let i = 0; i < startPad; i++) dayCells.push(`<div class="co-day co-day-empty"></div>`);
     for (let d = 1; d <= dim; d++) {
@@ -11015,6 +11026,32 @@
       );
     }
 
+    const taskActions = (t) => {
+      const st = t.status || "";
+      const bits = [
+        `<button type="button" class="btn-secondary co-ev" data-id="${escapeHtml(t.id)}">Evidence</button>`,
+      ];
+      if (st === "in_progress" || st === "upcoming" || st === "backlog") {
+        bits.push(
+          `<button type="button" class="btn-secondary co-review" data-id="${escapeHtml(t.id)}">Submit review</button>`
+        );
+      }
+      if (st === "review" || st === "approval") {
+        bits.push(
+          `<button type="button" class="btn-primary co-approve" data-id="${escapeHtml(t.id)}">Approve</button>`
+        );
+        bits.push(
+          `<button type="button" class="btn-secondary co-reject" data-id="${escapeHtml(t.id)}">Reject</button>`
+        );
+      }
+      if (st !== "completed" && st !== "cancelled") {
+        bits.push(
+          `<button type="button" class="btn-primary co-done" data-id="${escapeHtml(t.id)}">Complete</button>`
+        );
+      }
+      return bits.join("");
+    };
+
     const taskRow = (t) => {
       const pri = t.overdue ? "high" : t.priority === "critical" || t.priority === "high" ? "high" : "medium";
       return `<li class="co-task" data-task-id="${escapeHtml(t.id)}">
@@ -11022,35 +11059,66 @@
         <strong>${escapeHtml(t.title || "")}</strong>
         <span class="hint">${escapeHtml(t.due_label || "no due")} · ${escapeHtml(t.department || "—")} · ${escapeHtml(
         t.task_kind || "manual"
-      )}</span>
-        <span class="co-task-actions">
-          <button type="button" class="btn-secondary co-ev" data-id="${escapeHtml(t.id)}">Evidence</button>
-          <button type="button" class="btn-primary co-done" data-id="${escapeHtml(t.id)}">Complete</button>
-        </span>
+      )} · ${escapeHtml(t.status || "")}</span>
+        <span class="co-task-actions">${taskActions(t)}</span>
       </li>`;
     };
 
-    body.innerHTML = `
-      <p class="hint">${escapeHtml(summary.note || work.note || "")}</p>
-      <div class="fw-hero" style="margin-bottom:1rem">
-        <div class="fw-hero-score">
-          <span class="fw-hero-label">Work completion</span>
-          <strong>${summary.overall_percent != null ? `${summary.overall_percent}%` : "—"}</strong>
-          <em class="hint">Tasks completed / total · not certification</em>
-        </div>
-        <ul class="fw-hero-stats">
-          <li><span>Completed</span><strong>${escapeHtml(String(counts.completed ?? "—"))}</strong></li>
-          <li><span>Open</span><strong>${escapeHtml(String(counts.due_open ?? "—"))}</strong></li>
-          <li><span>Overdue</span><strong>${escapeHtml(String(counts.overdue ?? "—"))}</strong></li>
-          <li><span>Escalations</span><strong>${escapeHtml(String(counts.escalations ?? "—"))}</strong></li>
-        </ul>
-      </div>
-      <div class="co-grid">
-        <section class="cc-panel">
-          <header><h3 style="margin:0">Calendar · ${escapeHtml(String(m))}/${escapeHtml(String(y))}</h3></header>
-          <div class="co-cal-head"><span>Sun</span><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span></div>
-          <div class="co-cal">${dayCells.join("")}</div>
-        </section>
+    const tabsHtml = `
+      <div class="co-tabs" role="tablist">
+        <button type="button" class="co-tab ${tab === "calendar" ? "is-active" : ""}" data-co-switch="calendar">Calendar</button>
+        <button type="button" class="co-tab ${tab === "board" ? "is-active" : ""}" data-co-switch="board">Board</button>
+        <button type="button" class="co-tab ${tab === "work" ? "is-active" : ""}" data-co-switch="work">My Work</button>
+        <button type="button" class="co-tab ${tab === "mgmt" ? "is-active" : ""}" data-co-switch="mgmt">Management</button>
+      </div>`;
+
+    let mainHtml = "";
+    if (tab === "board") {
+      const cols = board.columns || [];
+      mainHtml = `
+        <p class="hint">${escapeHtml(board.note || "Board is a work view — not a certification score.")}</p>
+        <div class="co-board">
+          ${cols
+            .map((col) => {
+              const cards = (col.tasks || [])
+                .map((t) => {
+                  const next =
+                    col.id === "backlog"
+                      ? "upcoming"
+                      : col.id === "upcoming"
+                        ? "in_progress"
+                        : col.id === "in_progress"
+                          ? "review"
+                          : "";
+                  return `<div class="co-card" data-task-id="${escapeHtml(t.id)}">
+                    <strong>${escapeHtml(t.title || "")}</strong>
+                    <span class="hint">${escapeHtml(t.department || "—")} · ${escapeHtml(t.priority || "medium")}${
+                    t.overdue ? " · overdue" : ""
+                  }</span>
+                    <div class="co-card-actions">
+                      ${taskActions(t)}
+                      ${
+                        next
+                          ? `<button type="button" class="btn-secondary co-move" data-id="${escapeHtml(
+                              t.id
+                            )}" data-status="${next}">→ ${escapeHtml(next.replace("_", " "))}</button>`
+                          : ""
+                      }
+                    </div>
+                  </div>`;
+                })
+                .join("");
+              return `<section class="co-col" data-col="${escapeHtml(col.id)}">
+                <div class="co-col-head"><span>${escapeHtml(col.label)}</span><span class="co-col-count">${escapeHtml(
+                String(col.count ?? 0)
+              )}</span></div>
+                ${cards || `<p class="hint" style="margin:0.25rem 0">Empty</p>`}
+              </section>`;
+            })
+            .join("")}
+        </div>`;
+    } else if (tab === "work") {
+      mainHtml = `
         <section class="cc-panel">
           <header><h3 style="margin:0">My Work</h3></header>
           <ul class="fw-hero-stats" style="margin:0.5rem 0">
@@ -11060,37 +11128,99 @@
             <li><span>Upcoming</span><strong>${escapeHtml(String(wc.upcoming ?? 0))}</strong></li>
           </ul>
           <ul class="co-task-list">
-            ${(work.overdue || []).concat(work.due_today || [], work.this_week || []).slice(0, 12).map(taskRow).join("") ||
+            ${(work.overdue || []).concat(work.due_today || [], work.this_week || []).slice(0, 20).map(taskRow).join("") ||
               `<li class="hint">No open tasks — Seed year to create schedules, then Run tick / Materialize.</li>`}
           </ul>
-        </section>
-      </div>
-      <section class="cc-panel" style="margin-top:1rem">
-        <header><h3 style="margin:0">Departments</h3></header>
-        <ul class="fw-hero-stats">
-          ${
-            depts.length
-              ? depts
-                  .map(
-                    (d) =>
-                      `<li><span>${escapeHtml(d.department)}</span><strong>${escapeHtml(
-                        String(d.completion_percent)
-                      )}% · ${escapeHtml(String(d.overdue))} overdue</strong></li>`
-                  )
-                  .join("")
-              : `<li class="hint">No department rollup yet</li>`
-          }
-        </ul>
-      </section>
-      <section class="cc-panel" style="margin-top:1rem">
-        <header><h3 style="margin:0">All open tasks</h3></header>
-        <ul class="co-task-list">
-          ${
-            tasks.filter((t) => t.status !== "completed" && t.status !== "cancelled").slice(0, 25).map(taskRow).join("") ||
-            `<li class="hint">No tasks yet</li>`
-          }
-        </ul>
-      </section>`;
+        </section>`;
+    } else if (tab === "mgmt") {
+      mainHtml = `
+        <div class="fw-hero" style="margin-bottom:1rem">
+          <div class="fw-hero-score">
+            <span class="fw-hero-label">Work completion</span>
+            <strong>${summary.overall_percent != null ? `${summary.overall_percent}%` : "—"}</strong>
+            <em class="hint">Tasks completed / total · not certification</em>
+          </div>
+          <ul class="fw-hero-stats">
+            <li><span>Completed</span><strong>${escapeHtml(String(counts.completed ?? "—"))}</strong></li>
+            <li><span>Open</span><strong>${escapeHtml(String(counts.due_open ?? "—"))}</strong></li>
+            <li><span>Overdue</span><strong>${escapeHtml(String(counts.overdue ?? "—"))}</strong></li>
+            <li><span>Escalations</span><strong>${escapeHtml(String(counts.escalations ?? "—"))}</strong></li>
+          </ul>
+        </div>
+        <section class="cc-panel">
+          <header><h3 style="margin:0">Departments</h3></header>
+          <ul class="fw-hero-stats">
+            ${
+              depts.length
+                ? depts
+                    .map(
+                      (d) =>
+                        `<li><span>${escapeHtml(d.department)}</span><strong>${escapeHtml(
+                          String(d.completion_percent)
+                        )}% · ${escapeHtml(String(d.overdue))} overdue</strong></li>`
+                    )
+                    .join("")
+                : `<li class="hint">No department rollup yet</li>`
+            }
+          </ul>
+        </section>`;
+    } else {
+      mainHtml = `
+        <div class="fw-hero" style="margin-bottom:1rem">
+          <div class="fw-hero-score">
+            <span class="fw-hero-label">Work completion</span>
+            <strong>${summary.overall_percent != null ? `${summary.overall_percent}%` : "—"}</strong>
+            <em class="hint">Tasks completed / total · not certification</em>
+          </div>
+          <ul class="fw-hero-stats">
+            <li><span>Completed</span><strong>${escapeHtml(String(counts.completed ?? "—"))}</strong></li>
+            <li><span>Open</span><strong>${escapeHtml(String(counts.due_open ?? "—"))}</strong></li>
+            <li><span>Overdue</span><strong>${escapeHtml(String(counts.overdue ?? "—"))}</strong></li>
+            <li><span>Escalations</span><strong>${escapeHtml(String(counts.escalations ?? "—"))}</strong></li>
+          </ul>
+        </div>
+        <div class="co-grid">
+          <section class="cc-panel">
+            <header><h3 style="margin:0">Calendar · ${escapeHtml(String(m))}/${escapeHtml(String(y))}</h3></header>
+            <div class="co-cal-head"><span>Sun</span><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span></div>
+            <div class="co-cal">${dayCells.join("")}</div>
+          </section>
+          <section class="cc-panel">
+            <header><h3 style="margin:0">My Work</h3></header>
+            <ul class="fw-hero-stats" style="margin:0.5rem 0">
+              <li><span>Overdue</span><strong>${escapeHtml(String(wc.overdue ?? 0))}</strong></li>
+              <li><span>Due today</span><strong>${escapeHtml(String(wc.due_today ?? 0))}</strong></li>
+              <li><span>This week</span><strong>${escapeHtml(String(wc.this_week ?? 0))}</strong></li>
+              <li><span>Upcoming</span><strong>${escapeHtml(String(wc.upcoming ?? 0))}</strong></li>
+            </ul>
+            <ul class="co-task-list">
+              ${(work.overdue || []).concat(work.due_today || [], work.this_week || []).slice(0, 12).map(taskRow).join("") ||
+                `<li class="hint">No open tasks — Seed year to create schedules, then Run tick / Materialize.</li>`}
+            </ul>
+          </section>
+        </div>
+        <section class="cc-panel" style="margin-top:1rem">
+          <header><h3 style="margin:0">All open tasks</h3></header>
+          <ul class="co-task-list">
+            ${
+              tasks.filter((t) => t.status !== "completed" && t.status !== "cancelled").slice(0, 25).map(taskRow).join("") ||
+              `<li class="hint">No tasks yet</li>`
+            }
+          </ul>
+        </section>`;
+    }
+
+    body.innerHTML = `
+      <p class="hint">${escapeHtml(summary.note || work.note || "")}</p>
+      ${tabsHtml}
+      ${mainHtml}`;
+
+    body.querySelectorAll("[data-co-switch]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        window.__securaiqCoTab = btn.getAttribute("data-co-switch") || "calendar";
+        renderComplianceOpsPage();
+      });
+    });
 
     const wireTaskActions = (root) => {
       root.querySelectorAll(".co-done").forEach((btn) => {
@@ -11120,6 +11250,80 @@
             body: JSON.stringify({ note }),
           });
           if (typeof notifyUser === "function") notifyUser("**Evidence recorded** on compliance task.");
+          renderComplianceOpsPage();
+        });
+      });
+      root.querySelectorAll(".co-review").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const id = btn.getAttribute("data-id");
+          const note = window.prompt("Review note (optional)", "") || "";
+          const res = await fetch(`/api/compliance-ops/tasks/${encodeURIComponent(id)}/submit-review`, {
+            method: "POST",
+            headers: authHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify({ note }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            if (typeof notifyUser === "function")
+              notifyUser(`**Cannot submit:** ${data.detail || res.status}`);
+            return;
+          }
+          renderComplianceOpsPage();
+        });
+      });
+      root.querySelectorAll(".co-approve").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const id = btn.getAttribute("data-id");
+          const note = window.prompt("Approval note (optional)", "Approved") || "";
+          const res = await fetch(`/api/compliance-ops/tasks/${encodeURIComponent(id)}/approve`, {
+            method: "POST",
+            headers: authHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify({ note }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            if (typeof notifyUser === "function")
+              notifyUser(`**Cannot approve:** ${data.detail || res.status}`);
+            return;
+          }
+          if (typeof notifyUser === "function") notifyUser("**Task approved** and completed.");
+          renderComplianceOpsPage();
+        });
+      });
+      root.querySelectorAll(".co-reject").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const id = btn.getAttribute("data-id");
+          const reason = window.prompt("Return reason", "Needs rework") || "";
+          if (!reason) return;
+          const res = await fetch(`/api/compliance-ops/tasks/${encodeURIComponent(id)}/reject`, {
+            method: "POST",
+            headers: authHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify({ reason }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            if (typeof notifyUser === "function")
+              notifyUser(`**Cannot reject:** ${data.detail || res.status}`);
+            return;
+          }
+          renderComplianceOpsPage();
+        });
+      });
+      root.querySelectorAll(".co-move").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const id = btn.getAttribute("data-id");
+          const status = btn.getAttribute("data-status");
+          const res = await fetch(`/api/compliance-ops/tasks/${encodeURIComponent(id)}/transition`, {
+            method: "POST",
+            headers: authHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify({ status }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            if (typeof notifyUser === "function")
+              notifyUser(`**Cannot move:** ${data.detail || res.status}`);
+            return;
+          }
           renderComplianceOpsPage();
         });
       });
@@ -13764,7 +13968,10 @@
         e.preventDefault();
         const ws = el.getAttribute("data-workspace");
         const scroll = el.getAttribute("data-scroll");
-        showWorkspace(ws);
+        const coTab = el.getAttribute("data-co-tab");
+        const opts = {};
+        if (coTab) opts.coTab = coTab;
+        showWorkspace(ws, opts);
         if (scroll) {
           setTimeout(() => {
             const target = document.getElementById(scroll);

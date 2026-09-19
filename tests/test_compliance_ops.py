@@ -102,6 +102,91 @@ def test_tick_overdue_escalates(tmp_path, monkeypatch):
     assert int(refreshed.get("escalation_level") or 0) >= 1
 
 
+def test_board_and_approval_workflow(tmp_path, monkeypatch):
+    configure_isolated_settings(monkeypatch, tmp_path)
+    from app.auth import login, register_user
+    from app.compliance_ops.tasks import (
+        approve_task,
+        board_view,
+        create_task,
+        reject_task,
+        submit_evidence,
+        submit_for_review,
+        transition_task,
+    )
+    from app.tenancy import ensure_tenant_schema
+
+    ensure_tenant_schema()
+    register_user("co_board", "password123", role="admin")
+    user, _ = login("co_board", "password123")
+    task = create_task(
+        user.id,
+        {
+            "title": "Policy review",
+            "department": "Legal",
+            "due_at": time.time() + 5 * 86400,
+            "evidence_required": True,
+            "status": "in_progress",
+        },
+    )
+    board = board_view(user.id)
+    assert board["ok"] is True
+    assert any(c["id"] == "in_progress" for c in board["columns"])
+    transition_task(user.id, task["id"], "upcoming")
+    try:
+        submit_for_review(user.id, task["id"])
+        assert False, "should require evidence"
+    except ValueError as exc:
+        assert "evidence" in str(exc).lower()
+    submit_evidence(user.id, task["id"], note="Signed policy PDF")
+    reviewed = submit_for_review(user.id, task["id"], note="Ready")
+    assert reviewed["status"] == "review"
+    rejected = reject_task(user.id, task["id"], reason="Missing sign-off page")
+    assert rejected["status"] == "in_progress"
+    submit_for_review(user.id, task["id"])
+    approved = approve_task(user.id, task["id"], note="Looks good")
+    assert approved["status"] == "completed"
+
+
+def test_control_fail_pass_bridge(tmp_path, monkeypatch):
+    configure_isolated_settings(monkeypatch, tmp_path)
+    from app.auth import login, register_user
+    from app.compliance_ops.bridge import upsert_task_from_control_result
+    from app.compliance_ops.tasks import get_task
+    from app.tenancy import ensure_tenant_schema
+
+    ensure_tenant_schema()
+    register_user("co_bridge", "password123", role="admin")
+    user, _ = login("co_bridge", "password123")
+    opened = upsert_task_from_control_result(
+        user.id,
+        test_name="host_firewall",
+        status="fail",
+        summary="Firewall disabled",
+        hostname="lab-host-1",
+    )
+    assert opened and opened["status"] == "in_progress"
+    assert opened["live_test_name"] == "host_firewall"
+    assert opened["task_kind"] == "automated"
+    again = upsert_task_from_control_result(
+        user.id,
+        test_name="host_firewall",
+        status="fail",
+        summary="Still disabled",
+        hostname="lab-host-1",
+    )
+    assert again["id"] == opened["id"]
+    done = upsert_task_from_control_result(
+        user.id,
+        test_name="host_firewall",
+        status="pass",
+        summary="Firewall enabled",
+        hostname="lab-host-1",
+    )
+    assert done and done["status"] == "completed"
+    assert get_task(user.id, opened["id"])["status"] == "completed"
+
+
 def test_compliance_ops_api(tmp_path, monkeypatch):
     configure_isolated_settings(monkeypatch, tmp_path)
     from fastapi.testclient import TestClient
@@ -123,3 +208,33 @@ def test_compliance_ops_api(tmp_path, monkeypatch):
     r3 = client.get("/api/compliance-ops/calendar", headers=headers)
     assert r3.status_code == 200
     assert r3.json().get("ok") is True
+    r4 = client.get("/api/compliance-ops/board", headers=headers)
+    assert r4.status_code == 200
+    assert r4.json().get("ok") is True
+    create = client.post(
+        "/api/compliance-ops/tasks",
+        headers=headers,
+        json={
+            "title": "API review task",
+            "department": "IT",
+            "evidence_required": False,
+            "status": "in_progress",
+            "due_at": time.time() + 86400,
+        },
+    )
+    assert create.status_code == 200
+    tid = create.json()["task"]["id"]
+    rev = client.post(
+        f"/api/compliance-ops/tasks/{tid}/submit-review",
+        headers=headers,
+        json={"note": "done"},
+    )
+    assert rev.status_code == 200
+    assert rev.json()["task"]["status"] == "review"
+    appr = client.post(
+        f"/api/compliance-ops/tasks/{tid}/approve",
+        headers=headers,
+        json={"note": "ok"},
+    )
+    assert appr.status_code == 200
+    assert appr.json()["task"]["status"] == "completed"

@@ -7,7 +7,7 @@
 | Surface | Answers |
 |---------|---------|
 | **Compliance** (Frameworks / Evidence / DPDP) | Are we compliant and **why**? |
-| **Compliance Operations** (Calendar / My Work) | What must people **do**, and **when**? |
+| **Compliance Operations** (Calendar / Board / My Work) | What must people **do**, and **when**? |
 
 Honesty: this module manages **work**. It is **not** a legal determination of compliance or a certification.
 
@@ -26,6 +26,20 @@ Task kinds:
 - **assisted** — SecuraIQ + human evidence
 - **manual** — governance (access review, training, management review)
 
+## Board + approval
+
+Statuses: `backlog` → `upcoming` → `in_progress` → `review` → `approval` → `completed`.
+
+- **Submit for review** — owner finished; blocked if `evidence_required` and no evidence
+- **Approve** — reviewer signs off → completed (force past `approval_required`)
+- **Reject** — returns to `in_progress`
+
+## Control bridge
+
+When a live host control **FAIL**s, Compliance Ops opens (or refreshes) an **automated** task for that `live_test_name`. When the same control recovers **PASS** after FAIL, the open automated task is auto-completed with a verification note.
+
+Mapped tests today: `host_firewall`, `host_defender`, `host_ssh_root`, `host_disk_encryption`, `host_risky_listeners`.
+
 ## API
 
 Prefix: `/api/compliance-ops`
@@ -35,8 +49,13 @@ Prefix: `/api/compliance-ops`
 | GET | `/summary` | Management rollup + departments |
 | GET | `/my-work` | Overdue / due today / week / upcoming |
 | GET | `/calendar?year=&month=` | Month view |
+| GET | `/board` | Kanban columns |
 | GET/POST | `/tasks` | List / create |
+| POST | `/tasks/{id}/transition` | Move to board status |
 | POST | `/tasks/{id}/evidence` | Attach evidence note |
+| POST | `/tasks/{id}/submit-review` | Owner → Review |
+| POST | `/tasks/{id}/approve` | Approve → completed |
+| POST | `/tasks/{id}/reject` | Return to in_progress |
 | POST | `/tasks/{id}/complete` | Complete (blocked if evidence required missing) |
 | POST | `/tasks/{id}/escalate` | Manual escalate |
 | GET/POST | `/schedules` | Recurring schedules |
@@ -55,21 +74,21 @@ Background job `compliance_ops_tick` (every ~5 min via `app/jobs.py`):
 
 Realtime events (SSE):
 
-`compliance.task.created|updated|due_soon|due|overdue|completed|escalated|evidence_attached`
+`compliance.task.created|updated|due_soon|due|overdue|completed|escalated|evidence_attached|evidence_missing|review|approved|rejected`
 
 ## UI
 
-Nav: **Compliance Ops → Calendar / Tasks · My Work · Management**
+Nav: **Compliance Ops → Calendar / Tasks · Board · My Work · Management**
 
-Seed year → materialize → work the queue. Evidence is required before complete when `evidence_required` is set.
+Seed year → materialize → work the queue or board. Evidence is required before complete / submit-review when `evidence_required` is set.
 
-## Out of scope for this MVP (next slices)
+## Out of scope (later)
 
 - Full holiday calendars / regional working days  
 - Multi-step approval graphs  
 - Slack / Teams connectors (email + in-app first)  
 - SMS / WhatsApp  
-- Full board / Gantt timeline views  
+- Gantt timeline views  
 
 ## Tests
 

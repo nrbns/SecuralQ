@@ -17,6 +17,8 @@ from app.compliance_ops.automation import run_compliance_ops_tick
 from app.compliance_ops.schedules import create_schedule, list_schedules, materialize_due_from_schedules
 from app.compliance_ops.seed import seed_default_schedules
 from app.compliance_ops.tasks import (
+    approve_task,
+    board_view,
     calendar_month,
     complete_task,
     create_task,
@@ -25,7 +27,10 @@ from app.compliance_ops.tasks import (
     list_tasks,
     management_summary,
     my_work_queue,
+    reject_task,
     submit_evidence,
+    submit_for_review,
+    transition_task,
     update_task,
 )
 
@@ -79,6 +84,18 @@ class EscalateBody(BaseModel):
     reason: str = ""
 
 
+class TransitionBody(BaseModel):
+    status: str = Field(min_length=1, max_length=40)
+
+
+class ReviewBody(BaseModel):
+    note: str = ""
+
+
+class RejectBody(BaseModel):
+    reason: str = ""
+
+
 class ScheduleCreate(BaseModel):
     title: str = Field(min_length=1, max_length=300)
     description: str = ""
@@ -124,6 +141,11 @@ async def api_calendar(
     if m < 1 or m > 12:
         raise HTTPException(status_code=400, detail="month must be 1-12")
     return calendar_month(user.id, year=y, month=m)
+
+
+@router.get("/board")
+async def api_board(user: Annotated[AuthUser, Depends(require_user)]):
+    return board_view(user.id)
 
 
 @router.get("/tasks")
@@ -214,6 +236,58 @@ async def api_escalate(
 ):
     try:
         task = escalate_task(user.id, task_id, reason=body.reason)
+        return {"ok": True, "task": task}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/tasks/{task_id}/transition")
+async def api_transition(
+    task_id: str,
+    body: TransitionBody,
+    user: Annotated[AuthUser, Depends(require_user)],
+):
+    try:
+        task = transition_task(user.id, task_id, body.status)
+        return {"ok": True, "task": task}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/tasks/{task_id}/submit-review")
+async def api_submit_review(
+    task_id: str,
+    body: ReviewBody,
+    user: Annotated[AuthUser, Depends(require_user)],
+):
+    try:
+        task = submit_for_review(user.id, task_id, note=body.note)
+        return {"ok": True, "task": task}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/tasks/{task_id}/approve")
+async def api_approve(
+    task_id: str,
+    body: ReviewBody,
+    user: Annotated[AuthUser, Depends(require_user)],
+):
+    try:
+        task = approve_task(user.id, task_id, note=body.note)
+        return {"ok": True, "task": task}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/tasks/{task_id}/reject")
+async def api_reject(
+    task_id: str,
+    body: RejectBody,
+    user: Annotated[AuthUser, Depends(require_user)],
+):
+    try:
+        task = reject_task(user.id, task_id, reason=body.reason)
         return {"ok": True, "task": task}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
