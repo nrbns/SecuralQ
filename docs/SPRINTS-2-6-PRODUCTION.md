@@ -71,7 +71,7 @@ UI: `static/workspace.js` `_agentCommandLifecycle` aligned.
 | Phase 1 CI gate | `phase1-realtime-gate` | Done |
 | Tenant isolation tests | `tests/test_cross_tenant_isolation.py` etc. | Done |
 | Backups / restore / chaos | scripts + docs | Partial — runbook only |
-| Load / capacity measurement | `scripts/realtime_load_test.py` + `docs/ops/CAPACITY-LAB.md` | Lab tool — **no 5k claim until table filled** |
+| Load / capacity measurement | `scripts/realtime_load_test.py` + `docs/ops/CAPACITY-LAB.md` | Lab measured: in-proc to 100k + HTTP wave to 50 — **no 5k claim** |
 | Stripe portal + downloads | `POST /api/billing/portal`, `GET /api/billing/downloads` | Done (inert without Stripe keys) |
 | Rust agent client cert | `securaiq-agent` `crypto::certificates` + HTTPS Identity | Done |
 | Production profile status API | `app/production_profile.py` + `/api/controls/production-profile` | Done |

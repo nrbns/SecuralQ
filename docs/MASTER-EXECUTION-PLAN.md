@@ -40,7 +40,7 @@ Rust Agent → Agent Gateway → FastAPI → Redis Streams → Workers
 | 6 | Requirements first-class | **Shipped** — domain Requirement model + `/api/controls/requirements*` + Frameworks UI strip (not legal text) |
 | 7 | DPDP Privacy Center | **Deepened** — data_map activities/requests/retention + Privacy Center sections (not a DPDP compliance claim) |
 | 8 | Command Center UX (WHAT→WHY→EVIDENCE→IMPACT→ACTION→VERIFY) | **Shipped** — ops decision card + `renderNarrativeBlock` on remediations/assets/agents/evidence/findings |
-| 9 | Measure scale ladder 100→100K | **In-proc measured to 100K** — see [ops/CAPACITY-LAB.md](./ops/CAPACITY-LAB.md); HTTP/Redis/SSE path still TBD |
+| 9 | Measure scale ladder 100→100K | **In-proc to 100K + HTTP wave to 50** — see [ops/CAPACITY-LAB.md](./ops/CAPACITY-LAB.md); HTTP 100/500/1k and Redis path still TBD |
 | 10 | Then Cloud / Identity / AppSec / SBOM / K8s | **Frozen** until 1–5 stay green |
 
 ### Prove #1
