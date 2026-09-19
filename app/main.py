@@ -98,6 +98,7 @@ from app.cmmc_affirmation_api import router as cmmc_affirmation_router
 from app.compliance_attestation_api import router as compliance_attestation_router
 from app.canonical_controls_api import router as canonical_controls_router
 from app.controls.controls_api import router as controls_router
+from app.compliance_ops.api import router as compliance_ops_router
 from app.configuration.configuration_api import router as configuration_router
 from app.live_ssp_api import router as live_ssp_router
 from app.compliance_doc_library_api import router as compliance_doc_library_router
@@ -410,6 +411,7 @@ app.include_router(cmmc_affirmation_router)
 app.include_router(compliance_attestation_router)
 app.include_router(canonical_controls_router)
 app.include_router(controls_router)
+app.include_router(compliance_ops_router)
 app.include_router(configuration_router)
 app.include_router(live_ssp_router)
 app.include_router(compliance_doc_library_router)

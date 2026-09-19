@@ -47,6 +47,8 @@ _last_thehive_sync = _boot_ts
 _last_cloud_posture_sync = _boot_ts
 _last_sonarqube_sync = _boot_ts
 _last_software_sync = _boot_ts
+_last_compliance_ops_tick = _boot_ts
+COMPLIANCE_OPS_TICK_SEC = 300  # every 5 minutes
 
 
 def register_job(kind: str):
@@ -247,6 +249,7 @@ async def _scheduler_loop() -> None:
     await asyncio.sleep(15)
     global _last_kev_sync, _last_xdr_sync, _last_wazuh_sync, _last_openaudit_sync
     global _last_thehive_sync, _last_cloud_posture_sync, _last_sonarqube_sync, _last_software_sync
+    global _last_compliance_ops_tick
     while True:
         now_t = time.time()
         try:
@@ -367,6 +370,16 @@ async def _scheduler_loop() -> None:
             ):
                 _last_software_sync = now_t
                 enqueue_job("software_sync_all", {"scheduled": True, "user_id": "local"})
+        except Exception:
+            pass
+        try:
+            if (
+                "compliance_ops_tick" in JOB_HANDLERS
+                and now_t - _last_compliance_ops_tick >= COMPLIANCE_OPS_TICK_SEC
+                and not _has_pending_or_running("compliance_ops_tick")
+            ):
+                _last_compliance_ops_tick = now_t
+                enqueue_job("compliance_ops_tick", {"scheduled": True})
         except Exception:
             pass
         await asyncio.sleep(_SCHEDULER_TICK_SEC)
@@ -959,3 +972,14 @@ async def _job_report_export(payload: dict[str, Any]) -> dict[str, Any]:
         )
 
     return {"path": str(out_path), "bytes": len(pdf_bytes)}
+
+
+@register_job("compliance_ops_tick")
+async def _job_compliance_ops_tick(payload: dict[str, Any]) -> dict[str, Any]:
+    """Materialize schedules + reminders/escalations for Compliance Operations."""
+    from app.compliance_ops.automation import run_compliance_ops_tick, run_tick_all_users
+
+    uid = (payload.get("user_id") or "").strip()
+    if uid and uid != "local":
+        return await asyncio.to_thread(run_compliance_ops_tick, uid)
+    return await asyncio.to_thread(run_tick_all_users)

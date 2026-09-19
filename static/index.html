@@ -106,6 +106,15 @@
         </div>
       </nav>
 
+      <nav class="side-nav nav-group" aria-label="Compliance Operations" data-nav-group>
+        <button type="button" class="nav-group-toggle" aria-expanded="true"><span class="nav-ico" data-ico="comp" aria-hidden="true"></span> Compliance Ops</button>
+        <div class="nav-group-body">
+          <button type="button" class="nav-link" data-workspace="compliance_ops"><span class="nav-ico sm" data-ico="comp" aria-hidden="true"></span> Calendar / Tasks</button>
+          <button type="button" class="nav-link" data-workspace="compliance_ops" data-co-tab="work"><span class="nav-ico sm" data-ico="ctrl" aria-hidden="true"></span> My Work</button>
+          <button type="button" class="nav-link" data-workspace="compliance_ops" data-co-tab="mgmt"><span class="nav-ico sm" data-ico="rep" aria-hidden="true"></span> Management</button>
+        </div>
+      </nav>
+
       <nav class="side-nav nav-group" aria-label="Remediation" data-nav-group>
         <button type="button" class="nav-group-toggle" aria-expanded="true"><span class="nav-ico" data-ico="pb" aria-hidden="true"></span> Remediation</button>
         <div class="nav-group-body">
@@ -1056,6 +1065,23 @@
             </div>
           </div>
           <div id="complianceCenterPageBody"><p class="hint">Loading…</p></div>
+        </section>
+        <section id="viewComplianceOps" class="workspace-view hidden" data-module-page data-view-panel="compliance_ops">
+          <div class="page-head">
+            <div>
+              <h1>Compliance Operations</h1>
+              <p class="page-intro hint" style="margin:0.35rem 0 0">
+                Know what must be done, when, by whom — calendar, reminders, evidence gates, and escalation.
+                Work management only; not a legal compliance determination.
+              </p>
+            </div>
+            <div class="page-head-actions" style="display:flex;gap:0.5rem;flex-wrap:wrap">
+              <button type="button" class="btn-secondary" id="coSeedBtn">Seed year</button>
+              <button type="button" class="btn-secondary" id="coTickBtn">Run tick</button>
+              <button type="button" class="btn-primary" id="coNewTaskBtn">New task</button>
+            </div>
+          </div>
+          <div id="complianceOpsPageBody" class="page-pad"><p class="hint">Loading…</p></div>
         </section>
         <section id="viewPrivacy" class="workspace-view hidden" data-module-page data-view-panel="privacy">
           <div class="page-head">

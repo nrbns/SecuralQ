@@ -43,6 +43,11 @@ Rust Agent → Agent Gateway → FastAPI → Redis Streams → Workers
 | 9 | Measure scale ladder 100→100K | **In-proc to 100K + HTTP wave to 50** — see [ops/CAPACITY-LAB.md](./ops/CAPACITY-LAB.md); HTTP 100/500/1k and Redis path still TBD |
 | 10 | Then Cloud / Identity / AppSec / SBOM / K8s | **Frozen** until 1–5 stay green |
 
+### Compliance Operations (new module — after Immediate loop)
+
+Calendar-driven workflow engine (not domain expansion): see [COMPLIANCE-OPERATIONS.md](./COMPLIANCE-OPERATIONS.md).  
+MVP shipped: tasks · schedules · evidence gate · my-work · calendar · escalation tick · SSE events.
+
 ### Prove #1
 
 ```bash

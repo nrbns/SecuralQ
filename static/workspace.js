@@ -351,6 +351,7 @@
       orgs: "viewOrgs",
       frameworks: "viewFrameworks",
       compliance_center: "viewComplianceCenter",
+      compliance_ops: "viewComplianceOps",
       privacy: "viewPrivacy",
       control_center: "viewControlCenter",
       impact: "viewImpact",
@@ -404,6 +405,7 @@
         orgs: "Organizations",
         frameworks: "Frameworks",
         compliance_center: "Compliance Center",
+        compliance_ops: "Compliance Operations",
         privacy: "India DPDP",
         control_center: "Control Center",
         impact: "Cross-Framework Impact",
@@ -443,6 +445,7 @@
       renderFrameworksPage();
     }
     if (view === "compliance_center") renderComplianceCenterPage();
+    if (view === "compliance_ops") renderComplianceOpsPage();
     if (view === "privacy") renderPrivacyPage();
     if (view === "control_center") renderControlCenterPage();
     if (view === "impact") renderImpactPage();
@@ -10965,6 +10968,215 @@
   }
   window.renderComplianceCenterPage = renderComplianceCenterPage;
 
+  async function renderComplianceOpsPage() {
+    const body = qs("complianceOpsPageBody");
+    if (!body) return;
+    body.innerHTML = `<p class="hint">Loading Compliance Operations…</p>`;
+    const now = new Date();
+    const y = now.getUTCFullYear();
+    const m = now.getUTCMonth() + 1;
+    const [sumRes, workRes, calRes, taskRes] = await Promise.all([
+      fetch("/api/compliance-ops/summary", { headers: authHeaders() }),
+      fetch("/api/compliance-ops/my-work", { headers: authHeaders() }),
+      fetch(`/api/compliance-ops/calendar?year=${y}&month=${m}`, { headers: authHeaders() }),
+      fetch("/api/compliance-ops/tasks?limit=100", { headers: authHeaders() }),
+    ]);
+    const summary = sumRes.ok ? await sumRes.json().catch(() => ({})) : {};
+    const work = workRes.ok ? await workRes.json().catch(() => ({})) : {};
+    const cal = calRes.ok ? await calRes.json().catch(() => ({})) : {};
+    const taskData = taskRes.ok ? await taskRes.json().catch(() => ({})) : {};
+    const counts = summary.counts || {};
+    const wc = work.counts || {};
+    const depts = summary.departments || [];
+    const days = cal.days || {};
+    const tasks = taskData.tasks || [];
+
+    const dayCells = [];
+    const first = new Date(Date.UTC(y, m - 1, 1));
+    const startPad = first.getUTCDay(); // 0 Sun
+    const dim = new Date(Date.UTC(y, m, 0)).getUTCDate();
+    for (let i = 0; i < startPad; i++) dayCells.push(`<div class="co-day co-day-empty"></div>`);
+    for (let d = 1; d <= dim; d++) {
+      const key = `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+      const items = days[key] || [];
+      const chips = items
+        .slice(0, 3)
+        .map(
+          (t) =>
+            `<button type="button" class="co-chip ${t.overdue ? "is-overdue" : ""}" data-task-id="${escapeHtml(
+              t.id
+            )}" title="${escapeHtml(t.title)}">${escapeHtml((t.title || "").slice(0, 22))}</button>`
+        )
+        .join("");
+      dayCells.push(
+        `<div class="co-day"><div class="co-day-num">${d}</div><div class="co-day-items">${chips}${
+          items.length > 3 ? `<span class="hint">+${items.length - 3}</span>` : ""
+        }</div></div>`
+      );
+    }
+
+    const taskRow = (t) => {
+      const pri = t.overdue ? "high" : t.priority === "critical" || t.priority === "high" ? "high" : "medium";
+      return `<li class="co-task" data-task-id="${escapeHtml(t.id)}">
+        <span class="wq-badge pri-${pri}">${t.overdue ? "overdue" : escapeHtml(t.priority || "medium")}</span>
+        <strong>${escapeHtml(t.title || "")}</strong>
+        <span class="hint">${escapeHtml(t.due_label || "no due")} · ${escapeHtml(t.department || "—")} · ${escapeHtml(
+        t.task_kind || "manual"
+      )}</span>
+        <span class="co-task-actions">
+          <button type="button" class="btn-secondary co-ev" data-id="${escapeHtml(t.id)}">Evidence</button>
+          <button type="button" class="btn-primary co-done" data-id="${escapeHtml(t.id)}">Complete</button>
+        </span>
+      </li>`;
+    };
+
+    body.innerHTML = `
+      <p class="hint">${escapeHtml(summary.note || work.note || "")}</p>
+      <div class="fw-hero" style="margin-bottom:1rem">
+        <div class="fw-hero-score">
+          <span class="fw-hero-label">Work completion</span>
+          <strong>${summary.overall_percent != null ? `${summary.overall_percent}%` : "—"}</strong>
+          <em class="hint">Tasks completed / total · not certification</em>
+        </div>
+        <ul class="fw-hero-stats">
+          <li><span>Completed</span><strong>${escapeHtml(String(counts.completed ?? "—"))}</strong></li>
+          <li><span>Open</span><strong>${escapeHtml(String(counts.due_open ?? "—"))}</strong></li>
+          <li><span>Overdue</span><strong>${escapeHtml(String(counts.overdue ?? "—"))}</strong></li>
+          <li><span>Escalations</span><strong>${escapeHtml(String(counts.escalations ?? "—"))}</strong></li>
+        </ul>
+      </div>
+      <div class="co-grid">
+        <section class="cc-panel">
+          <header><h3 style="margin:0">Calendar · ${escapeHtml(String(m))}/${escapeHtml(String(y))}</h3></header>
+          <div class="co-cal-head"><span>Sun</span><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span></div>
+          <div class="co-cal">${dayCells.join("")}</div>
+        </section>
+        <section class="cc-panel">
+          <header><h3 style="margin:0">My Work</h3></header>
+          <ul class="fw-hero-stats" style="margin:0.5rem 0">
+            <li><span>Overdue</span><strong>${escapeHtml(String(wc.overdue ?? 0))}</strong></li>
+            <li><span>Due today</span><strong>${escapeHtml(String(wc.due_today ?? 0))}</strong></li>
+            <li><span>This week</span><strong>${escapeHtml(String(wc.this_week ?? 0))}</strong></li>
+            <li><span>Upcoming</span><strong>${escapeHtml(String(wc.upcoming ?? 0))}</strong></li>
+          </ul>
+          <ul class="co-task-list">
+            ${(work.overdue || []).concat(work.due_today || [], work.this_week || []).slice(0, 12).map(taskRow).join("") ||
+              `<li class="hint">No open tasks — Seed year to create schedules, then Run tick / Materialize.</li>`}
+          </ul>
+        </section>
+      </div>
+      <section class="cc-panel" style="margin-top:1rem">
+        <header><h3 style="margin:0">Departments</h3></header>
+        <ul class="fw-hero-stats">
+          ${
+            depts.length
+              ? depts
+                  .map(
+                    (d) =>
+                      `<li><span>${escapeHtml(d.department)}</span><strong>${escapeHtml(
+                        String(d.completion_percent)
+                      )}% · ${escapeHtml(String(d.overdue))} overdue</strong></li>`
+                  )
+                  .join("")
+              : `<li class="hint">No department rollup yet</li>`
+          }
+        </ul>
+      </section>
+      <section class="cc-panel" style="margin-top:1rem">
+        <header><h3 style="margin:0">All open tasks</h3></header>
+        <ul class="co-task-list">
+          ${
+            tasks.filter((t) => t.status !== "completed" && t.status !== "cancelled").slice(0, 25).map(taskRow).join("") ||
+            `<li class="hint">No tasks yet</li>`
+          }
+        </ul>
+      </section>`;
+
+    const wireTaskActions = (root) => {
+      root.querySelectorAll(".co-done").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const id = btn.getAttribute("data-id");
+          const res = await fetch(`/api/compliance-ops/tasks/${encodeURIComponent(id)}/complete`, {
+            method: "POST",
+            headers: authHeaders(),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            if (typeof notifyUser === "function")
+              notifyUser(`**Cannot complete:** ${data.detail || res.status}`);
+            return;
+          }
+          renderComplianceOpsPage();
+        });
+      });
+      root.querySelectorAll(".co-ev").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const id = btn.getAttribute("data-id");
+          const note = window.prompt("Evidence note / reference", "Evidence attached") || "";
+          if (!note) return;
+          await fetch(`/api/compliance-ops/tasks/${encodeURIComponent(id)}/evidence`, {
+            method: "POST",
+            headers: authHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify({ note }),
+          });
+          if (typeof notifyUser === "function") notifyUser("**Evidence recorded** on compliance task.");
+          renderComplianceOpsPage();
+        });
+      });
+    };
+    wireTaskActions(body);
+
+    const seedBtn = qs("coSeedBtn");
+    if (seedBtn && !seedBtn.dataset.wired) {
+      seedBtn.dataset.wired = "1";
+      seedBtn.addEventListener("click", async () => {
+        const res = await fetch("/api/compliance-ops/seed", { method: "POST", headers: authHeaders() });
+        const data = await res.json().catch(() => ({}));
+        await fetch("/api/compliance-ops/materialize?horizon_days=45", {
+          method: "POST",
+          headers: authHeaders(),
+        });
+        if (typeof notifyUser === "function")
+          notifyUser(`**Compliance year seeded** (${data.seeded ?? 0} schedules).`);
+        renderComplianceOpsPage();
+      });
+    }
+    const tickBtn = qs("coTickBtn");
+    if (tickBtn && !tickBtn.dataset.wired) {
+      tickBtn.dataset.wired = "1";
+      tickBtn.addEventListener("click", async () => {
+        const res = await fetch("/api/compliance-ops/tick", { method: "POST", headers: authHeaders() });
+        const data = await res.json().catch(() => ({}));
+        if (typeof notifyUser === "function")
+          notifyUser(`**Tick ran** — ${(data.actions || []).length} actions.`);
+        renderComplianceOpsPage();
+      });
+    }
+    const newBtn = qs("coNewTaskBtn");
+    if (newBtn && !newBtn.dataset.wired) {
+      newBtn.dataset.wired = "1";
+      newBtn.addEventListener("click", async () => {
+        const title = window.prompt("Task title", "Quarterly access review");
+        if (!title) return;
+        const due = new Date();
+        due.setUTCDate(due.getUTCDate() + 7);
+        await fetch("/api/compliance-ops/tasks", {
+          method: "POST",
+          headers: authHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify({
+            title,
+            department: "IT",
+            task_kind: "manual",
+            due_at: due.getTime() / 1000,
+            evidence_required: true,
+          }),
+        });
+        renderComplianceOpsPage();
+      });
+    }
+  }
+  window.renderComplianceOpsPage = renderComplianceOpsPage;
+
   async function renderPrivacyPage() {
     const body = qs("privacyPageBody");
     if (!body) return;
@@ -14089,6 +14301,8 @@
         evidence: () => typeof renderEvidencePage === "function" && renderEvidencePage(),
         compliance_center: () =>
           typeof renderComplianceCenterPage === "function" && renderComplianceCenterPage({ quiet: true }),
+        compliance_ops: () =>
+          typeof renderComplianceOpsPage === "function" && renderComplianceOpsPage(),
         control_center: () =>
           typeof renderControlCenterPage === "function" && renderControlCenterPage({ quiet: true }),
         frameworks: () => {
