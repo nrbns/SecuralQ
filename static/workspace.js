@@ -1570,7 +1570,10 @@
   async function refreshSoftwareFromPush(push, opts) {
     const options = opts || {};
     const view = window.__securaiqWorkspaceView || "";
-    window.__securaiqRealtimeConnected = !!window.__securaiqEsConnected;
+    window.__securaiqRealtimeConnected =
+      typeof window.__securaiqSseLive === "function"
+        ? window.__securaiqSseLive()
+        : !!window.__securaiqEsConnected;
     wireSoftwareLiveToggleOnce();
 
     if (!options.skipPulse && typeof window.pulseSoftwareFromPush === "function") {
@@ -1625,8 +1628,10 @@
     clearInterval(window.__securaiqSwPollTimer);
     window.__securaiqSwPollTimer = setInterval(() => {
       if (window.__securaiqWorkspaceView !== "software") return;
+      if (typeof window.__securaiqSseLive === "function" && window.__securaiqSseLive()) return;
       const rt = window.RealtimeManager;
-      if (window.__securaiqEsConnected || (rt && (rt.state === "connected" || rt.state === "open"))) return;
+      if (window.__securaiqEsConnected || (rt && (rt.state === "connected" || rt.state === "open" || rt.state === "reconnected")))
+        return;
       refreshSoftwareFromPush({}, { partial: true, summaryOnly: _softwareView === "servers" });
     }, 120000);
   }
@@ -1707,7 +1712,10 @@
     const lastSync = data.last_sync ? new Date(Number(data.last_sync) * (Number(data.last_sync) < 1e12 ? 1000 : 1)) : null;
     const lastSyncLabel =
       lastSync && !Number.isNaN(lastSync.getTime()) ? lastSync.toLocaleString() : "Never";
-    window.__securaiqRealtimeConnected = !!window.__securaiqEsConnected;
+    window.__securaiqRealtimeConnected =
+      typeof window.__securaiqSseLive === "function"
+        ? window.__securaiqSseLive()
+        : !!window.__securaiqEsConnected;
     const liveState = window.__securaiqRealtimeConnected ? "● LIVE" : "○ Polling";
     const engine = data.engine || {};
     const patchCounts = engine.patch_counts || {};
@@ -13263,7 +13271,10 @@
     const pending = jobs.filter((j) => statusOf(j) === "pending").length;
     const done = jobs.filter((j) => statusOf(j) === "done").length;
     const failed = jobs.filter((j) => statusOf(j) === "error" || statusOf(j) === "failed").length;
-    const liveOn = !!window.__securaiqEsConnected;
+    const liveOn =
+      typeof window.__securaiqSseLive === "function"
+        ? window.__securaiqSseLive()
+        : !!window.__securaiqEsConnected;
     const pill = qs("automationLivePill");
     if (pill) {
       pill.textContent = liveOn

@@ -416,7 +416,7 @@ Agent check-in payloads already include `firewall_status`, `defender_status`, an
 | **RT-10** | Agent telemetry → control test → compliance → evidence → risk → dashboard | **Partial→improved** (foundations) |
 | **RT-11** | Control FAIL → rem → approve → agent → verify → PASS → evidence | **Partial→improved** (firewall + Defender + SSH lab loops; verify on host PASS) |
 | **E** / **RT-12** | Central dashboard realtime (`RealtimeManager` + Last-Event-ID) | **Done→partial** (manager exists; not every panel) |
-| **F** / **RT-13** | Remove polling from major dashboards | **Partial** (soft-poll skip while SSE connected) |
+| **F** / **RT-13** | Remove polling from major dashboards | **Done** (soft-poll + notif badge only when SSE offline/stalled; Immediate #3) |
 | **RT-14** | Connection state + stale-data indicators | **Partial→improved** (live badge states) |
 | **RT-15** | Realtime timeline for every incident/remediation/control | **Planned** |
 | **G** | Command lifecycle dual-write (`lifecycle` on bus) | **Partial** |

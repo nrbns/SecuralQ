@@ -10856,18 +10856,54 @@ checkHealth().then(() => {
 });
 wireCommandCenterUi();
 setInterval(checkHealth, 90000);
-// Soft-poll ONLY when SSE / RealtimeManager is not connected (Task #3).
-function _sseRealtimeLive() {
+// Soft-poll ONLY when SSE / RealtimeManager is not live (Immediate #3).
+// Connected + recent events → RealtimeManager owns refreshes. Offline or
+// stalled SSE → soft-poll + optional force reconnect.
+const SSE_STALL_MS = 120000;
+function _sseRealtimeLive(opts) {
+  opts = opts || {};
+  const stallMs = opts.stallMs != null ? opts.stallMs : SSE_STALL_MS;
   const rt = window.RealtimeManager;
-  if (rt && (rt.state === "connected" || rt.state === "open")) return true;
-  return !!window.__securaiqEsConnected;
+  const state = rt && rt.state;
+  const connOk =
+    state === "connected" ||
+    state === "open" ||
+    state === "reconnected" ||
+    !!window.__securaiqEsConnected;
+  if (!connOk) return false;
+  const lastAt = Number((rt && rt.lastEventAt) || 0);
+  if (lastAt > 0 && Date.now() - lastAt > stallMs) {
+    if (rt && typeof rt.setConnState === "function" && state !== "degraded") {
+      try {
+        rt.setConnState("degraded", "SSE stall — soft-poll", "");
+      } catch {
+        /* ignore */
+      }
+    }
+    return false;
+  }
+  return true;
 }
+window.__securaiqSseLive = _sseRealtimeLive;
 setInterval(() => {
   if (currentView === "command" && !_sseRealtimeLive()) loadCommandCenter();
 }, 120000);
-// Fallback live refresh if SSE stalls — keep open workspace panels warm.
+// Fallback live refresh if SSE offline/stalled — keep open workspace panels warm.
 setInterval(() => {
   if (_sseRealtimeLive()) return;
+  const rt = window.RealtimeManager;
+  const es = window.__securaiqRealtimeEs;
+  const stalled =
+    rt &&
+    rt.lastEventAt > 0 &&
+    Date.now() - rt.lastEventAt > SSE_STALL_MS &&
+    (window.__securaiqEsConnected || (es && es.readyState === EventSource.OPEN));
+  if (stalled && typeof startRealtimeFeed === "function") {
+    startRealtimeFeed({
+      force: true,
+      lastEventId: (rt && rt.lastEventId) || "",
+    });
+  }
   if (typeof window.__securaiqRefreshActiveView === "function") {
     window.__securaiqRefreshActiveView({}, { heartbeat: true });
   }
@@ -11042,7 +11078,11 @@ document.addEventListener("click", (e) => {
 });
 
 refreshNotifBadge();
-setInterval(refreshNotifBadge, 45000);
+// Badge soft-poll only when SSE is down — live path uses push type "notification".
+setInterval(() => {
+  if (typeof _sseRealtimeLive === "function" && _sseRealtimeLive()) return;
+  refreshNotifBadge();
+}, 45000);
 
 async function loadToolsStatus() {
   if (!toolsStatusEl) return;
