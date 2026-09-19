@@ -716,6 +716,26 @@ def dpdp_overview(user_id: str, *, as_of: str | None = None) -> dict[str, Any]:
             "elements": list_data_elements(user_id, limit=200),
             "flows": list_data_flows(user_id, limit=200),
             "processors": list_processors(user_id, limit=200),
+            "activities": list_processing_activities(user_id, limit=200),
+            "principal_requests": list_principal_requests(user_id, limit=200),
+            "retention_policies": list_retention_policies(user_id, limit=200),
+        },
+        "privacy_center": {
+            "sections": [
+                "data_inventory",
+                "data_classification",
+                "processing_activities",
+                "data_flows",
+                "principal_requests",
+                "retention",
+                "processors",
+                "dpdp_controls",
+                "evidence",
+            ],
+            "note": (
+                "Privacy Center is a Compliance surface for declared inventory + DPDP "
+                "frameworks — not a legal determination of DPDP compliance."
+            ),
         },
         "legal_disclaimer": _LEGAL,
         "hierarchy": [

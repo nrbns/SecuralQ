@@ -9746,21 +9746,24 @@
   async function renderFrameworksPage() {
     const body = qs("frameworksPageBody");
     if (!body) return;
-    const [fwRes, dashRes, remRes, evRes] = await Promise.all([
+    const [fwRes, dashRes, remRes, evRes, reqRes] = await Promise.all([
       fetch("/api/frameworks", { headers: authHeaders() }),
       fetch("/api/dashboard", { headers: authHeaders() }),
       fetch("/api/gap/remediations", { headers: authHeaders() }),
       fetch("/api/evidence", { headers: authHeaders() }),
+      fetch("/api/controls/requirements", { headers: authHeaders() }),
     ]);
     const fwData = await fwRes.json().catch(() => ({}));
     const dash = await dashRes.json().catch(() => ({}));
     const remData = await remRes.json().catch(() => ({}));
     const evData = await evRes.json().catch(() => ({}));
+    const reqData = await reqRes.json().catch(() => ({}));
     const apiErrors = [];
     if (!fwRes.ok) apiErrors.push(`frameworks ${fwRes.status}`);
     if (!dashRes.ok) apiErrors.push(`dashboard ${dashRes.status}`);
     if (!remRes.ok) apiErrors.push(`remediations ${remRes.status}`);
     if (!evRes.ok) apiErrors.push(`evidence ${evRes.status}`);
+    if (!reqRes.ok) apiErrors.push(`requirements ${reqRes.status}`);
     if (apiErrors.length && typeof notifyUser === "function") {
       notifyUser(`**Frameworks page:** ${apiErrors.join(" · ")}`);
     }
@@ -10455,12 +10458,34 @@
     setTxt("fwStatMissing", totMissing);
     setTxt("fwStatRems", openRems);
 
+    const reqFrameworks = reqData.frameworks || [];
+    const reqSummaryHtml = reqFrameworks.length
+      ? `<section class="cc-panel" style="margin-bottom:1rem" aria-label="Requirements">
+          <header><h3 style="margin:0">Requirements</h3>
+            <span class="hint">Framework → Requirement → Control → Test → Evidence</span>
+          </header>
+          <p class="hint" style="margin:0.35rem 0 0.75rem">Domain groupings of catalog controls — help assess requirements, not certify.</p>
+          <ul class="fw-hero-stats" style="margin:0">
+            ${reqFrameworks
+              .slice(0, 12)
+              .map((rf) => {
+                const n = rf.requirement_count != null ? rf.requirement_count : (rf.requirements || []).length;
+                const mv = rf.machine_verifiable_requirements != null ? rf.machine_verifiable_requirements : "—";
+                return `<li><span>${escapeHtml(rf.name || rf.framework_id || "framework")}</span>
+                  <strong>${escapeHtml(String(n))} req · ${escapeHtml(String(mv))} live-mapped</strong></li>`;
+              })
+              .join("")}
+          </ul>
+        </section>`
+      : "";
+
     body.innerHTML = `
       ${
         apiErrors.length
           ? `<p class="hint" style="color:var(--danger,#b91c1c)">API: ${escapeHtml(apiErrors.join(" · "))}</p>`
           : ""
       }
+      ${reqSummaryHtml}
       <div class="fw-grid">
         ${
           fws.length
@@ -10949,6 +10974,10 @@
     const elements = map.elements || [];
     const flows = map.flows || [];
     const processors = map.processors || [];
+    const activities = map.activities || [];
+    const requests = map.principal_requests || [];
+    const retention = map.retention_policies || [];
+    const privacyCenter = data.privacy_center || {};
     const fwRows = (data.frameworks || [])
       .map((f) => {
         const pct = f.assessed && f.compliance_percent != null ? `${f.compliance_percent}%` : "not assessed";
@@ -10999,11 +11028,51 @@
           )
           .join("")
       : `<li class="hint">No processors declared</li>`;
+    const actHtml = activities.length
+      ? activities
+          .slice(0, 30)
+          .map(
+            (a) =>
+              `<li><strong>${escapeHtml(a.name || "activity")}</strong>
+                <span class="hint">${escapeHtml(a.purpose || "no purpose")} · ${escapeHtml(
+                a.lawful_basis || "basis unset"
+              )}</span></li>`
+          )
+          .join("")
+      : `<li class="hint">No processing activities declared</li>`;
+    const reqHtml = requests.length
+      ? requests
+          .slice(0, 30)
+          .map(
+            (r) =>
+              `<li><strong>${escapeHtml(r.request_type || r.kind || "request")}</strong>
+                <span class="hint">${escapeHtml(r.status || "open")} · ${escapeHtml(
+                r.principal || r.subject || ""
+              )}</span></li>`
+          )
+          .join("")
+      : `<li class="hint">No data-principal requests logged</li>`;
+    const retHtml = retention.length
+      ? retention
+          .slice(0, 30)
+          .map(
+            (r) =>
+              `<li><strong>${escapeHtml(r.name || r.data_element_id || "policy")}</strong>
+                <span class="hint">${escapeHtml(
+                  r.retention_days != null ? `${r.retention_days} days` : "days unset"
+                )}</span></li>`
+          )
+          .join("")
+      : `<li class="hint">No retention policies declared</li>`;
 
     body.innerHTML = `
       <p class="hint" style="margin:0 0 0.75rem">${escapeHtml(
         data.legal_disclaimer ||
           "Evidence-backed readiness assessment — not a legal determination of DPDP compliance."
+      )}</p>
+      <p class="hint" style="margin:0 0 0.75rem">${escapeHtml(
+        privacyCenter.note ||
+          "Privacy Center: inventory → purpose → retention → processor → control → evidence."
       )}</p>
       <div class="fw-hero">
         <div class="fw-hero-score">
@@ -11041,12 +11110,16 @@
         <ul>${fwRows || `<li class="hint">No DPDP gap assessments yet</li>`}</ul>
       </div>
       <div class="cc-panel" style="margin-top:0.85rem">
-        <header><h2>Data map</h2></header>
-        <p class="hint">Declared systems and flows — click an element for detail. Agents cannot invent legal purpose; this is human/integration-declared context.</p>
+        <header><h2>Privacy Center</h2></header>
+        <p class="hint">Data → System → Processor → Purpose → Retention → Control → Evidence</p>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(16rem,1fr));gap:1rem;margin-top:0.75rem">
           <div>
             <h3 style="font-size:0.95rem;margin:0 0 0.35rem">Personal data elements</h3>
             <ul id="dpdpElemList">${elemHtml}</ul>
+          </div>
+          <div>
+            <h3 style="font-size:0.95rem;margin:0 0 0.35rem">Processing activities</h3>
+            <ul>${actHtml}</ul>
           </div>
           <div>
             <h3 style="font-size:0.95rem;margin:0 0 0.35rem">Flows</h3>
@@ -11055,6 +11128,14 @@
           <div>
             <h3 style="font-size:0.95rem;margin:0 0 0.35rem">Processors</h3>
             <ul>${procHtml}</ul>
+          </div>
+          <div>
+            <h3 style="font-size:0.95rem;margin:0 0 0.35rem">Principal requests</h3>
+            <ul>${reqHtml}</ul>
+          </div>
+          <div>
+            <h3 style="font-size:0.95rem;margin:0 0 0.35rem">Retention</h3>
+            <ul>${retHtml}</ul>
           </div>
         </div>
         <div id="dpdpElemDetail" class="cc-panel" style="margin-top:0.75rem;display:none"></div>
@@ -11067,6 +11148,12 @@
           <input name="storage_system" placeholder="Storage (e.g. PostgreSQL)" style="min-width:10rem" />
           <input name="purpose" placeholder="Purpose" style="min-width:10rem" />
           <button type="submit" class="btn-secondary">Add element</button>
+        </form>
+        <form id="dpdpQuickActivity" class="inline-form" style="flex-wrap:wrap;gap:0.5rem;margin-top:0.75rem">
+          <input name="name" placeholder="Processing activity" required style="min-width:10rem" />
+          <input name="purpose" placeholder="Purpose" style="min-width:10rem" />
+          <input name="lawful_basis" placeholder="Lawful basis / consent note" style="min-width:10rem" />
+          <button type="submit" class="btn-secondary">Add activity</button>
         </form>
         <form id="dpdpSdfForm" class="inline-form" style="flex-wrap:wrap;gap:0.5rem;margin-top:0.75rem">
           <label class="hint">SDF applicability
@@ -11124,6 +11211,21 @@
       });
       if (!r.ok) {
         alert(`Could not save element (${r.status})`);
+        return;
+      }
+      renderPrivacyPage();
+    });
+    body.querySelector("#dpdpQuickActivity")?.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const fd = new FormData(ev.target);
+      const payload = Object.fromEntries(fd.entries());
+      const r = await fetch("/api/data-governance/activities", {
+        method: "POST",
+        headers: { ...authHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) {
+        alert(`Could not save activity (${r.status})`);
         return;
       }
       renderPrivacyPage();

@@ -138,3 +138,56 @@ async def api_controls_registry(_user: Annotated[AuthUser, Depends(require_user)
             "New test_names need an evaluator in control_testing to execute."
         ),
     }
+
+
+@router.get("/requirements")
+async def api_requirements_index(user: Annotated[AuthUser, Depends(require_user)]):
+    """First-class Requirement index across frameworks (domain groupings)."""
+    from app.controls.requirements import requirements_index
+
+    return requirements_index(user_id=user.id)
+
+
+@router.get("/requirements/{framework_id}")
+async def api_list_requirements(
+    framework_id: str,
+    user: Annotated[AuthUser, Depends(require_user)],
+):
+    """List Requirement entities for one framework."""
+    _ensure_framework(framework_id)
+    from app.controls.requirements import list_requirements
+
+    rows = list_requirements(framework_id, user_id=user.id)
+    return {
+        "ok": True,
+        "framework_id": framework_id,
+        "count": len(rows),
+        "requirements": rows,
+        "chain": [
+            "framework",
+            "requirement",
+            "control",
+            "test",
+            "evidence",
+            "finding",
+            "remediation",
+            "verification",
+        ],
+        "note": "Domain groupings of catalog controls — helps assess requirements, not certify.",
+    }
+
+
+@router.get("/requirements/{framework_id}/{requirement_id}")
+async def api_get_requirement(
+    framework_id: str,
+    requirement_id: str,
+    user: Annotated[AuthUser, Depends(require_user)],
+):
+    """One Requirement with nested controls + live-test bindings."""
+    _ensure_framework(framework_id)
+    from app.controls.requirements import get_requirement
+
+    row = get_requirement(framework_id, requirement_id, user_id=user.id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Requirement not found")
+    return {"ok": True, "requirement": row}

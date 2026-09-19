@@ -2,6 +2,9 @@
 
 At large fleet sizes the UI must subscribe to ``fleet.*.changed`` aggregates.
 Per-agent detail is fetched on demand when an operator opens an agent.
+
+Counters are maintained incrementally so observation ingest stays O(1) per
+agent (required for 25k–100k lab ladder rungs).
 """
 
 from __future__ import annotations
@@ -13,6 +16,8 @@ from typing import Any
 _lock = threading.RLock()
 # user_id -> {agent_id -> {status, ts, warning}}
 _AGENT_STATE: dict[str, dict[str, dict[str, Any]]] = {}
+# user_id -> running tallies {total, online, offline, warning}
+_COUNTS: dict[str, dict[str, int]] = {}
 # user_id -> last published summary signature
 _LAST_SIG: dict[str, str] = {}
 _LAST_PUBLISH_TS: dict[str, float] = {}
@@ -21,9 +26,31 @@ _LAST_PUBLISH_TS: dict[str, float] = {}
 _MIN_PUBLISH_INTERVAL = 2.0
 
 
+def _empty_counts() -> dict[str, int]:
+    return {"total": 0, "online": 0, "offline": 0, "warning": 0}
+
+
+def _apply_row_counts(counts: dict[str, int], row: dict[str, Any], sign: int) -> None:
+    """Mirror full-scan semantics: status and warning flag are independent axes."""
+    st = str(row.get("status") or "")
+    if row.get("warning"):
+        counts["warning"] += sign
+    if st in {"online", "ok", "healthy"}:
+        counts["online"] += sign
+    elif st in {"offline", "disconnected", "stale"}:
+        counts["offline"] += sign
+    else:
+        counts["warning"] += sign
+    counts["total"] += sign
+    for k in ("total", "online", "offline", "warning"):
+        if counts[k] < 0:
+            counts[k] = 0
+
+
 def reset_fleet_state_for_tests() -> None:
     with _lock:
         _AGENT_STATE.clear()
+        _COUNTS.clear()
         _LAST_SIG.clear()
         _LAST_PUBLISH_TS.clear()
 
@@ -46,12 +73,18 @@ def record_agent_observation(
     now = time.time()
     with _lock:
         bucket = _AGENT_STATE.setdefault(uid, {})
-        bucket[aid] = {
+        counts = _COUNTS.setdefault(uid, _empty_counts())
+        prev = bucket.get(aid)
+        if prev is not None:
+            _apply_row_counts(counts, prev, -1)
+        row = {
             "status": st,
             "warning": bool(warning),
             "ts": now,
             "org_id": org_id or "",
         }
+        bucket[aid] = row
+        _apply_row_counts(counts, row, 1)
         summary = _summarize_unlocked(uid)
     if publish:
         maybe_publish_fleet_health(uid, summary)
@@ -65,26 +98,13 @@ def fleet_summary(user_id: str) -> dict[str, Any]:
 
 
 def _summarize_unlocked(user_id: str) -> dict[str, Any]:
-    agents = _AGENT_STATE.get(user_id) or {}
-    online = offline = warning = 0
-    for row in agents.values():
-        st = str(row.get("status") or "")
-        if row.get("warning"):
-            warning += 1
-        if st in {"online", "ok", "healthy"}:
-            online += 1
-        elif st in {"offline", "disconnected", "stale"}:
-            offline += 1
-        else:
-            # unknown / degraded counts toward warning bucket for UI
-            warning += 1
-    total = len(agents)
+    counts = _COUNTS.get(user_id) or _empty_counts()
     return {
         "user_id": user_id,
-        "total": total,
-        "online": online,
-        "offline": offline,
-        "warning": warning,
+        "total": int(counts.get("total") or 0),
+        "online": int(counts.get("online") or 0),
+        "offline": int(counts.get("offline") or 0),
+        "warning": int(counts.get("warning") or 0),
         "updated_at": time.time(),
     }
 

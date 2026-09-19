@@ -6363,7 +6363,10 @@ function renderMcOpsHome(data) {
 
   const what = document.getElementById("mcOpsWhat");
   const why = document.getElementById("mcOpsWhy");
+  const evidence = document.getElementById("mcOpsEvidence");
+  const impact = document.getElementById("mcOpsImpact");
   const doit = document.getElementById("mcOpsDo");
+  const verify = document.getElementById("mcOpsVerify");
   const fixed = document.getElementById("mcOpsFixed");
   const top = wq[0] || fix[0];
   if (what) {
@@ -6381,11 +6384,45 @@ function renderMcOpsHome(data) {
         ? `${data.vulnerabilities_critical_high} critical/high findings open`
         : "No critical queue pressure");
   }
+  if (evidence) {
+    const evIds = top?.evidence_ids || top?.evidence || [];
+    const evN = Array.isArray(evIds) ? evIds.length : Number(data.evidence_total || 0);
+    evidence.textContent =
+      (Array.isArray(evIds) && evIds.length
+        ? `${evIds.length} linked evidence id(s)`
+        : evN
+          ? `${evN} evidence records in workspace`
+          : "No evidence linked yet — control FAIL/PASS creates observed evidence") || "—";
+  }
+  if (impact) {
+    const idx =
+      Number(
+        data.security_index != null
+          ? data.security_index
+          : (data.mission_control || {}).security_score
+      ) || 0;
+    const livePct = live.live_percent != null ? Math.round(Number(live.live_percent)) : null;
+    impact.textContent = [
+      idx ? `security index ${idx}` : null,
+      livePct != null ? `live controls ${livePct}%` : null,
+      Number(data.risks_open || 0) ? `${data.risks_open} open risks` : null,
+      top?.estimated_risk_reduction_pct != null
+        ? `↓ ${top.estimated_risk_reduction_pct}% if fixed`
+        : null,
+    ]
+      .filter(Boolean)
+      .join(" · ") || "Impact pending telemetry";
+  }
   if (doit) {
     doit.textContent =
       brief.next_step ||
       top?.prompt ||
       (data.is_empty ? "Open Agents → enroll endpoint" : "Triage Action required, then approve remediation");
+  }
+  if (verify) {
+    verify.textContent = closed
+      ? `${closed} verified close(s) · next check-in must re-observe PASS`
+      : "Never mark fixed from execute alone — wait for independent check-in PASS";
   }
   if (fixed) {
     fixed.textContent = closed
