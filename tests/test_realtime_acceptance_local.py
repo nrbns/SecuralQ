@@ -105,8 +105,8 @@ def test_realtime_acceptance_local_triple_host_loops(tmp_path, monkeypatch):
 
     report = run_local_all_host_loops(user.id, aid)
     assert report.ok is True
-    # 3 loops × (10 core + verify + timeline) = 36
-    assert len(report.steps) == 36
+    # 5 loops × (10 core + verify + timeline) = 60
+    assert len(report.steps) == 60
 
     for loop in HOST_LOOPS:
         prefix = loop.test_id
@@ -116,7 +116,10 @@ def test_realtime_acceptance_local_triple_host_loops(tmp_path, monkeypatch):
 
         cmd_step = next(s for s in report.steps if s.name == f"{prefix}:{loop.step_names[5]}")
         assert cmd_step.ok is True
-        assert cmd_step.data.get("final_status") == "done"
+        if loop.requires_command:
+            assert cmd_step.data.get("final_status") == "done"
+        else:
+            assert cmd_step.data.get("observe_only") is True
 
         pass_step = next(s for s in report.steps if s.name == f"{prefix}:{loop.step_names[6]}")
         assert pass_step.ok is True
@@ -124,7 +127,10 @@ def test_realtime_acceptance_local_triple_host_loops(tmp_path, monkeypatch):
 
         verify = next(s for s in report.steps if s.name == f"{prefix}:{LOCAL_VERIFY_STEP}")
         assert verify.ok is True
-        assert verify.data.get("verification_status") == "verified"
+        if loop.requires_command:
+            assert verify.data.get("verification_status") == "verified"
+        else:
+            assert verify.data.get("verification_status") == "telemetry_pass"
 
         timeline = next(s for s in report.steps if s.name == f"{prefix}:{LOCAL_TIMELINE_STEP}")
         assert timeline.ok is True

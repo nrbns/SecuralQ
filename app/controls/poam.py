@@ -35,6 +35,12 @@ _FIX_HINTS: dict[str, str] = {
         "then wait for the next agent check-in to verify PASS. "
         "UNKNOWN when not collected — never invent PASS. No auto-remediation."
     ),
+    "host_risky_listeners": (
+        "Stop or restrict high-risk listeners (RDP/Redis/Docker API/etc.), "
+        "or bind them to localhost and confirm via host firewall. "
+        "Partial signal from listening_ports only — not internet-exposure proof. "
+        "No auto-remediation."
+    ),
 }
 
 

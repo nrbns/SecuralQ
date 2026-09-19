@@ -433,8 +433,10 @@ def test_control_test_registry_loads_firewall_bindings():
     assert ("nist_800_171", "3.13.1") in bindings
 
     derived = build_control_test_map()
-    assert derived[("cis_controls", "CIS-12")] == [TEST_HOST_FIREWALL]
-    assert _CONTROL_TEST_MAP[("cis_controls", "CIS-12")] == [TEST_HOST_FIREWALL]
+    assert derived[("cis_controls", "CIS-12")][0] == TEST_HOST_FIREWALL
+    assert TEST_HOST_FIREWALL in derived[("cis_controls", "CIS-12")]
+    assert "host_risky_listeners" in derived[("cis_controls", "CIS-12")]
+    assert _CONTROL_TEST_MAP[("cis_controls", "CIS-12")][0] == TEST_HOST_FIREWALL
     assert _CONTROL_TEST_MAP[("cmmc_l2", "SC.L2-3.13.1")] == [TEST_HOST_FIREWALL]
 
     disk = get_test_entry(TEST_HOST_DISK_ENCRYPTION)

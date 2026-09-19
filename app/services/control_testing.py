@@ -38,6 +38,7 @@ from app.controls.test_registry import (
     TEST_HOST_DEFENDER,
     TEST_HOST_DISK_ENCRYPTION,
     TEST_HOST_FIREWALL,
+    TEST_HOST_RISKY_LISTENERS,
     TEST_HOST_SSH_ROOT,
     TEST_PATCH_MANAGEMENT,
     TEST_VULNERABILITY_MANAGEMENT,
@@ -515,11 +516,132 @@ def evaluate_host_disk_encryption_payload(
     }
 
 
+# Curated high-risk TCP listeners (agent reports port numbers only — not bind addr).
+_RISKY_LISTENER_PORTS: dict[int, str] = {
+    2375: "docker-api",
+    2376: "docker-tls",
+    3389: "rdp",
+    5900: "vnc",
+    5985: "winrm-http",
+    5986: "winrm-https",
+    6379: "redis",
+    9200: "elasticsearch",
+    11211: "memcached",
+    27017: "mongodb",
+}
+
+
+def _normalize_listening_ports(raw: Any) -> list[int] | None:
+    """Return port list, or None when telemetry was not collected."""
+    if raw is None:
+        return None
+    if not isinstance(raw, list):
+        return None
+    ports: list[int] = []
+    for item in raw:
+        if isinstance(item, bool):
+            continue
+        if isinstance(item, int):
+            ports.append(item)
+            continue
+        if isinstance(item, float) and item == int(item):
+            ports.append(int(item))
+            continue
+        if isinstance(item, dict):
+            p = item.get("port") or item.get("local_port") or item.get("LocalPort")
+            try:
+                ports.append(int(p))
+            except (TypeError, ValueError):
+                continue
+            continue
+        try:
+            ports.append(int(str(item).strip()))
+        except (TypeError, ValueError):
+            continue
+    return ports
+
+
+def evaluate_host_risky_listeners_payload(
+    payload: dict[str, Any],
+    *,
+    agent_id: str = "",
+    asset_id: str = "",
+    collected_at: Any = None,
+) -> dict[str, Any]:
+    """FAIL when agent listening_ports includes curated high-risk services.
+
+    Partial verifiability: port presence only — not internet exposure / bind address.
+    """
+    ports = _normalize_listening_ports(payload.get("listening_ports"))
+    prov_base = {
+        "test_id": TEST_HOST_RISKY_LISTENERS,
+        "agent_id": agent_id,
+        "asset_id": asset_id,
+        "collected_at": collected_at,
+    }
+    if ports is None:
+        # Distinguish missing key (unknown) from empty list (pass).
+        if "listening_ports" not in payload:
+            prov = _provenance(
+                test_id=TEST_HOST_RISKY_LISTENERS,
+                agent_id=agent_id,
+                asset_id=asset_id,
+                observed={"collected": False},
+                collected_at=collected_at,
+                confidence=0.3,
+            )
+            return {
+                "test": TEST_HOST_RISKY_LISTENERS,
+                "status": "unknown",
+                "summary": "Listening ports not collected by agent telemetry.",
+                "detail": {**prov_base, **prov},
+                **prov,
+            }
+        ports = []
+
+    hits = [
+        {"port": p, "service": _RISKY_LISTENER_PORTS[p]}
+        for p in sorted(set(ports))
+        if p in _RISKY_LISTENER_PORTS
+    ]
+    snippet = {
+        "collected": True,
+        "port_count": len(ports),
+        "risky_hits": hits,
+        "risky_ports": [h["port"] for h in hits],
+    }
+    prov = _provenance(
+        test_id=TEST_HOST_RISKY_LISTENERS,
+        agent_id=agent_id,
+        asset_id=asset_id,
+        observed=snippet,
+        collected_at=collected_at,
+        confidence=0.75,
+    )
+    if hits:
+        labels = ", ".join(f"{h['service']}:{h['port']}" for h in hits[:8])
+        return {
+            "test": TEST_HOST_RISKY_LISTENERS,
+            "status": "fail",
+            "summary": f"High-risk listeners present ({labels}).",
+            "detail": {**snippet, **prov},
+            **prov,
+        }
+    return {
+        "test": TEST_HOST_RISKY_LISTENERS,
+        "status": "pass",
+        "summary": "No curated high-risk listening ports observed.",
+        "detail": {**snippet, **prov},
+        **prov,
+    }
+
+
 _HOST_EVALUATORS = {
     TEST_HOST_FIREWALL: evaluate_host_firewall_payload,
     TEST_HOST_DEFENDER: evaluate_host_defender_payload,
     TEST_HOST_SSH_ROOT: evaluate_host_ssh_root_payload,
     TEST_HOST_DISK_ENCRYPTION: evaluate_host_disk_encryption_payload,
+    TEST_HOST_RISKY_LISTENERS: evaluate_host_risky_listeners_payload,
 }
 
 
@@ -610,6 +732,10 @@ def _test_host_disk_encryption(user_id: str) -> dict[str, Any]:
     return _aggregate_host_test(user_id, TEST_HOST_DISK_ENCRYPTION)
 
 
+def _test_host_risky_listeners(user_id: str) -> dict[str, Any]:
+    return _aggregate_host_test(user_id, TEST_HOST_RISKY_LISTENERS)
+
+
 _TEST_FUNCS = {
     TEST_ASSET_INVENTORY: _test_asset_inventory,
     TEST_VULNERABILITY_MANAGEMENT: _test_vulnerability_management,
@@ -619,6 +745,7 @@ _TEST_FUNCS = {
     TEST_HOST_DEFENDER: _test_host_defender,
     TEST_HOST_SSH_ROOT: _test_host_ssh_root,
     TEST_HOST_DISK_ENCRYPTION: _test_host_disk_encryption,
+    TEST_HOST_RISKY_LISTENERS: _test_host_risky_listeners,
 }
 
 
@@ -710,8 +837,16 @@ def _failure_risk_score(test_result: dict[str, Any]) -> float:
         base += min(28.0, float(detail.get("failing_agents") or 1) * 9.0)
     elif test == TEST_HOST_DISK_ENCRYPTION:
         base += min(30.0, float(detail.get("failing_agents") or 1) * 10.0)
+    elif test == TEST_HOST_RISKY_LISTENERS:
+        base += min(22.0, float(detail.get("failing_agents") or 1) * 7.0)
     elif test == TEST_FIPS_REMOTE_ACCESS:
         base += min(30.0, float(len(detail.get("risky_findings") or [])) * 10.0)
+    try:
+        from app.controls.test_registry import risk_weight_for_test
+
+        base *= max(0.5, float(risk_weight_for_test(test) or 1.0))
+    except Exception:
+        pass
     return round(min(99.0, base), 1)
 
 
@@ -1077,6 +1212,9 @@ def evaluate_agent_host_controls(
                 payload, agent_id=agent_id, asset_id=asset, collected_at=collected_at
             )),
             (TEST_HOST_DISK_ENCRYPTION, lambda: evaluate_host_disk_encryption_payload(
+                payload, agent_id=agent_id, asset_id=asset, collected_at=collected_at
+            )),
+            (TEST_HOST_RISKY_LISTENERS, lambda: evaluate_host_risky_listeners_payload(
                 payload, agent_id=agent_id, asset_id=asset, collected_at=collected_at
             )),
         )

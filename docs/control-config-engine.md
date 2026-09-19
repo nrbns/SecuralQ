@@ -28,6 +28,23 @@ Related: [master-build-plan.md](./master-build-plan.md) (Phase 13) ·
 - Do **not** claim: CMMC certification, SPRS submission, FIPS validation, PreVeil / GCC High integration, C3PAO assessment, or Maryland (or any) funding eligibility.
 - Framework PDFs / official catalogs are the **workflow source of control text only** — SecuraIQ reuses `data/frameworks/*.json` and does not invent practice wording.
 - Live tests exist **only** via the explicit registry in `app/controls/test_registry.py` (derived map in `control_testing._CONTROL_TEST_MAP` — same philosophy as canonical controls: no fuzzy AI mappings).
+
+Each registry entry is a **configurable control definition** (Phase 13 / immediate task #4):
+
+| Field | Role |
+|-------|------|
+| `test_name` / `name` / `description` | Stable id + display |
+| `applicability` | e.g. `{ "os": ["windows","linux","macos"] }` |
+| `data_sources` | Telemetry / store inputs |
+| `pass_condition` / `fail_condition` | Human-readable PASS/FAIL rules |
+| `evidence_rule` / `verification_rule` | What must be recorded / re-observed |
+| `risk_weight` | Multiplier for live-failure ranking |
+| `frequency` / `verifiability` | `checkin`/`daily`/… · `machine`/`partial`/… |
+| `control_bindings` | Explicit `(framework_id, control_id)` pairs only |
+| `remediation_hint` | Recommend-only text |
+
+Host check-in tests today: firewall, Defender, SSH root, disk encryption, **risky listeners**.
+Observe-only controls (disk encryption, risky listeners) open POA&M and require the next check-in for PASS — never invent rem commands.
 - Task **#144** (Frameworks table Live Test UI column) remains **frozen** — this package does not change that UI.
 - **No auto-execute** of firewall/defender/SSH remediations without operator approval.
 

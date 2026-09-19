@@ -1,12 +1,20 @@
 {
-  "note": "Copy to custom_tests.json to extend control_bindings without editing Python. New test_names need an evaluator in app/services/control_testing.py to execute.",
+  "note": "Copy to custom_tests.json to extend bindings / metadata without editing Python. New test_names need an evaluator in app/services/control_testing.py to execute.",
   "tests": [
     {
       "test_name": "host_firewall",
+      "name": "Host Firewall Enabled",
+      "description": "Host firewall must be enabled.",
       "data_sources": ["securaiq_agent.firewall_status"],
-      "expected_state": {"enabled": true},
+      "expected_state": {"firewall_enabled": true},
       "frequency": "checkin",
       "verifiability": "machine",
+      "applicability": {"os": ["windows", "linux", "macos"]},
+      "pass_condition": "firewall_status.enabled is true",
+      "fail_condition": "firewall_status.enabled is false",
+      "risk_weight": 1.2,
+      "evidence_rule": "Observed firewall_status from agent check-in",
+      "verification_rule": "Next check-in must show firewall enabled",
       "control_bindings": [
         ["iso27001", "A.8.20"],
         ["soc2", "CC6.6"]

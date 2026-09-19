@@ -9,7 +9,13 @@ _log = logging.getLogger("securaiq.controls.recompute")
 
 # Event type → which curated tests to refresh
 _SOFTWARE_TESTS = ("patch_management", "vulnerability_management", "asset_inventory")
-_HOST_TESTS = ("host_firewall", "host_defender", "host_ssh_root", "host_disk_encryption")
+_HOST_TESTS = (
+    "host_firewall",
+    "host_defender",
+    "host_ssh_root",
+    "host_disk_encryption",
+    "host_risky_listeners",
+)
 _CONFIG_TESTS = _HOST_TESTS
 
 

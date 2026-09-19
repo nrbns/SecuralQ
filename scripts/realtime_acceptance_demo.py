@@ -88,6 +88,7 @@ class HostLoopSpec:
     request_fn_name: str
     step_names: tuple[str, ...]  # 10 core steps (1–10); verify appended separately
     status_key: str  # data key for fail/pass status (firewall_status / …)
+    requires_command: bool = True  # False = observe-only (disk encryption, risky listeners)
 
 
 def _base_payload(*, hostname: str, os_name: str) -> dict[str, Any]:
@@ -154,6 +155,46 @@ def ssh_root_denied_payload(*, hostname: str = "rt-accept-host") -> dict[str, An
     return base
 
 
+def disk_encryption_off_payload(*, hostname: str = "rt-accept-host") -> dict[str, Any]:
+    p = _base_payload(hostname=hostname, os_name="windows")
+    p["firewall_status"] = {"collected": True, "enabled": True, "backend": "windows"}
+    p["defender_status"] = {
+        "collected": True,
+        "realtime_protection_enabled": True,
+        "antivirus_enabled": True,
+    }
+    p["ssh_config"] = {"collected": False, "reason": "Not applicable on windows"}
+    p["disk_encryption_status"] = {
+        "collected": True,
+        "encrypted": False,
+        "backend": "bitlocker",
+    }
+    return p
+
+
+def disk_encryption_on_payload(*, hostname: str = "rt-accept-host") -> dict[str, Any]:
+    base = disk_encryption_off_payload(hostname=hostname)
+    base["disk_encryption_status"] = {
+        "collected": True,
+        "encrypted": True,
+        "backend": "bitlocker",
+    }
+    return base
+
+
+def risky_listeners_fail_payload(*, hostname: str = "rt-accept-host") -> dict[str, Any]:
+    p = _base_payload(hostname=hostname, os_name="linux")
+    p["listening_ports"] = [22, 3389, 6379]
+    p["disk_encryption_status"] = {"collected": True, "encrypted": True, "backend": "luks"}
+    return p
+
+
+def risky_listeners_pass_payload(*, hostname: str = "rt-accept-host") -> dict[str, Any]:
+    base = risky_listeners_fail_payload(hostname=hostname)
+    base["listening_ports"] = [22, 443]
+    return base
+
+
 def _defender_step_names() -> tuple[str, ...]:
     return (
         "1_defender_off_host_control_fail",
@@ -178,6 +219,36 @@ def _ssh_step_names() -> tuple[str, ...]:
         "5_risk_event_published",
         "6_disable_ssh_root_command",
         "7_ssh_permit_root_pass",
+        "8_evidence_pass",
+        "9_poam_closed_rem_done",
+        "10_risk_reduction_hint",
+    )
+
+
+def _disk_step_names() -> tuple[str, ...]:
+    return (
+        "1_disk_encryption_off_host_control_fail",
+        "2_evidence_created_observed",
+        "3_compliance_or_control_failed_event",
+        "4_poam_gap_remediation_open",
+        "5_risk_event_published",
+        "6_observe_only_no_auto_rem",
+        "7_disk_encryption_on_pass",
+        "8_evidence_pass",
+        "9_poam_closed_rem_done",
+        "10_risk_reduction_hint",
+    )
+
+
+def _risky_listeners_step_names() -> tuple[str, ...]:
+    return (
+        "1_risky_listeners_host_control_fail",
+        "2_evidence_created_observed",
+        "3_compliance_or_control_failed_event",
+        "4_poam_gap_remediation_open",
+        "5_risk_event_published",
+        "6_observe_only_no_auto_rem",
+        "7_risky_listeners_pass",
         "8_evidence_pass",
         "9_poam_closed_rem_done",
         "10_risk_reduction_hint",
@@ -214,6 +285,28 @@ HOST_LOOPS: tuple[HostLoopSpec, ...] = (
         request_fn_name="request_disable_ssh_root_command",
         step_names=_ssh_step_names(),
         status_key="ssh_status",
+    ),
+    HostLoopSpec(
+        test_id="host_disk_encryption",
+        command_kind="",
+        api_path="",
+        fail_payload=disk_encryption_off_payload,
+        pass_payload=disk_encryption_on_payload,
+        request_fn_name="",
+        step_names=_disk_step_names(),
+        status_key="disk_status",
+        requires_command=False,
+    ),
+    HostLoopSpec(
+        test_id="host_risky_listeners",
+        command_kind="",
+        api_path="",
+        fail_payload=risky_listeners_fail_payload,
+        pass_payload=risky_listeners_pass_payload,
+        request_fn_name="",
+        step_names=_risky_listeners_step_names(),
+        status_key="listeners_status",
+        requires_command=False,
     ),
 )
 
@@ -388,6 +481,22 @@ def _run_rem_command(
     step_name: str,
 ) -> str:
     """Request → approve → lab-simulated agent result. Returns command_id or ''."""
+    if not loop.requires_command:
+        report.steps.append(
+            StepResult(
+                name=step_name,
+                ok=True,
+                detail="observe-only control — no approved rem command (manual/host fix)",
+                data={
+                    "skipped": True,
+                    "observe_only": True,
+                    "supported": False,
+                    "lab_note": "PASS must come from next check-in telemetry",
+                },
+            )
+        )
+        return ""
+
     if not _command_supported(loop.command_kind):
         report.steps.append(
             StepResult(
@@ -800,23 +909,39 @@ def run_local_host_loop(
         ).fetchone()
         vstat = (dict(row).get("verification_status") if row else "") or ""
     v_bus = _verification_bus_events(bus_pass, command_id=cid)
-    report.steps.append(
-        StepResult(
-            name=f"{prefix}{LOCAL_VERIFY_STEP}",
-            ok=bool(cid) and vstat == "verified",
-            detail=(
-                f"command_id={cid[:16] if cid else ''} verification_status={vstat} "
-                f"bus_verify_events={len(v_bus)}"
-            ),
-            data={
-                "command_id": cid,
-                "verification_status": vstat,
-                "via_checkin": True,
-                "bus_verify_events": len(v_bus),
-                "lab_note": "execute step is lab-simulated; verify is independent telemetry re-check",
-            },
+    if not loop.requires_command:
+        report.steps.append(
+            StepResult(
+                name=f"{prefix}{LOCAL_VERIFY_STEP}",
+                ok=bool(pass_ok) and (tr_pass.get("status") or "").lower() == "pass",
+                detail="observe-only verification via checkin PASS (no command)",
+                data={
+                    "command_id": "",
+                    "verification_status": "telemetry_pass",
+                    "via_checkin": True,
+                    "observe_only": True,
+                    "bus_verify_events": len(v_bus),
+                },
+            )
         )
-    )
+    else:
+        report.steps.append(
+            StepResult(
+                name=f"{prefix}{LOCAL_VERIFY_STEP}",
+                ok=bool(cid) and vstat == "verified",
+                detail=(
+                    f"command_id={cid[:16] if cid else ''} verification_status={vstat} "
+                    f"bus_verify_events={len(v_bus)}"
+                ),
+                data={
+                    "command_id": cid,
+                    "verification_status": vstat,
+                    "via_checkin": True,
+                    "bus_verify_events": len(v_bus),
+                    "lab_note": "execute step is lab-simulated; verify is independent telemetry re-check",
+                },
+            )
+        )
 
     # Step 12: bus timeline chain (SSE vocabulary without a browser)
     chain = _timeline_milestones(list(bus_fail) + list(bus_pass))

@@ -24,6 +24,7 @@ TEST_HOST_FIREWALL = "host_firewall"
 TEST_HOST_DEFENDER = "host_defender"
 TEST_HOST_SSH_ROOT = "host_ssh_root"
 TEST_HOST_DISK_ENCRYPTION = "host_disk_encryption"
+TEST_HOST_RISKY_LISTENERS = "host_risky_listeners"
 TEST_FIPS_REMOTE_ACCESS = "fips_remote_access_tooling"
 
 _HOST_TELEMETRY_TESTS = frozenset(
@@ -32,6 +33,7 @@ _HOST_TELEMETRY_TESTS = frozenset(
         TEST_HOST_DEFENDER,
         TEST_HOST_SSH_ROOT,
         TEST_HOST_DISK_ENCRYPTION,
+        TEST_HOST_RISKY_LISTENERS,
     }
 )
 
@@ -42,6 +44,7 @@ _HOST_TEST_PRIMARY_CONTROLS: dict[str, tuple[str, str]] = {
     TEST_HOST_DEFENDER: ("cmmc_l2", "SI.L2-3.14.2"),
     TEST_HOST_SSH_ROOT: ("cmmc_l2", "AC.L2-3.1.5"),
     TEST_HOST_DISK_ENCRYPTION: ("cmmc_l2", "SC.L2-3.13.16"),
+    TEST_HOST_RISKY_LISTENERS: ("cmmc_l2", "SC.L2-3.13.6"),
 }
 
 
@@ -54,15 +57,35 @@ def _entry(
     verifiability: Verifiability,
     control_bindings: list[tuple[str, str]],
     remediation_hint: str = "",
+    name: str = "",
+    description: str = "",
+    applicability: dict[str, Any] | None = None,
+    pass_condition: str = "",
+    fail_condition: str = "",
+    risk_weight: float = 1.0,
+    evidence_rule: str = "",
+    verification_rule: str = "",
 ) -> dict[str, Any]:
+    """Configurable control-test definition (Phase 13 / immediate task #4)."""
+    display = name or test_name.replace("_", " ").title()
     return {
         "test_name": test_name,
+        "name": display,
+        "description": description or remediation_hint or display,
         "data_sources": list(data_sources),
         "expected_state": dict(expected_state),
         "frequency": frequency,
         "verifiability": verifiability,
         "control_bindings": list(control_bindings),
         "remediation_hint": remediation_hint,
+        "applicability": dict(applicability or {"os": ["windows", "linux", "macos"]}),
+        "pass_condition": pass_condition,
+        "fail_condition": fail_condition,
+        "risk_weight": float(risk_weight),
+        "evidence_rule": evidence_rule
+        or "Record observed agent telemetry snippet + PASS/FAIL/UNKNOWN with provenance.",
+        "verification_rule": verification_rule
+        or "Independent next check-in must re-observe PASS — never trust command JSON alone.",
     }
 
 
@@ -121,6 +144,8 @@ CONTROL_TEST_REGISTRY: list[dict[str, Any]] = [
     ),
     _entry(
         TEST_HOST_FIREWALL,
+        name="Host Firewall Enabled",
+        description="Host firewall must be enabled (ufw/firewalld/Windows Firewall).",
         data_sources=["securaiq_agent.firewall_status"],
         expected_state={"firewall_enabled": True},
         frequency="checkin",
@@ -141,9 +166,17 @@ CONTROL_TEST_REGISTRY: list[dict[str, Any]] = [
             "Enable the host firewall (ufw/firewalld/Windows Firewall). "
             "Optional approved agent command: enable_firewall (never auto-executed)."
         ),
+        pass_condition="firewall_status.enabled is true (or equivalent OS signal).",
+        fail_condition="firewall_status collected and enabled is false.",
+        risk_weight=1.2,
+        applicability={"os": ["windows", "linux", "macos"]},
+        evidence_rule="Observed firewall_status snippet from agent check-in.",
+        verification_rule="Next check-in must show firewall enabled — not command JSON.",
     ),
     _entry(
         TEST_HOST_DEFENDER,
+        name="Endpoint AV / Defender",
+        description="Microsoft Defender (or equivalent) realtime protection enabled on Windows.",
         data_sources=["securaiq_agent.defender_status"],
         expected_state={"defender_enabled": True},
         frequency="checkin",
@@ -161,9 +194,17 @@ CONTROL_TEST_REGISTRY: list[dict[str, Any]] = [
             "Optional approved agent command: enable_defender "
             "(POST /api/agents/{id}/commands/enable-defender; never auto-executed)."
         ),
+        pass_condition="defender_status.enabled is true on Windows.",
+        fail_condition="Windows host with defender_status collected and enabled false.",
+        risk_weight=1.4,
+        applicability={"os": ["windows"]},
+        evidence_rule="Observed defender_status from agent check-in.",
+        verification_rule="Next check-in must show Defender enabled — not command JSON.",
     ),
     _entry(
         TEST_HOST_SSH_ROOT,
+        name="SSH Root Login Disabled",
+        description="sshd PermitRootLogin must not allow password/root login.",
         data_sources=["securaiq_agent.ssh_config"],
         expected_state={"permit_root_login": False},
         frequency="checkin",
@@ -180,9 +221,17 @@ CONTROL_TEST_REGISTRY: list[dict[str, Any]] = [
             "Request approved disable_ssh_root (PermitRootLogin no), "
             "then verify on next check-in — never auto-executed."
         ),
+        pass_condition="ssh_config.permit_root_login is false / no / prohibit-password.",
+        fail_condition="ssh_config collected and permit_root_login allows root.",
+        risk_weight=1.3,
+        applicability={"os": ["linux", "macos"]},
+        evidence_rule="Observed ssh_config snippet from agent check-in.",
+        verification_rule="Next check-in must show PermitRootLogin denied — not command JSON.",
     ),
     _entry(
         TEST_HOST_DISK_ENCRYPTION,
+        name="Full-Disk Encryption",
+        description="BitLocker / LUKS / FileVault enabled on the system volume.",
         data_sources=["securaiq_agent.disk_encryption_status"],
         expected_state={"encrypted": True},
         frequency="checkin",
@@ -203,9 +252,48 @@ CONTROL_TEST_REGISTRY: list[dict[str, Any]] = [
             "then wait for the next agent check-in. UNKNOWN when not collected — "
             "never invent PASS. No auto-remediation."
         ),
+        pass_condition="disk_encryption_status.collected and encrypted is true.",
+        fail_condition="disk_encryption_status.collected and encrypted is false.",
+        risk_weight=1.5,
+        applicability={"os": ["windows", "linux", "macos"]},
+        evidence_rule="Observed disk_encryption_status (backend/volumes) from agent.",
+        verification_rule="Next check-in must re-observe encrypted=true — no auto rem command.",
+    ),
+    _entry(
+        TEST_HOST_RISKY_LISTENERS,
+        name="High-Risk Listening Ports",
+        description=(
+            "Agent-reported listening ports must not include known high-risk services "
+            "(RDP, Redis, Docker API, etc.). Signal only — not full network exposure proof."
+        ),
+        data_sources=["securaiq_agent.listening_ports"],
+        expected_state={"no_risky_listeners": True},
+        frequency="checkin",
+        verifiability="partial",
+        control_bindings=[
+            ("cis_controls", "CIS-12"),
+            ("nist_csf", "PR.IR-01"),
+            ("iso27001", "A.8.20"),
+            ("nist_800_53", "SC-7"),
+            ("nist_800_171", "3.13.6"),
+            ("cmmc_l2", "SC.L2-3.13.6"),
+            ("dpdp_rules_2025", "Rule-6-Access"),
+        ],
+        remediation_hint=(
+            "Stop or bind high-risk listeners to localhost / restrict with host firewall. "
+            "Partial signal from port list only — not internet-exposure proof. No auto-remediation."
+        ),
+        pass_condition="listening_ports collected and contains none of the curated risky port set.",
+        fail_condition="listening_ports includes a curated high-risk port (e.g. 3389, 6379).",
+        risk_weight=1.1,
+        applicability={"os": ["windows", "linux", "macos"]},
+        evidence_rule="Observed listening_ports list + matched risky port labels.",
+        verification_rule="Next check-in must show risky ports cleared — observe-only.",
     ),
     _entry(
         TEST_FIPS_REMOTE_ACCESS,
+        name="FIPS Remote-Access Tooling Signal",
+        description="Heuristic check for known non-FIPS remote-access/RMM tools in software inventory.",
         data_sources=["enterprise.software_inventory"],
         expected_state={"no_non_fips_remote_access_tools": True},
         frequency="on_change",
@@ -220,6 +308,10 @@ CONTROL_TEST_REGISTRY: list[dict[str, Any]] = [
             "Replace known non-FIPS-validated remote-access/RMM tooling when CUI "
             "remote access requires validated crypto (signal only — not FIPS certification)."
         ),
+        pass_condition="No known non-FIPS RMM/remote-access tools in software inventory.",
+        fail_condition="Inventory lists a curated non-FIPS remote-access tool.",
+        risk_weight=0.8,
+        applicability={"os": ["windows", "linux", "macos"]},
     ),
 ]
 
@@ -276,6 +368,7 @@ def load_custom_registry_overrides(*, force: bool = False) -> list[dict[str, Any
                     bindings.append((str(b[0]), str(b[1])))
                 elif isinstance(b, dict) and b.get("framework_id") and b.get("control_id"):
                     bindings.append((str(b["framework_id"]), str(b["control_id"])))
+            display_name = str(row.get("name") or "").strip()
             out.append(
                 _entry(
                     name,
@@ -285,6 +378,16 @@ def load_custom_registry_overrides(*, force: bool = False) -> list[dict[str, Any
                     verifiability=row.get("verifiability") or "partial",  # type: ignore[arg-type]
                     control_bindings=bindings,
                     remediation_hint=str(row.get("remediation_hint") or ""),
+                    name=display_name,
+                    description=str(row.get("description") or ""),
+                    applicability=row.get("applicability")
+                    if isinstance(row.get("applicability"), dict)
+                    else None,
+                    pass_condition=str(row.get("pass_condition") or ""),
+                    fail_condition=str(row.get("fail_condition") or ""),
+                    risk_weight=float(row.get("risk_weight") or 1.0),
+                    evidence_rule=str(row.get("evidence_rule") or ""),
+                    verification_rule=str(row.get("verification_rule") or ""),
                 )
             )
         break  # first existing file wins
@@ -362,3 +465,20 @@ def control_bindings_for_test(test_name: str) -> list[dict[str, str]]:
 def remediation_hint_for_test(test_name: str) -> str:
     entry = get_test_entry(test_name)
     return str((entry or {}).get("remediation_hint") or "")
+
+
+def risk_weight_for_test(test_name: str) -> float:
+    entry = get_test_entry(test_name)
+    try:
+        return float((entry or {}).get("risk_weight") or 1.0)
+    except (TypeError, ValueError):
+        return 1.0
+
+
+def reload_registry(*, force: bool = True) -> list[dict[str, Any]]:
+    """Clear custom override cache and return effective registry (ops/tests)."""
+    global _CUSTOM_CACHE
+    _CUSTOM_CACHE = None
+    if force:
+        pass  # cache already cleared
+    return effective_registry()

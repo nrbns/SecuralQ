@@ -35,7 +35,7 @@ Rust Agent → Agent Gateway → FastAPI → Redis Streams → Workers
 | 1 | Owned-host / lab acceptance loop (detect→risk→evidence→approve→remediate→verify→SSE timeline) | **CI green** — `realtime_acceptance_demo.py --local` + step 12 timeline; live OS mutation still ops/owned-host |
 | 2 | Measure Redis Sentinel failover | **Harness ready** — Docker not on this Windows lab; run `--inject-stop --record` where compose HA is up |
 | 3 | Remove unnecessary polling → RealtimeManager only when SSE live | **In progress** — soft-poll is SSE-offline fallback only |
-| 4 | Telemetry → controls → evidence → compliance (beyond firewall) | Partial — firewall/Defender/SSH loops; expand configurable control engine next |
+| 4 | Telemetry → controls → evidence → compliance (beyond firewall) | **Improved** — configurable registry fields + `host_risky_listeners` + disk encryption / risky-listener acceptance loops |
 | 5 | Remediation → agent → independent verification (never “fixed” from execute alone) | Done for host remediations in acceptance |
 | 6 | Requirements first-class | Partial / Sprint C+ |
 | 7 | DPDP Privacy Center | Foundations shipped (catalogs + data-governance UI); deepen inventory/rights/processors |
