@@ -1039,7 +1039,7 @@ def _record_host_control_evidence(
         from app.services.evidence import record_evidence as _record
 
         summary = f"{test_name}:{status} — {result.get('summary') or ''}"
-        return _record(
+        ev = _record(
             user_id,
             entity_type="agent_host_control",
             entity_id=f"{agent_id}:{test_name}",
@@ -1048,6 +1048,7 @@ def _record_host_control_evidence(
             summary=summary[:500],
             detail={
                 "status": status,
+                "result": status,
                 "test": test_name,
                 "agent_id": agent_id,
                 "asset_id": result.get("asset_id") or "",
@@ -1058,6 +1059,72 @@ def _record_host_control_evidence(
             },
             created_by="securaiq_agent",
         )
+        # Evidence Spine: map the same evidence row to framework controls
+        # (documents can map to the same control_id without a second module).
+        if isinstance(ev, dict) and ev.get("id"):
+            try:
+                from app.evidence_spine.mapping import link_evidence_to_control
+                from app.evidence_spine.schema import ensure_evidence_spine_schema
+                from app.db import get_conn, new_id, now
+                import json
+                import hashlib
+
+                ensure_evidence_spine_schema()
+                mapped = _mapped_control_ids_for_test(test_name)
+                for ctl in mapped:
+                    cid = (ctl.get("control_id") or "").strip()
+                    if not cid:
+                        continue
+                    try:
+                        link_evidence_to_control(
+                            user_id,
+                            ev["id"],
+                            control_id=cid,
+                            framework_id=(ctl.get("framework_id") or "").strip(),
+                            role="satisfies",
+                            org_id=ev.get("org_id"),
+                        )
+                    except Exception:
+                        pass
+                obs_id = new_id()
+                ch = hashlib.sha256(
+                    f"{agent_id}:{test_name}:{status}:{obs_id}".encode()
+                ).hexdigest()
+                get_conn().execute(
+                    """
+                    INSERT INTO evidence_observations
+                    (id, user_id, org_id, data_source, source_ref, check_id, control_hint,
+                     result, summary, detail_json, content_hash, evidence_id, observed_at,
+                     expires_at, created_at)
+                    VALUES (?, ?, ?, 'agent', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        obs_id,
+                        user_id,
+                        ev.get("org_id"),
+                        agent_id,
+                        test_name,
+                        (mapped[0]["control_id"] if mapped else ""),
+                        status,
+                        summary[:500],
+                        json.dumps(
+                            {
+                                "agent_id": agent_id,
+                                "test": test_name,
+                                "result": status,
+                            }
+                        )[:4000],
+                        ch,
+                        ev["id"],
+                        now(),
+                        ev.get("expires_at"),
+                        now(),
+                    ),
+                )
+                get_conn().commit()
+            except Exception:
+                pass
+        return ev
     except Exception:
         return None
 

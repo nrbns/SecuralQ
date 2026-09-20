@@ -191,6 +191,8 @@ API docs: http://127.0.0.1:8080/docs
 | Doc | Topic |
 |-----|--------|
 | [`docs/control-plane-roadmap.md`](docs/control-plane-roadmap.md) | P0 / P1 / P2 product direction |
+| [`docs/EVIDENCE-SPINE.md`](docs/EVIDENCE-SPINE.md) | Evidence as common language (obs + docs → controls) |
+| [`docs/COMPLIANCE-OPERATIONS.md`](docs/COMPLIANCE-OPERATIONS.md) | Calendar / board / tasks / escalation |
 | [`docs/production-readiness.md`](docs/production-readiness.md) | Ship / don’t-ship gate |
 | [`docs/compliance-platform.md`](docs/compliance-platform.md) | Continuous compliance |
 | [`docs/scan-engine.md`](docs/scan-engine.md) | Scanners |

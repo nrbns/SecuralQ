@@ -93,6 +93,13 @@ def _enrich(task: dict[str, Any]) -> dict[str, Any]:
     out["due_label"] = (
         datetime.fromtimestamp(due, tz=timezone.utc).strftime("%Y-%m-%d") if due else None
     )
+    try:
+        meta = json.loads(out.get("meta_json") or "{}")
+        out["meta"] = meta if isinstance(meta, dict) else {}
+    except Exception:
+        out["meta"] = {}
+    if out["meta"].get("evidence_id"):
+        out["evidence_id"] = out["meta"]["evidence_id"]
     return out
 
 
@@ -306,14 +313,70 @@ def submit_evidence(
     task = get_task(user_id, task_id)
     if not task:
         raise ValueError("task not found")
+    linked_id = (evidence_id or "").strip()
+    # Create first-class Evidence when only a note is provided, and map to
+    # the task's control when known (Document/note → Evidence, not attachment).
+    if not linked_id and (note or "").strip():
+        try:
+            from app.evidence_spine.ingest import ingest_document_as_evidence
+
+            spine = ingest_document_as_evidence(
+                user_id,
+                title=f"Task evidence — {task.get('title') or task_id}",
+                summary=(note or "")[:500],
+                document_id=f"task:{task_id}",
+                control_id=str(task.get("control_id") or ""),
+                framework_id=str(task.get("framework_id") or ""),
+                detail={"task_id": task_id, "task_kind": task.get("task_kind")},
+            )
+            linked_id = str(spine.get("evidence_id") or "")
+        except Exception:
+            linked_id = ""
+    elif linked_id and (task.get("control_id") or "").strip():
+        try:
+            from app.evidence_spine.mapping import link_evidence_to_control
+
+            link_evidence_to_control(
+                user_id,
+                linked_id,
+                control_id=str(task["control_id"]),
+                framework_id=str(task.get("framework_id") or ""),
+                role="supports",
+            )
+        except Exception:
+            pass
+
+    meta = {}
+    try:
+        meta = json.loads(task.get("meta_json") or "{}")
+        if not isinstance(meta, dict):
+            meta = {}
+    except Exception:
+        meta = {}
+    if linked_id:
+        meta["evidence_id"] = linked_id
+        ids = meta.get("evidence_ids") if isinstance(meta.get("evidence_ids"), list) else []
+        if linked_id not in ids:
+            ids.append(linked_id)
+        meta["evidence_ids"] = ids[-20:]
+
     get_conn().execute(
-        "UPDATE compliance_tasks SET evidence_attached = 1, updated_at = ? WHERE id = ? AND user_id = ?",
-        (now(), task_id, user_id),
+        """
+        UPDATE compliance_tasks
+        SET evidence_attached = 1, updated_at = ?, meta_json = ?
+        WHERE id = ? AND user_id = ?
+        """,
+        (now(), json.dumps(meta)[:8000], task_id, user_id),
     )
     get_conn().commit()
-    detail = note or evidence_id or "evidence attached"
+    detail = note or linked_id or evidence_id or "evidence attached"
     _record_event(task_id, user_id, "evidence", detail[:500])
-    _publish("compliance.task.evidence_attached", user_id, task_id=task_id)
+    _publish(
+        "compliance.task.evidence_attached",
+        user_id,
+        task_id=task_id,
+        evidence_id=linked_id or None,
+    )
     return get_task(user_id, task_id) or task
 
 

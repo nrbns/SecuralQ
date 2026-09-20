@@ -46,7 +46,13 @@ Rust Agent → Agent Gateway → FastAPI → Redis Streams → Workers
 ### Compliance Operations (new module — after Immediate loop)
 
 Calendar-driven workflow engine (not domain expansion): see [COMPLIANCE-OPERATIONS.md](./COMPLIANCE-OPERATIONS.md).  
-MVP shipped: tasks · schedules · evidence gate · my-work · calendar · escalation tick · SSE events.
+MVP shipped: tasks · schedules · evidence gate · my-work · calendar · escalation tick · SSE events.  
+Board + approvals + control FAIL/PASS bridge shipped.
+
+### Evidence Spine (common language — after Compliance Ops)
+
+Observation + Document → Evidence → control map → evaluate: see [EVIDENCE-SPINE.md](./EVIDENCE-SPINE.md).  
+Does not rebuild the product — unifies `securaiq_evidence`, host controls, doc library, and Compliance Ops tasks.
 
 ### Prove #1
 

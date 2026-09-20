@@ -84,6 +84,7 @@ from app.xdr_api import router as xdr_router
 from app.agents_api import router as agents_router
 from app.agent_gateway import router as agent_gateway_router
 from app.evidence_api import router as evidence_router
+from app.evidence_spine.api import router as evidence_spine_router
 from app.risk_api import router as risk_router
 from app.wazuh_api import router as wazuh_router
 from app.openaudit_api import router as openaudit_router
@@ -397,6 +398,7 @@ app.include_router(wazuh_router, prefix="/api/wazuh")  # compat alias
 app.include_router(agent_gateway_router)
 app.include_router(agents_router)
 app.include_router(evidence_router)
+app.include_router(evidence_spine_router)
 app.include_router(risk_router)
 app.include_router(openaudit_router)
 app.include_router(hardeningkitty_router)

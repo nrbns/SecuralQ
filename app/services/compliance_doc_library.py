@@ -426,6 +426,29 @@ def review_document(
         status="accepted",
     )
 
+    # Evidence Spine: Document → Evidence (not a bare attachment) + control map
+    spine_evidence_id = ""
+    try:
+        from app.evidence_spine.ingest import ingest_document_as_evidence
+
+        spine = ingest_document_as_evidence(
+            user_id,
+            title=str(doc.get("title") or "Compliance document"),
+            summary=(
+                f"Approved document v{doc.get('version', 1)} "
+                f"(reviewer={reviewer or 'reviewer'})"
+            ),
+            file_id=upload["id"],
+            document_id=doc_id,
+            control_id=str(doc.get("control_id") or ""),
+            framework_id=str(doc.get("framework_id") or ""),
+            owner=str(doc.get("owner") or ""),
+            detail={"evidence_link_id": link["id"], "approved_by": reviewer},
+        )
+        spine_evidence_id = str(spine.get("evidence_id") or "")
+    except Exception:
+        pass
+
     get_conn().execute(
         """
         UPDATE compliance_documents
@@ -439,6 +462,12 @@ def review_document(
     audit(
         "compliance_doc_approve",
         user_id,
-        {"id": doc_id, "reviewer": reviewer, "evidence_link_id": link["id"], "file_id": upload["id"]},
+        {
+            "id": doc_id,
+            "reviewer": reviewer,
+            "evidence_link_id": link["id"],
+            "file_id": upload["id"],
+            "spine_evidence_id": spine_evidence_id,
+        },
     )
     return get_document(user_id, doc_id)

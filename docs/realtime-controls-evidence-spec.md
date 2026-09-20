@@ -9,12 +9,13 @@
 ## Architectural decision (non-negotiable)
 
 ```text
-Live structured Evidence Store  =  source of truth
-PDF / DOCX / Markdown reports   =  outputs / exports only
+Live structured Evidence Store  =  source of truth for runtime claims
+PDF / DOCX / Markdown reports   =  exports / outputs only when used as reports
+Approved policy documents       =  Document Evidence (declared) — supports controls;
+                                   never alone proves live host PASS
 ```
 
-Do **not** treat report files as compliance truth. Do **not** expand framework catalogs
-until this control → evidence → verify loop is reliable on owned lab endpoints.
+See [EVIDENCE-SPINE.md](./EVIDENCE-SPINE.md) for Observation + Document → same control.
 
 Task **#144** (Frameworks Live Test UI) remains **frozen**.
 
