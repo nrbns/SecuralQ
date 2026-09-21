@@ -803,6 +803,105 @@ async def assets_list(
     return {"assets": assets, "live_scans": live_scans, "org_id": oid}
 
 
+class AssetResolveIn(BaseModel):
+    ip: str = ""
+    hostname: str = ""
+    agent_id: str = ""
+    aws_instance_id: str = ""
+    edr_id: str = ""
+    aliases: dict[str, str] = Field(default_factory=dict)
+
+
+class AssetAliasIn(BaseModel):
+    kind: str = Field(min_length=1, max_length=40)
+    value: str = Field(min_length=1, max_length=240)
+    source: str = ""
+    confidence: float = 1.0
+
+
+@router.post("/assets/resolve")
+async def assets_resolve_identity(
+    body: AssetResolveIn,
+    user: Annotated[AuthUser, Depends(require_user)],
+    x_securaiq_org: str | None = Header(default=None, alias="X-SecuraIQ-Org"),
+):
+    """Resolve multi-source identifiers → canonical asset_id (entity resolution)."""
+    oid = resolve_request_org(user, header_org=x_securaiq_org)
+    require_perm(user, "asset.read", org_id=oid)
+    from app.asset_identity import resolve_canonical
+    from app.enterprise import get_asset
+
+    hit = resolve_canonical(
+        user.id,
+        aliases=body.aliases,
+        ip=body.ip,
+        hostname=body.hostname,
+        agent_id=body.agent_id,
+        aws_instance_id=body.aws_instance_id,
+        edr_id=body.edr_id,
+    )
+    asset = get_asset(user.id, str(hit["asset_id"])) if hit and hit.get("asset_id") else None
+    return {"ok": True, "match": hit, "asset": asset, "org_id": oid}
+
+
+@router.get("/assets/identity-conflicts")
+async def assets_identity_conflicts(
+    user: Annotated[AuthUser, Depends(require_user)],
+    limit: int = 50,
+    x_securaiq_org: str | None = Header(default=None, alias="X-SecuraIQ-Org"),
+):
+    oid = resolve_request_org(user, header_org=x_securaiq_org)
+    require_perm(user, "asset.read", org_id=oid)
+    from app.asset_identity import list_conflicts
+
+    return {"ok": True, "conflicts": list_conflicts(user.id, limit=limit), "org_id": oid}
+
+
+@router.get("/assets/{asset_id}/aliases")
+async def assets_list_aliases(
+    asset_id: str,
+    user: Annotated[AuthUser, Depends(require_user)],
+    x_securaiq_org: str | None = Header(default=None, alias="X-SecuraIQ-Org"),
+):
+    oid = resolve_request_org(user, header_org=x_securaiq_org)
+    require_perm(user, "asset.read", org_id=oid)
+    from app.asset_identity import list_aliases
+    from app.enterprise import get_asset
+
+    if not get_asset(user.id, asset_id):
+        raise HTTPException(status_code=404, detail="Asset not found")
+    return {"ok": True, "asset_id": asset_id, "aliases": list_aliases(user.id, asset_id)}
+
+
+@router.post("/assets/{asset_id}/aliases")
+async def assets_register_alias(
+    asset_id: str,
+    body: AssetAliasIn,
+    user: Annotated[AuthUser, Depends(require_user)],
+    x_securaiq_org: str | None = Header(default=None, alias="X-SecuraIQ-Org"),
+):
+    oid = resolve_request_org(user, header_org=x_securaiq_org)
+    require_perm(user, "asset.write", org_id=oid)
+    from app.asset_identity import register_alias
+    from app.enterprise import get_asset
+
+    if not get_asset(user.id, asset_id):
+        raise HTTPException(status_code=404, detail="Asset not found")
+    try:
+        row = register_alias(
+            user.id,
+            asset_id,
+            kind=body.kind,
+            value=body.value,
+            source=body.source or "api",
+            confidence=body.confidence,
+            org_id=oid,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "alias": row}
+
+
 @router.get("/assets/{asset_id}")
 async def assets_get(
     asset_id: str,

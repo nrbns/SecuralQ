@@ -65,8 +65,9 @@ AGENTS / CLOUD / DOCUMENTS → OBSERVATIONS → EVIDENCE
   → REMEDIATION → VERIFY → NEW EVIDENCE → AUDIT PROOF → REALTIME UI
 ```
 
-Next backbone gaps (🔴): asset identity depth · verification closed-loop polish · tenant hardening · measured HA/DR/load (re-run HTTP ladder after check-in event-loop fix).  
+Next backbone gaps (🔴): verification closed-loop polish · tenant hardening · measured HA/DR/load (re-run HTTP ladder after check-in event-loop fix).  
 **Notification worker shipped:** email/Slack/Teams outbox + `notification_delivery_tick` (in-app stays sync).  
+**Asset identity shipped:** `asset_aliases` entity resolution (agent/IP/hostname/cloud/EDR → one canonical asset) — see [ASSET-IDENTITY.md](./ASSET-IDENTITY.md).  
 Frozen until loop stays green: Cloud/K8s/AppSec/Identity depth · business-service graph expansions · AI SecOps.
 
 ### Prove #1

@@ -72,6 +72,19 @@ def create_asset(
     c.commit()
     audit("asset_create", user_id, {"id": aid, "name": name, "org_id": oid})
     try:
+        from app.asset_identity import register_aliases_from_meta
+        from app.asset_names import parse_notes_meta
+
+        register_aliases_from_meta(
+            user_id,
+            aid,
+            parse_notes_meta(notes),
+            source="asset_create",
+            org_id=oid,
+        )
+    except Exception:
+        pass
+    try:
         from app.realtime_bus import publish
 
         publish(type="asset", id=aid, user_id=user_id, org_id=oid)
@@ -143,6 +156,74 @@ def ensure_asset_for_target(
         ip_guess = name.split("(")[-1].rstrip(")") if "(" in name else name
         incoming_ip = ip_guess.strip().lower()
 
+    # Asset identity index — O(1) alias lookup before linear notes scan
+    try:
+        from app.asset_identity import (
+            aliases_from_notes,
+            register_aliases_from_meta,
+            resolve_canonical,
+        )
+
+        alias_hit = resolve_canonical(
+            user_id,
+            aliases=aliases_from_notes(notes),
+            ip=incoming_ip,
+            hostname=incoming_host,
+            agent_id=str(incoming.get("securaiq_agent_id") or ""),
+            aws_instance_id=str(incoming.get("aws_instance_id") or incoming.get("instance_id") or ""),
+            edr_id=str(incoming.get("edr_id") or ""),
+        )
+        if alias_hit and alias_hit.get("asset_id"):
+            existing = get_asset(user_id, str(alias_hit["asset_id"]))
+            if existing:
+                a = existing
+                aid = a.get("id")
+                merged_meta = _notes_dict(
+                    _merge_notes(a.get("notes") or "", notes) if notes else (a.get("notes") or "")
+                )
+                inferred = infer_asset_category(
+                    asset_type=asset_type,
+                    os=str(merged_meta.get("os") or ""),
+                    hostname=str(merged_meta.get("hostname") or merged_meta.get("host") or ""),
+                    oa_type=str(merged_meta.get("oa_type") or ""),
+                    ports=ports_from_meta(merged_meta),
+                    name=name,
+                )
+                patch: dict[str, Any] = {}
+                if aid and notes:
+                    merged = _merge_notes(a.get("notes") or "", notes)
+                    if merged != (a.get("notes") or ""):
+                        patch["notes"] = merged
+                    merged_meta = _notes_dict(merged)
+                    new_name = canonical_asset_name(
+                        name=name,
+                        ip=str(merged_meta.get("ip") or ""),
+                        hostname=str(
+                            merged_meta.get("hostname") or merged_meta.get("host") or ""
+                        ),
+                    )
+                    cur_name = (a.get("name") or "").strip()
+                    if new_name and is_better_asset_name(new_name, cur_name):
+                        patch["name"] = new_name[:200]
+                    if is_better_category(inferred, str(a.get("asset_type") or "")):
+                        patch["asset_type"] = inferred
+                    out = update_asset(user_id, str(aid), patch) if patch else a
+                else:
+                    out = a
+                try:
+                    register_aliases_from_meta(
+                        user_id,
+                        str(aid),
+                        merged_meta,
+                        source=str(incoming.get("source") or "ensure_asset"),
+                        org_id=org_id,
+                    )
+                except Exception:
+                    pass
+                return out or a
+    except Exception:
+        pass
+
     def _asset_keys(a: dict[str, Any]) -> set[str]:
         keys: set[str] = set()
         an = (a.get("name") or "").strip().lower()
@@ -204,6 +285,18 @@ def ensure_asset_for_target(
                 publish(type="asset", id=aid, user_id=user_id, org_id=org_id, action="scan_seen")
         except Exception:
             pass
+        try:
+            from app.asset_identity import register_aliases_from_meta
+
+            register_aliases_from_meta(
+                user_id,
+                str(aid),
+                _notes_dict(_merge_notes(a.get("notes") or "", notes) if notes else (a.get("notes") or "")),
+                source=str(incoming.get("source") or "ensure_asset"),
+                org_id=org_id,
+            )
+        except Exception:
+            pass
         return a
     # Heuristic type from target shape + scan metadata
     merged_meta = _notes_dict(notes)
@@ -215,7 +308,7 @@ def ensure_asset_for_target(
         ports=ports_from_meta(merged_meta),
         name=name,
     )
-    return create_asset(
+    created = create_asset(
         user_id,
         name,
         asset_type=at,
@@ -225,6 +318,20 @@ def ensure_asset_for_target(
         engagement_id=engagement_id,
         org_id=org_id,
     )
+    try:
+        if created and created.get("id"):
+            from app.asset_identity import register_aliases_from_meta
+
+            register_aliases_from_meta(
+                user_id,
+                str(created["id"]),
+                merged_meta,
+                source=str(incoming.get("source") or "ensure_asset"),
+                org_id=org_id,
+            )
+    except Exception:
+        pass
+    return created
 
 
 def get_asset(user_id: str, asset_id: str) -> dict[str, Any] | None:

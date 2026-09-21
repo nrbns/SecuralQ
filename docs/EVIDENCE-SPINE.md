@@ -154,7 +154,7 @@ Existing Evidence Store remains at `/api/evidence`.
 - Org-wide auto risk recalc on every write
 - Email notification worker → **shipped** (`notification_outbox` + `notification_delivery_tick`)
 - Drag-and-drop vault UI polish
-- Full asset identity / entity-resolution graph
+- Full asset identity / entity-resolution graph → **shipped** (`asset_aliases` — see [ASSET-IDENTITY.md](./ASSET-IDENTITY.md))
 
 ## Tests
 

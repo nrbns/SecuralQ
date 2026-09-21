@@ -651,8 +651,9 @@ def _link_agent_asset(
     user_id: str, agent_id: str, payload: dict[str, Any], *, org_id: str | None = None
 ) -> str:
     from app.asset_categories import infer_asset_category
+    from app.asset_identity import register_aliases_from_meta, resolve_canonical
     from app.asset_names import canonical_asset_name
-    from app.enterprise import ensure_asset_for_target, list_assets
+    from app.enterprise import ensure_asset_for_target
 
     hostname = str(payload.get("hostname") or "").strip()
     ip = str(payload.get("ip") or "").strip()
@@ -671,12 +672,16 @@ def _link_agent_asset(
             "source": "securaiq-agent",
         }
     )[:2000]
+    # Prefer identity index (agent_id / ip / hostname) over notes substring scan
     asset_id = ""
-    for a in list_assets(user_id):
-        n = a.get("notes") or ""
-        if f'"securaiq_agent_id": "{agent_id}"' in n:
-            asset_id = a["id"]
-            break
+    try:
+        hit = resolve_canonical(
+            user_id, agent_id=agent_id, ip=ip, hostname=hostname
+        )
+        if hit and hit.get("asset_id"):
+            asset_id = str(hit["asset_id"])
+    except Exception:
+        pass
     asset = ensure_asset_for_target(
         user_id,
         display,
@@ -687,6 +692,21 @@ def _link_agent_asset(
         org_id=org_id,
     )
     if asset and asset.get("id"):
+        try:
+            register_aliases_from_meta(
+                user_id,
+                str(asset["id"]),
+                {
+                    "securaiq_agent_id": agent_id,
+                    "ip": ip,
+                    "hostname": hostname,
+                    "host": hostname or ip,
+                },
+                source="securaiq-agent",
+                org_id=org_id,
+            )
+        except Exception:
+            pass
         return str(asset["id"])
     return asset_id
 
