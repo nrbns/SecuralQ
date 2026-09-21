@@ -1,15 +1,16 @@
-"""API for Evidence Spine — Observation/Document → Evidence → Control."""
+"""API for Evidence Spine — Observation/Document → Evidence → Control + Vault."""
 
 from __future__ import annotations
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from app.auth import AuthUser
 from app.commercial_api import require_user
 from app.evidence_spine.evaluate import evaluate_control_from_evidence
+from app.evidence_spine.freshness import apply_freshness_to_result, list_freshness_policies
 from app.evidence_spine.ingest import ingest_document_as_evidence, ingest_observation_as_evidence
 from app.evidence_spine.mapping import (
     link_evidence_to_control,
@@ -17,6 +18,14 @@ from app.evidence_spine.mapping import (
     list_evidence_for_control,
     unlink_evidence_from_control,
 )
+from app.evidence_spine.vault import (
+    create_vault_document,
+    get_vault_item,
+    list_vault,
+    set_review_status,
+    supersede_vault_document,
+)
+from app.upload_validation import UploadValidationError
 
 router = APIRouter(prefix="/api/evidence-spine", tags=["evidence-spine"])
 
@@ -53,6 +62,17 @@ class LinkIn(BaseModel):
     control_id: str = Field(min_length=1)
     framework_id: str = ""
     role: str = "supports"
+
+
+class ReviewIn(BaseModel):
+    status: str = Field(min_length=1, max_length=40)
+    note: str = ""
+
+
+class FreshnessIn(BaseModel):
+    result: str = "pass"
+    last_observed: float | None = None
+    control_or_test: str = Field(min_length=1, max_length=120)
 
 
 @router.post("/observations")
@@ -101,6 +121,100 @@ async def api_ingest_document(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/vault")
+async def api_list_vault(
+    user: Annotated[AuthUser, Depends(require_user)],
+    kind: str = "",
+    limit: int = 100,
+):
+    return {"ok": True, "items": list_vault(user.id, kind=kind, limit=limit)}
+
+
+@router.get("/vault/{vault_id}")
+async def api_get_vault(vault_id: str, user: Annotated[AuthUser, Depends(require_user)]):
+    item = get_vault_item(user.id, vault_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="vault item not found")
+    return item
+
+
+@router.post("/vault/upload")
+async def api_vault_upload(
+    user: Annotated[AuthUser, Depends(require_user)],
+    file: UploadFile = File(...),
+    title: str = Form(""),
+    control_id: str = Form(""),
+    framework_id: str = Form(""),
+    kind: str = Form("document"),
+    notes: str = Form(""),
+    retention_days: int | None = Form(None),
+):
+    raw = await file.read()
+    try:
+        return create_vault_document(
+            user.id,
+            title=title or (file.filename or "Evidence"),
+            filename=file.filename or "upload.bin",
+            data=raw,
+            kind=kind,
+            control_id=control_id,
+            framework_id=framework_id,
+            notes=notes,
+            retention_days=retention_days,
+        )
+    except (ValueError, UploadValidationError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/vault/{vault_id}/supersede")
+async def api_vault_supersede(
+    vault_id: str,
+    user: Annotated[AuthUser, Depends(require_user)],
+    file: UploadFile = File(...),
+    notes: str = Form(""),
+):
+    raw = await file.read()
+    try:
+        return supersede_vault_document(
+            user.id,
+            vault_id,
+            filename=file.filename or "upload.bin",
+            data=raw,
+            notes=notes,
+        )
+    except (ValueError, UploadValidationError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/vault/{vault_id}/review")
+async def api_vault_review(
+    vault_id: str,
+    body: ReviewIn,
+    user: Annotated[AuthUser, Depends(require_user)],
+):
+    try:
+        return set_review_status(user.id, vault_id, status=body.status, note=body.note)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/freshness-policies")
+async def api_freshness_policies(_user: Annotated[AuthUser, Depends(require_user)]):
+    return {"ok": True, "policies": list_freshness_policies()}
+
+
+@router.post("/freshness/apply")
+async def api_freshness_apply(
+    body: FreshnessIn,
+    _user: Annotated[AuthUser, Depends(require_user)],
+):
+    return apply_freshness_to_result(
+        result=body.result,
+        last_observed=body.last_observed,
+        control_or_test=body.control_or_test,
+    )
 
 
 @router.post("/link")

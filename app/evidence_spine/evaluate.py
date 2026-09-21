@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.db import now
+from app.evidence_spine.freshness import apply_freshness_to_result
 from app.evidence_spine.mapping import list_evidence_for_control
 
 
@@ -18,8 +20,9 @@ def evaluate_control_from_evidence(
     Rules (honest):
     - Fresh **observed** FAIL → overall ``fail``
     - Fresh **observed** PASS and no fresh FAIL → ``pass``
+    - Stale observed (past freshness policy) → contributes ``stale``
     - Only **document/declared** evidence → ``partial`` (supports, not runtime proof)
-    - Only stale/expired observed → ``unknown`` (stale)
+    - Only stale/expired observed → ``stale`` / ``unknown``
     - Nothing mapped → ``unknown``
     """
     rows = list_evidence_for_control(
@@ -30,6 +33,7 @@ def evaluate_control_from_evidence(
     observed_stale = 0
     documents = 0
     evidence_ids: list[str] = []
+    freshness_notes: list[str] = []
     for r in rows:
         eid = str(r.get("id") or "")
         if eid:
@@ -39,7 +43,6 @@ def evaluate_control_from_evidence(
         fresh = (r.get("freshness_status") or "fresh").lower()
         detail = r.get("detail") if isinstance(r.get("detail"), dict) else {}
         status = str(detail.get("result") or detail.get("status") or "").lower()
-        # Infer from summary host_control:fail style
         if not status and ":" in (r.get("summary") or ""):
             part = (r.get("summary") or "").split(":", 1)[-1]
             if part.lower().startswith("fail"):
@@ -49,18 +52,26 @@ def evaluate_control_from_evidence(
 
         is_doc = et == "document" or src == "declared" or (r.get("map_role") == "documents")
         is_obs = et in {"observation", "agent_host_control", "control_result"} or src == "observed"
+        test_hint = str(detail.get("test") or detail.get("test_name") or control_id)
 
         if is_doc and not is_obs:
             documents += 1
             continue
         if is_obs:
-            if fresh == "fresh":
-                if status == "fail":
-                    observed_fresh_fail += 1
-                elif status == "pass":
-                    observed_fresh_pass += 1
-            else:
+            last = r.get("last_seen") or detail.get("observed_at")
+            fr = apply_freshness_to_result(
+                result=status or "unknown",
+                last_observed=float(last) if last else None,
+                control_or_test=test_hint,
+                now_ts=now(),
+            )
+            if fr.get("stale") or fresh in {"stale", "expired"}:
                 observed_stale += 1
+                freshness_notes.append(str(fr.get("note") or "stale"))
+            elif fr.get("effective_result") == "fail" or status == "fail":
+                observed_fresh_fail += 1
+            elif fr.get("effective_result") == "pass" or status == "pass":
+                observed_fresh_pass += 1
 
     if observed_fresh_fail > 0:
         result = "fail"
@@ -68,14 +79,19 @@ def evaluate_control_from_evidence(
     elif observed_fresh_pass > 0:
         result = "pass"
         note = "Fresh observed PASS evidence; no fresh FAIL."
+    elif observed_stale > 0 and documents == 0:
+        result = "stale"
+        note = freshness_notes[0] if freshness_notes else "Observed evidence is stale — recollect."
     elif documents > 0 and observed_fresh_pass == 0 and observed_fresh_fail == 0:
         result = "partial"
         note = (
             "Document/declared evidence supports the control but does not prove "
             "live operating effectiveness. Add agent observation for PASS."
         )
+        if observed_stale:
+            note += " Some observed evidence is also stale."
     elif observed_stale > 0:
-        result = "unknown"
+        result = "stale"
         note = "Only stale/expired observed evidence — re-check required."
     else:
         result = "unknown"

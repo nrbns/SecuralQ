@@ -8919,7 +8919,7 @@
           .join("")
       : `<tr><td colspan="4" class="hint">No open gaps without evidence — run a gap analysis or link artifacts</td></tr>`;
     body.innerHTML = `
-      <p class="hint">Evidence vault — control → artifact → integrity → audit pack. Not a generic file dump.</p>
+      <p class="hint">Evidence vault — control → artifact → integrity → audit pack. Not a generic file dump. Replacing a file creates a new version; history is never overwritten.</p>
       ${
         typeof window.renderNarrativeBlock === "function"
           ? window.renderNarrativeBlock({
@@ -8932,6 +8932,18 @@
             })
           : ""
       }
+      <section class="cc-panel" style="margin-bottom:1rem">
+        <header><h2 style="margin:0">Document vault (SHA-256 + versions)</h2></header>
+        <p class="hint">Upload PDF/DOCX/XLSX/images as first-class Evidence. Supersede creates v2+ without deleting v1.</p>
+        <form id="evVaultUploadForm" class="inline-form" style="flex-wrap:wrap;gap:0.5rem;margin:0.5rem 0">
+          <input type="file" id="evVaultFile" required accept=".pdf,.docx,.xlsx,.pptx,.png,.jpg,.jpeg,.txt,.md,.csv" />
+          <input id="evVaultTitle" placeholder="Title" style="min-width:12rem" />
+          <input id="evVaultControl" placeholder="Control ID" style="max-width:10rem" />
+          <input id="evVaultFramework" placeholder="Framework ID" style="max-width:10rem" />
+          <button type="submit" class="btn-primary">Upload to vault</button>
+        </form>
+        <ul class="co-task-list" id="evVaultList"><li class="hint">Loading vault…</li></ul>
+      </section>
       ${
         loadErrors.length
           ? `<p class="hint" style="color:#c0392b">Could not load ${escapeHtml(
@@ -9073,6 +9085,101 @@
       }
     }
     await renderComplianceDocsPanel();
+    // Document vault (SHA-256 + versions) — first-class Evidence, not bare attachments
+    (async () => {
+      const listEl = qs("evVaultList");
+      try {
+        const vr = await fetch("/api/evidence-spine/vault?limit=30", { headers: authHeaders() });
+        const vd = await vr.json().catch(() => ({}));
+        const items = vd.items || [];
+        if (listEl) {
+          listEl.innerHTML = items.length
+            ? items
+                .map(
+                  (it) =>
+                    `<li class="co-task"><strong>${escapeHtml(it.title || "")}</strong>
+                    <span class="hint">${escapeHtml(it.kind || "document")} · ${escapeHtml(
+                      it.review_status || ""
+                    )} · ${escapeHtml((it.current_evidence_id || "").slice(0, 8))}…</span>
+                    <span class="co-task-actions">
+                      <button type="button" class="btn-secondary ev-vault-accept" data-id="${escapeHtml(
+                        it.id
+                      )}">Accept</button>
+                      <button type="button" class="btn-secondary ev-vault-supersede" data-id="${escapeHtml(
+                        it.id
+                      )}">Supersede</button>
+                    </span></li>`
+                )
+                .join("")
+            : `<li class="hint">No vault documents yet — upload above.</li>`;
+        }
+        listEl?.querySelectorAll(".ev-vault-accept").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            await fetch(`/api/evidence-spine/vault/${encodeURIComponent(btn.getAttribute("data-id"))}/review`, {
+              method: "POST",
+              headers: authHeaders({ "Content-Type": "application/json" }),
+              body: JSON.stringify({ status: "accepted", note: "Accepted in Evidence vault" }),
+            });
+            renderEvidencePage();
+          });
+        });
+        listEl?.querySelectorAll(".ev-vault-supersede").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            const input = document.createElement("input");
+            input.type = "file";
+            input.accept = ".pdf,.docx,.xlsx,.txt,.md,.png,.jpg";
+            input.onchange = async () => {
+              const f = input.files && input.files[0];
+              if (!f) return;
+              const fd = new FormData();
+              fd.append("file", f);
+              fd.append("notes", `Superseded with ${f.name}`);
+              const res = await fetch(
+                `/api/evidence-spine/vault/${encodeURIComponent(btn.getAttribute("data-id"))}/supersede`,
+                { method: "POST", headers: authHeaders(), body: fd }
+              );
+              const data = await res.json().catch(() => ({}));
+              if (!res.ok) {
+                if (typeof notifyUser === "function")
+                  notifyUser(`**Supersede failed:** ${data.detail || res.status}`);
+                return;
+              }
+              if (typeof notifyUser === "function")
+                notifyUser(`**New evidence version** created (history preserved).`);
+              renderEvidencePage();
+            };
+            input.click();
+          });
+        });
+      } catch {
+        if (listEl) listEl.innerHTML = `<li class="hint">Vault unavailable</li>`;
+      }
+    })();
+    qs("evVaultUploadForm")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fileInput = qs("evVaultFile");
+      const f = fileInput?.files && fileInput.files[0];
+      if (!f) return;
+      const fd = new FormData();
+      fd.append("file", f);
+      fd.append("title", qs("evVaultTitle")?.value || f.name);
+      fd.append("control_id", qs("evVaultControl")?.value || "");
+      fd.append("framework_id", qs("evVaultFramework")?.value || "");
+      const res = await fetch("/api/evidence-spine/vault/upload", {
+        method: "POST",
+        headers: authHeaders(),
+        body: fd,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (typeof notifyUser === "function")
+          notifyUser(`**Vault upload failed:** ${data.detail || res.status}`);
+        return;
+      }
+      if (typeof notifyUser === "function")
+        notifyUser(`**Evidence vaulted** with SHA-256 integrity (v1).`);
+      renderEvidencePage();
+    });
     if (evidencePrefill && evidencePrefill.control_id) {
       const docControlInput = qs("complianceDocControlId");
       const docFrameworkInput = qs("complianceDocFrameworkId");

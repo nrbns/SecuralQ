@@ -27,7 +27,7 @@ _TEXT_EXT = {
     ".ipynb", ".r", ".lua", ".pl", ".pm",
 }
 _IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
-_ALLOWED_EXT = _TEXT_EXT | _IMAGE_EXT | {".zip"}  # zip stored but not fully extracted in MVP
+_ALLOWED_EXT = _TEXT_EXT | _IMAGE_EXT | {".zip", ".docx", ".xlsx", ".pptx"}  # OOXML = zip
 
 
 def uploads_root() -> Path:

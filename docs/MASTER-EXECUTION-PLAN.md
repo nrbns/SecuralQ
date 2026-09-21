@@ -52,7 +52,8 @@ Board + approvals + control FAIL/PASS bridge shipped.
 ### Evidence Spine (common language — after Compliance Ops)
 
 Observation + Document → Evidence → control map → evaluate: see [EVIDENCE-SPINE.md](./EVIDENCE-SPINE.md).  
-Does not rebuild the product — unifies `securaiq_evidence`, host controls, doc library, and Compliance Ops tasks.
+Does not rebuild the product — unifies `securaiq_evidence`, host controls, doc library, and Compliance Ops tasks.  
+**Vault shipped:** SHA-256 integrity, version supersede (no overwrite), review accept/reject, freshness policies.
 
 ### Prove #1
 

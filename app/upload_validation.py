@@ -27,6 +27,9 @@ _MAGIC_SIGNATURES: dict[str, tuple[bytes, ...]] = {
     ".webp": (b"RIFF",),  # WEBP is RIFF container; good enough signal, not a full parse
     ".bmp": (b"BM",),
     ".zip": (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"),
+    ".docx": (b"PK\x03\x04",),
+    ".xlsx": (b"PK\x03\x04",),
+    ".pptx": (b"PK\x03\x04",),
     ".ipynb": (b"{",),  # JSON — loose check, real parse happens at ingest time
 }
 
