@@ -1,0 +1,82 @@
+# SecuraIQ — Release gates (prove closes, do not add breadth)
+
+**Rule:** every change must close a partial on the golden path, or prove failure/recovery/capacity.  
+Do **not** add domain screens (Cloud / K8s / AppSec / Identity depth) until Release 1 stays green.
+
+Cross-links: [GOLDEN-PATH.md](./GOLDEN-PATH.md) · [MASTER-EXECUTION-PLAN.md](./MASTER-EXECUTION-PLAN.md) · [production-readiness.md](./production-readiness.md) · [ops/CAPACITY-LAB.md](./ops/CAPACITY-LAB.md)
+
+## Governing question (six)
+
+> **WHAT** happened → **WHY** it matters → **EVIDENCE** → **IMPACT** → **ACTION** → **VERIFIED**
+
+If a feature cannot answer all six, do not ship it yet.
+
+---
+
+## RELEASE 0 — Foundation
+
+| Piece | Status on main | Honesty |
+|-------|----------------|---------|
+| Event contract (`event_id` / type / sequence) | **Partial→improved** | Normalized on publish; not HA exactly-once |
+| Observation → Evidence | **Shipped** | Spine ingest + vault |
+| Evidence → Control map | **Shipped** | `evidence_control_map` + evaluate |
+| Requirement first-class | **Shipped** | Domain model + API (not legal text) |
+| Realtime state (Streams + SSE) | **Partial→improved** | Lab Streams fan-out; Sentinel live Docker still ops |
+| Document vault + versioning | **Shipped→deepening** | SHA-256, supersede, review; lifecycle expired/invalid + tick |
+| Freshness (never show old PASS as current) | **Shipped** | Policies + `control_stale_tick` |
+| Source reconciliation / CONFLICT | **Shipped** | Canonical + human resolve |
+
+## RELEASE 1 — Closed loop
+
+| Piece | Status | Honesty |
+|-------|--------|---------|
+| Detect → risk → finding | **Partial→improved** | Host loops in acceptance; richer risk still thin |
+| Remediation → approval → signed command | **Improved** | Allowlist + seals; production flags optional in lab |
+| Independent verification | **Enforced** | Execute ≠ verified (host + campaign) |
+| New evidence → control PASS → risk recalc | **Improved** | Acceptance demo; not every product surface |
+
+**Prove:** `pytest tests/test_realtime_acceptance_local.py` · `scripts/realtime_acceptance_demo.py --local`
+
+## RELEASE 2 — Compliance operations
+
+| Piece | Status | Honesty |
+|-------|--------|---------|
+| Calendar / tasks / my-work | **MVP shipped** | |
+| Document review + attestation | **Shipped** | Who/What/When/Decision |
+| Exceptions with expiry + renew | **Shipped** | + `exception_expiry_tick` |
+| Reminders / escalation | **MVP** | Compliance ops tick + notification outbox |
+| Notification worker (queue, not inline SMTP) | **Shipped** | `notification_delivery_tick` |
+
+## RELEASE 3 — Enterprise
+
+| Piece | Status | Honesty |
+|-------|--------|---------|
+| Tenant isolation (REST/SSE/spine/exports) | **Near-done** | Isolation tests expanding; prove every path |
+| SSO / SCIM | **Partial** | Facades; not full IdP depth |
+| HA / Redis Sentinel live failover | **CI self-test** | Docker `--inject-stop` still ops |
+| DR / backup restore | **Partial** | Docs + scripts; automate more |
+| Signed installers / update-rollback | **Partial** | Packages exist; Authenticode/notarize missing |
+| Platform Mission Control | **Partial** | Health endpoints exist; ops dashboard thin |
+
+## RELEASE 4 — Scale (measure only)
+
+| Rung | In-proc fleet sim | HTTP check-in wave |
+|------|-------------------|--------------------|
+| 100 | Measured | **Measured 2026-09-21** (100% ok) |
+| 1K–100K | Measured (aggregator only) | 500+ **unmeasured** |
+
+Advertise **largest measured** number only. See [ops/CAPACITY-LAB.md](./ops/CAPACITY-LAB.md).
+
+## RELEASE 5 — Differentiation (frozen)
+
+Attack paths / business graph / advanced risk / digital twin / AI SecOps autonomy — **frozen** until Releases 0–1 stay green on owned-host + measured HA/load.
+
+---
+
+## Immediate next closes (ordered)
+
+1. Document vault lifecycle honesty (expired / superseded / invalid + tick) — Release 0  
+2. Tenant path proofs still missing (SSE/gateway/workers/object storage) — Release 3  
+3. HTTP ladder 500+ when lab can sustain it — Release 4  
+4. Live Docker Sentinel failover when Docker available — Release 3  
+5. Owned-host live acceptance — Release 1 prove  

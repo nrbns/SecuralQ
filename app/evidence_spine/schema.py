@@ -104,4 +104,8 @@ def ensure_evidence_spine_schema() -> None:
             ON evidence_access_log(evidence_id, created_at DESC);
         """
     )
+    # Vault lifecycle: expires_at so ACCEPTED docs age into EXPIRED (never silent forever).
+    cols = {r[1] for r in c.execute("PRAGMA table_info(evidence_vault)").fetchall()}
+    if "expires_at" not in cols:
+        c.execute("ALTER TABLE evidence_vault ADD COLUMN expires_at REAL")
     c.commit()

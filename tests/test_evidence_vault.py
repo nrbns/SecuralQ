@@ -129,3 +129,51 @@ def test_vault_api_upload(tmp_path, monkeypatch):
     r3 = client.get("/api/evidence-spine/freshness-policies", headers=headers)
     assert r3.status_code == 200
     assert len(r3.json()["policies"]) >= 5
+
+
+def test_vault_expiry_tick_marks_accepted_expired(tmp_path, monkeypatch):
+    uid = _uid(monkeypatch, tmp_path, "vault_exp")
+    from app.db import get_conn, now
+    from app.evidence_spine.vault import (
+        create_vault_document,
+        get_vault_item,
+        run_vault_expiry_tick,
+        set_review_status,
+    )
+
+    v = create_vault_document(
+        uid,
+        title="Short-lived policy",
+        filename="policy.txt",
+        data=b"policy body",
+        retention_days=30,
+        control_id="A.5.1",
+    )
+    vault_id = v["vault"]["id"]
+    set_review_status(uid, vault_id, status="accepted", note="ok for now")
+    get_conn().execute(
+        "UPDATE evidence_vault SET expires_at = ? WHERE id = ?",
+        (now() - 10, vault_id),
+    )
+    get_conn().commit()
+    tick = run_vault_expiry_tick(limit=50)
+    assert tick["ok"] is True
+    assert int(tick["expired"]) >= 1
+    item = get_vault_item(uid, vault_id)
+    assert item["vault"]["review_status"] == "expired"
+    assert item["vault"]["lifecycle_status"] == "expired"
+    assert item["vault"]["is_active_evidence"] is False
+
+
+def test_vault_lifecycle_invalid_never_active(tmp_path, monkeypatch):
+    uid = _uid(monkeypatch, tmp_path, "vault_inv")
+    from app.evidence_spine.vault import create_vault_document, get_vault_item, set_review_status
+
+    v = create_vault_document(
+        uid, title="Bad upload", filename="x.txt", data=b"corrupt", control_id="A.5.1"
+    )
+    vault_id = v["vault"]["id"]
+    set_review_status(uid, vault_id, status="invalid", note="failed validation")
+    item = get_vault_item(uid, vault_id)
+    assert item["vault"]["lifecycle_status"] == "invalid"
+    assert item["vault"]["is_active_evidence"] is False

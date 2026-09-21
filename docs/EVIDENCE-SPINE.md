@@ -63,9 +63,11 @@ policy-v2.pdf → Evidence EV-2 (v2, previous=EV-1)  ← EV-1 retained + superse
 Each vault item tracks:
 
 - kind (document / screenshot / certificate / …)
-- owner, collector, review status (`draft` → `pending_review` → `accepted` / `rejected`)
-- `content_sha256`, file_id, version chain
-- access log (upload / supersede / review / accept / reject)
+- owner, collector, review status  
+  (`draft`/`uploaded` → `pending_review` → `accepted` / `rejected` / `invalid` / `expired`)
+- `content_sha256`, file_id, version chain, `expires_at` (retention/TTL)
+- access log (upload / supersede / review / accept / reject / expired)
+- Job `vault_expiry_tick` (hourly) marks past-`expires_at` docs **expired** — never keep ACCEPTED forever
 
 ## Freshness
 

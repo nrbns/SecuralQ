@@ -38,19 +38,32 @@ Results append to `data/ops/capacity_measurements.jsonl` when `--persist` is set
 
 ### B) HTTP agent check-in wave (live lab API)
 
-**Source:** `python scripts/realtime_load_test.py --server http://127.0.0.1:8080 --ladder --max-agents 50 --workers 4 --persist --sse-sample`  
+**Baseline (pre-fix):** `python scripts/realtime_load_test.py --server http://127.0.0.1:8080 --ladder --max-agents 50 --workers 4 --persist --sse-sample`  
 **Date (UTC):** 2026-09-19 · **Operator:** local lab · **AUTH_ENABLED:** false (lab)  
-**Note:** Wave = one check-in per enrolled agent. Latency includes host-control evaluation on check-in. **Not** Redis HA / multi-worker production capacity. p95 rises under queueing at 50 concurrent workers=4.
+**Note:** Wave = one check-in per enrolled agent. Latency includes host-control evaluation on check-in. **Not** Redis HA / multi-worker production capacity.
 
 **Root cause (investigated 2026-09-21):** `POST /api/agents/checkin` was an `async` handler calling sync `checkin()` **on the event loop**, while each check-in ran 5 host-control evaluators + `control.evaluating` SSE spam. Concurrent waves serialized on one loop → non-linear p95 (17.7s → 68.8s).
 
-**Mitigations landed:** `asyncio.to_thread(checkin)` on HTTP + WS gateway; `host_control_emit_evaluating=false` by default; fingerprint/interval skip for unchanged control payloads on re-check-in. **Re-measure** 25/50/100 before claiming improvement — do not invent numbers.
+**Mitigations landed:** `asyncio.to_thread(checkin)` on HTTP + WS gateway; `host_control_emit_evaluating=false` by default; fingerprint/interval skip for unchanged control payloads on re-check-in.
+
+#### B.1 — Baseline (before event-loop fix)
 
 | Rung (agents) | Tool | Duration (s) | Success % / eps | p50 (s) | p95 (s) | SSE first event (s) | Date (UTC) | Operator |
 |---------------|------|--------------|-----------------|---------|---------|---------------------|------------|----------|
 | 25 | realtime_load_test (wave) | 93.9 | 100% / 0.27 eps | 14.90 | 17.66 | 0.52 | 2026-09-19 | local lab |
 | 50 | realtime_load_test (wave) | 255.4 | 100% / 0.20 eps | 15.80 | 68.84 | (same run) | 2026-09-19 | local lab |
-| 100 | realtime_load_test (wave) | _TBD_ | _TBD_ | _TBD_ | _TBD_ | — | _unmeasured_ | _TBD_ |
+
+#### B.2 — Re-measure after `to_thread(checkin)` (2026-09-21)
+
+**Source:** `python scripts/realtime_load_test.py --server http://127.0.0.1:8080 --ladder --max-agents 100 --workers 4 --persist --sse-sample`  
+**Date (UTC):** 2026-09-21 · **Operator:** local lab · **AUTH_ENABLED:** false (lab)  
+**Result:** 100% success at 25/50/100. The **50-agent p95 cliff is gone** (68.84s → 24.47s). Absolute p50 is still multi-second (host-control work per check-in, workers=4 queueing) — do **not** claim production SLO. 500/1k still unmeasured.
+
+| Rung (agents) | Tool | Duration (s) | Success % / eps | p50 (s) | p95 (s) | SSE first event (s) | Date (UTC) | Operator |
+|---------------|------|--------------|-----------------|---------|---------|---------------------|------------|----------|
+| 25 | realtime_load_test (wave) | 143.5 | 100% / 0.17 eps | 22.22 | 27.01 | n/a (sample null) | 2026-09-21 | local lab |
+| 50 | realtime_load_test (wave) | 248.6 | 100% / 0.20 eps | 19.16 | 24.47 | — | 2026-09-21 | local lab |
+| 100 | realtime_load_test (wave) | 574.4 | 100% / 0.17 eps | 21.46 | 34.44 | — | 2026-09-21 | local lab |
 | 500 | realtime_load_test (wave) | _TBD_ | _TBD_ | _TBD_ | _TBD_ | — | _unmeasured_ | _TBD_ |
 | 1000 | realtime_load_test (wave) | _TBD_ | _TBD_ | _TBD_ | _TBD_ | — | _unmeasured_ | _TBD_ |
 
@@ -65,6 +78,6 @@ Raw JSON: `data/_capacity_extended.json` (in-proc); HTTP rows in `data/ops/capac
 | “Lab load ladder exists; capacity is measured per environment.” | “Supports 5 000 / 100 000 agents” / “enterprise scale proven” |
 | “CI may smoke a tiny rung; ops fills this table.” | Publishing empty TBD rows as product proof |
 | “In-process aggregator handled N simulated observations on this host.” | Equating simulator eps to production concurrent agents |
-| “HTTP wave ladder measured 25/50 agents at 100% success on this lab host.” | Claiming production SLO from lab p50/p95 |
+| “HTTP wave ladder measured 25/50/100 agents at 100% success on this lab host; 50-agent p95 cliff fixed after check-in offload.” | Claiming production SLO from lab p50/p95 |
 
-See also: `docs/SPRINTS-2-6-PRODUCTION.md` Sprint 6, `docs/SECURAIQ-PRODUCTION-BUILD.md`, `docs/DPDP.md`.
+See also: `docs/SPRINTS-2-6-PRODUCTION.md` Sprint 6, `docs/SECURAIQ-PRODUCTION-BUILD.md`, `docs/DPDP.md`, [RELEASE-GATES.md](../RELEASE-GATES.md).

@@ -27,7 +27,20 @@ VALID_KINDS = {
     "observation",
     "cloud",
 }
-VALID_REVIEW = {"draft", "pending_review", "accepted", "rejected"}
+# Document evidence lifecycle (human review + age). Machine observations use
+# control_runtime_state separately (COLLECTED/VERIFIED/STALE).
+VALID_REVIEW = {
+    "draft",           # uploaded / available for review
+    "pending_review",
+    "accepted",
+    "rejected",
+    "expired",         # past expires_at / retention — must recollect or supersede
+    "superseded",      # historical family head after replace (rare on vault row)
+    "invalid",         # malware/corrupt/failed validation — never counts as evidence
+}
+
+# Statuses that may satisfy a document evidence dependency slot
+ACTIVE_DOCUMENT_STATUSES = frozenset({"draft", "pending_review", "accepted"})
 
 
 def _sha256(data: bytes) -> str:
@@ -81,6 +94,30 @@ def _access(
     get_conn().commit()
 
 
+def _hydrate_vault(d: dict[str, Any]) -> dict[str, Any]:
+    """Attach lifecycle_status — never present expired ACCEPTED as current proof."""
+    try:
+        d["meta"] = json.loads(d.get("meta_json") or "{}")
+    except Exception:
+        d["meta"] = {}
+    st = str(d.get("review_status") or "draft").lower()
+    exp = d.get("expires_at")
+    ts = now()
+    if st in {"invalid", "rejected", "superseded", "expired"}:
+        lifecycle = st
+    elif exp is not None and float(exp) <= ts:
+        lifecycle = "expired"
+    elif st == "accepted":
+        lifecycle = "accepted"
+    elif st == "pending_review":
+        lifecycle = "pending_review"
+    else:
+        lifecycle = "uploaded"  # draft / available for review
+    d["lifecycle_status"] = lifecycle
+    d["is_active_evidence"] = lifecycle in {"uploaded", "pending_review", "accepted"}
+    return d
+
+
 def _vault_row(user_id: str, vault_id: str) -> dict[str, Any] | None:
     row = get_conn().execute(
         "SELECT * FROM evidence_vault WHERE id = ? AND user_id = ?",
@@ -88,12 +125,7 @@ def _vault_row(user_id: str, vault_id: str) -> dict[str, Any] | None:
     ).fetchone()
     if not row:
         return None
-    d = row_to_dict(row)
-    try:
-        d["meta"] = json.loads(d.get("meta_json") or "{}")
-    except Exception:
-        d["meta"] = {}
-    return d
+    return _hydrate_vault(row_to_dict(row))
 
 
 def list_versions(user_id: str, vault_id: str) -> list[dict[str, Any]]:
@@ -145,11 +177,7 @@ def list_vault(
     rows = get_conn().execute(q, args).fetchall()
     out = []
     for r in rows:
-        d = row_to_dict(r)
-        try:
-            d["meta"] = json.loads(d.get("meta_json") or "{}")
-        except Exception:
-            d["meta"] = {}
+        d = _hydrate_vault(row_to_dict(r))
         out.append(d)
     return out
 
@@ -242,8 +270,8 @@ def create_vault_document(
         """
         INSERT INTO evidence_vault
         (id, user_id, org_id, kind, title, owner_id, current_evidence_id,
-         review_status, retention_days, meta_json, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?)
+         review_status, retention_days, expires_at, meta_json, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?)
         """,
         (
             vault_id,
@@ -254,6 +282,7 @@ def create_vault_document(
             owner,
             evidence_id,
             retention_days,
+            expires_at,
             json.dumps({"notes": notes[:500], "filename": upload.get("filename")})[:4000],
             t,
             t,
@@ -400,10 +429,15 @@ def supersede_vault_document(
         """
         UPDATE evidence_vault
         SET current_evidence_id = ?, review_status = 'draft', updated_at = ?,
-            title = CASE WHEN ? != '' THEN ? ELSE title END
+            title = CASE WHEN ? != '' THEN ? ELSE title END,
+            expires_at = CASE
+                WHEN retention_days IS NOT NULL AND retention_days > 0
+                THEN ? + (retention_days * 86400.0)
+                ELSE expires_at
+            END
         WHERE id = ? AND user_id = ?
         """,
-        (new_eid, t, notes[:300], notes[:300] if notes else "", vault_id, user_id),
+        (new_eid, t, notes[:300], notes[:300] if notes else "", t, vault_id, user_id),
     )
     get_conn().commit()
     _access(
@@ -460,10 +494,14 @@ def set_review_status(
             _publish("evidence.verified", user_id, evidence_id=eid, vault_id=vault_id)
         elif st == "rejected":
             _publish("evidence.rejected", user_id, evidence_id=eid, vault_id=vault_id, note=note[:200])
+        elif st == "expired":
+            _publish("evidence.expired", user_id, evidence_id=eid, vault_id=vault_id)
+        elif st == "invalid":
+            _publish("evidence.invalid", user_id, evidence_id=eid, vault_id=vault_id, note=note[:200])
         else:
             _publish("evidence.updated", user_id, evidence_id=eid, vault_id=vault_id, review_status=st)
     # Human attestation — Who/What/When/Evidence/Decision (not a bare checkbox)
-    if st in {"accepted", "rejected"}:
+    if st in {"accepted", "rejected", "invalid"}:
         try:
             from app.services.human_attestation import record_attestation
 
@@ -472,11 +510,16 @@ def set_review_status(
                 meta = json.loads(vault.get("meta_json") or "{}")
             except Exception:
                 meta = {}
+            decision = {
+                "accepted": "approved",
+                "rejected": "rejected",
+                "invalid": "rejected",
+            }.get(st, st)
             record_attestation(
                 user_id,
                 subject_type="vault",
                 subject_id=vault_id,
-                decision="approved" if st == "accepted" else "rejected",
+                decision=decision,
                 title=str(vault.get("title") or "Vault evidence review"),
                 submitted_by=str(vault.get("owner_id") or ""),
                 reviewed_by=reviewed_by or user_id,
@@ -489,6 +532,54 @@ def set_review_status(
         except Exception:
             pass
     return get_vault_item(user_id, vault_id) or {"ok": True}
+
+
+def run_vault_expiry_tick(*, limit: int = 200) -> dict[str, Any]:
+    """Mark accepted/draft vault docs past expires_at as expired — never keep ACCEPTED forever.
+
+    Does not delete history. Owners must supersede or renew retention.
+    """
+    ensure_evidence_spine_schema()
+    t = now()
+    rows = get_conn().execute(
+        """
+        SELECT id, user_id, current_evidence_id, title, review_status
+        FROM evidence_vault
+        WHERE expires_at IS NOT NULL
+          AND expires_at <= ?
+          AND review_status NOT IN ('expired', 'invalid', 'rejected', 'superseded')
+        ORDER BY expires_at ASC
+        LIMIT ?
+        """,
+        (t, max(1, min(limit, 1000))),
+    ).fetchall()
+    marked = 0
+    for r in rows:
+        get_conn().execute(
+            "UPDATE evidence_vault SET review_status = 'expired', updated_at = ? WHERE id = ?",
+            (t, r["id"]),
+        )
+        marked += 1
+        try:
+            _publish(
+                "evidence.expired",
+                r["user_id"],
+                evidence_id=r["current_evidence_id"] or "",
+                vault_id=r["id"],
+                title=(r["title"] or "")[:120],
+            )
+            _access(
+                r["user_id"],
+                evidence_id=str(r["current_evidence_id"] or ""),
+                action="expired",
+                vault_id=r["id"],
+                detail="retention/ttl elapsed",
+            )
+        except Exception:
+            pass
+    if marked:
+        get_conn().commit()
+    return {"ok": True, "expired": marked, "scanned_cap": limit}
 
 
 def log_access(

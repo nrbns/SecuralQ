@@ -40,7 +40,7 @@ Rust Agent → Agent Gateway → FastAPI → Redis Streams → Workers
 | 6 | Requirements first-class | **Shipped** — domain Requirement model + `/api/controls/requirements*` + Frameworks UI strip (not legal text) |
 | 7 | DPDP Privacy Center | **Deepened** — data_map activities/requests/retention + Privacy Center sections (not a DPDP compliance claim) |
 | 8 | Command Center UX (WHAT→WHY→EVIDENCE→IMPACT→ACTION→VERIFY) | **Shipped** — ops decision card + `renderNarrativeBlock` on remediations/assets/agents/evidence/findings |
-| 9 | Measure scale ladder 100→100K | **In-proc to 100K + HTTP wave to 50** — see [ops/CAPACITY-LAB.md](./ops/CAPACITY-LAB.md); HTTP 100/500/1k and Redis path still TBD |
+| 9 | Measure scale ladder 100→100K | **In-proc to 100K + HTTP wave to 100** — see [ops/CAPACITY-LAB.md](./ops/CAPACITY-LAB.md); HTTP 500/1k and Redis path still TBD |
 | 10 | Then Cloud / Identity / AppSec / SBOM / K8s | **Frozen** until 1–5 stay green |
 
 ### Compliance Operations (new module — after Immediate loop)
@@ -88,16 +88,21 @@ SERVER CHANGE → AGENT → GATEWAY → REDIS → OBSERVATION → EVIDENCE
 | Audit pack completeness | Improved — attestations + exceptions + vault index in ZIP |
 | Command execute ≠ verified | Enforced (host + campaign) |
 | Redis Sentinel live Docker failover | Ops / needs Docker |
-| HTTP load ladder 100+ | Re-measure after check-in fix |
+| HTTP load ladder 100+ | **Measured to 100** — see [ops/CAPACITY-LAB.md](./ops/CAPACITY-LAB.md); 50-agent p95 cliff fixed; 500+ still TBD |
 | Tenant fail-closed completeness | Improved — spine lists (control state / vault / requirements / canonical) + exceptions + outbox stats scoped; exception expiry tick notifies renew |
+| Document vault lifecycle | Improved — expired/invalid statuses + `vault_expiry_tick`; WORM/object-lock still missing |
 | WORM / object-lock | Missing |
 | Cloud / K8s / Identity / AppSec depth | **Frozen** |
 
-Next 🔴 (Sprint A remainders): re-measure HTTP load ladder · owned-host live proof · Docker Sentinel failover · WORM/object-lock · full SSO/SCIM depth.  
+Next 🔴: tenant path proofs still missing · HTTP 500+ · owned-host live · Docker Sentinel · WORM · SSO/SCIM.  
+
+Organizing principle: [RELEASE-GATES.md](./RELEASE-GATES.md) — close partials on the golden path; do not add Release 5 breadth yet.
 
 **Sprint A+B closed this pass:** human attestation (Who/What/When/Evidence/Decision) · vault/exception → attestation + evidence · exception renew (no open-ended accept) · audit pack includes attestations/exceptions/vault · vault/alias list tenant-scoped.  
 
-**Tenant deepen (this pass):** `tenant_visibility_sql` on spine list APIs · cross-tenant isolation coverage in `tests/test_cross_tenant_isolation.py` · `exception_expiry_tick` job (6h) for approved exceptions expired / due ≤7d · outbox stats org-aware.
+**Tenant deepen (prior):** `tenant_visibility_sql` on spine list APIs · cross-tenant isolation coverage · `exception_expiry_tick` · outbox stats org-aware.
+
+**This pass:** HTTP ladder re-measure 25/50/100 (100% ok; p95 cliff gone) · `RELEASE-GATES.md` · vault lifecycle `expired`/`invalid` + `vault_expiry_tick`.
 Frozen until loop stays green: Cloud/K8s/AppSec/Identity depth · business-service graph expansions · AI SecOps autonomy.
 
 ### Prove #1

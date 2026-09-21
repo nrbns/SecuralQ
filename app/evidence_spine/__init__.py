@@ -59,6 +59,7 @@ from app.evidence_spine.vault import (
     create_vault_document,
     get_vault_item,
     list_vault,
+    run_vault_expiry_tick,
     set_review_status,
     supersede_vault_document,
 )
@@ -77,6 +78,7 @@ __all__ = [
     "list_vault",
     "get_vault_item",
     "set_review_status",
+    "run_vault_expiry_tick",
     "list_freshness_policies",
     "apply_freshness_to_result",
     "evaluate_dependencies",
