@@ -1471,18 +1471,35 @@ class JobEnqueueRequest(BaseModel):
 
 
 @app.get("/api/jobs")
-async def jobs_list(limit: int = 50, kind: str | None = None):
+async def jobs_list(request: Request, limit: int = 50, kind: str | None = None):
     from app.jobs import list_jobs
     from app.prefect_bridge import prefect_status
 
-    return {"jobs": list_jobs(limit=limit, kind=kind), "prefect": prefect_status()}
+    user = resolve_user(
+        request.headers.get("authorization"),
+        request.headers.get("x-securaiq-key") or request.headers.get("x-hackgpt-key"),
+    )
+    if settings.auth_enabled and not user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    scope_uid = user.id if (settings.auth_enabled and user) else None
+    return {
+        "jobs": list_jobs(limit=limit, kind=kind, user_id=scope_uid),
+        "prefect": prefect_status(),
+    }
 
 
 @app.get("/api/jobs/{job_id}")
-async def jobs_get(job_id: str):
+async def jobs_get(job_id: str, request: Request):
     from app.jobs import get_job
 
-    job = get_job(job_id)
+    user = resolve_user(
+        request.headers.get("authorization"),
+        request.headers.get("x-securaiq-key") or request.headers.get("x-hackgpt-key"),
+    )
+    if settings.auth_enabled and not user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    scope_uid = user.id if (settings.auth_enabled and user) else None
+    job = get_job(job_id, user_id=scope_uid)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job

@@ -59,11 +59,15 @@ def ensure_control_state_schema() -> None:
 def _publish(event_type: str, user_id: str, **extra: Any) -> None:
     try:
         from app.realtime_events import publish_aliased
+        from app.tenancy import primary_org_id
 
+        oid = primary_org_id(user_id)
         publish_aliased(
             "control",
             aliases=[event_type, "control.updated"] if event_type != "control.updated" else [event_type],
             user_id=user_id,
+            org_id=oid,
+            organization_id=oid,
             **extra,
         )
     except Exception:

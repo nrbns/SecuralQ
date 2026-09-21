@@ -20,11 +20,13 @@ If a feature cannot answer all six, do not ship it yet.
 | Event contract (`event_id` / type / sequence) | **Partial→improved** | Normalized on publish; not HA exactly-once |
 | Observation → Evidence | **Shipped** | Spine ingest + vault |
 | Evidence → Control map | **Shipped** | `evidence_control_map` + evaluate |
+| Universal evidence envelope | **Shipped** | `evidence_envelope()` on every evidence row (org/source/asset/sha256/status/freshness) |
 | Requirement first-class | **Shipped** | Domain model + API (not legal text) |
 | Realtime state (Streams + SSE) | **Partial→improved** | Lab Streams fan-out; Sentinel live Docker still ops |
-| Document vault + versioning | **Shipped→deepening** | SHA-256, supersede, review; lifecycle expired/invalid + tick |
+| Document vault + versioning | **Shipped** | SHA-256, supersede, review; lifecycle expired/invalid + tick |
 | Freshness (never show old PASS as current) | **Shipped** | Policies + `control_stale_tick` |
 | Source reconciliation / CONFLICT | **Shipped** | Canonical + human resolve |
+| Platform Mission Control | **Shipped (lab)** | `GET /api/ops/mission-control` — component health; not multi-node HA |
 
 ## RELEASE 1 — Closed loop
 
@@ -51,7 +53,8 @@ If a feature cannot answer all six, do not ship it yet.
 
 | Piece | Status | Honesty |
 |-------|--------|---------|
-| Tenant isolation (REST/SSE/spine/exports) | **Near-done→improved** | Cross-tenant tests cover product tables, spine, **SSE push filter**, **agent auth/commands**, notifications + outbox org assert. Remaining: object storage / AI search / workers path proofs |
+| Tenant isolation (REST/SSE/spine/exports) | **Near-done→improved** | Cross-tenant tests: product tables, spine, SSE, agent auth/commands, notifications/outbox, **jobs payload scope**, **uploads**, **RAG where/assert**. Remaining: object-store WORM |
+| Platform Mission Control | **Shipped (lab)** | `GET /api/ops/mission-control` |
 | SSO / SCIM | **Partial** | Facades; not full IdP depth |
 | HA / Redis Sentinel live failover | **CI self-test** | Docker `--inject-stop` still ops |
 | DR / backup restore | **Partial** | Docs + scripts; automate more |
@@ -75,9 +78,21 @@ Attack paths / business graph / advanced risk / digital twin / AI SecOps autonom
 
 ## Immediate next closes (ordered)
 
-1. ~~Document vault lifecycle honesty~~ — done (`expired`/`invalid` + `vault_expiry_tick`)  
-2. ~~Tenant SSE / agent gateway / notification path proofs~~ — done (`test_sse_gateway_notification_path_isolation`)  
-3. Remaining tenant paths (object storage, AI/RAG search, background workers) — Release 3  
-4. HTTP ladder 500+ when lab can sustain it — Release 4  
-5. Live Docker Sentinel failover when Docker available — Release 3  
-6. Owned-host live acceptance — Release 1 prove  
+1. ~~Document vault lifecycle honesty~~ — done  
+2. ~~Tenant SSE / agent gateway / notification path proofs~~ — done  
+3. ~~Remaining tenant paths (jobs/files/RAG) + evidence envelope + Mission Control~~ — done this pass  
+4. HTTP ladder 500+ when lab can sustain it — Release 4 (**ops**)  
+5. Live Docker Sentinel failover when Docker available — Release 3 (**ops**)  
+6. Owned-host live acceptance — Release 1 prove (**ops**)  
+7. WORM/object-lock · full SSO/SCIM · signed installers — Release 3 leftovers  
+
+### Still blocked on this Windows lab (do not fake)
+
+| Item | Why |
+|------|-----|
+| Docker Redis Sentinel `--inject-stop` | Docker absent |
+| Owned-host OS mutation acceptance | Needs authorized host |
+| HTTP 500/1k wave | Lab capacity / time; 100 measured |
+| Authenticode / notarization | Signing certs |
+| WORM object-lock | Needs object store |
+| Release 5 differentiation | Frozen until 0–1 green on owned-host + HA |

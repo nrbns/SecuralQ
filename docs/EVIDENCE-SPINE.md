@@ -69,6 +69,8 @@ Each vault item tracks:
 - access log (upload / supersede / review / accept / reject / expired)
 - Job `vault_expiry_tick` (hourly) marks past-`expires_at` docs **expired** — never keep ACCEPTED forever
 
+Every `securaiq_evidence` row also exposes a universal **`envelope`** (organization_id, source_type, asset/agent/document ids, sha256, status, freshness, collector) so controls treat agent and document evidence identically at the API layer.
+
 ## Freshness
 
 PASS cannot last forever. Policies (examples):

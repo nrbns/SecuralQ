@@ -329,6 +329,62 @@ def list_evidence(
     return [_row_to_dict(r) for r in rows]
 
 
+def evidence_envelope(row: dict[str, Any]) -> dict[str, Any]:
+    """Universal Evidence Spine view — same shape for agent and document evidence.
+
+    Control evaluation should consume this envelope, not care about source path.
+    """
+    detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
+    if not detail:
+        try:
+            detail = json.loads(row.get("detail_json") or "{}")
+        except Exception:
+            detail = {}
+    fresh = row.get("freshness_status") or freshness_status(row)
+    verified = bool(row.get("verified"))
+    if fresh == "expired":
+        status = "EXPIRED"
+    elif fresh == "stale":
+        status = "STALE"
+    elif verified:
+        status = "ACCEPTED" if str(row.get("source") or "") == "declared" else "VERIFIED"
+    elif str(row.get("source") or "") == "declared":
+        status = "AVAILABLE"
+    else:
+        status = "COLLECTED"
+    return {
+        "id": row.get("id"),
+        "organization_id": row.get("org_id"),
+        "source_type": row.get("source"),
+        "source_id": str(
+            detail.get("source_ref")
+            or detail.get("agent_id")
+            or detail.get("collector")
+            or ""
+        ),
+        "asset_id": detail.get("asset_id") or "",
+        "agent_id": detail.get("agent_id") or "",
+        "document_id": detail.get("document_id") or detail.get("vault_id") or "",
+        "observation_id": detail.get("observation_id") or "",
+        "framework_id": detail.get("framework_id") or "",
+        "requirement_id": detail.get("requirement_id") or "",
+        "control_id": detail.get("control_id") or "",
+        "finding_id": detail.get("finding_id") or "",
+        "remediation_id": detail.get("remediation_id") or "",
+        "collected_at": row.get("first_seen") or row.get("created_at"),
+        "valid_until": row.get("expires_at"),
+        "sha256": detail.get("content_sha256") or "",
+        "version": detail.get("version") or 1,
+        "status": status,
+        "freshness": fresh,
+        "collector": detail.get("collector") or row.get("source") or "",
+        "created_at": row.get("created_at"),
+        "entity_type": row.get("entity_type"),
+        "entity_id": row.get("entity_id"),
+        "summary": row.get("summary"),
+    }
+
+
 def _row_to_dict(row: Any) -> dict[str, Any]:
     d = dict(row)
     try:
@@ -339,4 +395,8 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
     if "expires_at" not in d:
         d["expires_at"] = None
     d["freshness_status"] = freshness_status(d)
+    d["envelope"] = evidence_envelope(d)
+    # Alias for clients that expect organization_id on the row
+    if d.get("org_id") and "organization_id" not in d:
+        d["organization_id"] = d["org_id"]
     return d

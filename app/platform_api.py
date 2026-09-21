@@ -385,3 +385,14 @@ async def integrations_catalog(user: Annotated[AuthUser, Depends(require_user)])
     from app.integrations_catalog import catalog_payload
 
     return catalog_payload()
+
+
+@router.get("/ops/mission-control")
+async def ops_mission_control(user: Annotated[AuthUser, Depends(require_user)]):
+    """Platform Mission Control — component health + queue lag / agents / SSE.
+
+    Lab honesty: process-local when Redis unset. Not a multi-node HA console.
+    """
+    from app.mission_control import mission_control_snapshot
+
+    return mission_control_snapshot(user_id=user.id)

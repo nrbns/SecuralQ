@@ -105,6 +105,8 @@ Organizing principle: [RELEASE-GATES.md](./RELEASE-GATES.md) — close partials 
 **This pass:** HTTP ladder re-measure 25/50/100 (100% ok; p95 cliff gone) · `RELEASE-GATES.md` · vault lifecycle `expired`/`invalid` + `vault_expiry_tick`.
 
 **Tenant path proofs (follow-on):** SSE push filter + agent auth/commands + notification/outbox isolation in `tests/test_cross_tenant_isolation.py`.
+
+**Release-gate closes (this pass):** jobs/files/RAG tenant proofs · universal `evidence_envelope` · `GET /api/ops/mission-control` · control.failed org stamp · recovery duplicate/stale tests (`tests/test_release_gate_closes.py`). Ops leftovers remain: Docker Sentinel, owned-host, HTTP 500+, WORM, SSO depth.
 Frozen until loop stays green: Cloud/K8s/AppSec/Identity depth · business-service graph expansions · AI SecOps autonomy.
 
 ### Prove #1

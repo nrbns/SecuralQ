@@ -102,25 +102,29 @@ def enqueue_job(
     try:
         from app.realtime_bus import publish
 
-        publish(type="job", id=jid, kind=kind, status="pending")
+        pub_uid = str(body.get("user_id") or "").strip() or None
+        publish(
+            type="job",
+            id=jid,
+            kind=kind,
+            status="pending",
+            user_id=pub_uid,
+        )
     except Exception:
         pass
     return get_job(jid)  # type: ignore[return-value]
 
 
-def get_job(job_id: str) -> dict[str, Any] | None:
-    row = get_conn().execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
-    d = row_to_dict(row)
-    if d:
-        for key in ("payload_json", "result_json"):
-            try:
-                d[key.replace("_json", "")] = json.loads(d.get(key) or "{}")
-            except Exception:
-                pass
-    return d
-
-
-def list_jobs(limit: int = 50, kind: str | None = None) -> list[dict[str, Any]]:
+def list_jobs(
+    limit: int = 50,
+    kind: str | None = None,
+    *,
+    user_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """List jobs. When ``user_id`` set (AUTH on), only jobs whose payload
+    ``user_id`` matches — system jobs without a user_id are visible to admins
+    only when ``user_id`` is omitted (ops) or equals ``local``.
+    """
     c = get_conn()
     q = "SELECT * FROM jobs"
     args: list[Any] = []
@@ -128,7 +132,11 @@ def list_jobs(limit: int = 50, kind: str | None = None) -> list[dict[str, Any]]:
         q += " WHERE kind = ?"
         args.append(kind)
     q += " ORDER BY created_at DESC LIMIT ?"
-    args.append(max(1, min(limit, 200)))
+    # Over-fetch when scoping so filtered list still fills the limit.
+    fetch_n = max(1, min(limit, 200))
+    if user_id and user_id != "local":
+        fetch_n = min(500, max(fetch_n * 5, 50))
+    args.append(fetch_n)
     out = []
     for row in c.execute(q, args).fetchall():
         d = dict(row)
@@ -136,9 +144,35 @@ def list_jobs(limit: int = 50, kind: str | None = None) -> list[dict[str, Any]]:
             try:
                 d[key.replace("_json", "")] = json.loads(d.get(key) or "{}")
             except Exception:
-                pass
+                d[key.replace("_json", "")] = {}
+        if user_id and user_id != "local":
+            payload_uid = str((d.get("payload") or {}).get("user_id") or "").strip()
+            if payload_uid and payload_uid != user_id:
+                continue
+            if not payload_uid:
+                # Unscoped system job — hide from tenant users
+                continue
         out.append(d)
+        if len(out) >= max(1, min(limit, 200)):
+            break
     return out
+
+
+def get_job(job_id: str, *, user_id: str | None = None) -> dict[str, Any] | None:
+    row = get_conn().execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+    d = row_to_dict(row)
+    if not d:
+        return None
+    for key in ("payload_json", "result_json"):
+        try:
+            d[key.replace("_json", "")] = json.loads(d.get(key) or "{}")
+        except Exception:
+            pass
+    if user_id and user_id != "local":
+        payload_uid = str((d.get("payload") or {}).get("user_id") or "").strip()
+        if payload_uid != user_id:
+            return None
+    return d
 
 
 def _has_pending_or_running(kind: str) -> bool:
