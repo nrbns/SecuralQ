@@ -341,7 +341,7 @@ async def agent_gateway(websocket: WebSocket) -> None:
                 await websocket.send_json({"type": "pong", "ts": data.get("ts")})
                 await _push_queued(agent_id)
             elif kind == "checkin":
-                result = checkin(agent_id, data.get("payload") or {})
+                result = await asyncio.to_thread(checkin, agent_id, data.get("payload") or {})
                 await websocket.send_json(
                     {"type": "checkin_ok", **{k: result[k] for k in result if k != "commands"}}
                 )

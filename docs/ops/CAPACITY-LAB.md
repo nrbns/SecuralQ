@@ -42,6 +42,10 @@ Results append to `data/ops/capacity_measurements.jsonl` when `--persist` is set
 **Date (UTC):** 2026-09-19 · **Operator:** local lab · **AUTH_ENABLED:** false (lab)  
 **Note:** Wave = one check-in per enrolled agent. Latency includes host-control evaluation on check-in. **Not** Redis HA / multi-worker production capacity. p95 rises under queueing at 50 concurrent workers=4.
 
+**Root cause (investigated 2026-09-21):** `POST /api/agents/checkin` was an `async` handler calling sync `checkin()` **on the event loop**, while each check-in ran 5 host-control evaluators + `control.evaluating` SSE spam. Concurrent waves serialized on one loop → non-linear p95 (17.7s → 68.8s).
+
+**Mitigations landed:** `asyncio.to_thread(checkin)` on HTTP + WS gateway; `host_control_emit_evaluating=false` by default; fingerprint/interval skip for unchanged control payloads on re-check-in. **Re-measure** 25/50/100 before claiming improvement — do not invent numbers.
+
 | Rung (agents) | Tool | Duration (s) | Success % / eps | p50 (s) | p95 (s) | SSE first event (s) | Date (UTC) | Operator |
 |---------------|------|--------------|-----------------|---------|---------|---------------------|------------|----------|
 | 25 | realtime_load_test (wave) | 93.9 | 100% / 0.27 eps | 14.90 | 17.66 | 0.52 | 2026-09-19 | local lab |

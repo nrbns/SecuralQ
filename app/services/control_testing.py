@@ -1291,27 +1291,36 @@ def evaluate_agent_host_controls(
                 continue
             try:
                 # Emit evaluating so UI timeline shows work-in-progress before PASS/FAIL.
+                # Off by default — under concurrent check-ins this was 5 SSE publishes
+                # per agent and contributed to the HTTP load p95 cliff.
                 try:
-                    from app.realtime_events import publish_aliased
+                    from app.config import settings as _cfg
 
-                    publish_aliased(
-                        "control.evaluating",
-                        aliases=["control.test.started"],
-                        status="evaluating",
-                        test=test_name,
-                        agent_id=agent_id,
-                        asset_id=asset,
-                        user_id=user_id,
-                        source="securaiq_agent",
-                        hostname=hostname,
-                        observed_at=collected_at,
-                        _from_processor=True,
-                    )
-                    out["events"].append(
-                        {"type": "control.evaluating", "status": "evaluating", "test": test_name}
-                    )
+                    _emit_eval = bool(getattr(_cfg, "host_control_emit_evaluating", False))
                 except Exception:
-                    pass
+                    _emit_eval = False
+                if _emit_eval:
+                    try:
+                        from app.realtime_events import publish_aliased
+
+                        publish_aliased(
+                            "control.evaluating",
+                            aliases=["control.test.started"],
+                            status="evaluating",
+                            test=test_name,
+                            agent_id=agent_id,
+                            asset_id=asset,
+                            user_id=user_id,
+                            source="securaiq_agent",
+                            hostname=hostname,
+                            observed_at=collected_at,
+                            _from_processor=True,
+                        )
+                        out["events"].append(
+                            {"type": "control.evaluating", "status": "evaluating", "test": test_name}
+                        )
+                    except Exception:
+                        pass
                 prev = _last_agent_host_status(user_id, agent_id, test_name)
                 result = fn()
                 result["tested_at"] = collected_at

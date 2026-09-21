@@ -65,7 +65,8 @@ AGENTS / CLOUD / DOCUMENTS → OBSERVATIONS → EVIDENCE
   → REMEDIATION → VERIFY → NEW EVIDENCE → AUDIT PROOF → REALTIME UI
 ```
 
-Next backbone gaps (🔴): asset identity depth · verification closed-loop polish · notification worker · tenant hardening · measured HA/DR/load.  
+Next backbone gaps (🔴): asset identity depth · verification closed-loop polish · tenant hardening · measured HA/DR/load (re-run HTTP ladder after check-in event-loop fix).  
+**Notification worker shipped:** email/Slack/Teams outbox + `notification_delivery_tick` (in-app stays sync).  
 Frozen until loop stays green: Cloud/K8s/AppSec/Identity depth · business-service graph expansions · AI SecOps.
 
 ### Prove #1

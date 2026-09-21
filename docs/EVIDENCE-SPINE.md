@@ -152,7 +152,7 @@ Existing Evidence Store remains at `/api/evidence`.
 - Full malware sandbox scanning
 - WORM / object-lock storage
 - Org-wide auto risk recalc on every write
-- Email notification worker
+- Email notification worker → **shipped** (`notification_outbox` + `notification_delivery_tick`)
 - Drag-and-drop vault UI polish
 - Full asset identity / entity-resolution graph
 

@@ -49,8 +49,10 @@ _last_sonarqube_sync = _boot_ts
 _last_software_sync = _boot_ts
 _last_compliance_ops_tick = _boot_ts
 _last_control_stale_tick = _boot_ts
+_last_notification_delivery_tick = _boot_ts
 COMPLIANCE_OPS_TICK_SEC = 300  # every 5 minutes
 CONTROL_STALE_TICK_SEC = 300  # every 5 minutes — PASS/FAIL → STALE
+NOTIFICATION_DELIVERY_TICK_SEC = 30  # drain email/slack/teams outbox
 
 
 def register_job(kind: str):
@@ -251,7 +253,7 @@ async def _scheduler_loop() -> None:
     await asyncio.sleep(15)
     global _last_kev_sync, _last_xdr_sync, _last_wazuh_sync, _last_openaudit_sync
     global _last_thehive_sync, _last_cloud_posture_sync, _last_sonarqube_sync, _last_software_sync
-    global _last_compliance_ops_tick, _last_control_stale_tick
+    global _last_compliance_ops_tick, _last_control_stale_tick, _last_notification_delivery_tick
     while True:
         now_t = time.time()
         try:
@@ -392,6 +394,23 @@ async def _scheduler_loop() -> None:
             ):
                 _last_control_stale_tick = now_t
                 enqueue_job("control_stale_tick", {"scheduled": True})
+        except Exception:
+            pass
+        try:
+            from app.config import settings as _notif_settings
+
+            n_iv = max(
+                15,
+                int(getattr(_notif_settings, "notification_worker_tick_sec", 30) or 30),
+            )
+            if (
+                "notification_delivery_tick" in JOB_HANDLERS
+                and getattr(_notif_settings, "notification_worker_enabled", True)
+                and now_t - _last_notification_delivery_tick >= n_iv
+                and not _has_pending_or_running("notification_delivery_tick")
+            ):
+                _last_notification_delivery_tick = now_t
+                enqueue_job("notification_delivery_tick", {"scheduled": True})
         except Exception:
             pass
         await asyncio.sleep(_SCHEDULER_TICK_SEC)
@@ -1006,3 +1025,12 @@ async def _job_control_stale_tick(payload: dict[str, Any]) -> dict[str, Any]:
     if uid and uid != "local":
         return await asyncio.to_thread(run_stale_tick, uid)
     return await asyncio.to_thread(run_stale_tick_all_users)
+
+
+@register_job("notification_delivery_tick")
+async def _job_notification_delivery_tick(payload: dict[str, Any]) -> dict[str, Any]:
+    """Drain email / Slack / Teams notification outbox."""
+    from app.notification_worker import process_outbox
+
+    limit = int(payload.get("limit") or 40)
+    return await asyncio.to_thread(process_outbox, limit=limit)

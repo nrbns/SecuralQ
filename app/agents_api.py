@@ -5,6 +5,7 @@ Mounted at /api/agents.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -1118,7 +1119,9 @@ async def api_agent_checkin(
         sig=x_securaiq_sig,
         request=request,
     )
-    result = checkin(str(agent["id"]), payload.model_dump())
+    # checkin() is sync and does host-control + evidence work — never block the
+    # event loop (HTTP load ladder p95 cliff at 25→50 concurrent was this).
+    result = await asyncio.to_thread(checkin, str(agent["id"]), payload.model_dump())
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("error") or "Check-in failed")
     return result

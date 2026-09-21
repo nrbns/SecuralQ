@@ -137,6 +137,14 @@ def ensure_schema() -> None:
             c.execute(
                 "ALTER TABLE securaiq_agents ADD COLUMN last_telemetry_seq INTEGER NOT NULL DEFAULT 0"
             )
+        if "last_host_control_fp" not in cols:
+            c.execute(
+                "ALTER TABLE securaiq_agents ADD COLUMN last_host_control_fp TEXT NOT NULL DEFAULT ''"
+            )
+        if "last_host_control_at" not in cols:
+            c.execute(
+                "ALTER TABLE securaiq_agents ADD COLUMN last_host_control_at REAL NOT NULL DEFAULT 0"
+            )
     except Exception:
         pass
     try:
@@ -972,17 +980,67 @@ def checkin(agent_id: str, payload: dict[str, Any]) -> dict[str, Any]:
             )
         except Exception:
             pass
+        skip_host = False
         try:
-            from app.services.control_testing import evaluate_agent_host_controls
+            import hashlib
 
-            host_controls = evaluate_agent_host_controls(
-                agent.get("user_id") or "local",
-                agent_id,
-                _eff if isinstance(_eff, dict) else payload,
-                asset_id=asset_id,
-            )
+            from app.config import settings as _hc_settings
+
+            ctrl_blob = {
+                k: (_eff or {}).get(k)
+                for k in (
+                    "firewall_status",
+                    "defender_status",
+                    "ssh_config",
+                    "disk_encryption_status",
+                    "listening_ports",
+                )
+            }
+            fp = hashlib.sha256(
+                json.dumps(ctrl_blob, sort_keys=True, default=str).encode("utf-8")
+            ).hexdigest()[:32]
+            min_iv = int(getattr(_hc_settings, "host_control_min_interval_sec", 60) or 0)
+            last_fp = str(agent.get("last_host_control_fp") or "")
+            last_at = float(agent.get("last_host_control_at") or 0)
+            if min_iv > 0 and last_fp == fp and last_at and (now() - last_at) < min_iv:
+                skip_host = True
+                host_controls = {
+                    "ok": True,
+                    "skipped": True,
+                    "reason": "unchanged_fingerprint_within_interval",
+                    "results": [],
+                }
+            else:
+                from app.services.control_testing import evaluate_agent_host_controls
+
+                host_controls = evaluate_agent_host_controls(
+                    agent.get("user_id") or "local",
+                    agent_id,
+                    _eff if isinstance(_eff, dict) else payload,
+                    asset_id=asset_id,
+                )
+                get_conn().execute(
+                    """
+                    UPDATE securaiq_agents
+                    SET last_host_control_fp = ?, last_host_control_at = ?
+                    WHERE id = ?
+                    """,
+                    (fp, now(), agent_id),
+                )
+                get_conn().commit()
         except Exception:
-            host_controls = None
+            if not skip_host:
+                try:
+                    from app.services.control_testing import evaluate_agent_host_controls
+
+                    host_controls = evaluate_agent_host_controls(
+                        agent.get("user_id") or "local",
+                        agent_id,
+                        _eff if isinstance(_eff, dict) else payload,
+                        asset_id=asset_id,
+                    )
+                except Exception:
+                    host_controls = None
     # Detect (architecture Phase 6–7) — check-in FIM + allowlisted security_logs
     # → native threats. Never invent from added/truncated/non-allowlisted lines.
     # Must never break check-in.

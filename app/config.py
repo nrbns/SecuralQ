@@ -110,12 +110,19 @@ class Settings(BaseSettings):
     jira_project_key: str = ""
     # Notifications: in-app always on; email is optional (SMTP)
     notifications_enabled: bool = True
+    # Deliver email/Slack/Teams via background worker (not inline in notify())
+    notification_worker_enabled: bool = True
+    notification_worker_tick_sec: int = 30
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_username: str = ""
     smtp_password: str = ""
     smtp_from: str = "securaiq@localhost"
     smtp_use_tls: bool = True
+    # Host-control eval on check-in: emit control.evaluating SSE (noisy under load)
+    host_control_emit_evaluating: bool = False
+    # Skip re-eval when control-relevant payload fingerprint unchanged (seconds; 0=always)
+    host_control_min_interval_sec: int = 60
     # Optional threat-intel API keys (AbuseIPDB, VT, Shodan, OTX, …)
     abuseipdb_api_key: str = ""
     virustotal_api_key: str = ""

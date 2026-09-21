@@ -136,20 +136,76 @@ def notify(
     body: str = "",
     link: str = "",
     email: bool = False,
+    *,
+    slack: bool = False,
+    teams: bool = False,
 ) -> dict[str, Any]:
     """Single entry point other modules should call:
         from app.notifications import notify
         notify(user_id, "critical_vuln", "New critical vuln imported", f"{title} on {asset}")
+
+    In-app + SSE are synchronous. Email/Slack/Teams go through the outbox worker
+    when ``notification_worker_enabled`` (default), so SMTP never blocks the caller.
     """
     if not settings.notifications_enabled:
         return {}
     record = create_notification(user_id, kind, title, body, link)
-    if email:
-        to_addr = _user_email(user_id)
-        if to_addr and send_email(to_addr, f"[SecuraIQ] {title}", body or title):
-            get_conn().execute("UPDATE notifications SET emailed = 1 WHERE id = ?", (record["id"],))
-            get_conn().commit()
-            audit("notification_emailed", user_id, {"id": record["id"], "kind": kind})
+    want_email = bool(email)
+    want_slack = bool(slack) or (
+        kind in {"critical_vuln", "incident"} and bool(getattr(settings, "slack_webhook_url", ""))
+    )
+    want_teams = bool(teams) or (
+        kind in {"critical_vuln", "incident"} and bool(getattr(settings, "teams_webhook_url", ""))
+    )
+    use_worker = bool(getattr(settings, "notification_worker_enabled", True))
+    if want_email or want_slack or want_teams:
+        try:
+            from app.notification_worker import enqueue_delivery
+
+            payload = {"title": title, "body": body or title, "link": link, "kind": kind}
+            if want_email:
+                if use_worker:
+                    enqueue_delivery(
+                        user_id,
+                        channel="email",
+                        notification_id=str(record.get("id") or ""),
+                        payload=payload,
+                    )
+                else:
+                    to_addr = _user_email(user_id)
+                    if to_addr and send_email(to_addr, f"[SecuraIQ] {title}", body or title):
+                        get_conn().execute(
+                            "UPDATE notifications SET emailed = 1 WHERE id = ?",
+                            (record["id"],),
+                        )
+                        get_conn().commit()
+                        audit("notification_emailed", user_id, {"id": record["id"], "kind": kind})
+            if want_slack and use_worker:
+                enqueue_delivery(
+                    user_id,
+                    channel="slack",
+                    notification_id=str(record.get("id") or ""),
+                    payload=payload,
+                )
+            if want_teams and use_worker:
+                enqueue_delivery(
+                    user_id,
+                    channel="teams",
+                    notification_id=str(record.get("id") or ""),
+                    payload=payload,
+                )
+        except Exception:
+            # Fall back to sync email so notify never loses critical alerts silently
+            if want_email and not use_worker:
+                pass
+            elif want_email:
+                to_addr = _user_email(user_id)
+                if to_addr and send_email(to_addr, f"[SecuraIQ] {title}", body or title):
+                    get_conn().execute(
+                        "UPDATE notifications SET emailed = 1 WHERE id = ?",
+                        (record["id"],),
+                    )
+                    get_conn().commit()
     try:
         from app.realtime_bus import publish
 
