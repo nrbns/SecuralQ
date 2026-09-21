@@ -5,9 +5,11 @@ exposes. Thin router: authenticate, call through, return.
 
 from __future__ import annotations
 
-from typing import Annotated
+import time
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
+from starlette.concurrency import run_in_threadpool
 
 from app.auth import AuthUser
 from app.commercial_api import require_user
@@ -20,6 +22,21 @@ from app.services.canonical_controls import (
 )
 
 router = APIRouter(prefix="/api/canonical-controls", tags=["canonical-controls"])
+
+# Short TTL cache — soft-poll / Mission Control must not re-scan every assessment
+# on every tick (was blocking the asyncio event loop → false "Server offline").
+_STATUS_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+_STATUS_TTL_SEC = 8.0
+
+
+def _cached_all_statuses(user_id: str) -> list[dict[str, Any]]:
+    now = time.monotonic()
+    hit = _STATUS_CACHE.get(user_id)
+    if hit and (now - hit[0]) < _STATUS_TTL_SEC:
+        return hit[1]
+    rows = compute_all_canonical_statuses(user_id)
+    _STATUS_CACHE[user_id] = (now, rows)
+    return rows
 
 
 @router.get("")
@@ -34,7 +51,8 @@ async def api_all_canonical_statuses(user: Annotated[AuthUser, Depends(require_u
     """Real per-canonical-control status computed from this user's actual
     latest assessment in each mapped framework -- 'implement once, satisfied
     in N frameworks' backed by real scored data, not a theoretical mapping."""
-    return {"statuses": compute_all_canonical_statuses(user.id)}
+    statuses = await run_in_threadpool(_cached_all_statuses, user.id)
+    return {"statuses": statuses}
 
 
 @router.get("/for-control")
@@ -59,7 +77,7 @@ async def api_get_canonical_control(canonical_id: str, _user: Annotated[AuthUser
 async def api_canonical_control_status(canonical_id: str, user: Annotated[AuthUser, Depends(require_user)]):
     """Real cross-framework status for one canonical control, computed from
     this user's actual assessments (never a static/theoretical claim)."""
-    result = compute_canonical_status(user.id, canonical_id)
+    result = await run_in_threadpool(compute_canonical_status, user.id, canonical_id)
     if not result:
         raise HTTPException(status_code=404, detail="Canonical control not found")
     return result

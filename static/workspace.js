@@ -265,8 +265,13 @@
     const body = qs("impactPageBody");
     if (!body) return;
     body.innerHTML = '<p class="hint">Loading…</p>';
+    const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+    const timer = ctrl ? setTimeout(() => ctrl.abort(), 20000) : null;
     try {
-      const res = await fetch("/api/canonical-controls/status", { headers: authHeaders() });
+      const res = await fetch("/api/canonical-controls/status", {
+        headers: authHeaders(),
+        signal: ctrl ? ctrl.signal : undefined,
+      });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error((data && data.detail) || `HTTP ${res.status}`);
       const statuses = data.statuses || [];
@@ -299,7 +304,12 @@
         card.addEventListener("click", () => card.classList.toggle("is-expanded"));
       });
     } catch (err) {
-      body.innerHTML = `<p class="hint">Could not load cross-framework impact: ${escapeHtml(err.message || String(err))}</p>`;
+      const msg = err && err.name === "AbortError" ? "Timed out waiting for Impact status (server busy)." : err.message || String(err);
+      body.innerHTML = `<p class="hint">Could not load cross-framework impact: ${escapeHtml(msg)}</p>
+        <button type="button" class="btn-secondary" id="impactRetryBtn">Retry</button>`;
+      body.querySelector("#impactRetryBtn")?.addEventListener("click", () => renderImpactPage());
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
   window.renderImpactPage = renderImpactPage;
@@ -14510,6 +14520,8 @@
           typeof renderComplianceCenterPage === "function" && renderComplianceCenterPage({ quiet: true }),
         compliance_ops: () =>
           typeof renderComplianceOpsPage === "function" && renderComplianceOpsPage(),
+        impact: () => typeof renderImpactPage === "function" && renderImpactPage(),
+        privacy: () => typeof renderPrivacyPage === "function" && renderPrivacyPage(),
         control_center: () =>
           typeof renderControlCenterPage === "function" && renderControlCenterPage({ quiet: true }),
         frameworks: () => {

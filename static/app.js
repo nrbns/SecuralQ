@@ -9847,12 +9847,28 @@ let lastHealthData = null;
 
 async function checkHealth() {
   try {
-    const res = await fetch("/api/health", { headers: authHeaders() });
+    const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+    const timer = ctrl ? setTimeout(() => ctrl.abort(), 10000) : null;
+    let res;
+    try {
+      res = await fetch("/api/health", {
+        headers: authHeaders(),
+        signal: ctrl ? ctrl.signal : undefined,
+      });
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+    if (!res.ok) throw new Error(`health ${res.status}`);
     const data = await res.json();
     lastHealthData = data;
+    window.__securaiqServerOnline = true;
+    // Clear sticky offline banner once health recovers
+    if (setupPanelEl && setupPanelEl.dataset.tone === "error" && /server offline/i.test(setupTitleEl?.textContent || "")) {
+      hideSetupPanel();
+    }
     const rag = data.rag_documents != null ? ` · RAG:${data.rag_documents}` : "";
     const backend = data.backend;
-    backendEl.value = backend;
+    if (backendEl) backendEl.value = backend;
 
     // Prefer ready remote backends; fall back to HuggingFace/Unsloth (loads on chat)
     const canChat =
@@ -9959,7 +9975,7 @@ async function checkHealth() {
             key: "unsloth-ready",
           });
         }
-      } else if (backend === "huggingface") {
+      } else if (backend === "huggingface" || backend === "huggingface_api") {
         preloadBtn.classList.remove("hidden");
         const speedTip =
           "For much faster replies: install Ollama, pull a model (e.g. mistral), then set Backend → Ollama in Settings.";
@@ -9990,11 +10006,14 @@ async function checkHealth() {
         }
       }
     }
-  } catch {
+  } catch (err) {
+    window.__securaiqServerOnline = false;
     backendReady = false;
-    sendBtn.disabled = true;
-    statusEl.textContent = "Offline";
-    statusEl.className = "status err";
+    if (sendBtn) sendBtn.disabled = true;
+    if (statusEl) {
+      statusEl.textContent = "Offline";
+      statusEl.className = "status err";
+    }
     showSetupPanel(
       "Server offline",
       "Start the backend with .\\scripts\\start.ps1 (Windows) or bash scripts/start.sh (Linux/macOS).",
@@ -10899,6 +10918,8 @@ setInterval(() => {
 // Fallback live refresh if SSE offline/stalled — keep open workspace panels warm.
 setInterval(() => {
   if (_sseRealtimeLive()) return;
+  // Don't pile more requests while the server is marked offline / recovering.
+  if (window.__securaiqServerOnline === false) return;
   const rt = window.RealtimeManager;
   const es = window.__securaiqRealtimeEs;
   const stalled =

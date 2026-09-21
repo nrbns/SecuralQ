@@ -224,7 +224,13 @@ def _latest_assessment_id_by_framework(user_id: str) -> dict[str, str]:
     return latest
 
 
-def compute_canonical_status(user_id: str, canonical_id: str) -> dict[str, Any] | None:
+def compute_canonical_status(
+    user_id: str,
+    canonical_id: str,
+    *,
+    _latest_ids: dict[str, str] | None = None,
+    _assessment_cache: dict[str, dict[str, Any] | None] | None = None,
+) -> dict[str, Any] | None:
     """Real, per-framework status for one canonical control, computed from
     the user's actual latest assessment per mapped framework -- not a
     static claim. A framework with no assessment yet is reported as
@@ -233,14 +239,27 @@ def compute_canonical_status(user_id: str, canonical_id: str) -> dict[str, Any] 
     if not cc:
         return None
 
-    latest_ids_by_fw = _latest_assessment_id_by_framework(user_id)
+    latest_ids_by_fw = _latest_ids if _latest_ids is not None else _latest_assessment_id_by_framework(user_id)
+    assessment_cache = _assessment_cache if _assessment_cache is not None else {}
     frameworks: dict[str, Any] = {}
     satisfied = 0
     assessed = 0
 
     for fw_id, control_ids in cc["frameworks"].items():
         assessment_id = latest_ids_by_fw.get(fw_id)
-        assessment = get_assessment(user_id, assessment_id) if assessment_id else None
+        if not assessment_id:
+            frameworks[fw_id] = {
+                "status": "not_assessed",
+                "control_ids": control_ids,
+                "assessment_id": None,
+                "has_assessment": False,
+            }
+            continue
+        if assessment_id in assessment_cache:
+            assessment = assessment_cache[assessment_id]
+        else:
+            assessment = get_assessment(user_id, assessment_id)
+            assessment_cache[assessment_id] = assessment
         if not assessment:
             frameworks[fw_id] = {
                 "status": "not_assessed",
@@ -310,4 +329,25 @@ def compute_canonical_status(user_id: str, canonical_id: str) -> dict[str, Any] 
 
 
 def compute_all_canonical_statuses(user_id: str) -> list[dict[str, Any]]:
-    return [compute_canonical_status(user_id, cc["id"]) for cc in list_canonical_controls()]
+    """Compute statuses for every canonical control with shared assessment cache.
+
+    Avoids N× list_assessments / get_assessment which stalled the Impact UI
+    under soft-poll load (false \"Server offline\" + perpetual Loading…).
+    """
+    latest_ids = _latest_assessment_id_by_framework(user_id)
+    assessment_cache: dict[str, dict[str, Any] | None] = {}
+    # Prefetch unique assessments once
+    for aid in latest_ids.values():
+        if aid not in assessment_cache:
+            assessment_cache[aid] = get_assessment(user_id, aid)
+    out: list[dict[str, Any]] = []
+    for cc in list_canonical_controls():
+        row = compute_canonical_status(
+            user_id,
+            cc["id"],
+            _latest_ids=latest_ids,
+            _assessment_cache=assessment_cache,
+        )
+        if row:
+            out.append(row)
+    return out
