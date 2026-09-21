@@ -51,7 +51,7 @@ If a feature cannot answer all six, do not ship it yet.
 
 | Piece | Status | Honesty |
 |-------|--------|---------|
-| Tenant isolation (REST/SSE/spine/exports) | **Near-done** | Isolation tests expanding; prove every path |
+| Tenant isolation (REST/SSE/spine/exports) | **Near-done→improved** | Cross-tenant tests cover product tables, spine, **SSE push filter**, **agent auth/commands**, notifications + outbox org assert. Remaining: object storage / AI search / workers path proofs |
 | SSO / SCIM | **Partial** | Facades; not full IdP depth |
 | HA / Redis Sentinel live failover | **CI self-test** | Docker `--inject-stop` still ops |
 | DR / backup restore | **Partial** | Docs + scripts; automate more |
@@ -75,8 +75,9 @@ Attack paths / business graph / advanced risk / digital twin / AI SecOps autonom
 
 ## Immediate next closes (ordered)
 
-1. Document vault lifecycle honesty (expired / superseded / invalid + tick) — Release 0  
-2. Tenant path proofs still missing (SSE/gateway/workers/object storage) — Release 3  
-3. HTTP ladder 500+ when lab can sustain it — Release 4  
-4. Live Docker Sentinel failover when Docker available — Release 3  
-5. Owned-host live acceptance — Release 1 prove  
+1. ~~Document vault lifecycle honesty~~ — done (`expired`/`invalid` + `vault_expiry_tick`)  
+2. ~~Tenant SSE / agent gateway / notification path proofs~~ — done (`test_sse_gateway_notification_path_isolation`)  
+3. Remaining tenant paths (object storage, AI/RAG search, background workers) — Release 3  
+4. HTTP ladder 500+ when lab can sustain it — Release 4  
+5. Live Docker Sentinel failover when Docker available — Release 3  
+6. Owned-host live acceptance — Release 1 prove  

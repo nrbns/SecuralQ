@@ -450,3 +450,122 @@ def test_evidence_spine_and_exception_isolation(two_orgs):
     tick = run_exception_expiry_tick(limit_users=20)
     assert tick.get("ok") is True
     assert int(tick.get("notified") or 0) >= 1
+
+
+def test_sse_gateway_notification_path_isolation(two_orgs):
+    """SSE push filter + agent auth/commands + notifications/outbox never cross tenants."""
+    alice, bob, org_a, org_b = two_orgs
+    from app.agents import (
+        authenticate_agent,
+        enroll_agent,
+        list_commands,
+        request_command,
+    )
+    from app.notification_worker import enqueue_delivery, outbox_stats
+    from app.notifications import list_notifications, notify
+    from app.realtime_bus import sse_push_allowed_for_client
+
+    # --- SSE: AUTH on — Alice must not receive Bob's control.failed ---
+    bob_push = {
+        "type": "control",
+        "event_type": "control.failed",
+        "event_id": "evt-bob-fw",
+        "user_id": bob.id,
+        "org_id": org_b["id"],
+        "entity_type": "control",
+        "entity_id": "host_firewall",
+        "current_state": "FAIL",
+    }
+    alice_push = {
+        "type": "control",
+        "event_type": "control.failed",
+        "event_id": "evt-alice-fw",
+        "user_id": alice.id,
+        "org_id": org_a["id"],
+        "entity_type": "control",
+        "entity_id": "host_firewall",
+        "current_state": "FAIL",
+    }
+    assert sse_push_allowed_for_client(
+        alice_push,
+        auth_enabled=True,
+        client_user_id=alice.id,
+        client_org_ids=[org_a["id"]],
+    )
+    assert not sse_push_allowed_for_client(
+        bob_push,
+        auth_enabled=True,
+        client_user_id=alice.id,
+        client_org_ids=[org_a["id"]],
+    )
+    assert not sse_push_allowed_for_client(
+        alice_push,
+        auth_enabled=True,
+        client_user_id=bob.id,
+        client_org_ids=[org_b["id"]],
+    )
+    # Org-only stamp (no user_id) still fails closed across tenants
+    assert not sse_push_allowed_for_client(
+        {"type": "risk", "org_id": org_b["id"], "event_id": "r-b"},
+        auth_enabled=True,
+        client_user_id=alice.id,
+        client_org_ids=[org_a["id"]],
+    )
+
+    # --- Agent gateway path: wrong key / wrong owner never sees commands ---
+    ea = enroll_agent(alice.id, name="alice-gw", org_id=org_a["id"])
+    eb = enroll_agent(bob.id, name="bob-gw", org_id=org_b["id"])
+    assert authenticate_agent(ea["agent_id"], ea["agent_key"]) is not None
+    assert authenticate_agent(ea["agent_id"], eb["agent_key"]) is None
+    assert authenticate_agent(ea["agent_id"], "wrong-key") is None
+    assert authenticate_agent(eb["agent_id"], ea["agent_key"]) is None
+
+    cmd = request_command(
+        alice.id,
+        ea["agent_id"],
+        kind="enable_firewall",
+        payload={"lab": True},
+        requested_by="alice",
+    )
+    assert cmd.get("id")
+    assert list_commands(alice.id, ea["agent_id"])
+    assert list_commands(bob.id, ea["agent_id"]) == []
+    with pytest.raises(ValueError, match="Agent not found"):
+        request_command(
+            bob.id,
+            ea["agent_id"],
+            kind="enable_firewall",
+            payload={"lab": True},
+            requested_by="bob",
+        )
+
+    # --- Notifications recipient-scoped; outbox stats fail closed ---
+    notify(alice.id, "system", "Alice only", "body-a", email=False)
+    notify(bob.id, "system", "Bob only", "body-b", email=False)
+    alice_titles = {n["title"] for n in list_notifications(alice.id)}
+    bob_titles = {n["title"] for n in list_notifications(bob.id)}
+    assert "Alice only" in alice_titles and "Bob only" not in alice_titles
+    assert "Bob only" in bob_titles and "Alice only" not in bob_titles
+
+    enqueue_delivery(
+        alice.id,
+        channel="email",
+        payload={"to": "alice@lab", "subject": "a"},
+        org_id=org_a["id"],
+    )
+    enqueue_delivery(
+        bob.id,
+        channel="email",
+        payload={"to": "bob@lab", "subject": "b"},
+        org_id=org_b["id"],
+    )
+    a_stats = outbox_stats(alice.id, org_id=org_a["id"])
+    b_stats = outbox_stats(bob.id, org_id=org_b["id"])
+    assert sum(a_stats["counts"].values()) >= 1
+    assert sum(b_stats["counts"].values()) >= 1
+    # Cross-org filter must not include the other tenant's pending rows
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as exc:
+        outbox_stats(bob.id, org_id=org_a["id"])
+    assert exc.value.status_code == 403

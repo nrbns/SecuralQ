@@ -103,6 +103,8 @@ Organizing principle: [RELEASE-GATES.md](./RELEASE-GATES.md) — close partials 
 **Tenant deepen (prior):** `tenant_visibility_sql` on spine list APIs · cross-tenant isolation coverage · `exception_expiry_tick` · outbox stats org-aware.
 
 **This pass:** HTTP ladder re-measure 25/50/100 (100% ok; p95 cliff gone) · `RELEASE-GATES.md` · vault lifecycle `expired`/`invalid` + `vault_expiry_tick`.
+
+**Tenant path proofs (follow-on):** SSE push filter + agent auth/commands + notification/outbox isolation in `tests/test_cross_tenant_isolation.py`.
 Frozen until loop stays green: Cloud/K8s/AppSec/Identity depth · business-service graph expansions · AI SecOps autonomy.
 
 ### Prove #1
