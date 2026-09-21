@@ -330,3 +330,123 @@ def test_rbac_viewer_cannot_approve_agent_commands(two_orgs):
     matrix = permission_matrix()
     assert "agent.approve" in matrix["actions"]
     assert matrix["permissions"]["agent.approve"]["org_min"] == "admin"
+
+
+def test_evidence_spine_and_exception_isolation(two_orgs):
+    """Control state, vault, requirements, canonical lists + exceptions fail closed."""
+    alice, bob, org_a, org_b = two_orgs
+    from app.db import get_conn, now
+    from app.evidence_spine import (
+        create_vault_document,
+        ingest_observation_as_evidence,
+        list_canonical_states,
+        list_control_states,
+        list_requirements,
+        list_vault,
+        reconcile_observations,
+        seed_default_packs,
+        transition_control_state,
+    )
+    from app.services.exceptions import (
+        approve_exception,
+        create_exception,
+        list_exceptions,
+        run_exception_expiry_tick,
+    )
+
+    transition_control_state(
+        alice.id, control_id="AC-ISO-A", new_state="pass", source="iso-test", framework_id="nist"
+    )
+    transition_control_state(
+        bob.id, control_id="AC-ISO-B", new_state="fail", source="iso-test", framework_id="nist"
+    )
+    alice_states = {s["control_id"] for s in list_control_states(alice.id, org_id=org_a["id"])}
+    bob_states = {s["control_id"] for s in list_control_states(bob.id, org_id=org_b["id"])}
+    assert "AC-ISO-A" in alice_states and "AC-ISO-B" not in alice_states
+    assert "AC-ISO-B" in bob_states and "AC-ISO-A" not in bob_states
+
+    seed_default_packs(alice.id)
+    seed_default_packs(bob.id)
+    alice_reqs = list_requirements(alice.id, org_id=org_a["id"])
+    bob_reqs = list_requirements(bob.id, org_id=org_b["id"])
+    assert alice_reqs and all(r.get("user_id") == alice.id for r in alice_reqs)
+    assert bob_reqs and all(r.get("user_id") == bob.id for r in bob_reqs)
+    assert not any(r.get("user_id") == bob.id for r in alice_reqs)
+
+    create_vault_document(
+        alice.id, title="Alice policy", filename="a.txt", data=b"alice-doc", control_id="AC-1"
+    )
+    create_vault_document(
+        bob.id, title="Bob policy", filename="b.txt", data=b"bob-doc", control_id="AC-1"
+    )
+    alice_vault = {v["title"] for v in list_vault(alice.id, org_id=org_a["id"])}
+    bob_vault = {v["title"] for v in list_vault(bob.id, org_id=org_b["id"])}
+    assert "Alice policy" in alice_vault and "Bob policy" not in alice_vault
+    assert "Bob policy" in bob_vault and "Alice policy" not in bob_vault
+
+    ingest_observation_as_evidence(
+        alice.id,
+        result="pass",
+        summary="alice fw",
+        data_source="agent",
+        agent_id="ag-a",
+        hostname="host-a",
+        test_name="host_firewall",
+    )
+    ingest_observation_as_evidence(
+        bob.id,
+        result="fail",
+        summary="bob fw",
+        data_source="agent",
+        agent_id="ag-b",
+        hostname="host-b",
+        test_name="host_firewall",
+    )
+    reconcile_observations(alice.id, check_id="host_firewall", hostname="host-a")
+    reconcile_observations(bob.id, check_id="host_firewall", hostname="host-b")
+    alice_can = list_canonical_states(alice.id, org_id=org_a["id"])
+    bob_can = list_canonical_states(bob.id, org_id=org_b["id"])
+    assert alice_can and all(c.get("user_id") == alice.id for c in alice_can)
+    assert bob_can and all(c.get("user_id") == bob.id for c in bob_can)
+    assert not any(c.get("user_id") == bob.id for c in alice_can)
+
+    exp_a = create_exception(
+        alice.id,
+        title="Alice exception",
+        reason="lab compensating control",
+        risk_accepted="accepted residual for lab window",
+        owner="alice",
+        expiry=now() + 14 * 86400,
+        control_id="AC-1",
+        framework_id="nist",
+        org_id=org_a["id"],
+        created_by="alice",
+    )
+    create_exception(
+        bob.id,
+        title="Bob exception",
+        reason="lab compensating control",
+        risk_accepted="accepted residual for lab window",
+        owner="bob",
+        expiry=now() + 14 * 86400,
+        control_id="AC-2",
+        framework_id="nist",
+        org_id=org_b["id"],
+        created_by="bob",
+    )
+    approve_exception(alice.id, exp_a["id"], approved_by="alice")
+    # Force near-expiry so tick notifies without waiting
+    get_conn().execute(
+        "UPDATE securaiq_exceptions SET expiry = ? WHERE id = ?",
+        (now() + 2 * 86400, exp_a["id"]),
+    )
+    get_conn().commit()
+
+    alice_ex = {e["title"] for e in list_exceptions(alice.id, org_id=org_a["id"])}
+    bob_ex = {e["title"] for e in list_exceptions(bob.id, org_id=org_b["id"])}
+    assert "Alice exception" in alice_ex and "Bob exception" not in alice_ex
+    assert "Bob exception" in bob_ex and "Alice exception" not in bob_ex
+
+    tick = run_exception_expiry_tick(limit_users=20)
+    assert tick.get("ok") is True
+    assert int(tick.get("notified") or 0) >= 1

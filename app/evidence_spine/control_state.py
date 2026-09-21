@@ -103,10 +103,13 @@ def list_control_states(
     *,
     state: str = "",
     limit: int = 200,
+    org_id: str | None = None,
 ) -> list[dict[str, Any]]:
     ensure_control_state_schema()
-    q = "SELECT * FROM control_runtime_state WHERE user_id = ?"
-    args: list[Any] = [user_id]
+    from app.tenancy import tenant_visibility_sql
+
+    where, args = tenant_visibility_sql(user_id, org_id=org_id)
+    q = f"SELECT * FROM control_runtime_state WHERE {where}"
     if state:
         q += " AND state = ?"
         args.append(state)

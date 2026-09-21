@@ -215,13 +215,16 @@ def process_outbox(*, limit: int = 40) -> dict[str, Any]:
     return {"ok": True, "processed": len(rows), "sent": sent, "failed": failed}
 
 
-def outbox_stats(user_id: str = "") -> dict[str, Any]:
+def outbox_stats(user_id: str = "", *, org_id: str | None = None) -> dict[str, Any]:
     ensure_outbox_schema()
-    q = "SELECT status, COUNT(*) AS n FROM notification_outbox"
     args: list[Any] = []
     if user_id:
-        q += " WHERE user_id = ?"
-        args.append(user_id)
+        from app.tenancy import tenant_visibility_sql
+
+        where, args = tenant_visibility_sql(user_id, org_id=org_id)
+        q = f"SELECT status, COUNT(*) AS n FROM notification_outbox WHERE {where}"
+    else:
+        q = "SELECT status, COUNT(*) AS n FROM notification_outbox"
     q += " GROUP BY status"
     counts = {r["status"]: int(r["n"]) for r in get_conn().execute(q, args).fetchall()}
     return {"ok": True, "counts": counts}

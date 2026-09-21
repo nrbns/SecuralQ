@@ -118,10 +118,13 @@ def list_requirements(
     *,
     control_id: str = "",
     framework_id: str = "",
+    org_id: str | None = None,
 ) -> list[dict[str, Any]]:
     ensure_dependency_schema()
-    q = "SELECT * FROM evidence_requirements WHERE user_id = ? AND enabled = 1"
-    args: list[Any] = [user_id]
+    from app.tenancy import tenant_visibility_sql
+
+    where, args = tenant_visibility_sql(user_id, org_id=org_id)
+    q = f"SELECT * FROM evidence_requirements WHERE {where} AND enabled = 1"
     if control_id:
         q += " AND control_id = ?"
         args.append(control_id)

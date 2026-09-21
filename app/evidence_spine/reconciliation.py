@@ -302,10 +302,13 @@ def list_canonical_states(
     conflict_status: str = "",
     check_id: str = "",
     limit: int = 100,
+    org_id: str | None = None,
 ) -> list[dict[str, Any]]:
     ensure_reconciliation_schema()
-    q = "SELECT * FROM observation_canonical_state WHERE user_id = ?"
-    args: list[Any] = [user_id]
+    from app.tenancy import tenant_visibility_sql
+
+    where, args = tenant_visibility_sql(user_id, org_id=org_id)
+    q = f"SELECT * FROM observation_canonical_state WHERE {where}"
     if conflict_status:
         q += " AND conflict_status = ?"
         args.append(conflict_status)

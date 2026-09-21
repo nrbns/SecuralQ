@@ -137,6 +137,9 @@ def create_exception(
     expiry_ts = _validate_expiry(expiry)
 
     ensure_schema()
+    from app.tenancy import primary_org_id
+
+    oid = org_id or primary_org_id(user_id)
     eid = new_id()
     ts = now()
     c = get_conn()
@@ -148,7 +151,7 @@ def create_exception(
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_approval', ?, ?, ?, ?, ?)
         """,
         (
-            eid, user_id, org_id, title[:300], framework_id.strip(), control_id.strip(), reason[:4000],
+            eid, user_id, oid, title[:300], framework_id.strip(), control_id.strip(), reason[:4000],
             risk_accepted[:4000], risk_level, owner[:200], (compensating_controls or "").strip()[:4000],
             expiry_ts, review_date, created_by, ts, ts,
         ),
@@ -448,4 +451,74 @@ def exceptions_summary(user_id: str, *, org_id: str | None = None) -> dict[str, 
         "active_coverage": active_coverage,
         "expired": expired,
         "expiring_soon_30d": expiring_soon,
+    }
+
+
+def run_exception_expiry_tick(*, limit_users: int = 50) -> dict[str, Any]:
+    """Notify owners of approved exceptions that are expired or due within 7 days.
+
+    Does not auto-revoke (human renew). Dedupes via notifications title match / 24h.
+    """
+    ensure_schema()
+    uids = [
+        r["user_id"]
+        for r in get_conn()
+        .execute(
+            """
+            SELECT DISTINCT user_id FROM securaiq_exceptions
+            WHERE status = 'approved'
+            LIMIT ?
+            """,
+            (limit_users,),
+        )
+        .fetchall()
+    ]
+    notified = 0
+    expired_n = 0
+    for uid in uids:
+        for ex in list_exceptions(uid, status="approved", limit=200):
+            days = ex.get("days_until_expiry")
+            eid = str(ex.get("id") or "")
+            title = str(ex.get("title") or eid)[:80]
+            if ex.get("expired"):
+                expired_n += 1
+                kind = "expired"
+                msg = f"Exception expired: {title} — renew or close coverage."
+            elif days is not None and float(days) <= 7:
+                kind = "expiring"
+                msg = f"Exception expires in {days} days: {title} — renew before lapse."
+            else:
+                continue
+            # Dedupe: one reminder per exception per 24h
+            existing = get_conn().execute(
+                """
+                SELECT 1 FROM notifications
+                WHERE user_id = ? AND kind = 'system'
+                  AND title LIKE ?
+                  AND created_at >= ?
+                LIMIT 1
+                """,
+                (uid, f"%{eid[:12]}%", now() - 86400),
+            ).fetchone()
+            if existing:
+                continue
+            try:
+                from app.notifications import notify
+
+                notify(
+                    uid,
+                    "system",
+                    f"Exception {kind} ({eid[:12]})",
+                    msg,
+                    link=f"/exceptions/{eid}",
+                    email=True,
+                )
+                notified += 1
+            except Exception:
+                pass
+    return {
+        "ok": True,
+        "users": len(uids),
+        "notified": notified,
+        "expired_seen": expired_n,
     }

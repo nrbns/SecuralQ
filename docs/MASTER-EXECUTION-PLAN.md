@@ -89,7 +89,7 @@ SERVER CHANGE → AGENT → GATEWAY → REDIS → OBSERVATION → EVIDENCE
 | Command execute ≠ verified | Enforced (host + campaign) |
 | Redis Sentinel live Docker failover | Ops / needs Docker |
 | HTTP load ladder 100+ | Re-measure after check-in fix |
-| Tenant fail-closed completeness | Partial (vault/aliases lists scoped; leftovers remain) |
+| Tenant fail-closed completeness | Improved — spine lists (control state / vault / requirements / canonical) + exceptions + outbox stats scoped; exception expiry tick notifies renew |
 | WORM / object-lock | Missing |
 | Cloud / K8s / Identity / AppSec depth | **Frozen** |
 
@@ -97,6 +97,7 @@ Next 🔴 (Sprint A remainders): re-measure HTTP load ladder · owned-host live 
 
 **Sprint A+B closed this pass:** human attestation (Who/What/When/Evidence/Decision) · vault/exception → attestation + evidence · exception renew (no open-ended accept) · audit pack includes attestations/exceptions/vault · vault/alias list tenant-scoped.  
 
+**Tenant deepen (this pass):** `tenant_visibility_sql` on spine list APIs · cross-tenant isolation coverage in `tests/test_cross_tenant_isolation.py` · `exception_expiry_tick` job (6h) for approved exceptions expired / due ≤7d · outbox stats org-aware.
 Frozen until loop stays green: Cloud/K8s/AppSec/Identity depth · business-service graph expansions · AI SecOps autonomy.
 
 ### Prove #1

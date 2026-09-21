@@ -50,9 +50,11 @@ _last_software_sync = _boot_ts
 _last_compliance_ops_tick = _boot_ts
 _last_control_stale_tick = _boot_ts
 _last_notification_delivery_tick = _boot_ts
+_last_exception_expiry_tick = _boot_ts
 COMPLIANCE_OPS_TICK_SEC = 300  # every 5 minutes
 CONTROL_STALE_TICK_SEC = 300  # every 5 minutes — PASS/FAIL → STALE
 NOTIFICATION_DELIVERY_TICK_SEC = 30  # drain email/slack/teams outbox
+EXCEPTION_EXPIRY_TICK_SEC = 6 * 3600  # renew/expiry reminders every 6h
 
 
 def register_job(kind: str):
@@ -254,6 +256,7 @@ async def _scheduler_loop() -> None:
     global _last_kev_sync, _last_xdr_sync, _last_wazuh_sync, _last_openaudit_sync
     global _last_thehive_sync, _last_cloud_posture_sync, _last_sonarqube_sync, _last_software_sync
     global _last_compliance_ops_tick, _last_control_stale_tick, _last_notification_delivery_tick
+    global _last_exception_expiry_tick
     while True:
         now_t = time.time()
         try:
@@ -411,6 +414,16 @@ async def _scheduler_loop() -> None:
             ):
                 _last_notification_delivery_tick = now_t
                 enqueue_job("notification_delivery_tick", {"scheduled": True})
+        except Exception:
+            pass
+        try:
+            if (
+                "exception_expiry_tick" in JOB_HANDLERS
+                and now_t - _last_exception_expiry_tick >= EXCEPTION_EXPIRY_TICK_SEC
+                and not _has_pending_or_running("exception_expiry_tick")
+            ):
+                _last_exception_expiry_tick = now_t
+                enqueue_job("exception_expiry_tick", {"scheduled": True})
         except Exception:
             pass
         await asyncio.sleep(_SCHEDULER_TICK_SEC)
@@ -1034,3 +1047,12 @@ async def _job_notification_delivery_tick(payload: dict[str, Any]) -> dict[str, 
 
     limit = int(payload.get("limit") or 40)
     return await asyncio.to_thread(process_outbox, limit=limit)
+
+
+@register_job("exception_expiry_tick")
+async def _job_exception_expiry_tick(payload: dict[str, Any]) -> dict[str, Any]:
+    """Remind owners of approved exceptions that are expired or due within 7 days."""
+    from app.services.exceptions import run_exception_expiry_tick
+
+    limit = int(payload.get("limit_users") or 50)
+    return await asyncio.to_thread(run_exception_expiry_tick, limit_users=limit)
