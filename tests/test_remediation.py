@@ -154,6 +154,52 @@ def test_approve_then_link_campaign_moves_plan_to_executing(tmp_path, monkeypatc
     assert linked["campaign_id"] == campaign["id"]
 
 
+def test_plan_verified_only_after_independent_command_verification(tmp_path, monkeypatch):
+    """Golden-path harden: executing → verified never from execute alone."""
+    from app.agents import create_campaign, enroll_agent, record_command_verification
+    from app.db import get_conn, new_id, now
+    from app.services.remediation import (
+        approve_plan,
+        create_plan,
+        get_plan,
+        link_campaign,
+        promote_plans_after_campaign_verification,
+    )
+
+    uid = _setup(monkeypatch, tmp_path, username="plan_verify_loop")
+    group_key, _ = _seed_vuln_group(uid, cve="CVE-2024-4242")
+    plan = create_plan(uid, group_key)
+    approve_plan(uid, plan["id"])
+    agent = enroll_agent(uid, name="verify-plan-agent")
+    campaign = create_campaign(
+        uid, name="verify campaign", manager="apt", package="openssl", agent_ids=[agent["agent_id"]]
+    )
+    linked = link_campaign(uid, plan["id"], campaign["id"])
+    assert linked["status"] == "executing"
+
+    cmd_id = new_id()
+    t = now()
+    get_conn().execute(
+        """
+        INSERT INTO securaiq_agent_commands
+        (id, agent_id, user_id, kind, payload_json, status, created_at, completed_at,
+         campaign_id, verification_status)
+        VALUES (?, ?, ?, 'patch_package', '{}', 'done', ?, ?, ?, 'pending')
+        """,
+        (cmd_id, agent["agent_id"], uid, t, t, campaign["id"]),
+    )
+    get_conn().commit()
+
+    # Execute alone must NOT promote the plan
+    still = promote_plans_after_campaign_verification(uid, campaign["id"])
+    assert still == []
+    assert get_plan(uid, plan["id"])["status"] == "executing"
+
+    record_command_verification(cmd_id, verified=True, detail="Inventory confirms patched")
+    promoted = get_plan(uid, plan["id"])
+    assert promoted["status"] == "verified"
+
+
 def test_link_campaign_requires_approved_status(tmp_path, monkeypatch):
     from app.agents import create_campaign, enroll_agent
     from app.services.remediation import create_plan, link_campaign

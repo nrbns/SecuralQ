@@ -3121,6 +3121,14 @@ def record_command_verification(command_id: str, *, verified: bool | None, detai
             _maybe_snapshot_campaign_after(campaign_id, row.get("user_id") or "local")
         except Exception:
             pass
+        try:
+            from app.services.remediation import promote_plans_after_campaign_verification
+
+            promote_plans_after_campaign_verification(
+                str(row.get("user_id") or "local"), str(campaign_id)
+            )
+        except Exception:
+            pass
     return {"ok": True, "verification_status": v_status, "resolved_findings": resolved_findings}
 
 

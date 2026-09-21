@@ -416,6 +416,74 @@ def link_campaign(user_id: str, plan_id: str, campaign_id: str) -> dict[str, Any
     return get_plan(user_id, plan_id)
 
 
+def promote_plans_after_campaign_verification(
+    user_id: str,
+    campaign_id: str,
+) -> list[dict[str, Any]]:
+    """Move linked plans executing → verified only after independent command verification.
+
+    Never promotes on command-sent or status=done alone. Requires every
+    ``done`` campaign command to have ``verification_status='verified'``.
+    If any command failed verification, plans stay ``executing`` (honest).
+    """
+    cid = (campaign_id or "").strip()
+    if not cid:
+        return []
+    c = get_conn()
+    done_rows = c.execute(
+        """
+        SELECT verification_status FROM securaiq_agent_commands
+        WHERE campaign_id = ? AND status = 'done'
+        """,
+        (cid,),
+    ).fetchall()
+    if not done_rows:
+        return []
+    statuses = [(r["verification_status"] or "").strip().lower() for r in done_rows]
+    if any(s in {"", "pending"} for s in statuses):
+        return []
+    if not all(s == "verified" for s in statuses):
+        return []
+    plans = c.execute(
+        """
+        SELECT id FROM remediation_plans
+        WHERE user_id = ? AND campaign_id = ? AND status = 'executing'
+        """,
+        (user_id, cid),
+    ).fetchall()
+    out: list[dict[str, Any]] = []
+    ts = now()
+    for p in plans:
+        pid = p["id"]
+        c.execute(
+            "UPDATE remediation_plans SET status = 'verified', updated_at = ? WHERE id = ?",
+            (ts, pid),
+        )
+        c.commit()
+        audit(
+            "remediation_plan_verified",
+            user_id,
+            {"id": pid, "campaign_id": cid, "note": "independent command verification complete"},
+        )
+        try:
+            from app.realtime_events import publish_aliased
+
+            publish_aliased(
+                "remediation",
+                aliases=["remediation.verified", "control.updated"],
+                plan_id=pid,
+                campaign_id=cid,
+                status="verified",
+                user_id=user_id,
+            )
+        except Exception:
+            pass
+        plan = get_plan(user_id, pid)
+        if plan:
+            out.append(plan)
+    return out
+
+
 def remeasure_plan(user_id: str, plan_id: str, *, org_id: str | None = None, engagement_id: str | None = None) -> dict[str, Any] | None:
     """Recompute the real organizational risk score right now and record it
     as this plan's risk_after -- an honest "what's the risk today", not a

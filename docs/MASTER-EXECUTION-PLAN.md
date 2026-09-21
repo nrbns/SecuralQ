@@ -65,10 +65,34 @@ AGENTS / CLOUD / DOCUMENTS → OBSERVATIONS → EVIDENCE
   → REMEDIATION → VERIFY → NEW EVIDENCE → AUDIT PROOF → REALTIME UI
 ```
 
-Next backbone gaps (🔴): verification closed-loop polish · tenant hardening · measured HA/DR/load (re-run HTTP ladder after check-in event-loop fix).  
-**Notification worker shipped:** email/Slack/Teams outbox + `notification_delivery_tick` (in-app stays sync).  
-**Asset identity shipped:** `asset_aliases` entity resolution (agent/IP/hostname/cloud/EDR → one canonical asset) — see [ASSET-IDENTITY.md](./ASSET-IDENTITY.md).  
-Frozen until loop stays green: Cloud/K8s/AppSec/Identity depth · business-service graph expansions · AI SecOps.
+**Frozen architecture (do not rebuild):** finish the existing control-plane so every module participates in the same golden path — do not add competing architectures or Phase 22+ domain expansion.
+
+```text
+SERVER CHANGE → AGENT → GATEWAY → REDIS → OBSERVATION → EVIDENCE
+  → CONTROL → RISK / COMPLIANCE → FINDING → REMEDIATION → APPROVAL
+  → SIGNED COMMAND → AGENT EXECUTION → INDEPENDENT VERIFICATION
+  → NEW EVIDENCE → RISK+COMPLIANCE RECALC → SSE → UI
+```
+
+| Backbone piece | Status on main |
+|----------------|----------------|
+| Evidence Spine (obs+docs→controls) | Shipped |
+| Evidence Vault (SHA-256, supersede, review) | Shipped |
+| Control runtime state + stale tick | Shipped |
+| Observation reconciliation / conflict | Shipped |
+| Asset identity / aliases | Shipped |
+| Compliance Ops (tasks/calendar/approvals) | MVP shipped |
+| Notification outbox worker | Shipped |
+| Remediation plan → **verified** only after independent command verify | Shipped |
+| Command execute ≠ verified | Enforced (host + campaign) |
+| Redis Sentinel live Docker failover | Ops / needs Docker |
+| HTTP load ladder 100+ | Re-measure after check-in fix |
+| Tenant fail-closed completeness | Partial |
+| WORM / object-lock | Missing |
+| Cloud / K8s / Identity / AppSec depth | **Frozen** |
+
+Next 🔴 (Sprint A remainders): tenant hardening · universal evidence coverage for remaining claim paths · human attestation depth · re-measure load · owned-host live proof.  
+Frozen until loop stays green: Cloud/K8s/AppSec/Identity depth · business-service graph expansions · AI SecOps autonomy.
 
 ### Prove #1
 
