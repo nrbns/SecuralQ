@@ -292,15 +292,23 @@ def register_aliases_from_meta(
     return out
 
 
-def list_aliases(user_id: str, asset_id: str) -> list[dict[str, Any]]:
+def list_aliases(
+    user_id: str,
+    asset_id: str,
+    *,
+    org_id: str | None = None,
+) -> list[dict[str, Any]]:
     ensure_identity_schema()
+    from app.tenancy import tenant_visibility_sql
+
+    where, args = tenant_visibility_sql(user_id, org_id=org_id)
     rows = get_conn().execute(
-        """
+        f"""
         SELECT * FROM asset_aliases
-        WHERE user_id = ? AND asset_id = ?
+        WHERE {where} AND asset_id = ?
         ORDER BY kind, value
         """,
-        (user_id, asset_id),
+        (*args, asset_id),
     ).fetchall()
     return [row_to_dict(r) for r in rows]
 

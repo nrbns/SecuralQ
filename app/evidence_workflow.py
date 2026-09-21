@@ -224,6 +224,86 @@ def build_audit_pack_zip(user_id: str, assessment_id: str) -> bytes:
             ]
         )
 
+    # Human attestations + exceptions + vault index (Sprint B audit pack completeness)
+    attest_buf = io.StringIO()
+    attest_w = csv.writer(attest_buf)
+    attest_w.writerow(
+        [
+            "id",
+            "subject_type",
+            "subject_id",
+            "decision",
+            "reviewed_by",
+            "attested_at",
+            "title",
+            "comment",
+            "evidence_ids",
+        ]
+    )
+    try:
+        from app.services.human_attestation import list_attestations
+
+        for a in list_attestations(user_id, limit=500):
+            attest_w.writerow(
+                [
+                    a.get("id"),
+                    a.get("subject_type"),
+                    a.get("subject_id"),
+                    a.get("decision"),
+                    a.get("reviewed_by"),
+                    a.get("attested_at"),
+                    (a.get("title") or "")[:200],
+                    (a.get("comment") or "")[:300],
+                    ",".join(a.get("evidence_ids") or []),
+                ]
+            )
+    except Exception:
+        pass
+
+    exc_buf = io.StringIO()
+    exc_w = csv.writer(exc_buf)
+    exc_w.writerow(
+        ["id", "title", "status", "control_id", "owner", "expiry", "approved_by", "risk_level"]
+    )
+    try:
+        from app.services.exceptions import list_exceptions
+
+        for e in list_exceptions(user_id, limit=500):
+            exc_w.writerow(
+                [
+                    e.get("id"),
+                    (e.get("title") or "")[:200],
+                    e.get("status"),
+                    e.get("control_id"),
+                    e.get("owner"),
+                    e.get("expiry"),
+                    e.get("approved_by"),
+                    e.get("risk_level"),
+                ]
+            )
+    except Exception:
+        pass
+
+    vault_buf = io.StringIO()
+    vault_w = csv.writer(vault_buf)
+    vault_w.writerow(["vault_id", "title", "kind", "review_status", "current_evidence_id", "updated_at"])
+    try:
+        from app.evidence_spine.vault import list_vault
+
+        for v in list_vault(user_id, limit=500):
+            vault_w.writerow(
+                [
+                    v.get("id"),
+                    (v.get("title") or "")[:200],
+                    v.get("kind"),
+                    v.get("review_status"),
+                    v.get("current_evidence_id"),
+                    v.get("updated_at"),
+                ]
+            )
+    except Exception:
+        pass
+
     manifest = {
         "product": "SecuraIQ",
         "pack_type": "compliance_audit_pack",
@@ -233,6 +313,15 @@ def build_audit_pack_zip(user_id: str, assessment_id: str) -> bytes:
         "compliance_percent": data.get("compliance_percent"),
         "evidence_coverage_percent": coverage.get("coverage_percent"),
         "evidence_files": len(links),
+        "includes": [
+            "README.md",
+            "control_matrix.csv",
+            "evidence_index.csv",
+            "remediations.csv",
+            "human_attestations.csv",
+            "exceptions.csv",
+            "vault_index.csv",
+        ],
         "disclaimer": (
             "Not a certification. Maps controls and linked evidence for authorized audits. "
             "Counsel and auditor judgment still required."
@@ -246,6 +335,9 @@ def build_audit_pack_zip(user_id: str, assessment_id: str) -> bytes:
         zf.writestr("control_matrix.csv", matrix_buf.getvalue())
         zf.writestr("evidence_index.csv", index_buf.getvalue())
         zf.writestr("remediations.csv", rem_buf.getvalue())
+        zf.writestr("human_attestations.csv", attest_buf.getvalue())
+        zf.writestr("exceptions.csv", exc_buf.getvalue())
+        zf.writestr("vault_index.csv", vault_buf.getvalue())
         zf.writestr(
             "coverage.json",
             json.dumps(

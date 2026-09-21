@@ -21,6 +21,7 @@ from app.services.exceptions import (
     get_exception,
     list_exceptions,
     reject_exception,
+    renew_exception,
     revoke_exception,
     update_exception,
 )
@@ -134,6 +135,27 @@ async def api_revoke_exception(exception_id: str, user: Annotated[AuthUser, Depe
     if not result:
         raise HTTPException(status_code=404, detail="Exception not found")
     return result
+
+
+class RenewBody(BaseModel):
+    new_expiry: float
+    note: str = ""
+
+
+@router.post("/{exception_id}/renew")
+async def api_renew_exception(
+    exception_id: str, body: RenewBody, user: Annotated[AuthUser, Depends(require_user)]
+):
+    try:
+        return renew_exception(
+            user.id,
+            exception_id,
+            new_expiry=body.new_expiry,
+            renewed_by=user.id,
+            note=body.note,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.delete("/{exception_id}")

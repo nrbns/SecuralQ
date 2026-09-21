@@ -125,10 +125,18 @@ def get_vault_item(user_id: str, vault_id: str) -> dict[str, Any] | None:
     }
 
 
-def list_vault(user_id: str, *, limit: int = 100, kind: str = "") -> list[dict[str, Any]]:
+def list_vault(
+    user_id: str,
+    *,
+    limit: int = 100,
+    kind: str = "",
+    org_id: str | None = None,
+) -> list[dict[str, Any]]:
     ensure_evidence_spine_schema()
-    q = "SELECT * FROM evidence_vault WHERE user_id = ?"
-    args: list[Any] = [user_id]
+    from app.tenancy import tenant_visibility_sql
+
+    where, args = tenant_visibility_sql(user_id, org_id=org_id)
+    q = f"SELECT * FROM evidence_vault WHERE {where}"
     if kind:
         q += " AND kind = ?"
         args.append(kind)
@@ -423,6 +431,7 @@ def set_review_status(
     *,
     status: str,
     note: str = "",
+    reviewed_by: str = "",
 ) -> dict[str, Any]:
     ensure_evidence_spine_schema()
     st = (status or "").strip().lower()
@@ -445,7 +454,7 @@ def set_review_status(
             try:
                 from app.services.evidence import confirm_evidence
 
-                confirm_evidence(user_id, eid, confirmed_by=user_id)
+                confirm_evidence(user_id, eid, confirmed_by=reviewed_by or user_id)
             except Exception:
                 pass
             _publish("evidence.verified", user_id, evidence_id=eid, vault_id=vault_id)
@@ -453,6 +462,32 @@ def set_review_status(
             _publish("evidence.rejected", user_id, evidence_id=eid, vault_id=vault_id, note=note[:200])
         else:
             _publish("evidence.updated", user_id, evidence_id=eid, vault_id=vault_id, review_status=st)
+    # Human attestation — Who/What/When/Evidence/Decision (not a bare checkbox)
+    if st in {"accepted", "rejected"}:
+        try:
+            from app.services.human_attestation import record_attestation
+
+            meta = {}
+            try:
+                meta = json.loads(vault.get("meta_json") or "{}")
+            except Exception:
+                meta = {}
+            record_attestation(
+                user_id,
+                subject_type="vault",
+                subject_id=vault_id,
+                decision="approved" if st == "accepted" else "rejected",
+                title=str(vault.get("title") or "Vault evidence review"),
+                submitted_by=str(vault.get("owner_id") or ""),
+                reviewed_by=reviewed_by or user_id,
+                comment=note,
+                evidence_ids=[eid] if eid else [],
+                framework_id=str(meta.get("framework_id") or ""),
+                control_id=str(meta.get("control_id") or ""),
+                meta={"vault_id": vault_id, "review_status": st},
+            )
+        except Exception:
+            pass
     return get_vault_item(user_id, vault_id) or {"ok": True}
 
 

@@ -286,6 +286,24 @@ def approve_exception(user_id: str, exception_id: str, *, approved_by: str) -> d
         )
     except Exception:
         pass
+    try:
+        from app.services.human_attestation import record_attestation
+
+        record_attestation(
+            user_id,
+            subject_type="exception",
+            subject_id=exception_id,
+            decision="approved",
+            title=f"Exception approved: {(existing.get('title') or exception_id)[:120]}",
+            submitted_by=str(existing.get("created_by") or ""),
+            reviewed_by=approved_by,
+            comment=str(existing.get("risk_accepted") or "")[:500],
+            framework_id=str(existing.get("framework_id") or ""),
+            control_id=str(existing.get("control_id") or ""),
+            meta={"exception_id": exception_id, "expiry": existing.get("expiry")},
+        )
+    except Exception:
+        pass
     return get_exception(user_id, exception_id)
 
 
@@ -337,6 +355,65 @@ def revoke_exception(user_id: str, exception_id: str, *, revoked_by: str) -> dic
     except Exception:
         pass
     return get_exception(user_id, exception_id)
+
+
+def renew_exception(
+    user_id: str,
+    exception_id: str,
+    *,
+    new_expiry: float,
+    renewed_by: str,
+    note: str = "",
+) -> dict[str, Any]:
+    """Create a successor exception with a new expiry — never extend in place.
+
+    The prior approved exception is revoked so coverage is never open-ended.
+    """
+    existing = get_exception(user_id, exception_id)
+    if not existing:
+        raise ValueError("exception not found")
+    status = str(existing.get("status") or "")
+    if status not in {"approved", "revoked"} and not existing.get("expired"):
+        if status != "approved":
+            raise ValueError("Only approved (or expired) exceptions can be renewed")
+    ts = now()
+    if float(new_expiry) <= ts:
+        raise ValueError("new_expiry must be in the future")
+    max_exp = ts + MAX_EXCEPTION_DAYS * 86400
+    if float(new_expiry) > max_exp:
+        raise ValueError(f"new_expiry cannot exceed {MAX_EXCEPTION_DAYS} days from now")
+    if status == "approved" and not existing.get("expired"):
+        revoke_exception(user_id, exception_id, revoked_by=renewed_by)
+    created = create_exception(
+        user_id,
+        created_by=renewed_by,
+        title=str(existing.get("title") or "Renewed exception"),
+        reason=str(existing.get("reason") or note or "Renewal"),
+        control_id=str(existing.get("control_id") or ""),
+        framework_id=str(existing.get("framework_id") or ""),
+        risk_accepted=str(existing.get("risk_accepted") or ""),
+        compensating_controls=str(existing.get("compensating_controls") or ""),
+        owner=str(existing.get("owner") or renewed_by),
+        risk_level=str(existing.get("risk_level") or "medium"),
+        expiry=float(new_expiry),
+        org_id=existing.get("org_id"),
+    )
+    try:
+        from app.services.human_attestation import record_attestation
+
+        record_attestation(
+            user_id,
+            subject_type="exception",
+            subject_id=str(created.get("id") or ""),
+            decision="attested",
+            title=f"Exception renewed from {exception_id[:12]}",
+            reviewed_by=renewed_by,
+            comment=note or f"Successor of {exception_id}",
+            meta={"previous_exception_id": exception_id, "new_expiry": new_expiry},
+        )
+    except Exception:
+        pass
+    return {"ok": True, "previous_id": exception_id, "exception": created}
 
 
 def delete_exception(user_id: str, exception_id: str) -> bool:

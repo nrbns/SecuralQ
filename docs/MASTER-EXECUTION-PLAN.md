@@ -83,15 +83,20 @@ SERVER CHANGE → AGENT → GATEWAY → REDIS → OBSERVATION → EVIDENCE
 | Asset identity / aliases | Shipped |
 | Compliance Ops (tasks/calendar/approvals) | MVP shipped |
 | Notification outbox worker | Shipped |
-| Remediation plan → **verified** only after independent command verify | Shipped |
+| Human attestation (Who/What/When/Decision) | Shipped — `/api/attestations` + vault/exception hooks |
+| Exception renew (no permanent accept) | Shipped — `POST /api/exceptions/{id}/renew` |
+| Audit pack completeness | Improved — attestations + exceptions + vault index in ZIP |
 | Command execute ≠ verified | Enforced (host + campaign) |
 | Redis Sentinel live Docker failover | Ops / needs Docker |
 | HTTP load ladder 100+ | Re-measure after check-in fix |
-| Tenant fail-closed completeness | Partial |
+| Tenant fail-closed completeness | Partial (vault/aliases lists scoped; leftovers remain) |
 | WORM / object-lock | Missing |
 | Cloud / K8s / Identity / AppSec depth | **Frozen** |
 
-Next 🔴 (Sprint A remainders): tenant hardening · universal evidence coverage for remaining claim paths · human attestation depth · re-measure load · owned-host live proof.  
+Next 🔴 (Sprint A remainders): re-measure HTTP load ladder · owned-host live proof · Docker Sentinel failover · WORM/object-lock · full SSO/SCIM depth.  
+
+**Sprint A+B closed this pass:** human attestation (Who/What/When/Evidence/Decision) · vault/exception → attestation + evidence · exception renew (no open-ended accept) · audit pack includes attestations/exceptions/vault · vault/alias list tenant-scoped.  
+
 Frozen until loop stays green: Cloud/K8s/AppSec/Identity depth · business-service graph expansions · AI SecOps autonomy.
 
 ### Prove #1
