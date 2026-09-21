@@ -106,7 +106,9 @@ Organizing principle: [RELEASE-GATES.md](./RELEASE-GATES.md) — close partials 
 
 **Tenant path proofs (follow-on):** SSE push filter + agent auth/commands + notification/outbox isolation in `tests/test_cross_tenant_isolation.py`.
 
-**Release-gate closes (this pass):** jobs/files/RAG tenant proofs · universal `evidence_envelope` · `GET /api/ops/mission-control` · control.failed org stamp · recovery duplicate/stale tests (`tests/test_release_gate_closes.py`). Ops leftovers remain: Docker Sentinel, owned-host, HTTP 500+, WORM, SSO depth.
+**Release-gate closes (prior):** jobs/files/RAG tenant proofs · universal `evidence_envelope` · `GET /api/ops/mission-control` · control.failed org stamp · recovery duplicate/stale tests.
+
+**CMMC Tier-1 slice (this pass):** assessment objectives (Examine/Interview/Test scaffolds) · method evidence → Evidence Spine · catalog-gated POA&M (180d L2) · CUI program container · SPRS preparation snapshot · versioned catalog status_note — `docs/CMMC-ASSESSMENT.md`. Does **not** claim C3PAO or SPRS submit.
 Frozen until loop stays green: Cloud/K8s/AppSec/Identity depth · business-service graph expansions · AI SecOps autonomy.
 
 ### Prove #1

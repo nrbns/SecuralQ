@@ -27,6 +27,7 @@ If a feature cannot answer all six, do not ship it yet.
 | Freshness (never show old PASS as current) | **Shipped** | Policies + `control_stale_tick` |
 | Source reconciliation / CONFLICT | **Shipped** | Canonical + human resolve |
 | Platform Mission Control | **Shipped (lab)** | `GET /api/ops/mission-control` — component health; not multi-node HA |
+| CMMC assessment layer | **Shipped (scaffold)** | Objectives (Examine/Interview/Test) · method evidence → spine · policy-gated POA&M · CUI program · SPRS prep · versioned catalog — see [CMMC-ASSESSMENT.md](./CMMC-ASSESSMENT.md). Not C3PAO/SPRS submit |
 
 ## RELEASE 1 — Closed loop
 
