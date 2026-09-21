@@ -21,6 +21,20 @@ runtime signal. Both can map to the same control.
 
 from __future__ import annotations
 
+from app.evidence_spine.control_state import (
+    get_control_state,
+    list_control_states,
+    reconcile_control,
+    run_stale_tick,
+    run_stale_tick_all_users,
+    transition_control_state,
+)
+from app.evidence_spine.dependencies import (
+    evaluate_dependencies,
+    list_requirements,
+    seed_default_packs,
+    upsert_requirement,
+)
 from app.evidence_spine.evaluate import evaluate_control_from_evidence
 from app.evidence_spine.freshness import apply_freshness_to_result, list_freshness_policies
 from app.evidence_spine.ingest import (
@@ -58,4 +72,14 @@ __all__ = [
     "set_review_status",
     "list_freshness_policies",
     "apply_freshness_to_result",
+    "evaluate_dependencies",
+    "list_requirements",
+    "seed_default_packs",
+    "upsert_requirement",
+    "get_control_state",
+    "list_control_states",
+    "transition_control_state",
+    "reconcile_control",
+    "run_stale_tick",
+    "run_stale_tick_all_users",
 ]

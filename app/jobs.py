@@ -48,7 +48,9 @@ _last_cloud_posture_sync = _boot_ts
 _last_sonarqube_sync = _boot_ts
 _last_software_sync = _boot_ts
 _last_compliance_ops_tick = _boot_ts
+_last_control_stale_tick = _boot_ts
 COMPLIANCE_OPS_TICK_SEC = 300  # every 5 minutes
+CONTROL_STALE_TICK_SEC = 300  # every 5 minutes — PASS/FAIL → STALE
 
 
 def register_job(kind: str):
@@ -249,7 +251,7 @@ async def _scheduler_loop() -> None:
     await asyncio.sleep(15)
     global _last_kev_sync, _last_xdr_sync, _last_wazuh_sync, _last_openaudit_sync
     global _last_thehive_sync, _last_cloud_posture_sync, _last_sonarqube_sync, _last_software_sync
-    global _last_compliance_ops_tick
+    global _last_compliance_ops_tick, _last_control_stale_tick
     while True:
         now_t = time.time()
         try:
@@ -380,6 +382,16 @@ async def _scheduler_loop() -> None:
             ):
                 _last_compliance_ops_tick = now_t
                 enqueue_job("compliance_ops_tick", {"scheduled": True})
+        except Exception:
+            pass
+        try:
+            if (
+                "control_stale_tick" in JOB_HANDLERS
+                and now_t - _last_control_stale_tick >= CONTROL_STALE_TICK_SEC
+                and not _has_pending_or_running("control_stale_tick")
+            ):
+                _last_control_stale_tick = now_t
+                enqueue_job("control_stale_tick", {"scheduled": True})
         except Exception:
             pass
         await asyncio.sleep(_SCHEDULER_TICK_SEC)
@@ -983,3 +995,14 @@ async def _job_compliance_ops_tick(payload: dict[str, Any]) -> dict[str, Any]:
     if uid and uid != "local":
         return await asyncio.to_thread(run_compliance_ops_tick, uid)
     return await asyncio.to_thread(run_tick_all_users)
+
+
+@register_job("control_stale_tick")
+async def _job_control_stale_tick(payload: dict[str, Any]) -> dict[str, Any]:
+    """Age PASS/FAIL controls past freshness into STALE; open recollection tasks."""
+    from app.evidence_spine.control_state import run_stale_tick, run_stale_tick_all_users
+
+    uid = (payload.get("user_id") or "").strip()
+    if uid and uid != "local":
+        return await asyncio.to_thread(run_stale_tick, uid)
+    return await asyncio.to_thread(run_stale_tick_all_users)

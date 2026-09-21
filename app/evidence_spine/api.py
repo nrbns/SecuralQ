@@ -9,6 +9,19 @@ from pydantic import BaseModel, Field
 
 from app.auth import AuthUser
 from app.commercial_api import require_user
+from app.evidence_spine.control_state import (
+    get_control_state,
+    list_control_states,
+    reconcile_control,
+    run_stale_tick,
+    transition_control_state,
+)
+from app.evidence_spine.dependencies import (
+    evaluate_dependencies,
+    list_requirements,
+    seed_default_packs,
+    upsert_requirement,
+)
 from app.evidence_spine.evaluate import evaluate_control_from_evidence
 from app.evidence_spine.freshness import apply_freshness_to_result, list_freshness_policies
 from app.evidence_spine.ingest import ingest_document_as_evidence, ingest_observation_as_evidence
@@ -73,6 +86,29 @@ class FreshnessIn(BaseModel):
     result: str = "pass"
     last_observed: float | None = None
     control_or_test: str = Field(min_length=1, max_length=120)
+
+
+class RequirementIn(BaseModel):
+    control_id: str = Field(min_length=1, max_length=120)
+    slot_key: str = Field(min_length=1, max_length=80)
+    title: str = ""
+    framework_id: str = ""
+    required_role: str = "supports"
+    min_count: int = 1
+
+
+class ReconcileIn(BaseModel):
+    framework_id: str = ""
+    test_name: str = ""
+
+
+class TransitionIn(BaseModel):
+    control_id: str = Field(min_length=1, max_length=120)
+    state: str = Field(min_length=1, max_length=40)
+    framework_id: str = ""
+    source: str = "api"
+    evidence_ids: list[str] = Field(default_factory=list)
+    detail: dict[str, Any] = Field(default_factory=dict)
 
 
 @router.post("/observations")
@@ -284,3 +320,127 @@ async def api_evidence_controls(
         "evidence_id": evidence_id,
         "controls": list_controls_for_evidence(user.id, evidence_id),
     }
+
+
+# ── Dependency packs ─────────────────────────────────────────────────────────
+
+
+@router.get("/dependencies")
+async def api_list_dependencies(
+    user: Annotated[AuthUser, Depends(require_user)],
+    control_id: str = "",
+    framework_id: str = "",
+):
+    return {
+        "ok": True,
+        "requirements": list_requirements(
+            user.id, control_id=control_id, framework_id=framework_id
+        ),
+    }
+
+
+@router.post("/dependencies")
+async def api_upsert_dependency(
+    body: RequirementIn,
+    user: Annotated[AuthUser, Depends(require_user)],
+):
+    try:
+        return {
+            "ok": True,
+            "requirement": upsert_requirement(
+                user.id,
+                control_id=body.control_id,
+                slot_key=body.slot_key,
+                title=body.title,
+                framework_id=body.framework_id,
+                required_role=body.required_role,
+                min_count=body.min_count,
+            ),
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/dependencies/seed")
+async def api_seed_dependencies(
+    user: Annotated[AuthUser, Depends(require_user)],
+    force: bool = False,
+):
+    return seed_default_packs(user.id, force=force)
+
+
+@router.get("/controls/{control_id}/dependencies")
+async def api_control_dependencies(
+    control_id: str,
+    user: Annotated[AuthUser, Depends(require_user)],
+    framework_id: str = "",
+):
+    return evaluate_dependencies(
+        user.id, control_id=control_id, framework_id=framework_id
+    )
+
+
+# ── Control runtime state ─────────────────────────────────────────────────────
+
+
+@router.get("/control-state")
+async def api_list_control_state(
+    user: Annotated[AuthUser, Depends(require_user)],
+    state: str = "",
+    limit: int = 200,
+):
+    return {"ok": True, "states": list_control_states(user.id, state=state, limit=limit)}
+
+
+@router.get("/controls/{control_id}/state")
+async def api_get_control_state(
+    control_id: str,
+    user: Annotated[AuthUser, Depends(require_user)],
+    framework_id: str = "",
+):
+    row = get_control_state(user.id, control_id=control_id, framework_id=framework_id)
+    if not row:
+        return {"ok": True, "state": None, "control_id": control_id, "framework_id": framework_id}
+    return {"ok": True, "state": row}
+
+
+@router.post("/controls/{control_id}/reconcile")
+async def api_reconcile_control(
+    control_id: str,
+    user: Annotated[AuthUser, Depends(require_user)],
+    body: ReconcileIn | None = None,
+):
+    body = body or ReconcileIn()
+    return reconcile_control(
+        user.id,
+        control_id=control_id,
+        framework_id=body.framework_id,
+        test_name=body.test_name,
+    )
+
+
+@router.post("/control-state/transition")
+async def api_transition_control(
+    body: TransitionIn,
+    user: Annotated[AuthUser, Depends(require_user)],
+):
+    try:
+        return {
+            "ok": True,
+            "state": transition_control_state(
+                user.id,
+                control_id=body.control_id,
+                new_state=body.state,
+                framework_id=body.framework_id,
+                source=body.source,
+                evidence_ids=body.evidence_ids,
+                detail=body.detail,
+            ),
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/control-state/stale-tick")
+async def api_stale_tick(user: Annotated[AuthUser, Depends(require_user)]):
+    return run_stale_tick(user.id)

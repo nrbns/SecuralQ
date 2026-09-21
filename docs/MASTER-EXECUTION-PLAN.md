@@ -53,7 +53,8 @@ Board + approvals + control FAIL/PASS bridge shipped.
 
 Observation + Document → Evidence → control map → evaluate: see [EVIDENCE-SPINE.md](./EVIDENCE-SPINE.md).  
 Does not rebuild the product — unifies `securaiq_evidence`, host controls, doc library, and Compliance Ops tasks.  
-**Vault shipped:** SHA-256 integrity, version supersede (no overwrite), review accept/reject, freshness policies.
+**Vault shipped:** SHA-256 integrity, version supersede (no overwrite), review accept/reject, freshness policies.  
+**State machine shipped:** evidence dependency packs + `control_runtime_state` + `control_stale_tick` job (PASS→STALE).
 
 ### Prove #1
 

@@ -17,8 +17,30 @@ SERVER / AGENT / DOCUMENT
          ↓
    CONTROL RESULT       (+ freshness → STALE)
          ↓
+ control_runtime_state  (CURRENT / PREVIOUS / VERSION)
+         ↓
  RISK / COMPLIANCE / TASK / SSE
 ```
+
+### Evidence dependency packs
+
+A control may require **multiple evidence slots** before it can be PASS:
+
+```text
+AC-1 Access control
+  ├── policy     (documents)  — Access control policy
+  └── runtime    (satisfies)  — Live MFA / access observation
+```
+
+If any required slot is missing or expired → reconcile returns **partial** (not PASS).
+Default packs: `AT-2`, `AC-1`, `host_firewall`. Seed via `POST /dependencies/seed`.
+
+### Control runtime state machine
+
+States: `unknown` → `evaluating` → `pass` | `fail` | `partial` → `stale` → (recollect) …
+
+Each row tracks `state`, `previous_state`, `changed_at`, `last_observed_at`, `version`, `source`.
+Job `control_stale_tick` (every 5 min) ages PASS/FAIL past freshness into STALE and opens host recollection tasks.
 
 ### Important honesty rules
 
@@ -77,6 +99,15 @@ Prefix: `/api/evidence-spine`
 | DELETE | `/link` | Unmap |
 | GET | `/controls/{id}/evidence` | All evidence for a control |
 | GET | `/controls/{id}/evaluate` | Rollup result + WHY note |
+| GET | `/controls/{id}/dependencies` | Dependency pack completeness |
+| POST | `/controls/{id}/reconcile` | Evaluate + deps + state transition |
+| GET | `/controls/{id}/state` | Runtime state row |
+| GET | `/control-state` | List runtime states |
+| POST | `/control-state/transition` | Manual/agent state transition |
+| POST | `/control-state/stale-tick` | Run stale tick for current user |
+| GET | `/dependencies` | List requirement slots |
+| POST | `/dependencies` | Upsert a requirement slot |
+| POST | `/dependencies/seed` | Seed default packs (AT-2, AC-1, host_firewall) |
 | GET | `/evidence/{id}/controls` | Controls linked to one evidence row |
 
 Existing Evidence Store remains at `/api/evidence`.
@@ -87,10 +118,12 @@ Existing Evidence Store remains at `/api/evidence`.
 - **Compliance Doc Library approve** — Document → Evidence (declared) + control map
 - **Compliance Operations** — task evidence notes become Evidence rows
 - **Evidence Vault** — upload / version / review with integrity hash
+- **Dependency packs** — control requires N evidence slots before PASS
+- **Control state machine** — CURRENT/PREVIOUS/VERSION + stale tick job + SSE
 
 ## SSE events
 
-`evidence.created` · `evidence.updated` · `evidence.linked` · `evidence.verified` · `evidence.rejected` · `evidence.superseded` · `control.stale`
+`evidence.created` · `evidence.updated` · `evidence.linked` · `evidence.verified` · `evidence.rejected` · `evidence.superseded` · `control.stale` · `control.passed` · `control.failed` · `control.evaluating` · `control.updated`
 
 ## Out of scope (next)
 
@@ -103,5 +136,5 @@ Existing Evidence Store remains at `/api/evidence`.
 ## Tests
 
 ```bash
-pytest -v tests/test_evidence_spine.py tests/test_evidence_vault.py
+pytest -v tests/test_evidence_spine.py tests/test_evidence_vault.py tests/test_control_state.py
 ```

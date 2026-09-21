@@ -7,6 +7,9 @@ from app.db import get_conn
 
 def ensure_evidence_spine_schema() -> None:
     """Idempotent — safe across test DB swaps (no sticky global)."""
+    from app.services.evidence import ensure_schema as ensure_evidence_store
+
+    ensure_evidence_store()
     c = get_conn()
     c.executescript(
         """
