@@ -47,6 +47,13 @@ from app.evidence_spine.mapping import (
     list_evidence_for_control,
     unlink_evidence_from_control,
 )
+from app.evidence_spine.reconciliation import (
+    detect_conflict,
+    get_canonical_state,
+    list_canonical_states,
+    reconcile_observations,
+    resolve_conflict,
+)
 from app.evidence_spine.schema import ensure_evidence_spine_schema
 from app.evidence_spine.vault import (
     create_vault_document,
@@ -82,4 +89,9 @@ __all__ = [
     "reconcile_control",
     "run_stale_tick",
     "run_stale_tick_all_users",
+    "detect_conflict",
+    "reconcile_observations",
+    "resolve_conflict",
+    "get_canonical_state",
+    "list_canonical_states",
 ]

@@ -31,6 +31,12 @@ from app.evidence_spine.mapping import (
     list_evidence_for_control,
     unlink_evidence_from_control,
 )
+from app.evidence_spine.reconciliation import (
+    get_canonical_state,
+    list_canonical_states,
+    reconcile_observations,
+    resolve_conflict,
+)
 from app.evidence_spine.vault import (
     create_vault_document,
     get_vault_item,
@@ -109,6 +115,22 @@ class TransitionIn(BaseModel):
     source: str = "api"
     evidence_ids: list[str] = Field(default_factory=list)
     detail: dict[str, Any] = Field(default_factory=dict)
+
+
+class ObservationReconcileIn(BaseModel):
+    check_id: str = Field(min_length=1, max_length=120)
+    asset_id: str = ""
+    hostname: str = ""
+    agent_id: str = ""
+    source_ref: str = ""
+    ip: str = ""
+
+
+class ConflictResolveIn(BaseModel):
+    subject_key: str = Field(min_length=1, max_length=240)
+    check_id: str = Field(min_length=1, max_length=120)
+    result: str = Field(min_length=1, max_length=40)
+    note: str = ""
 
 
 @router.post("/observations")
@@ -444,3 +466,81 @@ async def api_transition_control(
 @router.post("/control-state/stale-tick")
 async def api_stale_tick(user: Annotated[AuthUser, Depends(require_user)]):
     return run_stale_tick(user.id)
+
+
+# ── Multi-source observation reconciliation ───────────────────────────────────
+
+
+@router.post("/observations/reconcile")
+async def api_reconcile_observations(
+    body: ObservationReconcileIn,
+    user: Annotated[AuthUser, Depends(require_user)],
+):
+    try:
+        return reconcile_observations(
+            user.id,
+            check_id=body.check_id,
+            asset_id=body.asset_id,
+            hostname=body.hostname,
+            agent_id=body.agent_id,
+            source_ref=body.source_ref,
+            ip=body.ip,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/observations/canonical")
+async def api_list_canonical(
+    user: Annotated[AuthUser, Depends(require_user)],
+    conflict_status: str = "",
+    check_id: str = "",
+    limit: int = 100,
+):
+    return {
+        "ok": True,
+        "states": list_canonical_states(
+            user.id,
+            conflict_status=conflict_status,
+            check_id=check_id,
+            limit=limit,
+        ),
+    }
+
+
+@router.get("/observations/canonical/{check_id}")
+async def api_get_canonical(
+    check_id: str,
+    user: Annotated[AuthUser, Depends(require_user)],
+    subject_key: str = "",
+    asset_id: str = "",
+    hostname: str = "",
+    agent_id: str = "",
+):
+    from app.evidence_spine.reconciliation import subject_key as make_sk
+
+    sk = subject_key or make_sk(
+        asset_id=asset_id, hostname=hostname, agent_id=agent_id
+    )
+    row = get_canonical_state(user.id, subject_key_val=sk, check_id=check_id)
+    if not row:
+        return {"ok": True, "state": None, "subject_key": sk, "check_id": check_id}
+    return {"ok": True, "state": row}
+
+
+@router.post("/observations/resolve")
+async def api_resolve_conflict(
+    body: ConflictResolveIn,
+    user: Annotated[AuthUser, Depends(require_user)],
+):
+    try:
+        return resolve_conflict(
+            user.id,
+            subject_key_val=body.subject_key,
+            check_id=body.check_id,
+            result=body.result,
+            resolved_by=user.id,
+            note=body.note,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

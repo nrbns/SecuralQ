@@ -81,6 +81,23 @@ PASS cannot last forever. Policies (examples):
 
 `evaluate_control_from_evidence` can return `stale` when observed evidence ages past policy.
 
+## Multi-source reconciliation
+
+When Agent / Cloud / Scanner disagree on the same check for the same subject:
+
+```text
+Source → Observation → Freshness → Conflict detection → Canonical state
+```
+
+| Status | Meaning |
+|--------|---------|
+| `agreed` | All fresh sources report the same result |
+| `conflict` | Fresh sources disagree — **human resolve required** (advisory severity only) |
+| `insufficient` | No fresh observations |
+
+Canonical rows live in `observation_canonical_state` (CURRENT + VERSION + sources).  
+Ingest of observations triggers a best-effort reconcile hook. SSE: `observation.conflict` · `observation.reconciled`.
+
 ## API
 
 Prefix: `/api/evidence-spine`
@@ -108,6 +125,10 @@ Prefix: `/api/evidence-spine`
 | GET | `/dependencies` | List requirement slots |
 | POST | `/dependencies` | Upsert a requirement slot |
 | POST | `/dependencies/seed` | Seed default packs (AT-2, AC-1, host_firewall) |
+| POST | `/observations/reconcile` | Multi-source conflict → canonical state |
+| GET | `/observations/canonical` | List canonical / conflict rows |
+| GET | `/observations/canonical/{check_id}` | One subject+check canonical row |
+| POST | `/observations/resolve` | Human resolve a conflict |
 | GET | `/evidence/{id}/controls` | Controls linked to one evidence row |
 
 Existing Evidence Store remains at `/api/evidence`.
@@ -120,10 +141,11 @@ Existing Evidence Store remains at `/api/evidence`.
 - **Evidence Vault** — upload / version / review with integrity hash
 - **Dependency packs** — control requires N evidence slots before PASS
 - **Control state machine** — CURRENT/PREVIOUS/VERSION + stale tick job + SSE
+- **Observation reconciliation** — multi-source conflict detection + human resolve
 
 ## SSE events
 
-`evidence.created` · `evidence.updated` · `evidence.linked` · `evidence.verified` · `evidence.rejected` · `evidence.superseded` · `control.stale` · `control.passed` · `control.failed` · `control.evaluating` · `control.updated`
+`evidence.created` · `evidence.updated` · `evidence.linked` · `evidence.verified` · `evidence.rejected` · `evidence.superseded` · `control.stale` · `control.passed` · `control.failed` · `control.evaluating` · `control.updated` · `observation.conflict` · `observation.reconciled`
 
 ## Out of scope (next)
 
@@ -132,9 +154,10 @@ Existing Evidence Store remains at `/api/evidence`.
 - Org-wide auto risk recalc on every write
 - Email notification worker
 - Drag-and-drop vault UI polish
+- Full asset identity / entity-resolution graph
 
 ## Tests
 
 ```bash
-pytest -v tests/test_evidence_spine.py tests/test_evidence_vault.py tests/test_control_state.py
+pytest -v tests/test_evidence_spine.py tests/test_evidence_vault.py tests/test_control_state.py tests/test_observation_reconciliation.py
 ```

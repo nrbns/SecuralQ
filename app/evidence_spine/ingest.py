@@ -157,6 +157,21 @@ def ingest_observation_as_evidence(
             )
         except Exception:
             pass
+    recon = None
+    try:
+        from app.evidence_spine.reconciliation import reconcile_from_observation_payload
+
+        recon = reconcile_from_observation_payload(
+            user_id,
+            check_id=test or check_id,
+            asset_id=asset_id,
+            hostname=hostname,
+            agent_id=agent_id,
+            source_ref=source_ref or agent_id,
+            ip=str((detail or {}).get("ip") or "") if isinstance(detail, dict) else "",
+        )
+    except Exception:
+        recon = None
     return {
         "ok": True,
         "observation_id": obs_id,
@@ -164,6 +179,7 @@ def ingest_observation_as_evidence(
         "evidence_id": eid,
         "links": links,
         "content_hash": body["content_hash"],
+        "reconciliation": recon,
     }
 
 

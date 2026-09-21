@@ -54,7 +54,19 @@ Board + approvals + control FAIL/PASS bridge shipped.
 Observation + Document → Evidence → control map → evaluate: see [EVIDENCE-SPINE.md](./EVIDENCE-SPINE.md).  
 Does not rebuild the product — unifies `securaiq_evidence`, host controls, doc library, and Compliance Ops tasks.  
 **Vault shipped:** SHA-256 integrity, version supersede (no overwrite), review accept/reject, freshness policies.  
-**State machine shipped:** evidence dependency packs + `control_runtime_state` + `control_stale_tick` job (PASS→STALE).
+**State machine shipped:** evidence dependency packs + `control_runtime_state` + `control_stale_tick` job (PASS→STALE).  
+**Reconciliation shipped:** multi-source Observation conflict → `observation_canonical_state` (agreed | conflict | insufficient) + human resolve. Never silently picks a winner.
+
+### Commercial backbone (north star — do not random-feature)
+
+```text
+AGENTS / CLOUD / DOCUMENTS → OBSERVATIONS → EVIDENCE
+  → CONTROLS + ASSETS → COMPLIANCE + RISK → TASKS + FINDINGS
+  → REMEDIATION → VERIFY → NEW EVIDENCE → AUDIT PROOF → REALTIME UI
+```
+
+Next backbone gaps (🔴): asset identity depth · verification closed-loop polish · notification worker · tenant hardening · measured HA/DR/load.  
+Frozen until loop stays green: Cloud/K8s/AppSec/Identity depth · business-service graph expansions · AI SecOps.
 
 ### Prove #1
 
