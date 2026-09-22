@@ -148,27 +148,27 @@ class CheckinPayload(BaseModel):
     packages: list[dict[str, Any]] = Field(default_factory=list)
     file_integrity: list[dict[str, Any]] = Field(default_factory=list)
     uptime_sec: float | None = None
-    # Deep telemetry (task #140) -- each is the collector's own
-    # {"collected": bool, "reason": str, ...} shape from
-    # scripts/securaiq_agent.py; a field simply absent from an older agent's
-    # check-in defaults to {} rather than erroring the whole check-in, and
-    # the UI treats "no such key" the same as "collected: false".
-    services: dict[str, Any] = Field(default_factory=dict)
-    local_users: dict[str, Any] = Field(default_factory=dict)
-    local_groups: dict[str, Any] = Field(default_factory=dict)
-    hardware: dict[str, Any] = Field(default_factory=dict)
-    network: dict[str, Any] = Field(default_factory=dict)
-    firewall_status: dict[str, Any] = Field(default_factory=dict)
-    disk_encryption_status: dict[str, Any] = Field(default_factory=dict)
-    defender_status: dict[str, Any] = Field(default_factory=dict)
-    startup_apps: dict[str, Any] = Field(default_factory=dict)
-    ssh_config: dict[str, Any] = Field(default_factory=dict)
+    # Deep telemetry — absent on load-test / truncated check-ins.
+    # Use None (not {}) so checkin() does not treat empty defaults as
+    # "host telemetry present" and run full host-control evaluators.
+    services: dict[str, Any] | None = None
+    local_users: dict[str, Any] | None = None
+    local_groups: dict[str, Any] | None = None
+    hardware: dict[str, Any] | None = None
+    network: dict[str, Any] | None = None
+    firewall_status: dict[str, Any] | None = None
+    disk_encryption_status: dict[str, Any] | None = None
+    defender_status: dict[str, Any] | None = None
+    startup_apps: dict[str, Any] | None = None
+    ssh_config: dict[str, Any] | None = None
     # Phase 3 Rust/Python — bounded recent security log sample (optional).
-    security_logs: dict[str, Any] = Field(default_factory=dict)
+    security_logs: dict[str, Any] | None = None
     # REALTIME Task D — optional offline buffer / sequence recovery (ignored by older agents).
     sequence: int | None = None
     buffered_events: list[dict[str, Any]] = Field(default_factory=list)
     request_missing_from: int | None = None
+    # Capacity / recovery: skip host-control evaluators when true.
+    truncated: bool = False
 
 
 def _parse_agent_bearer(value: str | None) -> tuple[str, str]:
@@ -1121,7 +1121,9 @@ async def api_agent_checkin(
     )
     # checkin() is sync and does host-control + evidence work — never block the
     # event loop (HTTP load ladder p95 cliff at 25→50 concurrent was this).
-    result = await asyncio.to_thread(checkin, str(agent["id"]), payload.model_dump())
+    result = await asyncio.to_thread(
+        checkin, str(agent["id"]), payload.model_dump(exclude_none=True)
+    )
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("error") or "Check-in failed")
     return result

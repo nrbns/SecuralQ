@@ -288,10 +288,12 @@ Cross-links: [PRODUCTION-CONTROL-PLANE.md](./PRODUCTION-CONTROL-PLANE.md) · [RE
 
 ## 27. Scale 1 → 100,000 — P0
 
-| Rung | In-proc | HTTP check-in |
-|------|---------|---------------|
-| 100 | Measured | **Measured** |
-| 1K–100K | Measured (aggregator) | 500+ **unmeasured** |
+| Rung | In-proc | Soft check-in | HTTP check-in |
+|------|---------|---------------|---------------|
+| 100 | Measured | Measured | **Measured** |
+| 500 | Measured | Measured | **Measured (99.6%, 2026-09-22)** |
+| 1K | Measured | Measured | Unmeasured |
+| 5K–100K | Measured (aggregator) | Soft to 1k | Unmeasured |
 
 Measure events/sec, API p50/p95/p99, queue lag, Redis/PG, workers, SSE, loss/dupes, 30-min refresh — see [ops/CAPACITY-LAB.md](./ops/CAPACITY-LAB.md).
 
@@ -363,9 +365,11 @@ This matches the product philosophy. **Phases 2–5 breadth stay gated** by Phas
 
 ## What to do next (ordered)
 
-1. **Ops-unblock Phase 1 leftovers:** owned-host acceptance, live Sentinel, HTTP 500+ measure, Authenticode secrets.  
-2. **Do not** start Phase 5 twin / AI autonomy / cloud-module sprawl.  
-3. **Sell** what is lab-production on the golden loop + USP claims map.  
-4. Re-score this file after each measured close — never check a box from aspiration alone.
+1. ~~Code-unblock Phase 1 leftovers~~ — **done** (`app/phase1_ops_remaining.py`, `GET /ready`, `GET /api/admin/ops/phase1-remaining`, owned-host gate, soft ladder 100→1000, lab Authenticode PFX proof).  
+2. ~~HTTP 500 measure~~ — **done** (2026-09-22, 99.6% @ 500 truncated check-ins; 1000 still open).  
+3. **Ops-only (do not fake):** live Sentinel `--inject-stop` (needs Docker), owned-host OS mutation (`SECURAIQ_OWNED_HOST=1`), HTTP 1000, EV Authenticode secrets, cloud WORM.  
+4. **Do not** start Phase 5 twin / AI autonomy / cloud-module sprawl.  
+5. **Sell** what is lab-production on the golden loop + USP claims map.  
+6. Re-score this file after each measured close — never check a box from aspiration alone.
 
 *Snapshot aligned to main · 2026-09-22 · source of truth for world-class targeting.*

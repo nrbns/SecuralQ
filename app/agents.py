@@ -976,8 +976,14 @@ def checkin(agent_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     # RT-10/11 + Sprint 2 — config observe/drift then host control tests.
     # Must never break check-in; errors are swallowed.
     # Prefer effective (live + newest ACKed buffer) so offline catch-up re-applies.
+    _eff = effective_payload if isinstance(effective_payload, dict) else payload
+    host_controls: dict[str, Any] | None = None
+    # Empty {} from API defaults must NOT count as host telemetry present.
+    def _meaningful_host_blob(v: Any) -> bool:
+        return isinstance(v, dict) and bool(v)
+
     _host_present = any(
-        isinstance(effective_payload.get(k), dict)
+        _meaningful_host_blob((_eff or {}).get(k))
         for k in (
             "firewall_status",
             "defender_status",
@@ -985,8 +991,6 @@ def checkin(agent_id: str, payload: dict[str, Any]) -> dict[str, Any]:
             "disk_encryption_status",
         )
     )
-    _eff = effective_payload if isinstance(effective_payload, dict) else payload
-    host_controls: dict[str, Any] | None = None
     if not (_eff or {}).get("truncated") or _host_present:
         try:
             from app.configuration.observe import record_checkin_observations

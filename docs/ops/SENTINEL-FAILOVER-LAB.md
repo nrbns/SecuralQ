@@ -80,3 +80,13 @@ Also: `python scripts/realtime_ops_remaining_proof.py` bundles Sentinel self-tes
 - sse_resume_ok: `True`
 - live_redis_ping: `False` error=`redis_not_configured`
 - disclaimer: in-process only — not Docker Sentinel promote
+
+### In-process self-test 2026-09-22T09:45:19.434927+00:00
+
+- simulated: `true`
+- chain_ok: `True`
+- reconnect_ms: `577.4`
+- xautoclaim_reclaim_ok: `True`
+- sse_resume_ok: `True`
+- live_redis_ping: `False` error=`redis_not_configured`
+- disclaimer: in-process only — not Docker Sentinel promote

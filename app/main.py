@@ -1085,6 +1085,27 @@ async def admin_realtime_metrics(user: Annotated[AuthUser, Depends(require_user)
     return pipeline_metrics()
 
 
+@app.get("/ready")
+async def ready():
+    """Load-balancer readiness — DB + Redis/realtime (not /api/health)."""
+    from fastapi.responses import JSONResponse
+
+    from app.platform_ready import platform_ready
+
+    body = platform_ready()
+    code = 200 if body.get("ready") else 503
+    return JSONResponse(body, status_code=code)
+
+
+@app.get("/api/admin/ops/phase1-remaining")
+async def admin_phase1_ops_remaining(user: Annotated[AuthUser, Depends(require_user)]):
+    """Honest Phase-1 leftover board — code-unblocked vs still ops."""
+    _require_admin(user)
+    from app.phase1_ops_remaining import phase1_ops_remaining
+
+    return phase1_ops_remaining()
+
+
 @app.get("/api/admin/realtime/fabric")
 async def admin_realtime_fabric(user: Annotated[AuthUser, Depends(require_user)]):
     """Realtime fabric readiness — lab-production, not HA exactly-once."""

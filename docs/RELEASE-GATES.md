@@ -89,10 +89,19 @@ Attack paths / business graph / advanced risk / digital twin / AI SecOps autonom
 5. ~~Acceptance path uses sealed dispatch (not raw SQL → sent)~~ — done  
 6. ~~DLQ soft-recover + named failure-matrix contract~~ — done this pass  
 7. ~~Approve/execute auto-evidence + stage latency meters~~ — done this pass  
-8. HTTP ladder 500+ when lab can sustain it — Release 4 (**ops**)  
-9. Live Docker Sentinel failover when Docker available — Release 3 (**ops**)  
-10. Owned-host live acceptance — Release 1 prove (**ops**)  
-11. WORM/object-lock · full SSO/SCIM · signed installers — Release 3 leftovers  
+8. HTTP ladder 500+ when lab can sustain it — Release 4 (**ops measure**; harness + truncated check-in + soft 1000 **code-done**)  
+9. Live Docker Sentinel failover when Docker available — Release 3 (**ops**; pipeline self-test **code-done**)  
+10. Owned-host live acceptance — Release 1 prove (**ops**; gate `SECURAIQ_OWNED_HOST` / `--i-own-this-host` **code-done**)  
+11. WORM/object-lock · full SSO/SCIM · signed installers — Release 3 leftovers (scaffolds + lab PFX **code-done**; EV/cloud **ops**)
+
+One-shot lab close (no Docker faking):
+
+```bash
+python scripts/phase1_ops_complete_lab.py
+python scripts/phase1_ops_complete_lab.py --http-ladder --max-agents 500 --workers 8
+```
+
+Board: `GET /api/admin/ops/phase1-remaining` · LB probe: `GET /ready`
 
 ### Production control-plane freeze (customer roadmap)
 
@@ -110,18 +119,18 @@ Do **not** start Release 5 / cloud-depth / twin / AI autonomy. Finish the closed
 | CMMC | Lab-production Tier-1 (`/tier1-readiness`); not C3PAO/SPRS submit |
 | Tenant / RBAC / MFA / SSO | Lab-production — object-store org guard + IdP readiness facades |
 | Audit trail | Lab-production — hash chain + sealed export; SQLite ≠ cloud WORM |
-| HA/DR | Ops-blocked (live Sentinel inject) |
-| Load · Self-sec | Lab-production — HTTP 100 + soft 250/500 in-proc; dogfood report |
+| HA / DR | Ops-blocked (live) / **code-unblocked** | CI `--pipeline-self-test` + `GET /ready`; live Sentinel inject needs Docker |
+| Load · Self-sec | Lab-production | HTTP 100 + soft→1000; HTTP 500+ via load_test `--persist`; board `/api/admin/ops/phase1-remaining` |
 
 See [PRODUCTION-CONTROL-PLANE.md](./PRODUCTION-CONTROL-PLANE.md).
 
 ### Still blocked on this Windows lab (do not fake)
 
-| Item | Why |
-|------|-----|
-| Docker Redis Sentinel `--inject-stop` | Docker absent |
-| Owned-host OS mutation acceptance | Needs authorized host |
-| HTTP 500/1k wave | Lab capacity / time; 100 measured |
-| Authenticode / notarization | Signing certs |
-| WORM object-lock | Cloud backend needs object store; **local markers + API shipped** |
-| Release 5 differentiation | Frozen until 0–1 green on owned-host + HA |
+| Item | Why | Code-unblocked |
+|------|-----|----------------|
+| Docker Redis Sentinel `--inject-stop` | Docker absent | pipeline self-test + compose profile |
+| Owned-host OS mutation acceptance | Needs authorized host | `SECURAIQ_OWNED_HOST` / `--i-own-this-host` gate |
+| HTTP 500/1k wave | 500 measured 2026-09-22; 1000 unmeasured | harness + soft 1000 + truncated check-in fix |
+| Authenticode / notarization | Signing certs (EV) | scaffolds + lab self-signed PFX |
+| WORM object-lock | Cloud backend needs object store; **local markers + API shipped** | yes |
+| Release 5 differentiation | Frozen until 0–1 green on owned-host + HA | — |

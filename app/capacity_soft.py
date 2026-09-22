@@ -13,7 +13,12 @@ from typing import Any
 
 
 def soft_checkin_wave(user_id: str, n_agents: int) -> dict[str, Any]:
-    """Enroll N agents and check them in once; return latency stats."""
+    """Enroll N agents and check them in once; return latency stats.
+
+    Uses ``truncated: true`` so host-control evaluators are skipped — this is a
+    check-in path smoke, not host-control capacity. HTTP waves use the same
+    truncated shortcut when measuring enroll/checkin fabric cost.
+    """
     from app.agents import checkin, enroll_agent
 
     n = max(1, min(int(n_agents), 2000))
@@ -35,6 +40,8 @@ def soft_checkin_wave(user_id: str, n_agents: int) -> dict[str, Any]:
                     "hostname": f"host-{aid[:8]}",
                     "os": "lab",
                     "sequence": 1,
+                    # Skip host-control evaluators — soft ladder is fabric smoke.
+                    "truncated": True,
                 },
             )
             if out.get("ok") is not False and "error" not in out:
@@ -61,8 +68,9 @@ def soft_checkin_wave(user_id: str, n_agents: int) -> dict[str, Any]:
         "checkin_p50_ms": _pct(checkin_ms, 50),
         "checkin_p95_ms": _pct(checkin_ms, 95),
         "checkin_mean_ms": round(statistics.mean(checkin_ms), 3) if checkin_ms else None,
+        "truncated_checkin": True,
         "note": (
-            "Soft in-process ladder — not HTTP wave proof. "
+            "Soft in-process ladder (truncated check-in) — not HTTP wave proof. "
             "Do not market as HTTP 500+ capacity."
         ),
     }
@@ -72,13 +80,20 @@ def soft_checkin_ladder(
     user_id: str,
     rungs: list[int] | None = None,
 ) -> dict[str, Any]:
-    rungs = rungs or [100, 250, 500]
+    rungs = rungs or [100, 250, 500, 1000]
     results = []
     for n in rungs:
         results.append(soft_checkin_wave(user_id, n))
+    from app.phase1_ops_remaining import capacity_status
+
+    cap = capacity_status()
     return {
         "ok": all(r.get("ok") for r in results),
         "rungs": results,
-        "http_500_measured": False,
-        "note": "Lab soft ladder only; HTTP 500+ still unmeasured in CAPACITY-LAB.",
+        "http_500_measured": bool(cap.get("http_500_measured")),
+        "http_top_measured": cap.get("http_top_measured"),
+        "note": (
+            "Lab soft ladder only (truncated). HTTP 500+ counts only when "
+            "capacity_measurements.jsonl has a live wave row."
+        ),
     }

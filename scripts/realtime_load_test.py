@@ -139,6 +139,8 @@ def _checkin(server: str, token: str, *, insecure: bool = False, timeout: float 
         "listening_ports": [],
         "processes": [],
         "packages": [],
+        # Capacity ladder: skip host-control evaluators (not a control proof).
+        "truncated": True,
     }
     try:
         code, data = _request(

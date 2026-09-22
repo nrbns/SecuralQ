@@ -1417,6 +1417,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--admin-token", default="", help="Alias for --token")
     ap.add_argument("--insecure", action="store_true", help="Skip TLS verify for https lab servers")
+    ap.add_argument(
+        "--i-own-this-host",
+        action="store_true",
+        help="Assert authorized owned host for --server (or set SECURAIQ_OWNED_HOST=1)",
+    )
     args = ap.parse_args(argv)
 
     token = (args.admin_token or args.token or "").strip()
@@ -1425,6 +1430,16 @@ def main(argv: list[str] | None = None) -> int:
         if not token:
             print("[rt-accept] --token / SECURAIQ_ADMIN_TOKEN required for --server", flush=True)
             return 2
+        from app.phase1_ops_remaining import owned_host_authorized
+
+        if not (args.i_own_this_host or owned_host_authorized()):
+            print(
+                "[rt-accept] REFUSED: live --server acceptance requires "
+                "SECURAIQ_OWNED_HOST=1 or --i-own-this-host "
+                "(authorized lab/VM you own). Local: omit --server.",
+                flush=True,
+            )
+            return 3
         report = run_server_acceptance(args.server, token, insecure=args.insecure)
     elif args.firewall_only:
         # Legacy single-loop CLI path
