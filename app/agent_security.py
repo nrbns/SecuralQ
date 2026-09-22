@@ -200,7 +200,17 @@ def remember_nonce(nonce: str, *, agent_id: str = "", ttl_sec: int = _NONCE_TTL_
 
 
 def _require_command_signature() -> bool:
-    """RT-17: production opt-in; lab default is False."""
+    """RT-17: production opt-in; lab default is False.
+
+    ``AGENT_LAB_SEALED_MODE`` soft-enables seals without full commercial mTLS.
+    """
+    try:
+        from app.production_profile import lab_sealed_mode
+
+        if lab_sealed_mode():
+            return True
+    except Exception:
+        pass
     try:
         from app.config import settings
 
@@ -209,6 +219,26 @@ def _require_command_signature() -> bool:
     except Exception:
         pass
     raw = (os.environ.get("AGENT_REQUIRE_COMMAND_SIGNATURE") or "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+def _require_replay_protection() -> bool:
+    """Replay protection opt-in; also on under AGENT_LAB_SEALED_MODE."""
+    try:
+        from app.production_profile import lab_sealed_mode
+
+        if lab_sealed_mode():
+            return True
+    except Exception:
+        pass
+    try:
+        from app.config import settings
+
+        if bool(getattr(settings, "agent_require_replay_protection", False)):
+            return True
+    except Exception:
+        pass
+    raw = (os.environ.get("AGENT_REQUIRE_REPLAY_PROTECTION") or "").strip().lower()
     return raw in ("1", "true", "yes", "on")
 
 

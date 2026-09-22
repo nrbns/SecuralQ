@@ -70,7 +70,15 @@ def verify_replay_and_signature(
     require: bool | None = None,
 ) -> str | None:
     """Return an error string if the request should be rejected, else None."""
-    enforce = settings.agent_require_replay_protection if require is None else require
+    if require is None:
+        try:
+            from app.agent_security import _require_replay_protection
+
+            enforce = _require_replay_protection()
+        except Exception:
+            enforce = bool(settings.agent_require_replay_protection)
+    else:
+        enforce = require
     ts_raw = (ts_header or "").strip()
     nonce_s = (nonce or "").strip()
     sig_s = (sig or "").strip()

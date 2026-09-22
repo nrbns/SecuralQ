@@ -212,6 +212,38 @@ def mission_control_snapshot(*, user_id: str | None = None) -> dict[str, Any]:
     except Exception as exc:
         components["posture_engine"] = _comp("unknown", error=str(exc)[:120])
 
+    # Realtime fabric readiness
+    try:
+        from app.realtime_ops import fabric_status
+
+        fab = fabric_status()
+        components["realtime_fabric"] = _comp(
+            "healthy" if fab.get("lab_production") else "degraded",
+            lab_production=fab.get("lab_production"),
+            ha_exactly_once=False,
+            streams=fab.get("streams"),
+            mode=fab.get("mode"),
+            note=fab.get("note"),
+        )
+    except Exception as exc:
+        components["realtime_fabric"] = _comp("unknown", error=str(exc)[:120])
+
+    # Agent security readiness (lab flags may be off)
+    try:
+        from app.production_profile import agent_security_readiness
+
+        ag = agent_security_readiness()
+        components["agent_security"] = _comp(
+            "healthy" if ag.get("lab_production") else "degraded",
+            lab_production=ag.get("lab_production"),
+            lab_sealed_active=ag.get("lab_sealed_active"),
+            commercial_ready=ag.get("commercial_ready"),
+            allowlist_count=(ag.get("allowlist") or {}).get("count"),
+            note=ag.get("note"),
+        )
+    except Exception as exc:
+        components["agent_security"] = _comp("unknown", error=str(exc)[:120])
+
     overall = "healthy"
     for c in components.values():
         if c.get("status") in {"degraded", "unknown"}:

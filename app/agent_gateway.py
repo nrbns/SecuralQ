@@ -274,8 +274,15 @@ async def _auth_from_hello(websocket: WebSocket, hello: dict[str, Any]) -> dict[
         body=body if hello.get("nonce") else b"",
         require=False if not hello.get("nonce") else None,
     )
-    if err and settings.agent_require_replay_protection:
-        return None
+    if err:
+        try:
+            from app.agent_security import _require_replay_protection
+
+            enforce_replay = _require_replay_protection()
+        except Exception:
+            enforce_replay = bool(settings.agent_require_replay_protection)
+        if enforce_replay:
+            return None
     if err and hello.get("sig"):
         return None
     from app.agent_certs import enforce_proxy_mtls

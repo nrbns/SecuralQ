@@ -83,6 +83,35 @@ def pipeline_metrics() -> dict[str, Any]:
     return result
 
 
+def fabric_status() -> dict[str, Any]:
+    """Realtime fabric readiness — lab-production, not HA exactly-once."""
+    m = pipeline_metrics()
+    return {
+        "ok": True,
+        "lab_production": True,
+        "ha_exactly_once": False,
+        "streams": bool(m.get("redis_configured")),
+        "mode": m.get("mode"),
+        "dlq": (m.get("stream") or {}).get("dlq_length"),
+        "sse": m.get("sse"),
+        "ingress": m.get("ingress"),
+        "stage_latency": m.get("stage_latency"),
+        "capabilities": [
+            "streams_or_inproc_bus",
+            "dlq_soft_recover",
+            "last_event_id_replay",
+            "sse_recovery_gap_honesty",
+            "backpressure_shed",
+            "correlation_causation_ids",
+        ],
+        "note": (
+            "Lab-production realtime fabric: Streams/DLQ/SSE + soft recover + BP shed. "
+            "Not HA exactly-once / Sentinel live failover."
+        ),
+        "metrics": m,
+    }
+
+
 def get_dlq_entry(entry_id: str) -> dict[str, Any] | None:
     """Inspect one DLQ message by stream id."""
     eid = str(entry_id or "").strip()

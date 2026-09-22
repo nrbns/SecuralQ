@@ -67,7 +67,7 @@ Status key: **done** · **partial** · **missing**
 | Real Agent Gateway | Persistent WS + heartbeat + push commands | **done** (v1) — `WS /api/agents/ws`; HTTP check-in remains fallback |
 | Event pipeline | Agent → detection → risk → dashboard | **partial→improved** — threat ingest + realtime bus + SSE; Streams + scoped processor hooks (notify/evidence/risk when `user_id` known) + RT-06 idempotency; RT-07 threat→incident when burst/keyword threshold met; RT-08 inventory/vuln→org risk (`risk.changed`) + high/crit derived evidence; RT-09 critical/incident → `compute_attack_paths` + `attack_path` summary; SSE tenant filter when AUTH on; **Streams fan-out default** when Redis set; rich twin/XDR correlation still incomplete |
 | Agent installers | MSI / deb / rpm / pkg | **partial** — scripts only |
-| Agent security | Device identity, certs, signed commands | **partial→improved** — bearer + replay/HMAC; optional Ed25519; RT-17 seals; Sprint 2 mTLS issue/rotate + proxy verify + Python/Rust client cert presentment |
+| Agent security | Device identity, certs, signed commands | **lab-production** — allowlist + HMAC/Ed25519 seals + mTLS issue/rotate APIs; lab flags off by default; `AGENT_LAB_SEALED_MODE` for sealed lab; commercial = five flags + proxy |
 | Real-time dashboard | No polling-dependent UX | **lab-production** — SSE on publish + recovery honesty; some panels still poll |
 | Load testing | 100 → 1,000 → 5,000+ | **partial** — harness supports `--to-5k`; **claim only after** `docs/ops/CAPACITY-LAB.md` filled |
 

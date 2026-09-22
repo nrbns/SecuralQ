@@ -24,7 +24,7 @@ HA/load.
 |------|--------|-------|
 | Realtime event fabric | **Lab-production** | Soft BP shed, SSE recovery/gap, correlation_id, MC worker health, chaos CI; not HA exactly-once |
 | 30-min Posture Engine | **Shipped** | Layer B reconciliation — never Nmap/Nuclei/ZAP |
-| Agent security | Partial | Sealed acceptance with `AGENT_REQUIRE_COMMAND_SIGNATURE`; mTLS lab-off |
+| Agent security | **Lab-production** | Allowlist + seals + mTLS APIs; lab flags off by default; `AGENT_LAB_SEALED_MODE` / commercial five-flag profile |
 | Evidence Spine | Shipped | Finish; do **not** build a second evidence system |
 | Risk recalculation | Shipped | Evidence write → org risk + audit/evidence on delta |
 | Remediation → Verify | Shipped | Execute ≠ verified; approve/execute publish evidence |

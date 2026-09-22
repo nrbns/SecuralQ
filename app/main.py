@@ -1083,6 +1083,15 @@ async def admin_realtime_metrics(user: Annotated[AuthUser, Depends(require_user)
     return pipeline_metrics()
 
 
+@app.get("/api/admin/realtime/fabric")
+async def admin_realtime_fabric(user: Annotated[AuthUser, Depends(require_user)]):
+    """Realtime fabric readiness — lab-production, not HA exactly-once."""
+    _require_admin(user)
+    from app.realtime_ops import fabric_status
+
+    return fabric_status()
+
+
 @app.get("/api/admin/realtime/dlq")
 async def admin_realtime_dlq_list(
     user: Annotated[AuthUser, Depends(require_user)],

@@ -102,7 +102,7 @@ Do **not** start Release 5 / cloud-depth / twin / AI autonomy. Finish the closed
 |-------------|-------------|
 | Realtime fabric | Lab-production — soft DLQ recover, BP shed, correlation/causation, SSE recovery honesty; not HA exactly-once |
 | 30-min Posture Engine | **Shipped** (Layer B) |
-| Agent security | Partial — seals enforced in sealed acceptance; mTLS lab-off |
+| Agent security | Lab-production — allowlist/seals/mTLS APIs; flags off by default; commercial five-flag + proxy still opt-in |
 | Evidence Spine | Shipped (local); cloud WORM ops |
 | Risk recalc | Shipped |
 | Remediation → Verify | Shipped |
