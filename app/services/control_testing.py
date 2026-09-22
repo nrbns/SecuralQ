@@ -1124,6 +1124,35 @@ def _record_host_control_evidence(
                 get_conn().commit()
             except Exception:
                 pass
+        # Structured control_result evidence (auto_evidence) — host path already
+        # writes agent_host_control; processor skips when host_side_effects_done.
+        try:
+            from app.controls.auto_evidence import record_control_result_evidence
+
+            primary = _HOST_TEST_PRIMARY_CONTROLS.get(test_name)
+            mapped = _mapped_control_ids_for_test(test_name)
+            targets = mapped or (
+                [{"framework_id": primary[0], "control_id": primary[1]}] if primary else []
+            )
+            for ctl in targets[:3]:
+                record_control_result_evidence(
+                    user_id,
+                    control_id=str(ctl.get("control_id") or test_name),
+                    result=status,
+                    framework_id=str(ctl.get("framework_id") or ""),
+                    check_id=test_name,
+                    asset_id=str(result.get("asset_id") or ""),
+                    agent_id=agent_id,
+                    summary=summary[:500],
+                    detail={
+                        "test": test_name,
+                        "status": status,
+                        "source": "securaiq_agent",
+                        "host_side_effects_done": True,
+                    },
+                )
+        except Exception:
+            pass
         return ev
     except Exception:
         return None

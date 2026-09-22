@@ -40,7 +40,7 @@ def pipeline_metrics() -> dict[str, Any]:
     except Exception as exc:
         processor = {"error": str(exc)[:200]}
 
-    return {
+    result: dict[str, Any] = {
         "ok": True,
         "mode": bus.get("mode"),
         "redis_configured": bool(bus.get("redis_configured")),
@@ -69,9 +69,17 @@ def pipeline_metrics() -> dict[str, Any]:
         "hint": bus.get("hint"),
         "disclaimer": (
             "Lab metrics are process-local when REDIS_URL is unset. "
-            "DLQ/lag require Redis Streams. Not a commercial HA SLO."
+            "DLQ/lag require Redis Streams. Stage latency meters are process-local — "
+            "not a commercial HA SLO."
         ),
     }
+    try:
+        from app.metrics import stage_latency_snapshot
+
+        result["stage_latency"] = stage_latency_snapshot()
+    except Exception:
+        result["stage_latency"] = {}
+    return result
 
 
 def get_dlq_entry(entry_id: str) -> dict[str, Any] | None:

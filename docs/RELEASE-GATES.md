@@ -87,11 +87,13 @@ Attack paths / business graph / advanced risk / digital twin / AI SecOps autonom
 2. ~~Tenant SSE / agent gateway / notification path proofs~~ — done  
 3. ~~Remaining tenant paths (jobs/files/RAG) + evidence envelope + Mission Control~~ — done this pass  
 4. ~~Continuous Posture Engine (Layer B)~~ — done (`64d7463`)  
-5. ~~Acceptance path uses sealed dispatch (not raw SQL → sent)~~ — done this pass  
-6. HTTP ladder 500+ when lab can sustain it — Release 4 (**ops**)  
-7. Live Docker Sentinel failover when Docker available — Release 3 (**ops**)  
-8. Owned-host live acceptance — Release 1 prove (**ops**)  
-9. WORM/object-lock · full SSO/SCIM · signed installers — Release 3 leftovers  
+5. ~~Acceptance path uses sealed dispatch (not raw SQL → sent)~~ — done  
+6. ~~DLQ soft-recover + named failure-matrix contract~~ — done this pass  
+7. ~~Approve/execute auto-evidence + stage latency meters~~ — done this pass  
+8. HTTP ladder 500+ when lab can sustain it — Release 4 (**ops**)  
+9. Live Docker Sentinel failover when Docker available — Release 3 (**ops**)  
+10. Owned-host live acceptance — Release 1 prove (**ops**)  
+11. WORM/object-lock · full SSO/SCIM · signed installers — Release 3 leftovers  
 
 ### Production control-plane freeze (customer roadmap)
 

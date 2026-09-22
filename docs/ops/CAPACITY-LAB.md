@@ -2,6 +2,8 @@
 
 **Honesty:** `scripts/realtime_load_test.py` and `scripts/fleet_simulator.py` are **lab ladders**. Empty tables and unrun harnesses are **not** proof of 5 000 / 100 000 concurrent agents. Do not market those numbers until this table is filled from a real run on owned hardware.
 
+Process-local stage meters (`securaiq_stage_latency_*` / `pipeline_metrics.stage_latency`) exist for ingest/detect/risk/sse — they are **not** commercial SLOs until measured on a sustained lab run against the targets in [PRODUCTION-CONTROL-PLANE.md](../PRODUCTION-CONTROL-PLANE.md).
+
 ## Harness
 
 ```bash

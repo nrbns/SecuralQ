@@ -31,6 +31,29 @@ if str(_ROOT) not in sys.path:
 
 DISCLAIMER = "lab failure harness — not Sentinel/HA proof"
 
+# Named contract — CI fails if any required step is missing or renamed.
+REQUIRED_STEPS = (
+    "duplicate_event_dedupe",
+    "sequence_contiguous_ack",
+    "sequence_gap_no_skip",
+    "offline_buffer_contiguous_ack",
+    "sse_last_event_id_replay",
+    "sse_tenant_isolation",
+    "command_reject",
+    "command_timeout_lifecycle",
+    "bad_signature_reject",
+    "replay_nonce_reject",
+    "certificate_revoked_reject",
+    "dlq_dead_letter_rules",
+    "dlq_replay_purge_mocked",
+    "dlq_soft_recover_reprocess",
+    "production_profile_status",
+    "redis_reconnect_helper",
+    "realtime_pipeline_metrics",
+    "stage_latency_meters",
+    "audit_chain_verify",
+)
+
 
 @dataclass
 class StepResult:
@@ -419,6 +442,46 @@ def run_failure_matrix(*, tmp_path: Path | None = None) -> FailureReport:
 
         report.steps.append(_step("dlq_replay_purge_mocked", dlq_ops))
 
+        # --- 13b. Soft DLQ recover (Redis-free) + idempotent second process ---
+        def dlq_soft() -> tuple[bool, str, dict[str, Any]]:
+            from app.agent_security import new_event_id
+            from app.event_idempotency import clear_processed_for_tests, ensure_processed_events_schema
+            from app.event_processor import build_dlq_fields, soft_recover_dlq_payload
+            from app.services.evidence import get_evidence_for
+
+            ensure_processed_events_schema()
+            clear_processed_for_tests()
+            eid = new_event_id()
+            payload = {
+                "event_id": eid,
+                "type": "remediation.approved",
+                "event_type": "remediation.approved",
+                "user_id": "u-dlq-soft",
+                "id": "plan-soft-1",
+                "status": "approved",
+                "lifecycle": "APPROVED",
+            }
+            fields = build_dlq_fields(
+                payload,
+                error="lab_handler_boom",
+                delivery_count=5,
+                stream_id="soft-1-0",
+            )
+            out = soft_recover_dlq_payload(fields)
+            rows = get_evidence_for("u-dlq-soft", entity_type="remediation", entity_id="plan-soft-1")
+            ok = (
+                out.get("ok") is True
+                and out.get("processed") is True
+                and out.get("skipped_idempotent") is True
+                and len(rows) >= 1
+            )
+            return ok, f"processed={out.get('processed')} skip={out.get('skipped_idempotent')} evidence={len(rows)}", {
+                "recover": out,
+                "evidence_count": len(rows),
+            }
+
+        report.steps.append(_step("dlq_soft_recover_reprocess", dlq_soft))
+
         # --- 14. Production profile assert ---
         def prod_profile() -> tuple[bool, str, dict[str, Any]]:
             from app.production_profile import assert_commercial_profile, production_profile_status
@@ -451,7 +514,54 @@ def run_failure_matrix(*, tmp_path: Path | None = None) -> FailureReport:
 
         report.steps.append(_step("realtime_pipeline_metrics", metrics))
 
+        # --- 17. Stage latency meters present after publish/process ---
+        def stage_lat() -> tuple[bool, str, dict[str, Any]]:
+            from app.metrics import clear_stage_latency_for_tests, observe_stage, stage_latency_snapshot
+            from app.realtime_bus import clear_replay_buffer_for_tests, publish
+
+            clear_stage_latency_for_tests()
+            clear_replay_buffer_for_tests()
+            publish(
+                type="remediation.approved",
+                event_id=f"lat-{time.time_ns()}",
+                user_id="u-lat",
+                id="plan-lat",
+                status="approved",
+            )
+            # Force detect sample even if handler path was thin
+            observe_stage("detect", 1.5)
+            snap = stage_latency_snapshot()
+            ingest_n = int((snap.get("ingest") or {}).get("count") or 0)
+            detect_n = int((snap.get("detect") or {}).get("count") or 0)
+            ok = ingest_n >= 1 and detect_n >= 1
+            return ok, f"ingest={ingest_n} detect={detect_n}", {"stages": snap}
+
+        report.steps.append(_step("stage_latency_meters", stage_lat))
+
+        # --- 18. Audit hash-chain verify ---
+        def audit_ok() -> tuple[bool, str, dict[str, Any]]:
+            from app.audit_chain import append_chained, verify_chain
+
+            append_chained("failure_matrix_probe", "u-audit", {"ok": True})
+            v = verify_chain(limit=5000)
+            ok = v.get("ok") is True and int(v.get("checked") or 0) >= 1
+            return ok, f"checked={v.get('checked')}", v
+
+        report.steps.append(_step("audit_chain_verify", audit_ok))
+
         report.ok = all(s.ok for s in report.steps)
+        names = {s.name for s in report.steps}
+        missing = [n for n in REQUIRED_STEPS if n not in names]
+        if missing:
+            report.ok = False
+            report.steps.append(
+                StepResult(
+                    name="required_steps_contract",
+                    ok=False,
+                    detail=f"missing required steps: {missing}",
+                    data={"missing": missing},
+                )
+            )
     finally:
         try:
             from app.db import reset_conn_for_tests

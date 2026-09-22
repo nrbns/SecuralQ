@@ -332,6 +332,7 @@ def publish(event: dict[str, Any] | None = None, **kwargs: Any) -> None:
     sequence, timestamps, data, …) while preserving legacy ``type`` / ``seq`` /
     ``org_id`` and top-level domain fields for existing SSE consumers.
     """
+    t0 = time.perf_counter()
     payload = dict(event or {})
     payload.update(kwargs)
     try:
@@ -358,6 +359,13 @@ def publish(event: dict[str, Any] | None = None, **kwargs: Any) -> None:
 
     _note_publish(duplicate=False)
     _fanout_local(payload)
+    try:
+        from app.metrics import observe_stage
+
+        observe_stage("ingest", (time.perf_counter() - t0) * 1000.0)
+        observe_stage("sse", (time.perf_counter() - t0) * 1000.0)
+    except Exception:
+        pass
 
     # Lab path: sync processor hooks when Redis Streams consumer is not running.
     try:

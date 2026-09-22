@@ -17,11 +17,16 @@ from __future__ import annotations
 import time
 from collections import defaultdict
 from threading import Lock
+from typing import Any
 
 _start_time = time.time()
 _lock = Lock()
 _counters: dict[str, int] = defaultdict(int)
 _status_counters: dict[str, int] = defaultdict(int)
+# Process-local stage latency samples (ms) — not a multi-node SLO claim.
+_stage_samples: dict[str, list[float]] = defaultdict(list)
+_STAGE_MAX = 256
+_STAGE_NAMES = frozenset({"ingest", "detect", "risk", "sse"})
 
 
 def incr(name: str, amount: int = 1) -> None:
@@ -33,6 +38,62 @@ def incr_status(status_code: int) -> None:
     bucket = f"{status_code // 100}xx"
     with _lock:
         _status_counters[bucket] += 1
+
+
+def observe_stage(stage: str, ms: float) -> None:
+    """Record one stage latency sample in milliseconds (process-local ring)."""
+    name = (stage or "").strip().lower()
+    if name not in _STAGE_NAMES:
+        return
+    try:
+        val = float(ms)
+    except (TypeError, ValueError):
+        return
+    if val < 0 or val > 600_000:
+        return
+    with _lock:
+        buf = _stage_samples[name]
+        buf.append(val)
+        if len(buf) > _STAGE_MAX:
+            del buf[: len(buf) - _STAGE_MAX]
+
+
+def _percentile(sorted_vals: list[float], p: float) -> float | None:
+    if not sorted_vals:
+        return None
+    if len(sorted_vals) == 1:
+        return round(sorted_vals[0], 3)
+    idx = int(round((len(sorted_vals) - 1) * p))
+    idx = max(0, min(len(sorted_vals) - 1, idx))
+    return round(sorted_vals[idx], 3)
+
+
+def stage_latency_snapshot() -> dict[str, Any]:
+    """p50/p95/count per stage — lab meters only; targets remain unclaimed until measured."""
+    out: dict[str, Any] = {}
+    with _lock:
+        for name in sorted(_STAGE_NAMES):
+            samples = list(_stage_samples.get(name) or [])
+            if not samples:
+                out[name] = {"count": 0, "p50_ms": None, "p95_ms": None}
+                continue
+            ordered = sorted(samples)
+            out[name] = {
+                "count": len(ordered),
+                "p50_ms": _percentile(ordered, 0.50),
+                "p95_ms": _percentile(ordered, 0.95),
+                "last_ms": round(samples[-1], 3),
+            }
+    out["disclaimer"] = (
+        "Process-local stage meters — not HA SLOs. "
+        "Targets (<1s ingest / <5s detect / <10s risk / <15s SSE) stay unclaimed until measured."
+    )
+    return out
+
+
+def clear_stage_latency_for_tests() -> None:
+    with _lock:
+        _stage_samples.clear()
 
 
 def render_prometheus() -> str:
@@ -114,6 +175,30 @@ def render_prometheus() -> str:
         lines.append("# HELP securaiq_realtime_backpressure Soft backpressure active (1) when stream near maxlen.")
         lines.append("# TYPE securaiq_realtime_backpressure gauge")
         lines.append(f"securaiq_realtime_backpressure {1 if thr.get('backpressure_active') else 0}")
+    except Exception:
+        pass
+
+    # Stage latency gauges (process-local; -1 when no samples)
+    try:
+        stages = stage_latency_snapshot()
+        lines.append("# HELP securaiq_stage_latency_p50_ms Process-local stage latency p50 (ms).")
+        lines.append("# TYPE securaiq_stage_latency_p50_ms gauge")
+        lines.append("# HELP securaiq_stage_latency_p95_ms Process-local stage latency p95 (ms).")
+        lines.append("# TYPE securaiq_stage_latency_p95_ms gauge")
+        lines.append("# HELP securaiq_stage_latency_samples Stage latency sample count.")
+        lines.append("# TYPE securaiq_stage_latency_samples gauge")
+        for stage in ("ingest", "detect", "risk", "sse"):
+            row = stages.get(stage) if isinstance(stages.get(stage), dict) else {}
+            p50 = row.get("p50_ms")
+            p95 = row.get("p95_ms")
+            cnt = int(row.get("count") or 0)
+            lines.append(
+                f'securaiq_stage_latency_p50_ms{{stage="{stage}"}} {float(p50) if p50 is not None else -1}'
+            )
+            lines.append(
+                f'securaiq_stage_latency_p95_ms{{stage="{stage}"}} {float(p95) if p95 is not None else -1}'
+            )
+            lines.append(f'securaiq_stage_latency_samples{{stage="{stage}"}} {cnt}')
     except Exception:
         pass
 

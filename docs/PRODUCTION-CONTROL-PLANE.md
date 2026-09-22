@@ -22,19 +22,19 @@ HA/load.
 
 | Area | Status | Notes |
 |------|--------|-------|
-| Realtime event fabric | Partial | Streams, DLQ, Last-Event-ID; not HA exactly-once |
+| Realtime event fabric | Partial | Streams, DLQ, Last-Event-ID; soft recover CI gate; not HA exactly-once |
 | 30-min Posture Engine | **Shipped** | Layer B reconciliation — never Nmap/Nuclei/ZAP |
 | Agent security | Partial | Sealed acceptance with `AGENT_REQUIRE_COMMAND_SIGNATURE`; mTLS lab-off |
 | Evidence Spine | Shipped | Finish; do **not** build a second evidence system |
-| Risk recalculation | Shipped | Evidence write → org risk |
-| Remediation → Verify | Shipped | Execute ≠ verified |
+| Risk recalculation | Shipped | Evidence write → org risk + audit/evidence on delta |
+| Remediation → Verify | Shipped | Execute ≠ verified; approve/execute publish evidence |
 | Compliance Operations | Partial | Calendar/tasks MVP |
 | CMMC | Partial | Tier-1; not C3PAO/SPRS submit |
 | Tenant isolation | Partial | Broad tests; object-store leftovers |
 | RBAC / MFA / SSO | Partial | SSO IdP facades |
 | Audit trail | Partial | `audit()` → hash chain; SQLite ≠ WORM |
 | HA / DR | Ops-blocked | Live Sentinel inject needs Docker |
-| Load testing | Partial | HTTP 100 measured; 500+ unmeasured |
+| Load testing | Partial | HTTP 100 measured; 500+ unmeasured; stage meters present (unclaimed) |
 | Self-security | Partial | Tooling exists; dogfood report thin |
 | Asset identity | Shipped | `asset_aliases` — correlation ≠ ownership proof |
 

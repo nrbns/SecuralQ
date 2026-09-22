@@ -202,6 +202,71 @@ def should_dead_letter(*, delivery_count: int, max_deliveries: int | None = None
     return count >= limit
 
 
+def soft_recover_dlq_payload(fields: dict[str, Any] | None) -> dict[str, Any]:
+    """Redis-free DLQ recovery: parse DLQ fields → ``process_event`` → idempotent skip.
+
+    Used by the sellable failure gate when REDIS_URL is unset. Does **not** claim
+    Redis Streams re-XADD semantics — that remains ``replay_dlq_entries``.
+    """
+    fields = fields if isinstance(fields, dict) else {}
+    payload = _parse_stream_payload(fields)
+    if not payload:
+        # Allow callers to pass the original event dict directly.
+        if fields.get("event_id") or fields.get("type") or fields.get("event_type"):
+            skip = {"error", "delivery_count", "stream_id", "source_stream", "ts", "payload"}
+            payload = {k: v for k, v in fields.items() if k not in skip}
+    if not isinstance(payload, dict) or not payload:
+        return {
+            "ok": False,
+            "reason": "empty_payload",
+            "processed": False,
+            "skipped_idempotent": False,
+        }
+    # Processor skips _from_processor — strip so recovery actually runs handlers.
+    payload = dict(payload)
+    payload.pop("_from_processor", None)
+    if not payload.get("event_id"):
+        try:
+            from app.agent_security import new_event_id
+
+            payload["event_id"] = new_event_id()
+        except Exception:
+            import uuid
+
+            payload["event_id"] = uuid.uuid4().hex
+    eid = str(payload.get("event_id") or "")
+    et = str(payload.get("event_type") or payload.get("type") or "")
+    first_ok = False
+    try:
+        first_ok = bool(process_event(payload))
+    except Exception as exc:
+        return {
+            "ok": False,
+            "reason": f"process_failed:{exc}"[:200],
+            "processed": False,
+            "skipped_idempotent": False,
+            "event_id": eid,
+            "event_type": et,
+        }
+    # Second pass must hit RT-06 ledger (no double side-effects).
+    skipped = False
+    try:
+        from app.event_idempotency import already_processed
+
+        skipped = bool(eid and already_processed(eid))
+    except Exception:
+        skipped = False
+    second_ok = bool(process_event(payload))
+    return {
+        "ok": first_ok and second_ok and (skipped or not eid),
+        "processed": first_ok,
+        "skipped_idempotent": skipped,
+        "event_id": eid,
+        "event_type": et,
+        "error": str(fields.get("error") or "")[:200],
+    }
+
+
 def _parse_stream_payload(fields: Any) -> dict[str, Any]:
     if not isinstance(fields, dict):
         return {}
@@ -327,6 +392,7 @@ def _publish_evidence_hint(
 
 def _maybe_publish_org_risk(user_id: str, *, reason: str = "") -> None:
     """RT-08 — recompute org risk; publish type=risk / risk.changed with previous when known."""
+    t0 = time.perf_counter()
     try:
         from app.services.risk_priority import compute_org_risk_score
 
@@ -359,6 +425,51 @@ def _maybe_publish_org_risk(user_id: str, *, reason: str = "") -> None:
     # Dual-write flat risk for older UI subscribers
     flat = {**payload, "type": "risk", "event_type": "risk", "alias_of": "risk.changed"}
     _safe_publish(**flat)
+    # Golden-path audit + thin evidence (score delta) — never re-enter processor.
+    try:
+        from app.db import audit
+
+        audit(
+            "org_risk_changed",
+            user_id,
+            {
+                "score": new_score,
+                "previous_score": previous,
+                "score_delta": payload.get("score_delta"),
+                "band": result.get("band"),
+                "reason": reason or "event_processor",
+            },
+        )
+    except Exception:
+        pass
+    if previous is not None and abs(float(payload.get("score_delta") or 0)) >= 0.01:
+        try:
+            from app.services.evidence import record_evidence
+
+            record_evidence(
+                user_id,
+                entity_type="org_risk",
+                entity_id=user_id,
+                source="derived",
+                summary=f"Org risk {previous} → {new_score} ({reason or 'event_processor'})",
+                confidence=0.7,
+                detail={
+                    "score": new_score,
+                    "previous_score": previous,
+                    "score_delta": payload.get("score_delta"),
+                    "band": result.get("band"),
+                    "reason": reason or "event_processor",
+                },
+                created_by="risk_engine",
+            )
+        except Exception:
+            pass
+    try:
+        from app.metrics import observe_stage
+
+        observe_stage("risk", (time.perf_counter() - t0) * 1000.0)
+    except Exception:
+        pass
 
 
 def _terminal_kind(event: dict[str, Any]) -> str | None:
@@ -1128,6 +1239,7 @@ def process_event(event: dict[str, Any] | None) -> bool:
     Returns ``False`` when a registered handler raised (caller may retry / DLQ).
     """
     global _in_handler
+    t0 = time.perf_counter()
     if not event or not isinstance(event, dict):
         return True
     if event.get("_from_processor"):
@@ -1145,6 +1257,12 @@ def process_event(event: dict[str, Any] | None) -> bool:
 
             if already_processed(eid):
                 _log.debug("process_event skip — already processed %s", eid)
+                try:
+                    from app.metrics import observe_stage
+
+                    observe_stage("detect", (time.perf_counter() - t0) * 1000.0)
+                except Exception:
+                    pass
                 return True
         except Exception:
             pass
@@ -1160,9 +1278,21 @@ def process_event(event: dict[str, Any] | None) -> bool:
                 mark_processed(eid)
             except Exception:
                 pass
+        try:
+            from app.metrics import observe_stage
+
+            observe_stage("detect", (time.perf_counter() - t0) * 1000.0)
+        except Exception:
+            pass
         return True
     except Exception as exc:
         _log.debug("handler %s failed: %s", et, exc)
+        try:
+            from app.metrics import observe_stage
+
+            observe_stage("detect", (time.perf_counter() - t0) * 1000.0)
+        except Exception:
+            pass
         return False
     finally:
         _in_handler = False
@@ -1243,6 +1373,8 @@ HANDLERS: dict[str, Handler] = {
     "remediation.recommended": _handle_lifecycle_evidence,
     "remediation.completed": _handle_lifecycle_evidence,
     "remediation.verified": _handle_lifecycle_evidence,
+    "command.approved": _handle_lifecycle_evidence,
+    "command.completed": _handle_lifecycle_evidence,
     "command.sent": _handle_lifecycle_evidence,
     "command.ack": _handle_lifecycle_evidence,
     "command.verified": _handle_lifecycle_evidence,

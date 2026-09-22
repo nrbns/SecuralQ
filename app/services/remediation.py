@@ -374,6 +374,20 @@ def approve_plan(user_id: str, plan_id: str) -> dict[str, Any] | None:
     )
     c.commit()
     audit("remediation_plan_approve", user_id, {"id": plan_id})
+    try:
+        from app.realtime_events import publish_aliased
+
+        publish_aliased(
+            "remediation",
+            aliases=["remediation.approved"],
+            id=plan_id,
+            plan_id=plan_id,
+            status="approved",
+            user_id=user_id,
+            lifecycle="APPROVED",
+        )
+    except Exception:
+        pass
     return get_plan(user_id, plan_id)
 
 
@@ -413,6 +427,21 @@ def link_campaign(user_id: str, plan_id: str, campaign_id: str) -> dict[str, Any
     )
     c.commit()
     audit("remediation_plan_link_campaign", user_id, {"id": plan_id, "campaign_id": campaign_id})
+    try:
+        from app.realtime_events import publish_aliased
+
+        publish_aliased(
+            "remediation",
+            aliases=["remediation.executed"],
+            id=plan_id,
+            plan_id=plan_id,
+            campaign_id=campaign_id,
+            status="executing",
+            user_id=user_id,
+            lifecycle="EXECUTED",
+        )
+    except Exception:
+        pass
     return get_plan(user_id, plan_id)
 
 

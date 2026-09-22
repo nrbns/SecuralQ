@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from scripts.realtime_failure_acceptance import run_failure_matrix
+from scripts.realtime_failure_acceptance import REQUIRED_STEPS, run_failure_matrix
 
 
 def test_realtime_failure_acceptance_matrix(tmp_path, monkeypatch):
@@ -12,7 +12,10 @@ def test_realtime_failure_acceptance_matrix(tmp_path, monkeypatch):
     report = run_failure_matrix(tmp_path=tmp_path)
     failed = [s.name for s in report.steps if not s.ok]
     assert report.ok, f"failed steps: {failed} details={[s.detail for s in report.steps if not s.ok]}"
-    assert len(report.steps) >= 15
+    names = {s.name for s in report.steps}
+    missing = [n for n in REQUIRED_STEPS if n not in names]
+    assert not missing, f"required steps missing from report: {missing}"
+    assert len(report.steps) >= len(REQUIRED_STEPS)
 
 
 def test_realtime_ops_metrics_shape():
@@ -23,4 +26,5 @@ def test_realtime_ops_metrics_shape():
     assert "ingress" in m
     assert "stream" in m
     assert "sse" in m
+    assert "stage_latency" in m
     assert "disclaimer" in m
