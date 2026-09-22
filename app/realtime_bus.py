@@ -499,6 +499,74 @@ def replay_since(last_event_id: str | None, *, limit: int = 200) -> list[dict[st
     return merged
 
 
+def detect_sequence_gaps(events: list[dict[str, Any]]) -> dict[str, Any]:
+    """Detect missing sequence numbers in a replay window.
+
+    Returns gap metadata for clients to request recovery. Does not invent events.
+    Caps span so unrelated sequence namespaces cannot OOM the process.
+    """
+    seqs: list[int] = []
+    for ev in events:
+        raw = ev.get("sequence") if ev.get("sequence") is not None else ev.get("seq")
+        try:
+            seqs.append(int(raw))
+        except Exception:
+            continue
+    if len(seqs) < 2:
+        return {"gap_detected": False, "missing": [], "checked": len(seqs)}
+    seqs_sorted = sorted(set(seqs))
+    missing: list[int] = []
+    max_span = 64  # only report small contiguous holes inside a window
+    for a, b in zip(seqs_sorted, seqs_sorted[1:]):
+        span = b - a
+        if 1 < span <= max_span:
+            missing.extend(range(a + 1, b))
+            if len(missing) > 100:
+                break
+    return {
+        "gap_detected": bool(missing),
+        "missing": missing[:100],
+        "missing_from": missing[0] if missing else None,
+        "missing_to": missing[-1] if missing else None,
+        "checked": len(seqs_sorted),
+        "first_seq": seqs_sorted[0],
+        "last_seq": seqs_sorted[-1],
+        "max_span_checked": max_span,
+    }
+
+
+def replay_with_state(
+    last_event_id: str | None,
+    *,
+    limit: int = 200,
+) -> dict[str, Any]:
+    """Authoritative catch-up pack: events + gap detection + buffer version.
+
+    EVENTS → STATE hints for reconnect. Not full HA multi-AZ proof.
+    """
+    events = replay_since(last_event_id, limit=limit)
+    gaps = detect_sequence_gaps(events)
+    with _lock:
+        buf_len = len(_REPLAY_BUFFER)
+        last_eid = ""
+        if _REPLAY_BUFFER:
+            last_eid = next(reversed(_REPLAY_BUFFER))
+    return {
+        "ok": True,
+        "events": events,
+        "count": len(events),
+        "gaps": gaps,
+        "replay_buffer_size": buf_len,
+        "latest_event_id": last_eid or (events[-1].get("event_id") if events else None),
+        "cursor": last_event_id,
+        "note": (
+            "In-process + best-effort Streams replay. "
+            "Gap recovery requests missing sequences when detected; "
+            "full persistent multi-AZ queue remains a Release gate."
+        ),
+    }
+
+
 def stream_status() -> dict[str, Any]:
     """Health snapshot for Streams + in-process replay buffer.
 

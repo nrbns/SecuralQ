@@ -1,4 +1,4 @@
-"""CMMC assessment layer — objectives, Examine/Interview/Test, POA&M policy, SPRS prep.
+"""CMMC assessment layer — objectives, Examine/Interview/Test, POA&M, SSP, readiness.
 
 Does **not** rebuild Evidence Spine. Reuses securaiq_evidence, vault, live SSP,
 cmmc_scoping, affirmations, and gap_remediations.
@@ -12,7 +12,15 @@ Honesty:
 
 from __future__ import annotations
 
-from app.cmmc.cui_program import list_cui_programs, upsert_cui_program
+from app.cmmc.cui_access import classify_evidence, user_may_access_evidence
+from app.cmmc.cui_program import cui_scope_chain, list_cui_programs, upsert_cui_program
+from app.cmmc.gap_plan import build_evidence_gap_plan
+from app.cmmc.interviews import (
+    create_interview,
+    list_interviews,
+    review_interview,
+    submit_interview_response,
+)
 from app.cmmc.methods import list_method_evidence, record_method_evidence
 from app.cmmc.objectives import (
     get_control_assessment,
@@ -22,8 +30,14 @@ from app.cmmc.objectives import (
 )
 from app.cmmc.poam_items import close_poam_item, list_poam_items, open_poam_item
 from app.cmmc.poam_policy import poam_policy_for_control, poam_policy_for_framework
+from app.cmmc.readiness import control_readiness_confidence, framework_readiness_summary
 from app.cmmc.schema import ensure_cmmc_assessment_schema
 from app.cmmc.sprs_prep import sprs_preparation_snapshot
+from app.cmmc.ssp_engine import (
+    get_control_ssp_pack,
+    ssp_engine_snapshot,
+    upsert_implementation_statement,
+)
 from app.cmmc.versioning import framework_version_info
 
 __all__ = [
@@ -43,4 +57,17 @@ __all__ = [
     "framework_version_info",
     "upsert_cui_program",
     "list_cui_programs",
+    "cui_scope_chain",
+    "classify_evidence",
+    "user_may_access_evidence",
+    "control_readiness_confidence",
+    "framework_readiness_summary",
+    "get_control_ssp_pack",
+    "ssp_engine_snapshot",
+    "upsert_implementation_statement",
+    "build_evidence_gap_plan",
+    "create_interview",
+    "submit_interview_response",
+    "review_interview",
+    "list_interviews",
 ]

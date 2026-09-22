@@ -103,6 +103,67 @@ def ensure_cmmc_assessment_schema() -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_cmmc_poam_user
             ON cmmc_poam_items(user_id, framework_id, status);
+
+        CREATE TABLE IF NOT EXISTS cmmc_ssp_implementations (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            org_id TEXT,
+            framework_id TEXT NOT NULL,
+            control_id TEXT NOT NULL,
+            statement TEXT NOT NULL DEFAULT '',
+            responsibilities TEXT NOT NULL DEFAULT '',
+            people TEXT NOT NULL DEFAULT '',
+            processes TEXT NOT NULL DEFAULT '',
+            technology TEXT NOT NULL DEFAULT '',
+            external_services TEXT NOT NULL DEFAULT '',
+            connections TEXT NOT NULL DEFAULT '',
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL,
+            UNIQUE(user_id, framework_id, control_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_cmmc_ssp_user
+            ON cmmc_ssp_implementations(user_id, framework_id);
+
+        CREATE TABLE IF NOT EXISTS cmmc_interviews (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            org_id TEXT,
+            framework_id TEXT NOT NULL,
+            control_id TEXT NOT NULL,
+            objective_id TEXT NOT NULL DEFAULT '',
+            question TEXT NOT NULL DEFAULT '',
+            person TEXT NOT NULL DEFAULT '',
+            role TEXT NOT NULL DEFAULT '',
+            response TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'assigned',
+            assignee TEXT NOT NULL DEFAULT '',
+            reviewer TEXT NOT NULL DEFAULT '',
+            evidence_id TEXT NOT NULL DEFAULT '',
+            method_evidence_id TEXT NOT NULL DEFAULT '',
+            notes TEXT NOT NULL DEFAULT '',
+            assigned_at REAL,
+            submitted_at REAL,
+            reviewed_at REAL,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_cmmc_interview_user
+            ON cmmc_interviews(user_id, framework_id, status);
+
+        CREATE TABLE IF NOT EXISTS cmmc_evidence_classification (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            org_id TEXT,
+            evidence_id TEXT NOT NULL,
+            classification TEXT NOT NULL DEFAULT 'internal',
+            cui_program_id TEXT NOT NULL DEFAULT '',
+            allowed_roles_json TEXT NOT NULL DEFAULT '[]',
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL,
+            UNIQUE(user_id, evidence_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_cmmc_ev_cls
+            ON cmmc_evidence_classification(user_id, classification);
         """
     )
     c.commit()

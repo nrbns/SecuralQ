@@ -1630,6 +1630,50 @@ async def ingest_knowledge() -> IngestResponse:
     return IngestResponse(documents_ingested=count)
 
 
+@app.get("/api/realtime/reconstruct")
+async def realtime_reconstruct(
+    request: Request,
+    last_event_id: str = "",
+    limit: int = 200,
+):
+    """Authoritative reconnect pack: EVENTS + gap detection + latest cursor.
+
+    Complements SSE Last-Event-ID catch-up with an explicit JSON recovery API
+    for dashboards that buffered offline. Does not claim multi-AZ HA.
+    """
+    from app.auth import resolve_user
+    from app.realtime_bus import replay_with_state
+
+    q_token = (request.query_params.get("access_token") or request.query_params.get("token") or "").strip()
+    user = resolve_user(
+        request.headers.get("authorization") or (f"Bearer {q_token}" if q_token else None),
+        request.headers.get("x-securaiq-key") or request.headers.get("x-hackgpt-key"),
+        request.cookies.get("securaiq_session") or request.cookies.get("hackgpt_session") or q_token or None,
+    )
+    if settings.auth_enabled and not user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    cursor = (last_event_id or request.headers.get("last-event-id") or "").strip() or None
+    pack = replay_with_state(cursor, limit=max(1, min(int(limit or 200), 2000)))
+    # Tenant filter: drop events the caller must not see
+    if user and settings.auth_enabled:
+        try:
+            from app.realtime_bus import sse_push_allowed_for_client
+
+            filtered = [
+                ev
+                for ev in pack.get("events") or []
+                if sse_push_allowed_for_client(ev, user_id=user.id)
+            ]
+            pack["events"] = filtered
+            pack["count"] = len(filtered)
+            pack["gaps"] = __import__(
+                "app.realtime_bus", fromlist=["detect_sequence_gaps"]
+            ).detect_sequence_gaps(filtered)
+        except Exception:
+            pass
+    return pack
+
+
 @app.get("/api/realtime")
 async def realtime_feed(request: Request):
     """Server-Sent Events: live pulse for Mission Control + workspace panels.

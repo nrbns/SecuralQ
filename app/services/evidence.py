@@ -201,6 +201,13 @@ def record_evidence(
             (ts, conf, 1 if is_verified else 0, json.dumps(detail or {})[:8000], oid, exp, existing["id"]),
         )
         c.commit()
+        # Re-observation still moves risk/compliance chain
+        try:
+            from app.event_processor import _maybe_publish_org_risk
+
+            _maybe_publish_org_risk(user_id, reason=f"evidence.touch:{entity_type}")
+        except Exception:
+            pass
         return get_evidence(user_id, existing["id"])
     eid = new_id()
     c.execute(
@@ -234,6 +241,13 @@ def record_evidence(
             agent_id=(detail or {}).get("agent_id") if isinstance(detail, dict) else None,
             asset_id=(detail or {}).get("asset_id") if isinstance(detail, dict) else None,
         )
+    except Exception:
+        pass
+    # Org-wide risk/compliance chain on every evidence write (Evidence Spine gap close)
+    try:
+        from app.event_processor import _maybe_publish_org_risk
+
+        _maybe_publish_org_risk(user_id, reason=f"evidence.write:{entity_type}")
     except Exception:
         pass
     return row

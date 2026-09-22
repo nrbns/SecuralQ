@@ -44,6 +44,7 @@ from app.evidence_spine.vault import (
     set_review_status,
     supersede_vault_document,
 )
+from app.evidence_spine.worm import list_worm_locks, record_worm_lock, worm_backend_status
 from app.upload_validation import UploadValidationError
 
 router = APIRouter(prefix="/api/evidence-spine", tags=["evidence-spine"])
@@ -541,6 +542,41 @@ async def api_resolve_conflict(
             result=body.result,
             resolved_by=user.id,
             note=body.note,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+class WormLockIn(BaseModel):
+    content_hash: str = Field(min_length=1, max_length=128)
+    vault_id: str = ""
+    evidence_id: str = ""
+    retention_days: int = 365
+    lock_mode: str = "compliance"
+
+
+@router.get("/worm/status")
+async def api_worm_status(_user: Annotated[AuthUser, Depends(require_user)]):
+    return {"ok": True, **worm_backend_status()}
+
+
+@router.get("/worm/locks")
+async def api_worm_locks(user: Annotated[AuthUser, Depends(require_user)]):
+    return {"ok": True, "locks": list_worm_locks(user.id)}
+
+
+@router.post("/worm/locks")
+async def api_worm_lock(
+    body: WormLockIn, user: Annotated[AuthUser, Depends(require_user)]
+):
+    try:
+        return record_worm_lock(
+            user.id,
+            content_hash=body.content_hash,
+            vault_id=body.vault_id,
+            evidence_id=body.evidence_id,
+            retention_days=body.retention_days,
+            lock_mode=body.lock_mode,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

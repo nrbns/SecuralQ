@@ -27,7 +27,7 @@ If a feature cannot answer all six, do not ship it yet.
 | Freshness (never show old PASS as current) | **Shipped** | Policies + `control_stale_tick` |
 | Source reconciliation / CONFLICT | **Shipped** | Canonical + human resolve |
 | Platform Mission Control | **Shipped (lab)** | `GET /api/ops/mission-control` — component health; not multi-node HA |
-| CMMC assessment layer | **Shipped (scaffold)** | Objectives (Examine/Interview/Test) · method evidence → spine · policy-gated POA&M · CUI program · SPRS prep · versioned catalog — see [CMMC-ASSESSMENT.md](./CMMC-ASSESSMENT.md). Not C3PAO/SPRS submit |
+| CMMC assessment layer | **Shipped (Tier-1 deepen)** | Objectives · Examine/Interview/Test · SSP engine · readiness confidence · evidence gap plan · interview workflow · CUI scope/ACL · policy-gated POA&M · SPRS prep · versioned catalog — [CMMC-ASSESSMENT.md](./CMMC-ASSESSMENT.md). Not C3PAO/SPRS submit |
 
 ## RELEASE 1 — Closed loop
 
@@ -36,7 +36,7 @@ If a feature cannot answer all six, do not ship it yet.
 | Detect → risk → finding | **Partial→improved** | Host loops in acceptance; richer risk still thin |
 | Remediation → approval → signed command | **Improved** | Allowlist + seals; production flags optional in lab |
 | Independent verification | **Enforced** | Execute ≠ verified (host + campaign) |
-| New evidence → control PASS → risk recalc | **Improved** | Acceptance demo; not every product surface |
+| New evidence → control PASS → risk recalc | **Improved→shipped** | `record_evidence` triggers `_maybe_publish_org_risk` on every write/touch |
 
 **Prove:** `pytest tests/test_realtime_acceptance_local.py` · `scripts/realtime_acceptance_demo.py --local`
 
@@ -95,5 +95,5 @@ Attack paths / business graph / advanced risk / digital twin / AI SecOps autonom
 | Owned-host OS mutation acceptance | Needs authorized host |
 | HTTP 500/1k wave | Lab capacity / time; 100 measured |
 | Authenticode / notarization | Signing certs |
-| WORM object-lock | Needs object store |
+| WORM object-lock | Cloud backend needs object store; **local markers + API shipped** |
 | Release 5 differentiation | Frozen until 0–1 green on owned-host + HA |

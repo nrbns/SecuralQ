@@ -154,11 +154,15 @@ Existing Evidence Store remains at `/api/evidence`.
 ## Out of scope (next)
 
 - Full malware sandbox scanning
-- WORM / object-lock storage
-- Org-wide auto risk recalc on every write
-- Email notification worker → **shipped** (`notification_outbox` + `notification_delivery_tick`)
+- Cloud WORM / object-lock **backend** (local hash markers + `/api/evidence-spine/worm/*` shipped; needs object store)
 - Drag-and-drop vault UI polish
+
+## Closed this pass
+
+- Org-wide auto risk recalc on every `record_evidence` write → `_maybe_publish_org_risk`
+- WORM intent hooks on vault accept + explicit lock API (honest `not_configured` without object store)
 - Full asset identity / entity-resolution graph → **shipped** (`asset_aliases` — see [ASSET-IDENTITY.md](./ASSET-IDENTITY.md))
+- Email notification worker → **shipped** (`notification_outbox` + `notification_delivery_tick`)
 
 ## Tests
 

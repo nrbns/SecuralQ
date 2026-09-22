@@ -491,6 +491,28 @@ def set_review_status(
                 confirm_evidence(user_id, eid, confirmed_by=reviewed_by or user_id)
             except Exception:
                 pass
+            # WORM / Object Lock intent (local marker unless object store configured)
+            try:
+                from app.evidence_spine.worm import record_worm_lock
+
+                ch = str(vault.get("content_hash") or vault.get("sha256") or "")
+                if not ch:
+                    try:
+                        meta = json.loads(vault.get("meta_json") or "{}")
+                        ch = str(meta.get("content_hash") or meta.get("sha256") or "")
+                    except Exception:
+                        ch = ""
+                if ch:
+                    record_worm_lock(
+                        user_id,
+                        content_hash=ch,
+                        vault_id=vault_id,
+                        evidence_id=eid,
+                        retention_days=int(vault.get("retention_days") or 365),
+                        meta={"trigger": "vault_accepted"},
+                    )
+            except Exception:
+                pass
             _publish("evidence.verified", user_id, evidence_id=eid, vault_id=vault_id)
         elif st == "rejected":
             _publish("evidence.rejected", user_id, evidence_id=eid, vault_id=vault_id, note=note[:200])

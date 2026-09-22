@@ -154,3 +154,122 @@ def test_cmmc_api_smoke(tmp_path, monkeypatch):
     r4 = client.get("/api/cmmc/version?framework_id=cmmc_l2", headers=headers)
     assert r4.status_code == 200
     assert "status_note" in r4.json()
+
+
+def test_ssp_readiness_gap_interview_cui(tmp_path, monkeypatch):
+    uid = _uid(monkeypatch, tmp_path, "cmmc_tier1b")
+    from app.cmmc import (
+        build_evidence_gap_plan,
+        classify_evidence,
+        control_readiness_confidence,
+        create_interview,
+        get_control_ssp_pack,
+        record_method_evidence,
+        review_interview,
+        seed_objectives_for_framework,
+        ssp_engine_snapshot,
+        submit_interview_response,
+        upsert_cui_program,
+        upsert_implementation_statement,
+        user_may_access_evidence,
+    )
+
+    seed_objectives_for_framework("cmmc_l2")
+    upsert_implementation_statement(
+        uid,
+        framework_id="cmmc_l2",
+        control_id="AC.L2-3.1.1",
+        statement="MFA enforced via Entra ID Conditional Access for CUI workstations.",
+        technology="Entra ID + Intune",
+    )
+    pack = get_control_ssp_pack(uid, "cmmc_l2", "AC.L2-3.1.1")
+    assert pack["implementation"]["source"] == "authored"
+    assert "MFA" in pack["implementation"]["statement"]
+
+    record_method_evidence(
+        uid,
+        framework_id="cmmc_l2",
+        control_id="AC.L2-3.1.1",
+        method="examine",
+        title="AC policy",
+        result="pass",
+    )
+    conf = control_readiness_confidence(uid, "cmmc_l2", "AC.L2-3.1.1")
+    assert conf["overall"]["band"] in {"LOW", "MEDIUM", "HIGH"}
+    assert "signals" in conf
+
+    plan = build_evidence_gap_plan(uid, "cmmc_l2", owner_default="sec-ops")
+    assert plan["ok"] is True
+    assert plan["summary"]["tasks_generated"] > 0
+
+    iv = create_interview(
+        uid,
+        framework_id="cmmc_l2",
+        control_id="AC.L2-3.1.1",
+        question="How is MFA enforced for CUI users?",
+        person="Jane Admin",
+        role="Identity Owner",
+    )
+    submit_interview_response(uid, iv["id"], response="CA policy requires MFA.")
+    reviewed = review_interview(
+        uid, iv["id"], decision="approved", reviewer="auditor"
+    )
+    assert reviewed["status"] in {"approved", "attested"}
+    assert reviewed.get("evidence_id") or reviewed.get("method_evidence_id")
+
+    prog = upsert_cui_program(
+        uid,
+        name="CUI Boundary B",
+        boundary_notes="VLAN 40",
+        categories=["CUI"],
+        cui_assets=[{"asset_id": "ws-01", "hostname": "cui-ws-01"}],
+        cui_systems=[{"name": "FileShare"}],
+        cui_users=[{"name": "Jane", "role": "CUI user"}],
+        repositories=[{"name": "SharePoint CUI"}],
+    )
+    assert prog["scope_summary"]["assets"] == 1
+    assert prog["cui_systems"][0]["name"] == "FileShare"
+
+    # CUI evidence ACL
+    ev = record_method_evidence(
+        uid,
+        framework_id="cmmc_l2",
+        control_id="AC.L2-3.1.1",
+        method="test",
+        title="MFA check",
+        result="pass",
+    )
+    eid = ev["evidence_id"]
+    classify_evidence(uid, eid, classification="cui", cui_program_id=prog["id"])
+    denied = user_may_access_evidence(uid, eid, user_roles=[])
+    # owner path allows
+    assert denied["allowed"] is True or denied["reason"] == "owner"
+    denied2 = user_may_access_evidence(uid, eid, user_roles=["guest"])
+    # guest without owner match: if same user_id still owner-allowed
+    assert denied2["allowed"] is True  # owner of evidence row
+
+    snap = ssp_engine_snapshot(uid, "cmmc_l2")
+    assert snap["ok"] is True
+    assert snap["controls_total"] == 110
+
+
+def test_worm_and_realtime_reconstruct(tmp_path, monkeypatch):
+    uid = _uid(monkeypatch, tmp_path, "cmmc_worm")
+    from app.evidence_spine.worm import record_worm_lock, worm_backend_status
+    from app.realtime_bus import detect_sequence_gaps, publish, replay_with_state
+
+    st = worm_backend_status()
+    assert st["configured"] is False
+    lock = record_worm_lock(uid, content_hash="a" * 64, vault_id="v1", evidence_id="e1")
+    assert lock["status"] == "local_marker"
+
+    publish(type="test", event_type="test.gap", user_id=uid, sequence=1)
+    publish(type="test", event_type="test.gap", user_id=uid, sequence=2)
+    publish(type="test", event_type="test.gap", user_id=uid, sequence=4)
+    pack = replay_with_state(None, limit=50)
+    assert pack["ok"] is True
+    gaps = detect_sequence_gaps(
+        [{"sequence": 1}, {"sequence": 2}, {"sequence": 4}]
+    )
+    assert gaps["gap_detected"] is True
+    assert 3 in gaps["missing"]
