@@ -52,11 +52,38 @@ _last_control_stale_tick = _boot_ts
 _last_notification_delivery_tick = _boot_ts
 _last_exception_expiry_tick = _boot_ts
 _last_vault_expiry_tick = _boot_ts
+_last_posture_refresh = _boot_ts
 COMPLIANCE_OPS_TICK_SEC = 300  # every 5 minutes
 CONTROL_STALE_TICK_SEC = 300  # every 5 minutes — PASS/FAIL → STALE
 NOTIFICATION_DELIVERY_TICK_SEC = 30  # drain email/slack/teams outbox
 EXCEPTION_EXPIRY_TICK_SEC = 6 * 3600  # renew/expiry reminders every 6h
 VAULT_EXPIRY_TICK_SEC = 3600  # document evidence expiry every hour
+
+
+def _posture_interval_sec() -> int:
+    try:
+        from app.posture.refresh_policy import default_interval_sec
+
+        return int(default_interval_sec())
+    except Exception:
+        return 30 * 60
+
+
+def _posture_due(now_t: float) -> bool:
+    """Due check with deterministic jitter so tenants don't thundering-herd."""
+    import hashlib
+
+    interval = _posture_interval_sec()
+    try:
+        from app.posture.refresh_policy import default_jitter_sec
+
+        jitter = int(default_jitter_sec())
+    except Exception:
+        jitter = 60
+    # Bucket offset 0..jitter from process identity
+    seed = hashlib.sha256(f"posture:{id(_boot_ts)}".encode()).hexdigest()
+    offset = int(seed[:8], 16) % max(jitter + 1, 1)
+    return (now_t - _last_posture_refresh) >= (interval - offset)
 
 
 def register_job(kind: str):
@@ -292,7 +319,7 @@ async def _scheduler_loop() -> None:
     global _last_kev_sync, _last_xdr_sync, _last_wazuh_sync, _last_openaudit_sync
     global _last_thehive_sync, _last_cloud_posture_sync, _last_sonarqube_sync, _last_software_sync
     global _last_compliance_ops_tick, _last_control_stale_tick, _last_notification_delivery_tick
-    global _last_exception_expiry_tick, _last_vault_expiry_tick
+    global _last_exception_expiry_tick, _last_vault_expiry_tick, _last_posture_refresh
     while True:
         now_t = time.time()
         try:
@@ -470,6 +497,17 @@ async def _scheduler_loop() -> None:
             ):
                 _last_vault_expiry_tick = now_t
                 enqueue_job("vault_expiry_tick", {"scheduled": True})
+        except Exception:
+            pass
+        try:
+            # Continuous Posture Engine — Layer B reconciliation (NOT deep scans)
+            if (
+                "posture_refresh" in JOB_HANDLERS
+                and _posture_due(now_t)
+                and not _has_pending_or_running("posture_refresh")
+            ):
+                _last_posture_refresh = now_t
+                enqueue_job("posture_refresh", {"scheduled": True})
         except Exception:
             pass
         await asyncio.sleep(_SCHEDULER_TICK_SEC)
@@ -1111,3 +1149,22 @@ async def _job_vault_expiry_tick(payload: dict[str, Any]) -> dict[str, Any]:
 
     limit = int(payload.get("limit") or 200)
     return await asyncio.to_thread(run_vault_expiry_tick, limit=limit)
+
+
+@register_job("posture_refresh")
+async def _job_posture_refresh(payload: dict[str, Any]) -> dict[str, Any]:
+    """Continuous Posture Engine — Layer B reconciliation (not deep scans).
+
+    Realtime events still update immediately; this job is the safety-net cycle
+    (default 30m ± jitter). Never enqueues Nmap/Nuclei/ZAP.
+    """
+    from app.posture.orchestrator import run_posture_refresh, run_posture_refresh_all_users
+
+    uid = (payload.get("user_id") or "").strip()
+    trigger = "manual" if payload.get("manual") else "scheduled"
+    force = bool(payload.get("force"))
+    if uid and uid != "local":
+        return await asyncio.to_thread(
+            run_posture_refresh, uid, trigger=trigger, force=force
+        )
+    return await asyncio.to_thread(run_posture_refresh_all_users)

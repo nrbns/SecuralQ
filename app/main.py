@@ -97,6 +97,7 @@ from app.stix_api import router as stix_router
 from app.exceptions_api import router as exceptions_router
 from app.cmmc_affirmation_api import router as cmmc_affirmation_router
 from app.cmmc.api import router as cmmc_assessment_router
+from app.posture.api import router as posture_router
 from app.compliance_attestation_api import router as compliance_attestation_router
 from app.human_attestation_api import router as human_attestation_router
 from app.canonical_controls_api import router as canonical_controls_router
@@ -413,6 +414,7 @@ app.include_router(stix_router)
 app.include_router(exceptions_router)
 app.include_router(cmmc_affirmation_router)
 app.include_router(cmmc_assessment_router)
+app.include_router(posture_router)
 app.include_router(compliance_attestation_router)
 app.include_router(human_attestation_router)
 app.include_router(canonical_controls_router)

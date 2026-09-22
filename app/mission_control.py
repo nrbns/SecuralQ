@@ -158,6 +158,26 @@ def mission_control_snapshot(*, user_id: str | None = None) -> dict[str, Any]:
     except Exception as exc:
         components["notifications"] = _comp("unknown", error=str(exc)[:120])
 
+    # Continuous Posture Engine
+    try:
+        from app.posture.views import posture_health
+
+        ph = posture_health()
+        st = "healthy"
+        if not ph.get("handler_registered"):
+            st = "degraded"
+        elif int(ph.get("failed_last_24h") or 0) > 0:
+            st = "degraded"
+        components["posture_engine"] = _comp(
+            st,
+            last_cycle_sec_ago=ph.get("last_cycle_sec_ago"),
+            last_status=ph.get("last_status"),
+            interval_sec=ph.get("default_interval_sec"),
+            note="Layer B reconciliation — not deep scan",
+        )
+    except Exception as exc:
+        components["posture_engine"] = _comp("unknown", error=str(exc)[:120])
+
     overall = "healthy"
     for c in components.values():
         if c.get("status") in {"degraded", "unknown"}:

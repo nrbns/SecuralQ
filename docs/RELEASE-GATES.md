@@ -51,6 +51,7 @@ If a feature cannot answer all six, do not ship it yet.
 | CMMC audit pack / management view | **Shipped** | `/api/cmmc/audit-pack` · `/api/cmmc/management-view` |
 | SCIM Groups | **Shipped (minimal)** | `/scim/v2/Groups` CRUD; Users already present; not full RFC |
 | Cross-framework evidence write-through | **Shipped (opt-in)** | `propagate_canonical` on evidence link → sibling `supports` maps |
+| Continuous Posture Engine | **Shipped (Layer B)** | 30m ± jitter reconciliation — **not** Nmap/Nuclei/ZAP; see [POSTURE-ENGINE.md](./POSTURE-ENGINE.md) |
 | Notification worker (queue, not inline SMTP) | **Shipped** | `notification_delivery_tick` |
 
 ## RELEASE 3 — Enterprise
