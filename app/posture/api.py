@@ -30,6 +30,7 @@ router = APIRouter(prefix="/api/posture", tags=["posture-engine"])
 
 class RefreshNowIn(BaseModel):
     force: bool = False
+    async_enqueue: bool = True
 
 
 class SettingsIn(BaseModel):
@@ -80,8 +81,31 @@ async def api_refresh_now(
     user: Annotated[AuthUser, Depends(require_user)],
     body: RefreshNowIn | None = None,
 ):
-    """Refresh Now — idempotent org lock; never starts deep scanners."""
+    """Refresh Now — org lock + optional async job enqueue (never deep scanners)."""
     force = bool(body.force) if body else False
+    async_q = True if body is None else bool(body.async_enqueue)
+    if async_q:
+        try:
+            from app.jobs import enqueue_job
+
+            job = enqueue_job(
+                "posture_refresh",
+                {
+                    "user_id": user.id,
+                    "manual": True,
+                    "force": force,
+                    "priority": "P2",
+                },
+            )
+            return {
+                "ok": True,
+                "queued": True,
+                "job_id": job.get("id"),
+                "status": "queued",
+                "note": "Posture refresh queued — Layer B only (no Nmap/Nuclei/ZAP).",
+            }
+        except Exception:
+            pass
     return run_posture_refresh(user.id, trigger="manual", force=force)
 
 

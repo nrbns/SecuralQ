@@ -17,6 +17,7 @@ DEFAULT_QUOTAS = {
     "max_upload_mb": 500,
     "max_scans_per_day": 50,
     "api_per_minute": 300,
+    "max_posture_per_hour": 12,
 }
 
 
@@ -34,6 +35,14 @@ def ensure_quota_schema() -> None:
         )
         """
     )
+    try:
+        cols = {r[1] for r in c.execute("PRAGMA table_info(org_quotas)").fetchall()}
+        if "max_posture_per_hour" not in cols:
+            c.execute(
+                "ALTER TABLE org_quotas ADD COLUMN max_posture_per_hour INTEGER NOT NULL DEFAULT 12"
+            )
+    except Exception:
+        pass
     c.commit()
 
 
@@ -55,8 +64,9 @@ def get_quotas(org_id: str | None) -> dict[str, Any]:
         return base
     row = get_conn().execute("SELECT * FROM org_quotas WHERE org_id = ?", (oid,)).fetchone()
     if row:
+        row_keys = set(row.keys()) if hasattr(row, "keys") else set()
         for k in DEFAULT_QUOTAS:
-            if row[k] is not None:
+            if k in row_keys and row[k] is not None:
                 base[k] = int(row[k])
     return base
 
@@ -71,13 +81,17 @@ def set_quotas(org_id: str, **kwargs: int) -> dict[str, Any]:
             cur[k] = int(v)
     get_conn().execute(
         """
-        INSERT INTO org_quotas (org_id, max_agents, max_upload_mb, max_scans_per_day, api_per_minute, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO org_quotas (
+            org_id, max_agents, max_upload_mb, max_scans_per_day, api_per_minute,
+            max_posture_per_hour, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(org_id) DO UPDATE SET
           max_agents=excluded.max_agents,
           max_upload_mb=excluded.max_upload_mb,
           max_scans_per_day=excluded.max_scans_per_day,
           api_per_minute=excluded.api_per_minute,
+          max_posture_per_hour=excluded.max_posture_per_hour,
           updated_at=excluded.updated_at
         """,
         (
@@ -86,6 +100,7 @@ def set_quotas(org_id: str, **kwargs: int) -> dict[str, Any]:
             cur["max_upload_mb"],
             cur["max_scans_per_day"],
             cur["api_per_minute"],
+            cur["max_posture_per_hour"],
             now(),
         ),
     )

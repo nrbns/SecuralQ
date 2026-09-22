@@ -108,3 +108,79 @@ def test_dashboard_baseline_drift_and_api(tmp_path, monkeypatch):
     r3 = client.get("/api/posture/policies", headers=headers)
     assert r3.status_code == 200
     assert "B_posture_refresh" in r3.json()["layers"]
+
+
+def test_incremental_scheduled_skips_unchanged(tmp_path, monkeypatch):
+    uid = _uid(monkeypatch, tmp_path, "posture_incr")
+    from app.posture.orchestrator import run_posture_refresh
+
+    first = run_posture_refresh(uid, trigger="manual", force=True)
+    assert first["ok"] is True
+    second = run_posture_refresh(uid, trigger="scheduled", force=False)
+    assert second["ok"] is True
+    stages = (second.get("run") or {}).get("stages") or []
+    skipped = [s for s in stages if s.get("status") == "skipped"]
+    # Empty tenant: evidence/vuln/compliance may skip on incremental
+    metrics = (second.get("run") or {}).get("metrics") or {}
+    if isinstance(metrics, str):
+        import json
+
+        metrics = json.loads(metrics)
+    assert metrics.get("incremental") is True or skipped
+
+
+def test_tenant_posture_quota(tmp_path, monkeypatch):
+    uid = _uid(monkeypatch, tmp_path, "posture_quota")
+    from app.db import get_conn, now
+    from app.posture.orchestrator import run_posture_refresh
+    from app.posture.schema import ensure_posture_schema
+    from app.tenant_quotas import ensure_quota_schema, set_quotas
+    from app.tenancy import primary_org_id
+
+    ensure_posture_schema()
+    ensure_quota_schema()
+    oid = primary_org_id(uid) or uid
+    set_quotas(oid, max_posture_per_hour=1)
+    t = now() - 10
+    get_conn().execute(
+        """
+        INSERT INTO posture_refresh_runs
+        (id, user_id, org_id, trigger, status, created_at, started_at, completed_at, updated_at)
+        VALUES (?, ?, ?, 'manual', 'completed', ?, ?, ?, ?)
+        """,
+        ("seed_quota", uid, oid, t, t, t + 5, t + 5),
+    )
+    get_conn().commit()
+    blocked = run_posture_refresh(uid, trigger="manual", force=False)
+    assert blocked.get("reason") == "tenant_posture_quota"
+    assert blocked.get("ok") is False
+    forced = run_posture_refresh(uid, trigger="manual", force=True)
+    assert forced.get("ok") is True
+
+
+def test_async_refresh_enqueue_api(tmp_path, monkeypatch):
+    configure_isolated_settings(monkeypatch, tmp_path / "async_api")
+    from fastapi.testclient import TestClient
+
+    from app.auth import login, register_user
+    from app.main import app
+    from app.tenancy import ensure_tenant_schema
+
+    ensure_tenant_schema()
+    register_user("posture_async", "password123", role="admin")
+    _, token = login("posture_async", "password123")
+    client = TestClient(app)
+    headers = {"Authorization": f"Bearer {token}"}
+    r = client.post(
+        "/api/posture/refresh",
+        headers=headers,
+        json={"force": True, "async_enqueue": True},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body.get("ok") is True
+    # Prefer queued; sync fallback still ok
+    if body.get("queued"):
+        assert body.get("job_id")
+    else:
+        assert body.get("status") in {"completed", "partial", "cancelled", "running"}

@@ -3080,6 +3080,22 @@ window.RealtimeManager = {
         if (view === "control_center") this.invalidate("control_center");
       }
     }
+    // Continuous Posture Engine SSE
+    if (t === "posture" || String(t).startsWith("posture.")) {
+      clearTimeout(window.__securaiqPostureRtTimer);
+      window.__securaiqPostureRtTimer = setTimeout(() => {
+        if (typeof window.loadContinuousPosturePanel === "function") {
+          window.loadContinuousPosturePanel({ quiet: true });
+        }
+        if (
+          typeof loadCommandCenter === "function" &&
+          (window.__securaiqCurrentView === "command" ||
+            (typeof currentView !== "undefined" && currentView === "command"))
+        ) {
+          loadCommandCenter();
+        }
+      }, 500);
+    }
   },
   reconnect() {
     if (typeof ensureRealtimeFeed === "function") {
@@ -5736,6 +5752,9 @@ async function loadCommandCenter() {
     refreshMcIntegrations();
     const displayCompliance = assessedPct == null ? 0 : Math.round(assessedPct);
     renderSqPostureBars(data, index, displayCompliance);
+    if (typeof window.loadContinuousPosturePanel === "function") {
+      window.loadContinuousPosturePanel({ quiet: true });
+    }
     const postureNote = document.getElementById("sqPostureNote");
     if (postureNote) {
       postureNote.textContent =
@@ -7127,6 +7146,124 @@ function renderSqPostureBars(data, index, compliance) {
   } else {
     setBar("sqBarCompliance", "sqBarComplianceVal", compliance, `${compliance}%`);
   }
+}
+
+function _fmtRelSec(ts) {
+  if (ts == null || ts === "") return "—";
+  const n = Number(ts);
+  if (!Number.isFinite(n)) return "—";
+  const ago = Math.max(0, Math.round(Date.now() / 1000 - n));
+  if (ago < 60) return `${ago}s ago`;
+  if (ago < 3600) return `${Math.round(ago / 60)}m ago`;
+  if (ago < 86400) return `${Math.round(ago / 3600)}h ago`;
+  return `${Math.round(ago / 86400)}d ago`;
+}
+
+async function loadContinuousPosturePanel(opts = {}) {
+  const quiet = !!opts.quiet;
+  const meta = document.getElementById("sqPostureEngineMeta");
+  const attn = document.getElementById("sqPostureAttention");
+  if (!meta && !attn) return;
+  try {
+    const res = await fetch("/api/posture/dashboard", { headers: authHeaders() });
+    if (!res.ok) {
+      if (meta && !quiet) meta.textContent = "Continuous Posture Engine — unavailable";
+      return;
+    }
+    const dash = await res.json();
+    const scores = dash.scores || {};
+    const assets = dash.assets || {};
+    const last = dash.last_refresh || {};
+    const intervalMin = Math.round(Number(dash.interval_sec || 1800) / 60);
+    const lastDone = last.completed_at || last.started_at;
+    const status = dash.status || "unknown";
+    if (meta) {
+      meta.textContent =
+        `Continuous Posture Engine · ${status}` +
+        (lastDone ? ` · last ${_fmtRelSec(lastDone)}` : " · never run") +
+        ` · every ~${intervalMin}m` +
+        (assets.total != null ? ` · ${assets.healthy || 0}/${assets.total} assets healthy` : "");
+    }
+    const evPct = scores.evidence != null ? Number(scores.evidence) : Number(dash.snapshot?.evidence_fresh_percent);
+    if (Number.isFinite(evPct)) {
+      const bar = document.getElementById("sqBarEvidence");
+      const val = document.getElementById("sqBarEvidenceVal");
+      if (bar) bar.style.width = `${Math.min(100, Math.max(0, evPct))}%`;
+      if (val) val.textContent = `${Math.round(evPct)}%`;
+    }
+    if (scores.compliance != null) {
+      const bar = document.getElementById("sqBarCompliance");
+      const val = document.getElementById("sqBarComplianceVal");
+      const c = Math.round(Number(scores.compliance));
+      if (bar) bar.style.width = `${Math.min(100, Math.max(0, c))}%`;
+      if (val && val.textContent === "—") val.textContent = `${c}%`;
+    }
+    if (attn) {
+      const items = Array.isArray(dash.attention) ? dash.attention.slice(0, 5) : [];
+      if (!items.length) {
+        attn.innerHTML = `<li class="hint">No posture attention items</li>`;
+      } else {
+        attn.innerHTML = items
+          .map(
+            (a) =>
+              `<li><strong>${escapeHtml(a.title || "Item")}</strong>` +
+              (a.why ? ` — ${escapeHtml(a.why)}` : "") +
+              (a.action ? ` <em>${escapeHtml(a.action)}</em>` : "") +
+              `</li>`
+          )
+          .join("");
+      }
+    }
+    const note = document.getElementById("sqPostureNote");
+    if (note && dash.disclaimer) note.textContent = dash.disclaimer;
+  } catch (err) {
+    if (meta && !quiet) meta.textContent = `Continuous Posture Engine — ${err.message || "error"}`;
+  }
+}
+window.loadContinuousPosturePanel = loadContinuousPosturePanel;
+
+function wirePostureRefreshBtnOnce() {
+  if (window.__securaiqPostureRefreshWired) return;
+  const btn = document.getElementById("sqPostureRefreshBtn");
+  if (!btn) return;
+  window.__securaiqPostureRefreshWired = true;
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    const meta = document.getElementById("sqPostureEngineMeta");
+    if (meta) meta.textContent = "Continuous Posture Engine — queuing refresh…";
+    try {
+      const res = await fetch("/api/posture/refresh", {
+        method: "POST",
+        headers: authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ force: false, async_enqueue: true }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const msg = formatApiDetail(data.detail, res.status) || "Refresh failed";
+        if (typeof notifyUser === "function") notifyUser(`**Posture refresh failed:** ${msg}`);
+        if (meta) meta.textContent = `Continuous Posture Engine — ${msg}`;
+        return;
+      }
+      const queued = data.queued || data.status === "queued";
+      if (typeof notifyUser === "function") {
+        notifyUser(
+          queued
+            ? "**Posture refresh queued** — Layer B only (no deep scans)."
+            : `**Posture refresh** ${data.status || "done"}.`
+        );
+      }
+      setTimeout(() => loadContinuousPosturePanel({ quiet: true }), queued ? 2500 : 400);
+    } catch (err) {
+      if (typeof notifyUser === "function") notifyUser(`**Posture refresh error:** ${err.message || err}`);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", wirePostureRefreshBtnOnce);
+} else {
+  wirePostureRefreshBtnOnce();
 }
 
 function wireCcKpiNavOnce() {

@@ -557,20 +557,26 @@
           <div class="sq-hero-grid">
             <section class="sq-card sq-posture" id="sqPostureCard">
               <header class="sq-card-head"><h3>Security Posture</h3>
-                <button type="button" class="btn-ghost sq-link-btn" data-workspace="executive">Exposure detail →</button>
+                <div style="display:flex;gap:0.35rem;align-items:center">
+                  <button type="button" class="btn-ghost sq-link-btn" id="sqPostureRefreshBtn" title="Run Layer B posture refresh (not a deep scan)">Refresh now</button>
+                  <button type="button" class="btn-ghost sq-link-btn" data-workspace="executive">Exposure detail →</button>
+                </div>
               </header>
               <div class="sq-posture-score">
                 <strong class="sq-score-num" id="ccScoreMirror">0</strong>
                 <span class="sq-score-band" id="ccScoreLevelMirror">—</span>
                 <em class="sq-score-trend mc-trend" id="ccScoreTrendMirror"></em>
               </div>
+              <p class="hint" id="sqPostureEngineMeta" style="margin:0.25rem 0 0.5rem">Continuous Posture Engine — loading…</p>
               <div class="sq-posture-bars">
                 <div class="sq-pbar"><span>Assets</span><i style="width:0%" id="sqBarAssets"></i><em id="sqBarAssetsVal">0</em></div>
                 <div class="sq-pbar"><span>Vulns</span><i style="width:0%" id="sqBarVulns"></i><em id="sqBarVulnsVal">0</em></div>
                 <div class="sq-pbar"><span>Exposure</span><i style="width:0%" id="sqBarExposure"></i><em id="sqBarExposureVal">0</em></div>
                 <div class="sq-pbar"><span>Compliance</span><i style="width:0%" id="sqBarCompliance"></i><em id="sqBarComplianceVal">—</em></div>
+                <div class="sq-pbar"><span>Evidence</span><i style="width:0%" id="sqBarEvidence"></i><em id="sqBarEvidenceVal">—</em></div>
               </div>
-              <p class="hint" id="sqPostureNote" style="margin:0.5rem 0 0">Summary → ranked actions → evidence → verify.</p>
+              <ul id="sqPostureAttention" class="sq-attention-list" style="margin-top:0.5rem"></ul>
+              <p class="hint" id="sqPostureNote" style="margin:0.5rem 0 0">Realtime detection + 30-min reconciliation — not a full network scan.</p>
             </section>
           </div>
 
@@ -2519,7 +2525,7 @@
     </div>
   </div>
 
-  <script src="/app.js?v=230"></script>
+  <script src="/app.js?v=231"></script>
   <script src="/workspace.js?v=228"></script>
 </body>
 </html>

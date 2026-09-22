@@ -28,7 +28,31 @@ def run_posture_refresh(
     ensure_posture_schema()
     from app.tenancy import primary_org_id
 
-    oid = org_id or primary_org_id(user_id)
+    oid = org_id or primary_org_id(user_id) or user_id
+    # Soft tenant quota — max posture refreshes per hour
+    try:
+        from app.tenant_quotas import get_quotas
+
+        quotas = get_quotas(oid)
+        max_ph = int(quotas.get("max_posture_per_hour") or 12)
+        n = get_conn().execute(
+            """
+            SELECT COUNT(*) AS n FROM posture_refresh_runs
+            WHERE user_id = ? AND created_at >= ? AND status NOT IN ('cancelled')
+            """,
+            (user_id, now() - 3600),
+        ).fetchone()
+        if n and int(n["n"] or 0) >= max_ph and not force:
+            return {
+                "ok": False,
+                "status": "cancelled",
+                "reason": "tenant_posture_quota",
+                "max_posture_per_hour": max_ph,
+                "note": "Tenant posture refresh quota reached — wait or use force with admin approval.",
+            }
+    except Exception:
+        pass
+
     lock_key = f"posture:{oid or user_id}:posture"
     idem = "" if force else f"{lock_key}:{int(now() // 60)}"  # per-minute bucket
 
@@ -89,37 +113,83 @@ def run_posture_refresh(
             return None
 
     # --- stages (existing components only) ---
+    prev = _latest_snapshot(user_id)
+    incremental = trigger == "scheduled" and not force
+    skipped: list[str] = []
+
     asset_r = _stage("asset_health", lambda: _refresh_assets(user_id))
     if isinstance(asset_r, dict):
         counts["assets_checked"] = int(asset_r.get("total") or 0)
-        counts["stale_assets"] = int(asset_r.get("stale") or 0)
+        counts["stale_assets"] = int(
+            int(asset_r.get("stale") or 0)
+            + int(asset_r.get("offline") or 0)
+            + int(asset_r.get("unreachable") or 0)
+        )
 
-    ctrl_r = _stage("controls", lambda: _refresh_controls(user_id))
+    # Lightweight change detection — skip expensive stages when nothing moved
+    def _should_run_heavy() -> bool:
+        if not incremental or not prev:
+            return True
+        age = now() - float(prev.get("created_at") or 0)
+        if age > 2 * 3600:
+            return True
+        pa = prev.get("asset_health") or {}
+        if int(asset_r.get("stale") or 0) != int(pa.get("stale") or 0):
+            return True
+        if int(asset_r.get("offline") or 0) != int(pa.get("offline") or 0):
+            return True
+        if int(asset_r.get("total") or 0) != int(pa.get("total") or 0):
+            return True
+        if int(asset_r.get("critical_stale") or 0) > 0:
+            return True
+        return False
+
+    heavy = _should_run_heavy()
+
+    if heavy:
+        ctrl_r = _stage("controls", lambda: _refresh_controls(user_id))
+    else:
+        ctrl_r = {"skipped": True, "reason": "no_asset_delta"}
+        skipped.append("controls")
+        stages.append({"name": "controls", "status": "skipped", "result": ctrl_r})
     if isinstance(ctrl_r, dict):
         counts["controls_checked"] = int(ctrl_r.get("checked") or ctrl_r.get("stale") or 0)
 
     ev_r = _stage("evidence_freshness", lambda: _refresh_evidence(user_id))
     if isinstance(ev_r, dict):
         counts["evidence_checked"] = int(ev_r.get("checked") or 0)
+        if incremental and prev and int(ev_r.get("stale") or 0) == 0 and int(ev_r.get("expired") or 0) == 0:
+            # evidence clean — may still skip vuln/compliance if assets quiet
+            pass
 
-    vuln_r = _stage("vulnerabilities", lambda: _refresh_vulns(user_id))
+    if heavy or int((ev_r or {}).get("stale") or 0) or int((ev_r or {}).get("expired") or 0):
+        vuln_r = _stage("vulnerabilities", lambda: _refresh_vulns(user_id))
+        comp_r = _stage("compliance", lambda: _refresh_compliance(user_id))
+        risk_r = _stage("risk", lambda: _refresh_risk(user_id))
+        _stage("exceptions", lambda: _refresh_exceptions(user_id))
+        _stage("vault_expiry", lambda: _refresh_vault(user_id))
+    else:
+        vuln_r = {"skipped": True}
+        comp_r = {"skipped": True}
+        risk_r = {
+            "score": prev.get("risk_score") if prev else None,
+            "band": prev.get("risk_band") if prev else None,
+            "skipped": True,
+        }
+        for name in ("vulnerabilities", "compliance", "risk", "exceptions", "vault_expiry"):
+            skipped.append(name)
+            stages.append({"name": name, "status": "skipped", "result": {"reason": "incremental_no_change"}})
+
     if isinstance(vuln_r, dict):
         counts["vulnerabilities_checked"] = int(vuln_r.get("open") or 0)
-
-    comp_r = _stage("compliance", lambda: _refresh_compliance(user_id))
     if isinstance(comp_r, dict):
         counts["compliance_checked"] = int(comp_r.get("checked") or 0)
-
-    risk_r = _stage("risk", lambda: _refresh_risk(user_id))
-    if isinstance(risk_r, dict) and risk_r.get("score") is not None:
+    if isinstance(risk_r, dict) and risk_r.get("score") is not None and not risk_r.get("skipped"):
         counts["risk_recalculated"] = 1
 
-    _stage("exceptions", lambda: _refresh_exceptions(user_id))
-    _stage("vault_expiry", lambda: _refresh_vault(user_id))
     _stage("notifications", lambda: _refresh_notifications())
 
-    # Snapshot + delta vs previous
-    prev = _latest_snapshot(user_id)
+    # Snapshot + delta vs previous (prev already loaded)
     snap = _stage(
         "snapshot",
         lambda: _write_snapshot(
@@ -187,7 +257,7 @@ def run_posture_refresh(
         duration_ms=duration_ms,
         errors_json=errors,
         stages_json=stages,
-        metrics_json={"changed": changed, "layers": "B_posture"},
+        metrics_json={"changed": changed, "layers": "B_posture", "skipped": skipped, "incremental": incremental},
         previous_snapshot_id=(prev or {}).get("id") or "",
         snapshot_id=(snap or {}).get("id") if isinstance(snap, dict) else "",
         evidence_id=evidence_id,
@@ -221,8 +291,10 @@ def run_posture_refresh(
 
 
 def run_posture_refresh_all_users(*, limit_users: int = 50) -> dict[str, Any]:
-    """Scheduled fan-out across tenants (best-effort)."""
+    """Scheduled fan-out across tenants — honors per-org interval/disabled."""
     ensure_posture_schema()
+    from app.posture.refresh_policy import get_org_interval
+
     try:
         uids = [
             r["id"]
@@ -235,8 +307,29 @@ def run_posture_refresh_all_users(*, limit_users: int = 50) -> dict[str, Any]:
     if not uids:
         uids = ["local"]
     results = []
+    skipped_sched = 0
     for uid in uids:
         try:
+            settings = get_org_interval(uid)
+            if not settings.get("enabled", True):
+                skipped_sched += 1
+                continue
+            # Per-org cadence: skip if last completed run is within interval - jitter
+            last = get_conn().execute(
+                """
+                SELECT completed_at FROM posture_refresh_runs
+                WHERE user_id = ? AND completed_at IS NOT NULL
+                ORDER BY completed_at DESC LIMIT 1
+                """,
+                (uid,),
+            ).fetchone()
+            interval = int(settings.get("interval_sec") or 1800)
+            jitter = int(settings.get("jitter_sec") or 60)
+            if last and last["completed_at"]:
+                elapsed = now() - float(last["completed_at"])
+                if elapsed < max(60, interval - jitter):
+                    skipped_sched += 1
+                    continue
             results.append(run_posture_refresh(uid, trigger="scheduled"))
         except Exception as exc:
             results.append({"ok": False, "user_id": uid, "error": str(exc)})
@@ -244,6 +337,7 @@ def run_posture_refresh_all_users(*, limit_users: int = 50) -> dict[str, Any]:
         "ok": True,
         "users": len(uids),
         "runs": len(results),
+        "skipped_not_due": skipped_sched,
         "partial": sum(1 for r in results if r.get("status") == "partial"),
         "failed": sum(1 for r in results if not r.get("ok")),
     }
@@ -253,38 +347,91 @@ def run_posture_refresh_all_users(*, limit_users: int = 50) -> dict[str, Any]:
 
 
 def _refresh_assets(user_id: str) -> dict[str, Any]:
-    # Be resilient to schema variants across labs
+    """Asset health buckets — join agent last_seen when available; use criticality."""
     try:
         cols = {r[1] for r in get_conn().execute("PRAGMA table_info(assets)").fetchall()}
     except Exception:
         cols = set()
-    select = ["id"]
-    for c in ("hostname", "name", "last_seen", "updated_at", "created_at", "status", "agent_id"):
+    select = ["a.id"]
+    for c in (
+        "hostname",
+        "name",
+        "last_seen",
+        "updated_at",
+        "created_at",
+        "status",
+        "agent_id",
+        "criticality",
+        "business_criticality",
+        "asset_type",
+    ):
         if c in cols:
-            select.append(c)
-    if not select:
-        return {"total": 0, "healthy": 0, "stale": 0, "offline": 0, "degraded": 0, "unknown": 0}
+            select.append(f"a.{c}")
+    if len(select) == 1:
+        return {
+            "total": 0,
+            "healthy": 0,
+            "stale": 0,
+            "offline": 0,
+            "degraded": 0,
+            "unknown": 0,
+            "unreachable": 0,
+            "critical_stale": 0,
+        }
+
+    # Best-effort agent last_seen join
+    agent_join = ""
+    agent_cols = set()
+    try:
+        agent_cols = {r[1] for r in get_conn().execute("PRAGMA table_info(agents)").fetchall()}
+    except Exception:
+        agent_cols = set()
+    if "last_seen" in agent_cols and ("id" in agent_cols or "agent_id" in agent_cols):
+        agent_join = " LEFT JOIN agents ag ON ag.user_id = a.user_id AND (ag.id = a.id OR ag.hostname = a.name)"
+        if "last_seen" in agent_cols:
+            select.append("ag.last_seen AS agent_last_seen")
+        if "status" in agent_cols:
+            select.append("ag.status AS agent_status")
+
     rows = get_conn().execute(
-        f"SELECT {', '.join(select)} FROM assets WHERE user_id = ?",
+        f"SELECT {', '.join(select)} FROM assets a{agent_join} WHERE a.user_id = ?",
         (user_id,),
     ).fetchall()
     t = now()
-    healthy = stale = offline = degraded = unknown = 0
+    healthy = stale = offline = degraded = unknown = unreachable = critical_stale = 0
     for r in rows:
         d = dict(r)
-        last = float(d.get("last_seen") or d.get("updated_at") or d.get("created_at") or 0)
-        st = (d.get("status") or "").lower()
+        last = float(
+            d.get("agent_last_seen")
+            or d.get("last_seen")
+            or d.get("updated_at")
+            or d.get("created_at")
+            or 0
+        )
+        st = (d.get("agent_status") or d.get("status") or "").lower()
+        crit = (d.get("business_criticality") or d.get("criticality") or "medium").lower()
         age = t - last if last else 1e9
-        if st in {"offline", "unreachable"} or age > 24 * 3600:
+        if st in {"unreachable"} or (not last and st not in {"online", "healthy"}):
+            unreachable += 1
+            bucket = "unreachable"
+        elif st in {"offline"} or age > 24 * 3600:
             offline += 1
+            bucket = "offline"
         elif age > 2 * 3600:
             stale += 1
+            bucket = "stale"
+            if crit in {"critical", "high"}:
+                critical_stale += 1
         elif st in {"degraded", "warning"}:
             degraded += 1
+            bucket = "degraded"
         elif last:
             healthy += 1
+            bucket = "healthy"
         else:
             unknown += 1
+            bucket = "unknown"
+        d["_health"] = bucket
     return {
         "total": len(rows),
         "healthy": healthy,
@@ -292,6 +439,8 @@ def _refresh_assets(user_id: str) -> dict[str, Any]:
         "offline": offline,
         "degraded": degraded,
         "unknown": unknown,
+        "unreachable": unreachable,
+        "critical_stale": critical_stale,
     }
 
 

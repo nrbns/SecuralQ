@@ -109,10 +109,21 @@ def what_needs_attention(
                 "action": "Prioritize patching / compensating controls",
             }
         )
-    if int(asset_r.get("stale") or 0) > 0:
+    if int(asset_r.get("critical_stale") or 0) > 0:
         items.append(
             {
                 "priority": 2,
+                "title": f"{asset_r['critical_stale']} critical/high assets stale",
+                "why": "High-value systems without fresh telemetry",
+                "impact": "HIGH",
+                "lens": "endpoint",
+                "action": "Restore agent check-in on critical assets",
+            }
+        )
+    if int(asset_r.get("stale") or 0) > 0:
+        items.append(
+            {
+                "priority": 3,
                 "title": f"{asset_r['stale']} stale endpoints",
                 "why": "Telemetry older than expected",
                 "impact": "HIGH",
@@ -120,10 +131,21 @@ def what_needs_attention(
                 "action": "Investigate agent check-in / network reachability",
             }
         )
+    if int(asset_r.get("unreachable") or 0) > 0:
+        items.append(
+            {
+                "priority": 4,
+                "title": f"{asset_r['unreachable']} unreachable assets",
+                "why": "Cannot verify control state",
+                "impact": "HIGH",
+                "lens": "endpoint",
+                "action": "Check network path / agent registration",
+            }
+        )
     if int(ev_r.get("expired") or 0) > 0:
         items.append(
             {
-                "priority": 3,
+                "priority": 5,
                 "title": f"{ev_r['expired']} expired evidence items",
                 "why": "Compliance claims may no longer be current",
                 "impact": "HIGH",
@@ -134,7 +156,7 @@ def what_needs_attention(
     if int(ev_r.get("stale") or 0) > 0:
         items.append(
             {
-                "priority": 4,
+                "priority": 6,
                 "title": f"{ev_r['stale']} stale evidence items",
                 "why": "Freshness policy threshold exceeded",
                 "impact": "MEDIUM",
@@ -145,8 +167,8 @@ def what_needs_attention(
     if int(asset_r.get("offline") or 0) > 0:
         items.append(
             {
-                "priority": 5,
-                "title": f"{asset_r['offline']} offline / unreachable assets",
+                "priority": 7,
+                "title": f"{asset_r['offline']} offline assets",
                 "why": "Cannot verify control state",
                 "impact": "MEDIUM",
                 "lens": "endpoint",
@@ -265,6 +287,14 @@ def posture_health() -> dict[str, Any]:
     if last and last["completed_at"]:
         last_ago = round(now() - float(last["completed_at"]), 1)
 
+    metrics = {}
+    try:
+        from app.posture.metrics import refresh_metrics
+
+        metrics = refresh_metrics(since_sec=86400)
+    except Exception:
+        metrics = {}
+
     return {
         "ok": True,
         "scheduler": "healthy" if "posture_refresh" in JOB_HANDLERS else "unregistered",
@@ -275,6 +305,7 @@ def posture_health() -> dict[str, Any]:
         "last_status": (dict(last).get("status") if last else None),
         "last_duration_ms": (dict(last).get("duration_ms") if last else None),
         "default_interval_sec": default_interval_sec(),
+        "metrics_24h": metrics.get("by_status") if isinstance(metrics, dict) else {},
         "note": "In-process job worker — not multi-AZ HA proof.",
     }
 
