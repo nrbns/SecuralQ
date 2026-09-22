@@ -60,6 +60,10 @@ class RejectBody(BaseModel):
     reason: str = ""
 
 
+class ApproveBody(BaseModel):
+    compensating_evidence_ids: list[str] = Field(default_factory=list)
+
+
 @router.get("")
 async def api_list_exceptions(
     user: Annotated[AuthUser, Depends(require_user)],
@@ -109,9 +113,19 @@ async def api_update_exception(
 
 
 @router.post("/{exception_id}/approve")
-async def api_approve_exception(exception_id: str, user: Annotated[AuthUser, Depends(require_user)]):
+async def api_approve_exception(
+    exception_id: str,
+    user: Annotated[AuthUser, Depends(require_user)],
+    body: ApproveBody | None = None,
+):
     try:
-        result = approve_exception(user.id, exception_id, approved_by=user.id)
+        eids = (body.compensating_evidence_ids if body else None) or []
+        result = approve_exception(
+            user.id,
+            exception_id,
+            approved_by=user.id,
+            compensating_evidence_ids=eids or None,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not result:

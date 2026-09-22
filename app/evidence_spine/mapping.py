@@ -19,8 +19,13 @@ def link_evidence_to_control(
     framework_id: str = "",
     role: str = "supports",
     org_id: str | None = None,
+    propagate_canonical: bool = False,
 ) -> dict[str, Any]:
-    """Attach evidence to a control (idempotent on unique key)."""
+    """Attach evidence to a control (idempotent on unique key).
+
+    When ``propagate_canonical=True``, also link as ``supports`` to sibling
+    controls under the same canonical registry entry (cross-framework).
+    """
     ensure_evidence_spine_schema()
     cid = (control_id or "").strip()
     if not cid:
@@ -81,6 +86,24 @@ def link_evidence_to_control(
         )
     except Exception:
         pass
+
+    if propagate_canonical and fid and out:
+        try:
+            from app.services.cross_framework_evidence import (
+                propagate_evidence_to_canonical_siblings,
+            )
+
+            out["canonical_propagation"] = propagate_evidence_to_canonical_siblings(
+                user_id,
+                evidence_id,
+                framework_id=fid,
+                control_id=cid,
+                role=r,
+                org_id=oid,
+            )
+        except Exception as exc:
+            out["canonical_propagation"] = {"ok": False, "error": str(exc)}
+
     return out  # type: ignore[return-value]
 
 

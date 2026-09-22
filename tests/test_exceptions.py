@@ -28,6 +28,7 @@ def _valid_kwargs(now_fn, **overrides):
         reason="Vendor appliance does not support MFA until Q3 upgrade",
         risk_accepted="Medium residual risk of credential-stuffing against VPN",
         owner="ciso@example.com",
+        compensating_controls="Network segmentation + enhanced monitoring on VPN VLAN",
         expiry=now_fn() + 30 * 86400,
     )
     base.update(overrides)

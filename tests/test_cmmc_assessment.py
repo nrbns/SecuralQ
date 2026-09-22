@@ -273,3 +273,81 @@ def test_worm_and_realtime_reconstruct(tmp_path, monkeypatch):
     )
     assert gaps["gap_detected"] is True
     assert 3 in gaps["missing"]
+
+
+def test_management_view_and_audit_pack(tmp_path, monkeypatch):
+    uid = _uid(monkeypatch, tmp_path, "cmmc_mgmt")
+    from app.cmmc.audit_pack import build_cmmc_audit_pack_zip
+    from app.cmmc.management_view import cmmc_management_view
+    from app.cmmc.objectives import seed_objectives_for_framework
+
+    seed_objectives_for_framework("cmmc_l2")
+    view = cmmc_management_view(uid, framework_id="cmmc_l2")
+    assert view["ok"] is True
+    assert view["requirements"]["total"] == 110
+    assert "assessment_readiness_percent" in view
+    assert "disclaimer" in view
+
+    blob = build_cmmc_audit_pack_zip(uid, framework_id="cmmc_l2")
+    assert blob[:2] == b"PK"
+    assert len(blob) > 1000
+
+
+def test_cross_framework_propagate_and_scim_groups(tmp_path, monkeypatch):
+    configure_isolated_settings(monkeypatch, tmp_path)
+    monkeypatch.setenv("SCIM_ENABLED", "true")
+    monkeypatch.setenv("SCIM_TOKEN", "test-scim-token")
+    from app.config import settings
+
+    settings.scim_enabled = True
+    settings.scim_token = "test-scim-token"
+
+    from app.auth import login, register_user
+    from app.services.cross_framework_evidence import sibling_controls_via_canonical
+    from app.services.evidence import record_evidence
+    from app.evidence_spine.mapping import link_evidence_to_control
+    from app.tenancy import ensure_tenant_schema
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    ensure_tenant_schema()
+    register_user("xf_user", "password123", role="admin")
+    u, token = login("xf_user", "password123")
+
+    sibs = sibling_controls_via_canonical("cmmc_l2", "IA.L2-3.5.3")
+    assert any(s["framework_id"] == "nist_800_171" for s in sibs)
+
+    ev = record_evidence(
+        u.id,
+        entity_type="policy",
+        entity_id="mfa-policy",
+        source="declared",
+        summary="MFA policy v1",
+        verified=True,
+    )
+    linked = link_evidence_to_control(
+        u.id,
+        ev["id"],
+        control_id="IA.L2-3.5.3",
+        framework_id="cmmc_l2",
+        role="documents",
+        propagate_canonical=True,
+    )
+    prop = linked.get("canonical_propagation") or {}
+    assert prop.get("ok") is True
+    assert prop.get("siblings_considered", 0) >= 1
+
+    client = TestClient(app)
+    headers = {"Authorization": "Bearer test-scim-token"}
+    r = client.post(
+        "/scim/v2/Groups",
+        headers=headers,
+        json={"displayName": "CMMC Team", "members": [{"value": u.id, "display": "xf_user"}]},
+    )
+    assert r.status_code == 201, r.text
+    gid = r.json()["id"]
+    r2 = client.get(f"/scim/v2/Groups/{gid}", headers=headers)
+    assert r2.status_code == 200
+    assert r2.json()["displayName"] == "CMMC Team"
+    st = client.get("/scim/v2/status")
+    assert "Groups" in st.json()["supported"]

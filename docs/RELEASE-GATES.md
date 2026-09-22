@@ -46,8 +46,11 @@ If a feature cannot answer all six, do not ship it yet.
 |-------|--------|---------|
 | Calendar / tasks / my-work | **MVP shipped** | |
 | Document review + attestation | **Shipped** | Who/What/When/Decision |
-| Exceptions with expiry + renew | **Shipped** | + `exception_expiry_tick` |
+| Exceptions with expiry + renew | **Shipped→hardened** | Compensating evidence/text required on approve; tick flips lapsed → `expired` |
 | Reminders / escalation | **MVP** | Compliance ops tick + notification outbox |
+| CMMC audit pack / management view | **Shipped** | `/api/cmmc/audit-pack` · `/api/cmmc/management-view` |
+| SCIM Groups | **Shipped (minimal)** | `/scim/v2/Groups` CRUD; Users already present; not full RFC |
+| Cross-framework evidence write-through | **Shipped (opt-in)** | `propagate_canonical` on evidence link → sibling `supports` maps |
 | Notification worker (queue, not inline SMTP) | **Shipped** | `notification_delivery_tick` |
 
 ## RELEASE 3 — Enterprise

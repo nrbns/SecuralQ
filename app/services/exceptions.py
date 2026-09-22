@@ -37,7 +37,7 @@ from typing import Any
 from app.db import get_conn, new_id, now
 
 VALID_RISK_LEVELS = {"low", "medium", "high", "critical"}
-VALID_STATUSES = {"pending_approval", "approved", "rejected", "revoked"}
+VALID_STATUSES = {"pending_approval", "approved", "rejected", "revoked", "expired"}
 MAX_EXCEPTION_DAYS = 365
 _UPDATABLE_FIELDS = {
     "title",
@@ -83,6 +83,19 @@ def ensure_schema() -> None:
         )
         """
     )
+    # Compensating evidence links (many evidence ids as JSON)
+    try:
+        cols = {r[1] for r in c.execute("PRAGMA table_info(securaiq_exceptions)").fetchall()}
+        if "compensating_evidence_json" not in cols:
+            c.execute(
+                "ALTER TABLE securaiq_exceptions ADD COLUMN compensating_evidence_json TEXT NOT NULL DEFAULT '[]'"
+            )
+    except Exception:
+        pass
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_exceptions_user ON securaiq_exceptions(user_id, status, expiry)"
+    )
+    c.commit()
     c.execute("CREATE INDEX IF NOT EXISTS idx_exceptions_user ON securaiq_exceptions(user_id)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_exceptions_control ON securaiq_exceptions(framework_id, control_id)")
     c.commit()
@@ -181,11 +194,17 @@ def create_exception(
 
 
 def _row_to_dict(row: Any) -> dict[str, Any]:
+    import json
+
     d = dict(row)
     ts = now()
     d["expired"] = bool(d.get("expiry") and float(d["expiry"]) <= ts)
     d["days_until_expiry"] = round((float(d["expiry"]) - ts) / 86400, 1) if d.get("expiry") else None
     d["is_active_coverage"] = d.get("status") == "approved" and not d["expired"]
+    try:
+        d["compensating_evidence_ids"] = json.loads(d.get("compensating_evidence_json") or "[]")
+    except Exception:
+        d["compensating_evidence_ids"] = []
     return d
 
 
@@ -251,21 +270,51 @@ def update_exception(user_id: str, exception_id: str, fields: dict[str, Any]) ->
     return get_exception(user_id, exception_id)
 
 
-def approve_exception(user_id: str, exception_id: str, *, approved_by: str) -> dict[str, Any] | None:
+def approve_exception(
+    user_id: str,
+    exception_id: str,
+    *,
+    approved_by: str,
+    compensating_evidence_ids: list[str] | None = None,
+) -> dict[str, Any] | None:
     """An explicit human sign-off -- the only way status becomes 'approved'.
-    Re-validates expiry hasn't lapsed between request and approval."""
+    Re-validates expiry hasn't lapsed between request and approval.
+
+    Requires compensating control description and/or linked compensating evidence
+    so an exception is never a silent permanent ignore.
+    """
+    import json
+
     ensure_schema()
     existing = get_exception(user_id, exception_id)
     if not existing:
         return None
     if existing["expired"]:
         raise ValueError("Cannot approve an exception whose expiry has already passed -- create a new request.")
+    eids = [str(x) for x in (compensating_evidence_ids or existing.get("compensating_evidence_ids") or []) if x][:50]
+    comp_text = (existing.get("compensating_controls") or "").strip()
+    if not comp_text and not eids:
+        raise ValueError(
+            "Cannot approve without compensating_controls text or compensating_evidence_ids — "
+            "exceptions must not permanently ignore a control."
+        )
+    # Verify evidence ids exist when provided
+    if eids:
+        from app.services.evidence import get_evidence
+
+        for eid in eids:
+            if not get_evidence(user_id, eid):
+                raise ValueError(f"compensating evidence not found: {eid}")
     c = get_conn()
     ts = now()
     c.execute(
-        "UPDATE securaiq_exceptions SET status = 'approved', approved_by = ?, approved_at = ?, updated_at = ? "
-        "WHERE id = ? AND user_id = ?",
-        (approved_by[:200], ts, ts, exception_id, user_id),
+        """
+        UPDATE securaiq_exceptions SET
+            status = 'approved', approved_by = ?, approved_at = ?, updated_at = ?,
+            compensating_evidence_json = ?
+        WHERE id = ? AND user_id = ?
+        """,
+        (approved_by[:200], ts, ts, json.dumps(eids)[:4000], exception_id, user_id),
     )
     c.commit()
     try:
@@ -286,6 +335,7 @@ def approve_exception(user_id: str, exception_id: str, *, approved_by: str) -> d
             confidence=1.0,
             verified=True,
             created_by=approved_by,
+            detail={"compensating_evidence_ids": eids},
         )
     except Exception:
         pass
@@ -301,6 +351,7 @@ def approve_exception(user_id: str, exception_id: str, *, approved_by: str) -> d
             submitted_by=str(existing.get("created_by") or ""),
             reviewed_by=approved_by,
             comment=str(existing.get("risk_accepted") or "")[:500],
+            evidence_ids=eids,
             framework_id=str(existing.get("framework_id") or ""),
             control_id=str(existing.get("control_id") or ""),
             meta={"exception_id": exception_id, "expiry": existing.get("expiry")},
@@ -376,8 +427,8 @@ def renew_exception(
     if not existing:
         raise ValueError("exception not found")
     status = str(existing.get("status") or "")
-    if status not in {"approved", "revoked"} and not existing.get("expired"):
-        if status != "approved":
+    if status not in {"approved", "revoked", "expired"} and not existing.get("expired"):
+        if status not in {"approved", "expired"}:
             raise ValueError("Only approved (or expired) exceptions can be renewed")
     ts = now()
     if float(new_expiry) <= ts:
@@ -455,9 +506,9 @@ def exceptions_summary(user_id: str, *, org_id: str | None = None) -> dict[str, 
 
 
 def run_exception_expiry_tick(*, limit_users: int = 50) -> dict[str, Any]:
-    """Notify owners of approved exceptions that are expired or due within 7 days.
+    """Mark lapsed approved exceptions as status=expired and notify owners.
 
-    Does not auto-revoke (human renew). Dedupes via notifications title match / 24h.
+    Does not auto-renew. Dedupes via notifications title match / 24h.
     """
     ensure_schema()
     uids = [
@@ -475,6 +526,7 @@ def run_exception_expiry_tick(*, limit_users: int = 50) -> dict[str, Any]:
     ]
     notified = 0
     expired_n = 0
+    status_flipped = 0
     for uid in uids:
         for ex in list_exceptions(uid, status="approved", limit=200):
             days = ex.get("days_until_expiry")
@@ -482,6 +534,20 @@ def run_exception_expiry_tick(*, limit_users: int = 50) -> dict[str, Any]:
             title = str(ex.get("title") or eid)[:80]
             if ex.get("expired"):
                 expired_n += 1
+                # Flip stored status so it cannot look like current coverage
+                try:
+                    get_conn().execute(
+                        """
+                        UPDATE securaiq_exceptions
+                        SET status = 'expired', updated_at = ?
+                        WHERE id = ? AND user_id = ? AND status = 'approved'
+                        """,
+                        (now(), eid, uid),
+                    )
+                    get_conn().commit()
+                    status_flipped += 1
+                except Exception:
+                    pass
                 kind = "expired"
                 msg = f"Exception expired: {title} — renew or close coverage."
             elif days is not None and float(days) <= 7:
@@ -521,4 +587,5 @@ def run_exception_expiry_tick(*, limit_users: int = 50) -> dict[str, Any]:
         "users": len(uids),
         "notified": notified,
         "expired_seen": expired_n,
+        "status_flipped_to_expired": status_flipped,
     }

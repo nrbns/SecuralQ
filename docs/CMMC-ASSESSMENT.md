@@ -68,6 +68,8 @@ SPRS Preparation snapshot
 | `GET /cui-programs/{id}/scope` | CUI → boundary → assets chain |
 | `POST /evidence/classify` | Stamp CUI classification on evidence |
 | `GET /evidence/{id}/access` | Enforce CUI ACL (403 if denied) |
+| `GET /management-view` | Executive readiness (scope/POA&M/evidence/risk) |
+| `GET /audit-pack` | Assessor prep ZIP (SSP/readiness/POA&M/interviews/SPRS) |
 | `GET /sprs-preparation` | Score/scope/POA&M/affirmation prep pack |
 | `GET /readiness` | Framework readiness rollup |
 

@@ -82,6 +82,7 @@ class LinkIn(BaseModel):
     control_id: str = Field(min_length=1)
     framework_id: str = ""
     role: str = "supports"
+    propagate_canonical: bool = False
 
 
 class ReviewIn(BaseModel):
@@ -287,6 +288,7 @@ async def api_link(body: LinkIn, user: Annotated[AuthUser, Depends(require_user)
                 control_id=body.control_id,
                 framework_id=body.framework_id,
                 role=body.role,
+                propagate_canonical=body.propagate_canonical,
             ),
         }
     except ValueError as exc:

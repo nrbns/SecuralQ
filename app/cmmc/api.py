@@ -500,3 +500,33 @@ async def api_sprs_preparation(
     framework_id: str = Query("cmmc_l2"),
 ):
     return sprs_preparation_snapshot(user.id, framework_id=framework_id)
+
+
+@router.get("/management-view")
+async def api_management_view(
+    user: Annotated[AuthUser, Depends(require_user)],
+    framework_id: str = Query("cmmc_l2"),
+):
+    from app.cmmc.management_view import cmmc_management_view
+
+    return cmmc_management_view(user.id, framework_id=framework_id)
+
+
+@router.get("/audit-pack")
+async def api_cmmc_audit_pack(
+    user: Annotated[AuthUser, Depends(require_user)],
+    framework_id: str = Query("cmmc_l2"),
+):
+    """ZIP assessor preparation pack — not C3PAO / SPRS submit."""
+    from fastapi.responses import Response
+
+    from app.cmmc.audit_pack import build_cmmc_audit_pack_zip
+
+    data = build_cmmc_audit_pack_zip(user.id, framework_id=framework_id)
+    return Response(
+        content=data,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="securaiq-cmmc-audit-pack-{framework_id}.zip"'
+        },
+    )
