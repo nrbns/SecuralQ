@@ -19,22 +19,46 @@ def owned_host_authorized() -> bool:
 
 
 def owned_host_status() -> dict[str, Any]:
+    """True when operator explicitly asserts an authorized owned host."""
     ok_local = True  # local/CI acceptance always available
     live = owned_host_authorized()
+    # Persist evidence if live verify recorded a successful owned-host pass.
+    root = Path(__file__).resolve().parents[1]
+    live_log = root / "data" / "ops" / "live_lab_verify.jsonl"
+    live_proof = False
+    if live_log.is_file():
+        try:
+            import json
+
+            for line in live_log.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                if not row.get("owned_host"):
+                    continue
+                for s in row.get("steps") or []:
+                    if s.get("name") == "acceptance_server_owned" and s.get("ok"):
+                        live_proof = True
+                        break
+        except Exception:
+            pass
+    status = "lab" if (live and live_proof) else ("ops" if not live else "partial")
     return {
         "id": "owned_host_acceptance",
         "code_unblocked": True,
         "local_ci_ok": ok_local,
         "live_mutation_authorized": live,
-        "status": "lab" if live else "ops",
+        "live_server_acceptance_ok": live_proof,
+        "status": status,
         "env": "SECURAIQ_OWNED_HOST",
         "hint": (
             "Local: pytest tests/test_realtime_acceptance_local.py | "
-            "Live OS mutation: set SECURAIQ_OWNED_HOST=1 and "
-            "python scripts/realtime_acceptance_demo.py --server http://HOST:8080 --token …"
+            "Live: set SECURAIQ_OWNED_HOST=1 and "
+            "python scripts/live_lab_verify.py --server http://HOST:8080 --i-own-this-host"
         ),
         "disclaimer": (
-            "Live host-control OS mutation remains ops until authorized owned host"
+            "Live host-control OS mutation remains ops until authorized owned host "
+            "and a recorded acceptance_server_owned pass"
         ),
     }
 

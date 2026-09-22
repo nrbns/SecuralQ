@@ -35,10 +35,11 @@ HA/load.
 | RBAC / MFA / SSO | **Lab-production (facades)** | RBAC+MFA+SCIM Groups + OIDC/SAML readiness; full IdP depth still Partial |
 | Audit trail | **Lab-production** | Hash chain + sealed export + verify; SQLite ≠ cloud WORM |
 | HA / DR | **Code-unblocked / ops-blocked live** | CI Sentinel self-test + `/ready`; live inject needs Docker |
-| Load testing | **Lab-production (HTTP 500 measured; soft→1000)** | HTTP 500 @ 99.6% (2026-09-22); 1000 unmeasured; soft ≠ market claim |
+| Load testing | **Lab-production (HTTP 1000 measured; soft→1000)** | HTTP 1000 @ 99.3% (2026-09-22); soft ≠ market claim |
 | Self-security | **Lab-production** | Dogfood report API + Bandit productized; CI Trivy/ZAP remain report-only |
 | Asset identity | Shipped | `asset_aliases` — correlation ≠ ownership proof |
-| Phase-1 leftovers board | **Shipped** | `GET /api/admin/ops/phase1-remaining` · `scripts/phase1_ops_complete_lab.py` |
+| Phase-1 leftovers board | **Shipped** | `GET /api/admin/ops/phase1-remaining` · `scripts/live_lab_verify.py` |
+| Owned-host live accept | **Lab (when SECURAIQ_OWNED_HOST=1)** | Live verify GREEN 2026-09-22 on this lab host |
 
 ## Sellable acceptance (must work)
 

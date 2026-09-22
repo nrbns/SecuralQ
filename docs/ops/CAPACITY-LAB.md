@@ -85,6 +85,22 @@ Results append to `data/ops/capacity_measurements.jsonl` when `--persist` is set
 | 500 | realtime_load_test (wave) | 250.0 | 99.6% / 1.99 eps | 4.01 | 5.73 | — | 2026-09-22 | local lab |
 | 1000 | realtime_load_test (wave) | _TBD_ | _TBD_ | _TBD_ | _TBD_ | — | _unmeasured_ | _TBD_ |
 
+#### B.4 — HTTP 1000 measured (2026-09-22)
+
+**Source:** `python scripts/realtime_load_test.py --server http://127.0.0.1:8080 --ladder --max-agents 1000 --workers 8 --persist --sse-sample`  
+**Date (UTC):** 2026-09-22 · truncated check-ins · AUTH off  
+**Result:** HTTP **1000 measured** at 99.3% success. Not a production SLO.
+
+| Rung (agents) | Duration (s) | Success % | p50 (s) | p95 (s) |
+|---------------|--------------|-----------|---------|---------|
+| 25 | 28.3 | 96.0% | 3.92 | 21.50 |
+| 50 | 25.9 | 98.0% | 4.25 | 5.75 |
+| 100 | 49.2 | 99.0% | 3.90 | 6.02 |
+| 500 | 249.9 | 98.4% | 3.71 | 6.19 |
+| 1000 | 498.2 | **99.3%** | 3.86 | 6.01 |
+
+Live verify: `python scripts/live_lab_verify.py --server http://127.0.0.1:8080 --i-own-this-host`
+
 ### C) Soft in-process check-in ladder (not HTTP)
 
 **Source:** `app.capacity_soft.soft_checkin_ladder` (truncated check-ins) / pytest  

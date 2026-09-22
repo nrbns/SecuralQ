@@ -21,12 +21,15 @@ def platform_ready() -> dict[str, Any]:
 
     try:
         from app.config import settings
-        from app.redis_client import get_redis
+        from app.redis_client import get_sync_redis, redis_enabled
 
-        redis_url = (getattr(settings, "redis_url", None) or "").strip()
-        sentinel = (getattr(settings, "redis_sentinel_hosts", None) or "").strip()
-        if redis_url or sentinel:
-            client = get_redis()
+        if redis_enabled():
+            client = get_sync_redis(
+                decode_responses=True,
+                socket_connect_timeout=1.5,
+                socket_timeout=1.5,
+                cached=False,
+            )
             if client is None:
                 checks["redis"] = {
                     "ok": False,
@@ -36,8 +39,8 @@ def platform_ready() -> dict[str, Any]:
                 ready = False
             else:
                 try:
-                    pong = client.ping()
-                    checks["redis"] = {"ok": bool(pong), "configured": True}
+                    pong = bool(client.ping())
+                    checks["redis"] = {"ok": pong, "configured": True}
                     if not pong:
                         ready = False
                 except Exception as exc:
@@ -47,6 +50,11 @@ def platform_ready() -> dict[str, Any]:
                         "configured": True,
                         "error": str(exc)[:160],
                     }
+                finally:
+                    try:
+                        client.close()
+                    except Exception:
+                        pass
         else:
             checks["redis"] = {
                 "ok": True,

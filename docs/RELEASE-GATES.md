@@ -129,8 +129,8 @@ See [PRODUCTION-CONTROL-PLANE.md](./PRODUCTION-CONTROL-PLANE.md).
 | Item | Why | Code-unblocked |
 |------|-----|----------------|
 | Docker Redis Sentinel `--inject-stop` | Docker absent | pipeline self-test + compose profile |
-| Owned-host OS mutation acceptance | Needs authorized host | `SECURAIQ_OWNED_HOST` / `--i-own-this-host` gate |
-| HTTP 500/1k wave | 500 measured 2026-09-22; 1000 unmeasured | harness + soft 1000 + truncated check-in fix |
+| Owned-host OS mutation acceptance | **Live verify GREEN** with `SECURAIQ_OWNED_HOST=1` (this lab) | gate + `live_lab_verify.py` |
+| HTTP 500/1k wave | **HTTP 1000 measured 2026-09-22 (99.3%)** | harness + soft 1000 + truncated check-in fix |
 | Authenticode / notarization | Signing certs (EV) | scaffolds + lab self-signed PFX |
 | WORM object-lock | Cloud backend needs object store; **local markers + API shipped** | yes |
 | Release 5 differentiation | Frozen until 0–1 green on owned-host + HA | — |

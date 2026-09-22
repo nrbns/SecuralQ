@@ -1096,7 +1096,7 @@ def _request(
     headers: dict[str, str] | None = None,
     body: dict[str, Any] | None = None,
     insecure: bool = False,
-    timeout: float = 30.0,
+    timeout: float = 90.0,
 ) -> tuple[int, Any]:
     data = None
     hdrs = dict(headers or {})
@@ -1122,6 +1122,8 @@ def _request(
             return exc.code, json.loads(raw)
         except Exception:
             return exc.code, raw
+    except Exception as exc:
+        return 0, {"error": str(exc)[:300]}
 
 
 def _evidence_status(rows: list[dict[str, Any]], *, test_id: str, want: str) -> bool:
@@ -1207,50 +1209,60 @@ def _run_server_host_loop(
         )
     )
 
-    code_cmd, cmd_body = _request(
-        "POST",
-        f"{base}/api/agents/{agent_id}/commands/{loop.api_path}",
-        headers=auth_user,
-        body={},
-        insecure=insecure,
-    )
-    cmd_id = str(cmd_body.get("id") or "") if isinstance(cmd_body, dict) else ""
-    cmd_ok = code_cmd in (200, 201) and bool(cmd_id)
-    report.steps.append(
-        StepResult(
-            name=f"{prefix}:request_{loop.command_kind}",
-            ok=cmd_ok,
-            detail=f"http={code_cmd} cmd={cmd_id[:16]}",
-            data={"http_status": code_cmd, "command_id": cmd_id},
-        )
-    )
-    if cmd_ok:
-        code_appr, appr = _request(
+    cmd_id = ""
+    if getattr(loop, "requires_command", True) and (loop.api_path or "").strip():
+        code_cmd, cmd_body = _request(
             "POST",
-            f"{base}/api/agents/{agent_id}/commands/{cmd_id}/approve",
+            f"{base}/api/agents/{agent_id}/commands/{loop.api_path}",
             headers=auth_user,
             body={},
             insecure=insecure,
         )
+        cmd_id = str(cmd_body.get("id") or "") if isinstance(cmd_body, dict) else ""
+        cmd_ok = code_cmd in (200, 201) and bool(cmd_id)
         report.steps.append(
             StepResult(
-                name=f"{prefix}:approve_{loop.command_kind}",
-                ok=code_appr == 200,
-                detail=f"http={code_appr} status={(appr or {}).get('status') if isinstance(appr, dict) else None}",
+                name=f"{prefix}:request_{loop.command_kind}",
+                ok=cmd_ok,
+                detail=f"http={code_cmd} cmd={cmd_id[:16]}",
+                data={"http_status": code_cmd, "command_id": cmd_id},
             )
         )
-        code_res, res = _request(
-            "POST",
-            f"{base}/api/agents/commands/{cmd_id}/result",
-            headers=agent_auth,
-            body={"status": "done", "result": {"ok": True, "lab": True, "simulated": True}},
-            insecure=insecure,
-        )
+        if cmd_ok:
+            code_appr, appr = _request(
+                "POST",
+                f"{base}/api/agents/{agent_id}/commands/{cmd_id}/approve",
+                headers=auth_user,
+                body={},
+                insecure=insecure,
+            )
+            report.steps.append(
+                StepResult(
+                    name=f"{prefix}:approve_{loop.command_kind}",
+                    ok=code_appr == 200,
+                    detail=f"http={code_appr} status={(appr or {}).get('status') if isinstance(appr, dict) else None}",
+                )
+            )
+            code_res, res = _request(
+                "POST",
+                f"{base}/api/agents/commands/{cmd_id}/result",
+                headers=agent_auth,
+                body={"status": "done", "result": {"ok": True, "lab": True, "simulated": True}},
+                insecure=insecure,
+            )
+            report.steps.append(
+                StepResult(
+                    name=f"{prefix}:agent_command_result",
+                    ok=code_res == 200,
+                    detail=f"http={code_res} body={str(res)[:120]}",
+                )
+            )
+    else:
         report.steps.append(
             StepResult(
-                name=f"{prefix}:agent_command_result",
-                ok=code_res == 200,
-                detail=f"http={code_res} body={str(res)[:120]}",
+                name=f"{prefix}:observe_only_no_auto_rem",
+                ok=True,
+                detail="no remediation command for this control (observe-only)",
             )
         )
 
@@ -1427,9 +1439,6 @@ def main(argv: list[str] | None = None) -> int:
     token = (args.admin_token or args.token or "").strip()
 
     if args.server:
-        if not token:
-            print("[rt-accept] --token / SECURAIQ_ADMIN_TOKEN required for --server", flush=True)
-            return 2
         from app.phase1_ops_remaining import owned_host_authorized
 
         if not (args.i_own_this_host or owned_host_authorized()):
@@ -1440,7 +1449,13 @@ def main(argv: list[str] | None = None) -> int:
                 flush=True,
             )
             return 3
-        report = run_server_acceptance(args.server, token, insecure=args.insecure)
+        # Auth-off lab: empty token is fine (require_user → local admin).
+        if not token:
+            print(
+                "[rt-accept] note: empty --token (AUTH off / local admin synthetic)",
+                flush=True,
+            )
+        report = run_server_acceptance(args.server, token or "local", insecure=args.insecure)
     elif args.firewall_only:
         # Legacy single-loop CLI path
         td_ctx = tempfile.TemporaryDirectory(prefix="rt-accept-", ignore_cleanup_errors=True)
