@@ -95,7 +95,8 @@ services:
       - "127.0.0.1:6380:6379"
     networks:
       - securaiq-internal
-    restart: unless-stopped
+    # Lab HA measure uses compose stop — avoid flapping during inject.
+    restart: "no"
     profiles: ["redis-ha"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -113,14 +114,20 @@ services:
       - "6379"
     networks:
       - securaiq-internal
-    restart: unless-stopped
+    restart: "no"
     profiles: ["redis-ha"]
 
   redis-sentinel:
     image: redis:7-alpine
-    command: ["redis-sentinel", "/etc/redis/sentinel.conf"]
+    # Sentinel must rewrite its config on promote — copy template to /tmp first.
+    command:
+      [
+        "sh",
+        "-c",
+        "cp /etc/redis/sentinel.conf.template /tmp/sentinel.conf && exec redis-sentinel /tmp/sentinel.conf",
+      ]
     volumes:
-      - ./deploy/redis/sentinel.conf:/etc/redis/sentinel.conf:ro
+      - ./deploy/redis/sentinel.conf:/etc/redis/sentinel.conf.template:ro
     depends_on:
       redis-primary:
         condition: service_healthy
@@ -130,7 +137,7 @@ services:
       - "127.0.0.1:26379:26379"
     networks:
       - securaiq-internal
-    restart: unless-stopped
+    restart: "no"
     profiles: ["redis-ha"]
 
   # Optional: publish DB/Redis to localhost for debugging (never on public hosts).

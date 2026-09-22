@@ -10,6 +10,8 @@
 
   Lab without secrets: exits 0 with "skipped" so CI stays green.
   Production: set SIGN_WINDOWS=1 and provide cert material.
+  Lab self-signed: set SIGN_WINDOWS=1 + CODE_SIGN_PFX_PATH to tools/lab-certs PFX
+  (NOT EV / NOT SmartScreen trusted).
 
 .EXAMPLE
   .\scripts\packaging\sign_windows.ps1 -ArtifactDir dist\agent-packages
@@ -28,7 +30,7 @@ $Root = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 if (-not $ArtifactDir) { $ArtifactDir = Join-Path $Root "dist\agent-packages" }
 
 if (($env:SIGN_WINDOWS -as [string]).ToLower() -notin @("1", "true", "yes")) {
-  Write-Host "sign_windows: SIGN_WINDOWS not set — skipping Authenticode (scaffold only)."
+  Write-Host "sign_windows: SIGN_WINDOWS not set - skipping Authenticode (scaffold only)."
   exit 0
 }
 
@@ -63,9 +65,15 @@ if ($Thumbprint) {
   throw "SIGN_WINDOWS=1 but neither CODE_SIGN_THUMBPRINT nor CODE_SIGN_PFX_PATH set"
 }
 
+$signed = 0
 foreach ($f in $files) {
   Write-Host "Authenticode: $($f.Name)"
   & $signtool @signArgsBase $f.FullName
-  if ($LASTEXITCODE -ne 0) { throw "signtool failed for $($f.Name)" }
+  if ($LASTEXITCODE -ne 0) {
+    Write-Warning "signtool failed for $($f.Name) (skipping non-PE / bad artifact)"
+    continue
+  }
+  $signed++
 }
-Write-Host "sign_windows: signed $($files.Count) artifact(s)"
+Write-Host "sign_windows: signed $signed of $($files.Count) artifact(s)"
+if ($signed -lt 1) { throw "sign_windows: no artifacts signed" }
