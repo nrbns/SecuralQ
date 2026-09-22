@@ -10,7 +10,8 @@ Signal → Truth → Risk → Compliance → Action → Verification → Evidenc
 ```
 
 Cross-links: [PRODUCTION-CONTROL-PLANE.md](./PRODUCTION-CONTROL-PLANE.md) ·
-[POSTURE-ENGINE.md](./POSTURE-ENGINE.md) · [commercial-roadmap.md](./commercial-roadmap.md)
+[POSTURE-ENGINE.md](./POSTURE-ENGINE.md) · [commercial-roadmap.md](./commercial-roadmap.md) ·
+[WORLD-CLASS-CHECKLIST.md](./WORLD-CLASS-CHECKLIST.md)
 
 **Lab surfaces:** `GET /api/usp/status` · `/api/usp/graph/depth` · `/api/usp/risk/why-increased` ·
 `/api/usp/sbom/*` · `/api/usp/vendors*` · `/api/usp/scanners*`

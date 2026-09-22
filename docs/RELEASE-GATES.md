@@ -3,7 +3,7 @@
 **Rule:** every change must close a partial on the golden path, or prove failure/recovery/capacity.  
 Do **not** add domain screens (Cloud / K8s / AppSec / Identity depth) until Release 1 stays green.
 
-Cross-links: [GOLDEN-PATH.md](./GOLDEN-PATH.md) · [MASTER-EXECUTION-PLAN.md](./MASTER-EXECUTION-PLAN.md) · [production-readiness.md](./production-readiness.md) · [ops/CAPACITY-LAB.md](./ops/CAPACITY-LAB.md)
+Cross-links: [GOLDEN-PATH.md](./GOLDEN-PATH.md) · [MASTER-EXECUTION-PLAN.md](./MASTER-EXECUTION-PLAN.md) · [production-readiness.md](./production-readiness.md) · [ops/CAPACITY-LAB.md](./ops/CAPACITY-LAB.md) · [WORLD-CLASS-CHECKLIST.md](./WORLD-CLASS-CHECKLIST.md)
 
 ## Governing question (six)
 

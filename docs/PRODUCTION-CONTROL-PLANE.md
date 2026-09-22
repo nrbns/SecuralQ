@@ -10,7 +10,8 @@ Aligns with NIST CSF 2.0 (Govern → Identify → Protect → Detect → Respond
 as an **operational loop**, not a checklist score.
 
 Cross-links: [RELEASE-GATES.md](./RELEASE-GATES.md) · [GOLDEN-PATH.md](./GOLDEN-PATH.md) ·
-[POSTURE-ENGINE.md](./POSTURE-ENGINE.md) · [USP-CLAIMS.md](./USP-CLAIMS.md) (what you may claim)
+[POSTURE-ENGINE.md](./POSTURE-ENGINE.md) · [USP-CLAIMS.md](./USP-CLAIMS.md) (what you may claim) ·
+[WORLD-CLASS-CHECKLIST.md](./WORLD-CLASS-CHECKLIST.md) (master 39-section target + honest status)
 
 ## Freeze rule
 
