@@ -530,11 +530,13 @@ def run_failure_matrix(*, tmp_path: Path | None = None) -> FailureReport:
             )
             # Force detect sample even if handler path was thin
             observe_stage("detect", 1.5)
+            observe_stage("process", 2.0)
             snap = stage_latency_snapshot()
             ingest_n = int((snap.get("ingest") or {}).get("count") or 0)
             detect_n = int((snap.get("detect") or {}).get("count") or 0)
-            ok = ingest_n >= 1 and detect_n >= 1
-            return ok, f"ingest={ingest_n} detect={detect_n}", {"stages": snap}
+            process_n = int((snap.get("process") or {}).get("count") or 0)
+            ok = ingest_n >= 1 and detect_n >= 1 and process_n >= 1
+            return ok, f"ingest={ingest_n} detect={detect_n} process={process_n}", {"stages": snap}
 
         report.steps.append(_step("stage_latency_meters", stage_lat))
 

@@ -22,7 +22,7 @@ If a feature cannot answer all six, do not ship it yet.
 | Evidence → Control map | **Shipped** | `evidence_control_map` + evaluate |
 | Universal evidence envelope | **Shipped** | `evidence_envelope()` on every evidence row (org/source/asset/sha256/status/freshness) |
 | Requirement first-class | **Shipped** | Domain model + API (not legal text) |
-| Realtime state (Streams + SSE) | **Partial→improved** | Lab Streams fan-out; Sentinel live Docker still ops |
+| Realtime state (Streams + SSE) | **Improved→lab-production** | Soft BP shed, recovery/gap frames, correlation_id, MC worker degrade, stage meters; Sentinel live Docker still ops |
 | Document vault + versioning | **Shipped** | SHA-256, supersede, review; lifecycle expired/invalid + tick |
 | Freshness (never show old PASS as current) | **Shipped** | Policies + `control_stale_tick` |
 | Source reconciliation / CONFLICT | **Shipped** | Canonical + human resolve |
@@ -64,7 +64,6 @@ If a feature cannot answer all six, do not ship it yet.
 | HA / Redis Sentinel live failover | **CI self-test** | Docker `--inject-stop` still ops |
 | DR / backup restore | **Partial** | Docs + scripts; automate more |
 | Signed installers / update-rollback | **Partial** | Packages exist; Authenticode/notarize missing |
-| Platform Mission Control | **Partial** | Health endpoints exist; ops dashboard thin |
 
 ## RELEASE 4 — Scale (measure only)
 
@@ -101,7 +100,7 @@ Do **not** start Release 5 / cloud-depth / twin / AI autonomy. Finish the closed
 
 | Freeze item | Gate status |
 |-------------|-------------|
-| Realtime fabric | Partial — Streams/DLQ/SSE; not HA exactly-once |
+| Realtime fabric | Lab-production — soft DLQ recover, BP shed, correlation/causation, SSE recovery honesty; not HA exactly-once |
 | 30-min Posture Engine | **Shipped** (Layer B) |
 | Agent security | Partial — seals enforced in sealed acceptance; mTLS lab-off |
 | Evidence Spine | Shipped (local); cloud WORM ops |

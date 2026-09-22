@@ -22,7 +22,7 @@ HA/load.
 
 | Area | Status | Notes |
 |------|--------|-------|
-| Realtime event fabric | Partial | Streams, DLQ, Last-Event-ID; soft recover CI gate; not HA exactly-once |
+| Realtime event fabric | **Lab-production** | Soft BP shed, SSE recovery/gap, correlation_id, MC worker health, chaos CI; not HA exactly-once |
 | 30-min Posture Engine | **Shipped** | Layer B reconciliation — never Nmap/Nuclei/ZAP |
 | Agent security | Partial | Sealed acceptance with `AGENT_REQUIRE_COMMAND_SIGNATURE`; mTLS lab-off |
 | Evidence Spine | Shipped | Finish; do **not** build a second evidence system |

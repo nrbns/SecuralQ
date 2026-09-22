@@ -1725,7 +1725,7 @@ async def realtime_feed(request: Request):
     async def event_gen():
         from app.realtime_bus import (
             bind_loop,
-            replay_since,
+            replay_with_state,
             sse_push_allowed_for_client,
             subscribe,
             unsubscribe,
@@ -1965,7 +1965,28 @@ async def realtime_feed(request: Request):
             # Missed-event catch-up before live loop (Last-Event-ID / ?last_event_id=).
             if last_event_id:
                 try:
-                    for missed in replay_since(last_event_id, limit=100):
+                    from app.realtime_bus import replay_with_state
+
+                    pack = replay_with_state(last_event_id, limit=100)
+                    recovery = pack.get("recovery") if isinstance(pack, dict) else None
+                    if isinstance(recovery, dict) and (
+                        recovery.get("gap_detected")
+                        or recovery.get("truncated")
+                        or not recovery.get("cursor_known", True)
+                    ):
+                        try:
+                            frame = await build_payload(
+                                {
+                                    **recovery,
+                                    "type": "recovery",
+                                    "event_type": "recovery",
+                                    "event_id": f"recovery-{last_event_id[:24]}",
+                                }
+                            )
+                            yield _sse_frame(frame, frame.get("push", {}).get("event_id") if isinstance(frame.get("push"), dict) else None)
+                        except Exception:
+                            yield _sse_frame({"push": recovery})
+                    for missed in pack.get("events") or []:
                         if not isinstance(missed, dict):
                             continue
                         # Drop internal transport fields from the push body.

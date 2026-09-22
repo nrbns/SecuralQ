@@ -390,7 +390,13 @@ def _publish_evidence_hint(
     _safe_publish(**payload)
 
 
-def _maybe_publish_org_risk(user_id: str, *, reason: str = "") -> None:
+def _maybe_publish_org_risk(
+    user_id: str,
+    *,
+    reason: str = "",
+    correlation_id: str = "",
+    causation_id: str = "",
+) -> None:
     """RT-08 — recompute org risk; publish type=risk / risk.changed with previous when known."""
     t0 = time.perf_counter()
     try:
@@ -418,6 +424,10 @@ def _maybe_publish_org_risk(user_id: str, *, reason: str = "") -> None:
         "reason": reason or "event_processor",
         "_from_processor": True,
     }
+    if correlation_id:
+        payload["correlation_id"] = correlation_id
+    if causation_id:
+        payload["causation_id"] = causation_id
     if previous is not None:
         payload["previous_score"] = previous
         payload["score_delta"] = round(new_score - previous, 4)
@@ -647,6 +657,8 @@ def _maybe_escalate_threat_incident(
 
     if not incident or not incident.get("id"):
         return None
+    corr = str(event.get("correlation_id") or event.get("event_id") or "").strip()
+    cause = str(event.get("event_id") or "").strip()
     _safe_publish(
         type="incident",
         id=incident["id"],
@@ -657,6 +669,8 @@ def _maybe_escalate_threat_incident(
         title=incident.get("title") or inc_title,
         source="event_processor:agent_threat",
         threat_id=threat_id or None,
+        correlation_id=corr or None,
+        causation_id=cause or None,
         _from_processor=True,
     )
     return incident
@@ -743,6 +757,8 @@ def _handle_agent_threat(event: dict[str, Any]) -> None:
     )
     # Thin risk dashboard hint (no inventing detections — severity from the event).
     incident: dict[str, Any] | None = None
+    corr = str(event.get("correlation_id") or event.get("event_id") or "").strip()
+    cause = str(event.get("event_id") or "").strip()
     if sev in _HIGH_SEV:
         hint: dict[str, Any] = {
             "type": "risk",
@@ -751,6 +767,8 @@ def _handle_agent_threat(event: dict[str, Any]) -> None:
             "reason": "agent_threat",
             "entity_type": entity_type,
             "entity_id": entity_id,
+            "correlation_id": corr or None,
+            "causation_id": cause or None,
             "_from_processor": True,
         }
         if evidence and evidence.get("id"):
@@ -763,6 +781,12 @@ def _handle_agent_threat(event: dict[str, Any]) -> None:
             agent_id=agent_id,
             title=title,
             severity=sev,
+        )
+        _maybe_publish_org_risk(
+            user_id,
+            reason="agent_threat",
+            correlation_id=corr,
+            causation_id=cause,
         )
 
     # RT-09 — Threat → Attack Path on critical OR when RT-07 opened/updated an incident
@@ -1282,6 +1306,7 @@ def process_event(event: dict[str, Any] | None) -> bool:
             from app.metrics import observe_stage
 
             observe_stage("detect", (time.perf_counter() - t0) * 1000.0)
+            observe_stage("process", (time.perf_counter() - t0) * 1000.0)
         except Exception:
             pass
         return True
@@ -1291,6 +1316,7 @@ def process_event(event: dict[str, Any] | None) -> bool:
             from app.metrics import observe_stage
 
             observe_stage("detect", (time.perf_counter() - t0) * 1000.0)
+            observe_stage("process", (time.perf_counter() - t0) * 1000.0)
         except Exception:
             pass
         return False
@@ -1859,6 +1885,78 @@ def purge_dlq_entries(
                 client.close()
             except Exception:
                 pass
+
+
+def purge_dlq_older_than(*, max_age_sec: float = 7 * 86400, limit: int = 200) -> dict[str, Any]:
+    """Age-based DLQ retention — delete entries whose ``ts`` is older than max_age_sec.
+
+    Lab/ops hygiene; not cloud WORM. Without Redis returns ok=False.
+    """
+    lim = max(1, min(int(limit or 200), 500))
+    age = max(60.0, float(max_age_sec or 0))
+    cutoff = time.time() - age
+    if not _redis_configured():
+        return {
+            "ok": False,
+            "reason": "redis_not_configured",
+            "deleted": 0,
+            "cutoff": cutoff,
+            "note": "Age purge requires Redis Streams DLQ",
+        }
+    client = None
+    deleted = 0
+    scanned = 0
+    try:
+        from app.redis_client import get_sync_redis
+
+        client = get_sync_redis(decode_responses=True, socket_connect_timeout=1.0, socket_timeout=3.0)
+        if client is None:
+            return {"ok": False, "reason": "redis_unavailable", "deleted": 0, "cutoff": cutoff}
+        dlq = _dlq_key()
+        rows = client.xrange(dlq, min="-", max="+", count=lim)
+        for msg_id, fields in rows or []:
+            scanned += 1
+            if not isinstance(fields, dict):
+                continue
+            try:
+                ts = float(fields.get("ts") or 0)
+            except (TypeError, ValueError):
+                ts = 0.0
+            if ts and ts < cutoff:
+                try:
+                    deleted += int(client.xdel(dlq, msg_id) or 0)
+                except Exception:
+                    pass
+        return {
+            "ok": True,
+            "deleted": deleted,
+            "scanned": scanned,
+            "cutoff": cutoff,
+            "max_age_sec": age,
+            "dlq": dlq,
+        }
+    except Exception as exc:
+        return {"ok": False, "reason": str(exc)[:200], "deleted": deleted, "cutoff": cutoff}
+    finally:
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass
+
+
+def dlq_entry_is_expired(fields: dict[str, Any] | None, *, max_age_sec: float, now_ts: float | None = None) -> bool:
+    """Unit-testable age check for a DLQ field map."""
+    fields = fields if isinstance(fields, dict) else {}
+    try:
+        ts = float(fields.get("ts") or 0)
+    except (TypeError, ValueError):
+        return False
+    if not ts:
+        return False
+    age = max(60.0, float(max_age_sec or 0))
+    ref = float(now_ts if now_ts is not None else time.time())
+    return ts < (ref - age)
 
 
 def processor_status() -> dict[str, Any]:

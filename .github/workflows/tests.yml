@@ -68,6 +68,8 @@ jobs:
           tests/test_realtime_ops_remaining.py
           tests/test_realtime_failure_scenarios.py
           tests/test_control_plane_closes.py
+          tests/test_realtime_production_closes.py
+          tests/test_realtime_chaos_local.py
           tests/test_realtime_remaining_full.py
           tests/test_sprints_2_6_foundations.py
       - name: Backup-restore drill (#229)

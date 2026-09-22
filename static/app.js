@@ -3096,6 +3096,16 @@ window.RealtimeManager = {
         }
       }, 500);
     }
+    // SSE reconnect recovery / sequence gap honesty
+    if (t === "recovery" || t === "sequence_gap" || String(t).startsWith("recovery.")) {
+      window.__securaiqLastRecovery = push || {};
+      const gap = !!(push && (push.gap_detected || push.truncated));
+      if (gap && typeof notifyUser === "function") {
+        const miss = push.missing_from != null ? ` missing_from=${push.missing_from}` : "";
+        const trunc = push.truncated ? " (truncated window)" : "";
+        notifyUser(`**Realtime recovery** — catch-up${miss}${trunc}`);
+      }
+    }
   },
   reconnect() {
     if (typeof ensureRealtimeFeed === "function") {

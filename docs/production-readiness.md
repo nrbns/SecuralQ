@@ -35,7 +35,7 @@ Status key: **done** · **partial** · **missing**
 | Event ordering | **partial→improved** | Normalized `sequence`/`seq` (millis) best-effort dual-write. Agent check-in contiguous ACK + gap fields / `sequence_gap` publish (RT-05). Redis Streams append order when `REDIS_URL` set; **still** no per-tenant sequence authority. |
 | Persistent event queue | **partial→improved** | When `REDIS_URL` set: durable Streams (`REDIS_STREAM_KEY`) + **default** Streams SSE fan-out (`REALTIME_STREAMS_FANOUT=true`, per-process `securaiq-realtime-*`). Transitional pub/sub via `REALTIME_STREAMS_FANOUT=false`. Lab without Redis: in-process ring buffer only. Not HA / Sentinel. Jobs remain in-process SQLite. |
 | Agent reconnect | **done** | Gateway replaces an existing socket for the same agent id; agent client retries with backoff and falls back to HTTP check-in. |
-| Dashboard reconnect | **partial→improved** | SSE `EventSource` reconnects in `static/app.js` with Last-Event-ID catch-up. AUTH-on push events tenant-filtered (`sse_push_allowed_for_client`). Not a WebSocket dashboard gateway. |
+| Dashboard reconnect | **lab-production** | SSE `EventSource` reconnects with Last-Event-ID catch-up + `recovery` / `sequence_gap` honesty frames (`replay_with_state`); UI notifies on miss/truncation. AUTH-on push events tenant-filtered. Not a WebSocket dashboard gateway. |
 | Offline agent buffering | **partial→improved** | `app/agent_offline_buffer.py` + check-in `sequence` / `buffered_events` ACK (`last_telemetry_seq`). Packaged agent **wired** (v1.1.1+): enqueue on failure, flush on check-in, `apply_server_ack`. Remaining gaps: contiguous ACK only (no ACK across holes); host telemetry re-apply from newest ACKed buffer (RT-05) — not HA durable. |
 | Capacity measurement | **partial→improved** | In-proc fleet sim to 100k; **HTTP check-in wave re-measured 25/50/100 @ 100%** (2026-09-21) — 50-agent p95 cliff fixed after `to_thread(checkin)`. 500+ HTTP and Redis HA still unmeasured. See [ops/CAPACITY-LAB.md](./ops/CAPACITY-LAB.md). |
 | Command acknowledgement | **done** | HTTP `POST /api/agents/commands/{id}/ack` and WebSocket `{type: ack}`. Status `sent` → `acked`; realtime also publishes `lifecycle` (`ACKNOWLEDGED` / `EXECUTING`). |
@@ -54,7 +54,7 @@ Status key: **done** · **partial** · **missing**
 | Linux packages | **partial** | tar.gz + DEB/RPM scaffolds; secrets-gated \sign_deb.sh\ / \sign_rpm.sh\. Unsigned until secrets. |
 | macOS package | **partial** | tar.gz + DMG scaffold; notarization secrets-gated. |
 | Load test | **partial** | \scripts/realtime_load_test.py\ (\--ladder\ / \--to-5k --persist\) + \docs/ops/CAPACITY-LAB.md\. **Not** production proof; **do not claim 5k until table filled**. |
-| Failure/recovery test | **partial** | Soft chaos: `scripts/realtime_chaos_test.py` (buffer replay). Redis kill is manual/documented only. |
+| Failure/recovery test | **lab-production** | Soft chaos CI: `tests/test_realtime_chaos_local.py` + `tests/test_realtime_production_closes.py` (DLQ recover, BP shed, SSE recovery). Soft script: `scripts/realtime_chaos_test.py`. Redis kill / Sentinel live inject still ops/manual. |
 | Security test | **partial** | Auth/tenancy/AI suites exist; agent isolation + replay + Ed25519 roundtrip tests. No full pentest report. |
 
 ---
@@ -68,7 +68,7 @@ Status key: **done** · **partial** · **missing**
 | Event pipeline | Agent → detection → risk → dashboard | **partial→improved** — threat ingest + realtime bus + SSE; Streams + scoped processor hooks (notify/evidence/risk when `user_id` known) + RT-06 idempotency; RT-07 threat→incident when burst/keyword threshold met; RT-08 inventory/vuln→org risk (`risk.changed`) + high/crit derived evidence; RT-09 critical/incident → `compute_attack_paths` + `attack_path` summary; SSE tenant filter when AUTH on; **Streams fan-out default** when Redis set; rich twin/XDR correlation still incomplete |
 | Agent installers | MSI / deb / rpm / pkg | **partial** — scripts only |
 | Agent security | Device identity, certs, signed commands | **partial→improved** — bearer + replay/HMAC; optional Ed25519; RT-17 seals; Sprint 2 mTLS issue/rotate + proxy verify + Python/Rust client cert presentment |
-| Real-time dashboard | No polling-dependent UX | **partial** — SSE on publish; some panels still poll |
+| Real-time dashboard | No polling-dependent UX | **lab-production** — SSE on publish + recovery honesty; some panels still poll |
 | Load testing | 100 → 1,000 → 5,000+ | **partial** — harness supports `--to-5k`; **claim only after** `docs/ops/CAPACITY-LAB.md` filled |
 
 ## P1 (after Agent Gateway + tenancy are green)

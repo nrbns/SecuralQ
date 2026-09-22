@@ -51,10 +51,32 @@ _REPLAY_BUFFER: OrderedDict[str, dict[str, Any]] = OrderedDict()
 _PUBLISH_TOTAL = 0
 _DUP_DROPPED = 0
 _BACKPRESSURE_HITS = 0
+_BACKPRESSURE_SHED = 0
 _BACKPRESSURE_ACTIVE = False
 _PUBLISH_WINDOW: list[float] = []  # recent publish timestamps for events/sec
 _PUBLISH_WINDOW_SEC = 60.0
 _DEFAULT_BACKPRESSURE_LEN = 8000
+# When soft backpressure is active, shed these noisy types from durable path.
+_SHEDDABLE_PREFIXES = (
+    "software.",
+    "inventory",
+    "software_inventory",
+    "agent.telemetry",
+    "telemetry",
+    "heartbeat",
+)
+_CRITICAL_PREFIXES = (
+    "control.",
+    "risk",
+    "command.",
+    "remediation",
+    "verification.",
+    "agent_command",
+    "incident",
+    "compliance",
+    "sequence_gap",
+    "recovery",
+)
 
 
 def bind_loop(loop: asyncio.AbstractEventLoop | None = None) -> None:
@@ -115,6 +137,7 @@ def _safe_put(q: asyncio.Queue, event: dict[str, Any]) -> None:
 
 
 def _fanout_local(payload: dict[str, Any]) -> None:
+    t0 = time.perf_counter()
     with _lock:
         subs = list(_subscribers)
     loop = _loop
@@ -126,6 +149,46 @@ def _fanout_local(payload: dict[str, Any]) -> None:
                 _safe_put(q, payload)
         except Exception:
             pass
+    if subs:
+        try:
+            from app.metrics import observe_stage
+
+            observe_stage("sse", (time.perf_counter() - t0) * 1000.0)
+        except Exception:
+            pass
+
+
+def _event_type_of(payload: dict[str, Any]) -> str:
+    return str(payload.get("event_type") or payload.get("type") or "").strip().lower()
+
+
+def _is_critical_event(payload: dict[str, Any]) -> bool:
+    et = _event_type_of(payload)
+    if not et:
+        return True
+    if any(et == p or et.startswith(p) for p in _CRITICAL_PREFIXES):
+        return True
+    return False
+
+
+def _is_sheddable_event(payload: dict[str, Any]) -> bool:
+    if _is_critical_event(payload):
+        return False
+    et = _event_type_of(payload)
+    return any(et == p or et.startswith(p) for p in _SHEDDABLE_PREFIXES)
+
+
+def _note_shed() -> None:
+    global _BACKPRESSURE_SHED
+    with _lock:
+        _BACKPRESSURE_SHED += 1
+
+
+def set_backpressure_for_tests(active: bool) -> None:
+    """Test helper — force soft-backpressure active state."""
+    global _BACKPRESSURE_ACTIVE
+    with _lock:
+        _BACKPRESSURE_ACTIVE = bool(active)
 
 
 def _redis_url() -> str:
@@ -238,6 +301,7 @@ def publish_throughput() -> dict[str, Any]:
             "window_publishes": window_n,
             "backpressure_active": _BACKPRESSURE_ACTIVE,
             "backpressure_hits": _BACKPRESSURE_HITS,
+            "backpressure_shed_total": _BACKPRESSURE_SHED,
             "backpressure_len": _backpressure_len() if _redis_ready() else None,
         }
 
@@ -353,19 +417,30 @@ def publish(event: dict[str, Any] | None = None, **kwargs: Any) -> None:
     payload["event_id"] = eid
     payload["_pid"] = _PID
 
+    # Soft backpressure: shed noisy non-critical events (still keep control/risk/command).
+    if _BACKPRESSURE_ACTIVE and _is_sheddable_event(payload):
+        _note_shed()
+        _note_publish(duplicate=False)
+        try:
+            from app.metrics import observe_stage
+
+            observe_stage("ingest", (time.perf_counter() - t0) * 1000.0)
+        except Exception:
+            pass
+        return
+
     if not _remember_event(payload):
         _note_publish(duplicate=True)
         return
 
     _note_publish(duplicate=False)
-    _fanout_local(payload)
     try:
         from app.metrics import observe_stage
 
         observe_stage("ingest", (time.perf_counter() - t0) * 1000.0)
-        observe_stage("sse", (time.perf_counter() - t0) * 1000.0)
     except Exception:
         pass
+    _fanout_local(payload)
 
     # Lab path: sync processor hooks when Redis Streams consumer is not running.
     try:
@@ -552,21 +627,42 @@ def replay_with_state(
 
     EVENTS → STATE hints for reconnect. Not full HA multi-AZ proof.
     """
-    events = replay_since(last_event_id, limit=limit)
-    gaps = detect_sequence_gaps(events)
+    lim = max(1, min(int(limit or 200), 2000))
+    cursor_known = False
+    truncated = False
     with _lock:
+        items = list(_REPLAY_BUFFER.items())
         buf_len = len(_REPLAY_BUFFER)
-        last_eid = ""
-        if _REPLAY_BUFFER:
-            last_eid = next(reversed(_REPLAY_BUFFER))
+        last_eid = next(reversed(_REPLAY_BUFFER)) if _REPLAY_BUFFER else ""
+    if last_event_id and items:
+        needle = str(last_event_id).strip()
+        cursor_known = any(eid == needle for eid, _ in items)
+        if not cursor_known:
+            truncated = True  # cursor outside retention window — recent dump only
+    events = replay_since(last_event_id, limit=lim)
+    gaps = detect_sequence_gaps(events)
+    recovery: dict[str, Any] = {
+        "type": "recovery",
+        "event_type": "recovery",
+        "cursor": last_event_id or "",
+        "cursor_known": cursor_known if last_event_id else True,
+        "truncated": truncated,
+        "replay_count": len(events),
+        "gap_detected": bool(gaps.get("gap_detected")),
+        "missing_from": gaps.get("missing_from"),
+        "missing": (gaps.get("missing") or [])[:20],
+        "disclaimer": "Lab catch-up — not full HA multi-AZ replay",
+    }
     return {
         "ok": True,
         "events": events,
         "count": len(events),
         "gaps": gaps,
+        "recovery": recovery,
         "replay_buffer_size": buf_len,
         "latest_event_id": last_eid or (events[-1].get("event_id") if events else None),
         "cursor": last_event_id,
+        "truncated": truncated,
         "note": (
             "In-process + best-effort Streams replay. "
             "Gap recovery requests missing sequences when detected; "

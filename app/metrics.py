@@ -26,7 +26,7 @@ _status_counters: dict[str, int] = defaultdict(int)
 # Process-local stage latency samples (ms) — not a multi-node SLO claim.
 _stage_samples: dict[str, list[float]] = defaultdict(list)
 _STAGE_MAX = 256
-_STAGE_NAMES = frozenset({"ingest", "detect", "risk", "sse"})
+_STAGE_NAMES = frozenset({"ingest", "detect", "process", "risk", "sse"})
 
 
 def incr(name: str, amount: int = 1) -> None:
@@ -187,7 +187,7 @@ def render_prometheus() -> str:
         lines.append("# TYPE securaiq_stage_latency_p95_ms gauge")
         lines.append("# HELP securaiq_stage_latency_samples Stage latency sample count.")
         lines.append("# TYPE securaiq_stage_latency_samples gauge")
-        for stage in ("ingest", "detect", "risk", "sse"):
+        for stage in ("ingest", "detect", "process", "risk", "sse"):
             row = stages.get(stage) if isinstance(stages.get(stage), dict) else {}
             p50 = row.get("p50_ms")
             p95 = row.get("p95_ms")
@@ -199,6 +199,16 @@ def render_prometheus() -> str:
                 f'securaiq_stage_latency_p95_ms{{stage="{stage}"}} {float(p95) if p95 is not None else -1}'
             )
             lines.append(f'securaiq_stage_latency_samples{{stage="{stage}"}} {cnt}')
+    except Exception:
+        pass
+
+    try:
+        from app.realtime_bus import publish_throughput
+
+        thr = publish_throughput() or {}
+        lines.append("# HELP securaiq_realtime_backpressure_shed_total Non-critical events shed under soft backpressure.")
+        lines.append("# TYPE securaiq_realtime_backpressure_shed_total counter")
+        lines.append(f"securaiq_realtime_backpressure_shed_total {int(thr.get('backpressure_shed_total') or 0)}")
     except Exception:
         pass
 

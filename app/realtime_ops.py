@@ -50,6 +50,7 @@ def pipeline_metrics() -> dict[str, Any]:
             "duplicates_dropped": thr.get("duplicates_dropped"),
             "backpressure_hits": thr.get("backpressure_hits"),
             "backpressure_active": thr.get("backpressure_active"),
+            "backpressure_shed_total": thr.get("backpressure_shed_total"),
         },
         "stream": {
             "key": stream.get("stream_key"),

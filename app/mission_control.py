@@ -55,15 +55,49 @@ def mission_control_snapshot(*, user_id: str | None = None) -> dict[str, Any]:
             configured=redis_on,
             note=None if redis_on else "REDIS_URL unset — in-process bus only",
         )
+        ingress = m.get("ingress") or {}
+        bp_active = bool(ingress.get("backpressure_active"))
+        sse_status = "degraded" if bp_active else "healthy"
         components["sse"] = _comp(
-            "healthy",
+            sse_status,
             subscribers=sse_clients,
             streams_fanout=bool(sse.get("streams_fanout")),
+            backpressure_active=bp_active,
+            backpressure_shed=ingress.get("backpressure_shed_total"),
         )
         proc = m.get("processor") or {}
+        task_running = proc.get("task_running")
+        worker_st = "healthy"
+        worker_notes: list[str] = []
+        if proc.get("error"):
+            worker_st = "degraded"
+            worker_notes.append(str(proc.get("error"))[:80])
+        if redis_on and task_running is False:
+            worker_st = "degraded"
+            worker_notes.append("processor task not running")
+        if not redis_on:
+            worker_st = "degraded" if worker_st == "healthy" else worker_st
+            worker_notes.append("local_publish_hooks (REDIS_URL unset)")
+        try:
+            lag_n = float(queue_lag) if queue_lag is not None else None
+        except (TypeError, ValueError):
+            lag_n = None
+        if lag_n is not None and lag_n > 1000:
+            worker_st = "degraded"
+            worker_notes.append(f"queue_lag={lag_n}")
+        if dlq > 0:
+            worker_st = "degraded"
+            worker_notes.append(f"dlq={dlq}")
+        if bp_active:
+            worker_st = "degraded"
+            worker_notes.append("backpressure_active")
         components["workers"] = _comp(
-            "healthy" if not proc.get("error") else "degraded",
+            worker_st,
             processor=proc.get("mode") or proc.get("status") or "local",
+            task_running=task_running,
+            queue_lag=lag_n,
+            dlq_length=dlq,
+            notes=worker_notes or None,
             error=proc.get("error"),
         )
     except Exception as exc:
