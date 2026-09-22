@@ -22,6 +22,34 @@ def oidc_configured() -> bool:
     )
 
 
+def production_ready() -> bool:
+    """Lab/production readiness for OIDC — requires issuer + client credentials."""
+    return oidc_configured() and bool((settings.oidc_redirect_uri or "").strip())
+
+
+def status() -> dict[str, Any]:
+    """IdP facade readiness — does not imply a live IdP handshake succeeded."""
+    issuer = (settings.oidc_issuer or "").strip()
+    return {
+        "protocol": "oidc",
+        "enabled": bool(settings.oidc_enabled),
+        "issuer": issuer or None,
+        "client_id_set": bool((settings.oidc_client_id or "").strip()),
+        "client_secret_set": bool((settings.oidc_client_secret or "").strip()),
+        "redirect_uri": (settings.oidc_redirect_uri or "").strip() or None,
+        "scopes": settings.oidc_scopes or "openid profile email",
+        "configured": oidc_configured(),
+        "production_ready": production_ready(),
+        "login_path": "/api/auth/oidc/login",
+        "callback_path": "/api/auth/oidc/callback",
+        "note": (
+            "OIDC facade is ready when OIDC_ENABLED + issuer + client id/secret + redirect are set. "
+            "Live IdP discovery/login still requires a reachable issuer. "
+            "Not a full enterprise IdP certification."
+        ),
+    }
+
+
 async def _discovery() -> dict[str, Any]:
     issuer = settings.oidc_issuer.rstrip("/")
     url = f"{issuer}/.well-known/openid-configuration"

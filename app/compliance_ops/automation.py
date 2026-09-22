@@ -128,12 +128,22 @@ def run_compliance_ops_tick(
             escalate_task(user_id, tid, reason=f"Auto-escalate L2: overdue {int(delta_days)}d")
             actions.append({"task_id": tid, "action": "escalate_l2"})
 
+        elif delta_days >= 14 and int(task.get("escalation_level") or 0) < 3 and (now_ts - last_esc) > 12 * 3600:
+            escalate_task(user_id, tid, reason=f"Auto-escalate L3 (org): overdue {int(delta_days)}d")
+            actions.append({"task_id": tid, "action": "escalate_l3"})
+
+    esc_actions = [a for a in actions if str(a.get("action") or "").startswith("escalate")]
     return {
         "ok": True,
         "user_id": user_id,
         "materialized": materialized,
         "actions": actions,
         "open_tasks": len(open_tasks),
+        "escalation_summary": {
+            "reminders": len(actions) - len(esc_actions),
+            "escalations": len(esc_actions),
+            "levels_fired": sorted({a["action"] for a in esc_actions}),
+        },
         "disclaimer": "Automation manages work reminders — not a legal compliance determination.",
     }
 

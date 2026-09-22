@@ -485,31 +485,61 @@ def escalate_task(
     if not task:
         raise ValueError("task not found")
     level = int(task.get("escalation_level") or 0) + 1
+    # Priority ladder: escalate → at least high; L3 → critical
+    cur_pri = (task.get("priority") or "medium").lower()
+    pri_rank = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+    want_pri = "critical" if level >= 3 else "high" if level >= 1 else cur_pri
+    if pri_rank.get(want_pri, 0) > pri_rank.get(cur_pri, 0):
+        new_pri = want_pri
+    else:
+        new_pri = cur_pri
     get_conn().execute(
-        "UPDATE compliance_tasks SET escalation_level = ?, last_escalated_at = ?, updated_at = ? "
-        "WHERE id = ? AND user_id = ?",
-        (level, now(), now(), task_id, user_id),
+        "UPDATE compliance_tasks SET escalation_level = ?, last_escalated_at = ?, "
+        "priority = ?, updated_at = ? WHERE id = ? AND user_id = ?",
+        (level, now(), new_pri, now(), task_id, user_id),
     )
     get_conn().commit()
     _record_event(task_id, user_id, "escalated", reason or f"level {level}")
-    recipient = (
-        task.get("manager_id")
-        or task.get("reviewer_id")
-        or task.get("owner_id")
-        or user_id
-    )
     title = f"Compliance escalation — {task.get('title')} (L{level})"
     body = reason or f"Overdue / escalated. Due: {task.get('due_label')}"
-    _notify(str(recipient), title, body)
+    # Fan-out: owner always; manager L1+; reviewer L2+; org admins L3
+    recipients: set[str] = set()
+    recipients.add(str(task.get("owner_id") or user_id))
+    if task.get("manager_id"):
+        recipients.add(str(task["manager_id"]))
     if level >= 2 and task.get("reviewer_id"):
-        _notify(str(task["reviewer_id"]), title, body)
+        recipients.add(str(task["reviewer_id"]))
+    if level >= 3:
+        try:
+            from app.commercial_ext import list_org_members
+            from app.tenancy import primary_org_id
+
+            oid = primary_org_id(user_id)
+            if oid:
+                for m in list_org_members(user_id, oid) or []:
+                    if (m.get("role") or "").lower() in {"admin", "owner"}:
+                        recipients.add(str(m.get("user_id") or m.get("id") or ""))
+        except Exception:
+            recipients.add(user_id)
+    recipients.discard("")
+    for rid in recipients:
+        _notify(rid, title, body)
     _publish(
         "compliance.task.escalated",
         user_id,
         task_id=task_id,
         escalation_level=level,
+        priority=new_pri,
         title=task.get("title"),
     )
+    if level >= 2:
+        _publish(
+            "compliance.sla.breach",
+            user_id,
+            task_id=task_id,
+            escalation_level=level,
+            title=task.get("title"),
+        )
     # Soft risk signal — open a medium risk when escalation >= 2
     if level >= 2:
         try:
@@ -519,7 +549,7 @@ def escalate_task(
                 user_id,
                 threat=f"Overdue compliance: {task.get('title')}",
                 vulnerability="compliance_ops_escalation",
-                impact=3,
+                impact=4 if level >= 3 else 3,
                 likelihood=3,
                 mitigation=(
                     f"Escalation level {level}. Complete the Compliance Operations task "

@@ -47,8 +47,8 @@ If a feature cannot answer all six, do not ship it yet.
 | Calendar / tasks / my-work | **MVP shipped** | |
 | Document review + attestation | **Shipped** | Who/What/When/Decision |
 | Exceptions with expiry + renew | **Shipped→hardened** | Compensating evidence/text required on approve; tick flips lapsed → `expired` |
-| Reminders / escalation | **MVP** | Compliance ops tick + notification outbox |
-| CMMC audit pack / management view | **Shipped** | `/api/cmmc/audit-pack` · `/api/cmmc/management-view` |
+| Reminders / escalation | **Lab-production** | L1–L3 escalation fan-out, priority bump, SLA breach events; not legal determination |
+| CMMC audit pack / management view | **Lab-production** | `/api/cmmc/audit-pack` · `/management-view` · `/tier1-readiness`; not C3PAO/SPRS submit |
 | SCIM Groups | **Shipped (minimal)** | `/scim/v2/Groups` CRUD; Users already present; not full RFC |
 | Cross-framework evidence write-through | **Shipped (opt-in)** | `propagate_canonical` on evidence link → sibling `supports` maps |
 | Continuous Posture Engine | **Shipped (Layer B)** | 30m ± jitter reconciliation — **not** Nmap/Nuclei/ZAP; see [POSTURE-ENGINE.md](./POSTURE-ENGINE.md) |
@@ -58,9 +58,9 @@ If a feature cannot answer all six, do not ship it yet.
 
 | Piece | Status | Honesty |
 |-------|--------|---------|
-| Tenant isolation (REST/SSE/spine/exports) | **Near-done→improved** | Cross-tenant tests: product tables, spine, SSE, agent auth/commands, notifications/outbox, **jobs payload scope**, **uploads**, **RAG where/assert**. Remaining: object-store WORM |
+| Tenant isolation (REST/SSE/spine/exports) | **Lab-production** | Cross-tenant tests + object-store org key fail-closed. Remaining: cloud WORM object-lock |
 | Platform Mission Control | **Shipped (lab)** | `GET /api/ops/mission-control` |
-| SSO / SCIM | **Partial** | Facades; not full IdP depth |
+| SSO / SCIM | **Lab-production (facades)** | OIDC/SAML readiness + SCIM Groups; full IdP depth still open |
 | HA / Redis Sentinel live failover | **CI self-test** | Docker `--inject-stop` still ops |
 | DR / backup restore | **Partial** | Docs + scripts; automate more |
 | Signed installers / update-rollback | **Partial** | Packages exist; Authenticode/notarize missing |
@@ -106,11 +106,12 @@ Do **not** start Release 5 / cloud-depth / twin / AI autonomy. Finish the closed
 | Evidence Spine | Shipped (local); cloud WORM ops |
 | Risk recalc | Shipped |
 | Remediation → Verify | Shipped |
-| Compliance Ops | Partial (MVP) |
-| CMMC | Partial (Tier-1; not C3PAO) |
-| Tenant / RBAC / MFA | Partial |
-| Audit trail | Partial (hash chain; not WORM) |
-| HA/DR · Load · Self-sec | Ops / partial |
+| Compliance Ops | Lab-production — L1–L3 escalation + SLA breach |
+| CMMC | Lab-production Tier-1 (`/tier1-readiness`); not C3PAO/SPRS submit |
+| Tenant / RBAC / MFA / SSO | Lab-production — object-store org guard + IdP readiness facades |
+| Audit trail | Lab-production — hash chain + sealed export; SQLite ≠ cloud WORM |
+| HA/DR | Ops-blocked (live Sentinel inject) |
+| Load · Self-sec | Lab-production — HTTP 100 + soft 250/500 in-proc; dogfood report |
 
 See [PRODUCTION-CONTROL-PLANE.md](./PRODUCTION-CONTROL-PLANE.md).
 

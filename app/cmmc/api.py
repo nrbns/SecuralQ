@@ -512,6 +512,17 @@ async def api_management_view(
     return cmmc_management_view(user.id, framework_id=framework_id)
 
 
+@router.get("/tier1-readiness")
+async def api_tier1_lab_readiness(
+    user: Annotated[AuthUser, Depends(require_user)],
+    framework_id: str = Query("cmmc_l2"),
+):
+    """Tier-1 lab-production gate — not C3PAO / SPRS submit."""
+    from app.cmmc.tier1_lab import tier1_lab_readiness
+
+    return tier1_lab_readiness(user.id, framework_id=framework_id)
+
+
 @router.get("/audit-pack")
 async def api_cmmc_audit_pack(
     user: Annotated[AuthUser, Depends(require_user)],

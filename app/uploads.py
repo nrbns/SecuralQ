@@ -81,11 +81,20 @@ def save_upload(
 
     # #251 — also mirror into object storage when configured (local no-op copy)
     object_meta: dict[str, Any] = {}
+    org_id: str | None = None
+    try:
+        from app.tenancy import primary_org_id
+
+        org_id = primary_org_id(user_id)
+    except Exception:
+        org_id = None
     try:
         from app.object_storage import evidence_key, put_bytes
 
-        okey = evidence_key(None, fid, safe)
+        okey = evidence_key(org_id, fid, safe)
         object_meta = put_bytes(okey, data, content_type="application/octet-stream")
+        if object_meta is not None:
+            object_meta["org_id"] = org_id
     except Exception:
         object_meta = {}
 
@@ -104,18 +113,40 @@ def save_upload(
             pass
 
     c = get_conn()
-    c.execute(
-        "INSERT INTO files (id, engagement_id, user_id, filename, stored_path, size_bytes, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (fid, engagement_id, user_id, safe, str(stored), len(data), now()),
-    )
+    from app.db import table_columns
+
+    cols = table_columns(c, "files")
+    if "org_id" not in cols:
+        try:
+            c.execute("ALTER TABLE files ADD COLUMN org_id TEXT")
+            c.commit()
+            cols = table_columns(c, "files")
+        except Exception:
+            pass
+    if "org_id" in cols:
+        c.execute(
+            "INSERT INTO files (id, engagement_id, user_id, org_id, filename, stored_path, size_bytes, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (fid, engagement_id, user_id, org_id, safe, str(stored), len(data), now()),
+        )
+    else:
+        c.execute(
+            "INSERT INTO files (id, engagement_id, user_id, filename, stored_path, size_bytes, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (fid, engagement_id, user_id, safe, str(stored), len(data), now()),
+        )
     c.commit()
-    audit("file_upload", user_id, {"id": fid, "filename": safe, "bytes": len(data), "kind": kind})
+    audit(
+        "file_upload",
+        user_id,
+        {"id": fid, "filename": safe, "bytes": len(data), "kind": kind, "org_id": org_id},
+    )
     return {
         "id": fid,
         "filename": safe,
         "size_bytes": len(data),
         "engagement_id": engagement_id,
+        "org_id": org_id,
         "ingested": bool(ingest and text.strip() and kind == "document"),
         "object_storage": object_meta or None,
         "kind": kind,

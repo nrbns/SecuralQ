@@ -163,3 +163,46 @@ def verify_chain(*, limit: int = 10_000) -> dict[str, Any]:
         "skipped_legacy": skipped_legacy,
         "tip": expected_prev if checked else GENESIS,
     }
+
+
+def export_sealed_snapshot(*, limit: int = 10_000) -> dict[str, Any]:
+    """Seal tip hash + verify result for export/auditor handoff.
+
+    Honesty: SQLite rows are still mutable at the filesystem layer — this is
+    lab-production hash integrity, not cloud WORM / object-lock.
+    """
+    ensure_audit_chain_schema()
+    verify = verify_chain(limit=limit)
+    tip = str(verify.get("tip") or GENESIS)
+    seal = hashlib.sha256(
+        json.dumps(
+            {
+                "tip": tip,
+                "checked": verify.get("checked"),
+                "skipped_legacy": verify.get("skipped_legacy"),
+                "ok": verify.get("ok"),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return {
+        "ok": bool(verify.get("ok")),
+        "verify": verify,
+        "tip_hash": tip,
+        "seal_hash": seal,
+        "worm": False,
+        "backend": "sqlite_hash_chain",
+        "note": (
+            "Sealed hash-chain export for integrity checks. "
+            "Not cloud WORM — set object-lock backend for immutable storage."
+        ),
+    }
+
+
+def detect_tamper_after_mutation(*, limit: int = 5_000) -> dict[str, Any]:
+    """Diagnostic: verify after an intentional field mutate would break the chain.
+
+    Used by tests — does not mutate production data by itself.
+    """
+    return verify_chain(limit=limit)

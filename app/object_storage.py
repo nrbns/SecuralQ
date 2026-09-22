@@ -158,6 +158,30 @@ def evidence_key(org_id: str | None, file_id: str, filename: str) -> str:
     return f"evidence/{org}/{file_id}_{safe}"
 
 
+def key_org_segment(key: str) -> str | None:
+    """Extract org segment from ``evidence/{org}/...`` keys."""
+    parts = (key or "").replace("\\", "/").lstrip("/").split("/")
+    if len(parts) >= 2 and parts[0] == "evidence":
+        return parts[1] or None
+    return None
+
+
+def assert_key_belongs_to_org(key: str, org_id: str | None) -> None:
+    """Fail closed when a key is namespaced to a different org."""
+    if not org_id:
+        return
+    seg = key_org_segment(key)
+    want = (org_id or "default").replace("/", "_")[:64]
+    if seg and seg != want and seg != "default":
+        raise PermissionError(f"object-store key org mismatch: {seg} != {want}")
+
+
+def get_bytes_for_org(org_id: str | None, key: str) -> bytes | None:
+    """Tenant-scoped get — refuses cross-org keys before any backend read."""
+    assert_key_belongs_to_org(key, org_id)
+    return get_bytes(key)
+
+
 def uri_looks_remote(uri: str) -> bool:
     try:
         return urlparse(uri).scheme in {"s3", "http", "https"}

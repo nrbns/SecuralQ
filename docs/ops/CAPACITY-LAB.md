@@ -69,6 +69,15 @@ Results append to `data/ops/capacity_measurements.jsonl` when `--persist` is set
 | 500 | realtime_load_test (wave) | _TBD_ | _TBD_ | _TBD_ | _TBD_ | — | _unmeasured_ | _TBD_ |
 | 1000 | realtime_load_test (wave) | _TBD_ | _TBD_ | _TBD_ | _TBD_ | — | _unmeasured_ | _TBD_ |
 
+### C) Soft in-process check-in ladder (not HTTP)
+
+**Source:** `app.capacity_soft.soft_checkin_ladder` / pytest `test_soft_checkin_ladder_250_500`  
+**Honesty:** Exercises enroll+checkin in-process. **Do not** market as HTTP 500+ capacity. Fill section B when a live HTTP lab run completes.
+
+```bash
+python -c "from app.capacity_soft import soft_checkin_ladder; print(soft_checkin_ladder('USER', [100,250,500]))"
+```
+
 When measured, copy numbers from the harness JSON / jsonl — **never invent**.
 
 Raw JSON: `data/_capacity_extended.json` (in-proc); HTTP rows in `data/ops/capacity_measurements.jsonl` (gitignored).

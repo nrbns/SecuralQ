@@ -102,6 +102,14 @@ async def api_verify_audit_chain(user: Annotated[AuthUser, Depends(require_user)
     return verify_chain(limit=limit)
 
 
+@router.get("/admin/audit/sealed-export")
+async def api_audit_sealed_export(user: Annotated[AuthUser, Depends(require_user)], limit: int = 5000):
+    require_perm(user, "audit.read", org_id=None)
+    from app.audit_chain import export_sealed_snapshot
+
+    return export_sealed_snapshot(limit=limit)
+
+
 @router.post("/admin/audit/backfill-chain")
 async def api_backfill_audit_chain(user: Annotated[AuthUser, Depends(require_user)], limit: int = 50000):
     require_perm(user, "settings.write", org_id=None)
@@ -131,6 +139,23 @@ async def api_kms_status(user: Annotated[AuthUser, Depends(require_user)]):
     return status()
 
 
+@router.get("/admin/self-security/dogfood")
+async def api_self_security_dogfood(
+    user: Annotated[AuthUser, Depends(require_user)],
+    refresh: bool = False,
+):
+    """Latest dogfood security report (Bandit productized)."""
+    require_perm(user, "audit.read", org_id=None)
+    from app.self_security import generate_dogfood_report, latest_dogfood_report
+
+    if refresh:
+        return generate_dogfood_report(run_scan=True)
+    latest = latest_dogfood_report()
+    if latest:
+        return {"ok": True, **latest}
+    return generate_dogfood_report(run_scan=False)
+
+
 @router.get("/admin/mtls/fleet-status")
 async def api_mtls_fleet_status(user: Annotated[AuthUser, Depends(require_user)]):
     require_perm(user, "settings.write", org_id=None)
@@ -144,6 +169,41 @@ async def api_saml_status(user: Annotated[AuthUser, Depends(require_user)]):
     from app.saml_scaffold import status
 
     return status()
+
+
+@router.get("/auth/oidc/status")
+async def api_oidc_status(user: Annotated[AuthUser, Depends(require_user)]):
+    from app.oidc import status as oidc_status
+
+    return oidc_status()
+
+
+@router.get("/auth/idp/readiness")
+async def api_idp_readiness(user: Annotated[AuthUser, Depends(require_user)]):
+    """Aggregate SSO/SCIM facade readiness — not a live IdP certification."""
+    from app.oidc import status as oidc_status
+    from app.saml_scaffold import status as saml_status
+    from app.scim_api import _scim_enabled
+
+    oidc = oidc_status()
+    saml = saml_status()
+    scim_ready = False
+    try:
+        scim_ready = bool(_scim_enabled())
+    except Exception:
+        scim_ready = False
+    any_ready = bool(oidc.get("production_ready") or saml.get("production_ready") or scim_ready)
+    return {
+        "ok": True,
+        "oidc": oidc,
+        "saml": saml,
+        "scim": {"ready": scim_ready, "base_path": "/scim/v2"},
+        "any_facade_ready": any_ready,
+        "note": (
+            "Lab-production IdP facades: OIDC/SAML/SCIM Groups. "
+            "Full enterprise IdP depth (conditional access, SCIM entitlement sync SLA) remains Partial."
+        ),
+    }
 
 
 @router.get("/auth/saml/metadata")

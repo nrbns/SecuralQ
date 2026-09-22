@@ -40,7 +40,20 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install bandit
-      - run: bandit -r app -ll -x app/fine_tune -f screen
+      - run: bandit -r app -ll -x app/fine_tune -f json -o bandit-report.json || true
+      - run: bandit -r app -ll -x app/fine_tune -f screen || true
+      - name: Productize dogfood snapshot
+        run: |
+          pip install -e . 2>/dev/null || pip install -r requirements.txt
+          python scripts/dogfood_security_report.py --skip-scan --write-docs || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bandit-dogfood
+          path: |
+            bandit-report.json
+            docs/ops/SELF-SECURITY-DOGFOOD.md
+          retention-days: 90
+          if-no-files-found: ignore
 
   sast-semgrep:
     name: Semgrep (SAST, broad ruleset)

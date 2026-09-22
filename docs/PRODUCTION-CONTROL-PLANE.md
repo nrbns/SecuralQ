@@ -28,14 +28,14 @@ HA/load.
 | Evidence Spine | Shipped | Finish; do **not** build a second evidence system |
 | Risk recalculation | Shipped | Evidence write → org risk + audit/evidence on delta |
 | Remediation → Verify | Shipped | Execute ≠ verified; approve/execute publish evidence |
-| Compliance Operations | Partial | Calendar/tasks MVP |
-| CMMC | Partial | Tier-1; not C3PAO/SPRS submit |
-| Tenant isolation | Partial | Broad tests; object-store leftovers |
-| RBAC / MFA / SSO | Partial | SSO IdP facades |
-| Audit trail | Partial | `audit()` → hash chain; SQLite ≠ WORM |
+| Compliance Operations | **Lab-production** | Calendar/tasks/tick + L1–L3 escalation fan-out / SLA breach; not legal determination |
+| CMMC | **Lab-production (Tier-1)** | SSP/POA&M/SPRS-prep/audit-pack/management + `/tier1-readiness`; not C3PAO/SPRS submit |
+| Tenant isolation | **Lab-production** | Fail-closed product paths + object-store org key guard; cloud object leftovers ops |
+| RBAC / MFA / SSO | **Lab-production (facades)** | RBAC+MFA+SCIM Groups + OIDC/SAML readiness; full IdP depth still Partial |
+| Audit trail | **Lab-production** | Hash chain + sealed export + verify; SQLite ≠ cloud WORM |
 | HA / DR | Ops-blocked | Live Sentinel inject needs Docker |
-| Load testing | Partial | HTTP 100 measured; 500+ unmeasured; stage meters present (unclaimed) |
-| Self-security | Partial | Tooling exists; dogfood report thin |
+| Load testing | **Lab-production (measured to 100 HTTP; soft 250/500 in-proc)** | HTTP 500+ unmeasured; soft ladder must not be marketed as HTTP capacity |
+| Self-security | **Lab-production** | Dogfood report API + Bandit productized; CI Trivy/ZAP remain report-only |
 | Asset identity | Shipped | `asset_aliases` — correlation ≠ ownership proof |
 
 ## Sellable acceptance (must work)
