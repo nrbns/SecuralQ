@@ -50,6 +50,18 @@ async def get_organizational_score(user: Annotated[AuthUser, Depends(require_use
     return compute_org_risk_score(user.id)
 
 
+@router.get("/why-increased")
+async def get_why_risk_increased(
+    user: Annotated[AuthUser, Depends(require_user)],
+    use_llm: bool = False,
+    limit: int = 8,
+):
+    """USP #7 — deterministic narrative for risk movement (lab-production gate)."""
+    from app.services.risk_narrative import explain_risk_increase
+
+    return explain_risk_increase(user.id, limit_findings=limit, use_llm=use_llm)
+
+
 @router.get("/simulate")
 async def get_risk_simulation(user: Annotated[AuthUser, Depends(require_user)], limit: int = 10):
     """"If you fix these, here's the estimated impact" — grouped findings

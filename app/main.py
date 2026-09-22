@@ -86,6 +86,7 @@ from app.agent_gateway import router as agent_gateway_router
 from app.evidence_api import router as evidence_router
 from app.evidence_spine.api import router as evidence_spine_router
 from app.risk_api import router as risk_router
+from app.usp_api import router as usp_router
 from app.wazuh_api import router as wazuh_router
 from app.openaudit_api import router as openaudit_router
 from app.hardeningkitty_api import router as hardeningkitty_router
@@ -403,6 +404,7 @@ app.include_router(agents_router)
 app.include_router(evidence_router)
 app.include_router(evidence_spine_router)
 app.include_router(risk_router)
+app.include_router(usp_router)
 app.include_router(openaudit_router)
 app.include_router(hardeningkitty_router)
 app.include_router(thehive_router)

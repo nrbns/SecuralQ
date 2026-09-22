@@ -12,67 +12,63 @@ Signal → Truth → Risk → Compliance → Action → Verification → Evidenc
 Cross-links: [PRODUCTION-CONTROL-PLANE.md](./PRODUCTION-CONTROL-PLANE.md) ·
 [POSTURE-ENGINE.md](./POSTURE-ENGINE.md) · [commercial-roadmap.md](./commercial-roadmap.md)
 
+**Lab surfaces:** `GET /api/usp/status` · `/api/usp/graph/depth` · `/api/usp/risk/why-increased` ·
+`/api/usp/sbom/*` · `/api/usp/vendors*` · `/api/usp/scanners*`
+
 ---
 
 ## Verdict
 
-The core USP framing is **unusually well-grounded** — not generic fluff. The
-operating loop and freshness/posture engine are built and tested. Do **not**
-extend claims to live vendor ingest (Wiz/Tenable/…) or full graph depth until
-those ship.
+The core USP framing is **code-backed**. Former Partial/Aspirational rows below are
+now **lab-production** with honest leftovers (full twin, live vendor API without
+creds, Syft binary, etc.).
 
 ---
 
-## Claim now (Real — verified in code)
+## Claim now (Real / lab-production)
 
-| USP / claim | Evidence in repo | Demo language (safe) |
-|-------------|------------------|----------------------|
-| **#4 — 30-min Posture Reconciliation** | `app/posture/refresh_policy.py` + Layer B orchestrator; cadences include 30m; **excludes** Nmap/Nuclei/ZAP | “Freshness-driven posture cycle — not a deep scan farm.” |
-| **Evidence freshness / STALE** | `app/evidence_spine/freshness.py` + control state PASS→STALE | “PASS, observed N minutes ago — valid until … / STALE.” |
-| **Explainable factor risk** | `app/services/risk_priority.py` (exposure, KEV, quick-win) + `explain_risk_score` | “Why fix first: exposure · KEV · criticality — not a bare CVSS.” |
-| **#8 — Compliance Operations control room** | `app/compliance_ops/` calendar/tasks/tick + L1–L3 escalation | “Task board, overdue/escalated, evidence gates — not a legal cert.” |
-| **#2 — Find → Fix → Verify** | Patch/verify, `control_results`, acceptance golden loop | “Execute ≠ verified; verification closes the loop.” |
-| **#3 — Security → Compliance auto-map** | Canonical controls / cross-framework engine | “One observation supports sibling framework controls.” |
-| **XDR / cloud posture connectors** | `app/connectors/`: wazuh, crowdstrike, sentinelone, sophos, defender, aws_security_hub, azure_defender_cloud, gcp_scc (+ azure_sentinel, webhooks, …) | “Connect these sources today.” Name only what is in `app/connectors/`. |
-
----
-
-## Claim carefully (Partial — concept exists, depth limited)
-
-| USP / claim | What is real | What not to say |
-|-------------|--------------|-----------------|
-| **#6 — One security graph** | Attack graph + asset dependency / correlation exist | Full user/permission/container/cloud/data depth as if complete |
-| **#7 — AI explains “why did risk increase”** | `risk.changed` carries `previous_score` / `score_delta` + factor `explain_risk_score` (deterministic math narrative). Investigation paths can surface explanations | “Our LLM narrates every risk spike” as a baked product feature — generative narrative is **not** a dedicated demo gate yet |
-| **SBOM** | Wired via scanner adapters / software inventory | Branded standalone “SecuraIQ SBOM Engine” |
+| USP / claim | Evidence | Demo language (safe) |
+|-------------|----------|----------------------|
+| **#4 — 30-min Posture** | `app/posture/refresh_policy.py` | Freshness cycle — not deep scan farm |
+| **Evidence freshness / STALE** | `evidence_spine/freshness.py` | PASS observed N ago / STALE |
+| **Factor risk** | `risk_priority.py` | Why fix first: exposure · KEV · quick-win |
+| **#8 Compliance Ops** | `compliance_ops/` | Board + L1–L3 escalation |
+| **#2 Find→Fix→Verify** | patch/verify + acceptance | Execute ≠ verified |
+| **#3 Security→Compliance map** | canonical controls | One observation → sibling frameworks |
+| **XDR / cloud connectors** | `app/connectors/*` | Name only shipped connectors |
+| **#6 One security graph** | attack graph + knowledge graph + **identity depth** (`security_graph_depth.py`) | Lab-production graph with user/permission/container/cloud/data scaffolds — **not** full twin |
+| **#7 Why risk increased** | `risk_narrative.explain_risk_increase` + `/api/risk/why-increased` | Deterministic narrative from deltas + drivers; LLM polish optional |
+| **SecuraIQ SBOM** | `app/sbom.py` + `/api/usp/sbom/export` | Branded CycloneDX export over inventory — not Syft |
+| **Vendor export ingest** | `connectors/vendor_ingest.py` (Tenable/Qualys/Nessus/Rapid7/Wiz/Splunk/Elastic) | Export ingest ready; live API when env creds set |
+| **Secret / API / Config Scanner** | `scanners/product_facades.py` | Branded facades over Gitleaks / Web-ZAP / Checkov |
 
 ---
 
-## Do not claim yet (Aspirational)
+## Claim carefully (leftovers)
 
-| Claim | Honesty |
+| Topic | Honesty |
 |-------|---------|
-| Live ingest from **Tenable, Qualys, Nessus, Rapid7, Wiz, Splunk, Elastic** as first-class connectors | **No** matching modules under `app/connectors/`. Generic CSV/XML import and outbound SIEM/HEC ≠ live vendor pull. If asked “can you pull my Wiz data?” → **not today**. |
-| Distinct branded **Secret / API / Config Scanner** products | Coverage is folded into other tools/adapters — not standalone named offerings |
+| Full security twin | User/container/cloud/data nodes are scaffolds — not complete IAM/K8s/cloud topology |
+| Live Wiz/Tenable API pull | Requires operator credentials; until set, `configured=false` |
+| LLM risk storytelling | Product gate is deterministic; generative polish is optional hook |
+| Syft filesystem SBOM | Inventory-derived CycloneDX only |
 
 ---
 
-## Connector inventory (claim only these)
+## Connector inventory
 
-Present under `app/connectors/` (2026-09-22):
+**Endpoint / XDR / cloud (existing):** wazuh, crowdstrike, sentinelone, sophos, defender,
+aws_security_hub, azure_defender_cloud, gcp_scc, azure_sentinel, …
 
-- **XDR / endpoint:** `wazuh`, `crowdstrike`, `sentinelone`, `sophos`, `defender`
-- **Cloud posture:** `aws_security_hub`, `azure_defender_cloud`, `gcp_scc`
-- **Also present:** `azure_sentinel`, `github_webhook`, `gitlab_webhook`, `openaudit`, `servicenow`, `slack`, `teams`, `thehive`, `sonarqube`
-
-Not connectors: Tenable, Qualys, Nessus, Rapid7, Wiz, Splunk ingest, Elastic ingest.
+**Vendor export ingest (lab-production):** tenable, qualys, nessus, rapid7, wiz, splunk, elastic
+via `POST /api/usp/vendors/{vendor}/ingest`.
 
 ---
 
 ## Positioning rules
 
-1. Lead with the **closed loop** + **30-min posture** + **evidence freshness** — those are distinctive and real.
-2. Name **only** shipped connectors in customer conversations.
-3. Graph / AI risk narrative / SBOM → “available / deepening,” never “complete.”
-4. Release 5 breadth (twin, cloud depth, AI autonomy) stays **frozen** until owned-host + measured HA/load — see control plane freeze.
+1. Lead with closed loop + 30-min posture + evidence freshness + factor risk.
+2. Graph / SBOM / branded scanners / vendor ingest — claim **lab-production**, not complete twin or live-only.
+3. Release 5 breadth (digital twin depth, AI autonomy) stays frozen until owned-host + measured HA/load.
 
-*Last verified against codebase: 2026-09-22.*
+*Last verified: 2026-09-22.*

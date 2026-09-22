@@ -302,6 +302,16 @@ def build_knowledge_graph(user_id: str) -> dict[str, Any]:
         dk = node(link["dst_type"], link["dst_id"], f"{link['dst_type']}:{link['dst_id']}")
         edge(sk, dk, link.get("relation") or "related")
 
+    depth_meta: dict[str, Any] = {}
+    try:
+        from app.security_graph_depth import enrich_graph_identity_depth
+
+        depth_meta = enrich_graph_identity_depth(
+            user_id, node=node, edge=edge, assets=assets
+        )
+    except Exception as exc:
+        depth_meta = {"ok": False, "error": str(exc)[:160]}
+
     by_type: dict[str, int] = {}
     for n in nodes.values():
         by_type[n["type"]] = by_type.get(n["type"], 0) + 1
@@ -313,9 +323,11 @@ def build_knowledge_graph(user_id: str) -> dict[str, Any]:
         "edges": edges[:2000],
         "counts": {"nodes": len(nodes), "edges": len(edges), "by_type": by_type},
         "hotspots": hotspots[:12],
+        "identity_depth": depth_meta,
         "doctrine": (
-            "Correlation joins VAPT findings, XDR detections, incidents, and GRC controls "
-            "on shared assets — the differentiator is one picture, not five tabs."
+            "Correlation joins VAPT findings, XDR detections, incidents, GRC controls, "
+            "and identity/container/cloud/data scaffolds on shared assets — "
+            "one picture, not five tabs. Full twin depth remains open."
         ),
     }
 

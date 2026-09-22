@@ -89,9 +89,18 @@ CATALOG: list[dict[str, Any]] = [
     {"id": "nuclei", "name": "Nuclei", "category": "dast", "status": "path"},
     {"id": "nikto", "name": "Nikto", "category": "dast", "status": "path"},
     # Vuln mgmt
-    {"id": "nessus", "name": "Nessus", "category": "vuln_mgmt", "status": "commercial"},
-    {"id": "qualys", "name": "Qualys", "category": "vuln_mgmt", "status": "commercial"},
-    {"id": "rapid7", "name": "Rapid7 InsightVM", "category": "vuln_mgmt", "status": "commercial"},
+    {"id": "nessus", "name": "Nessus", "category": "vuln_mgmt", "status": "shipped", "hint": "Export ingest POST /api/usp/vendors/nessus/ingest"},
+    {"id": "qualys", "name": "Qualys", "category": "vuln_mgmt", "status": "shipped", "hint": "Export ingest POST /api/usp/vendors/qualys/ingest"},
+    {"id": "rapid7", "name": "Rapid7 InsightVM", "category": "vuln_mgmt", "status": "shipped", "hint": "Export ingest POST /api/usp/vendors/rapid7/ingest"},
+    {"id": "tenable", "name": "Tenable", "category": "vuln_mgmt", "status": "shipped", "hint": "Export ingest POST /api/usp/vendors/tenable/ingest"},
+    {"id": "wiz", "name": "Wiz", "category": "cloud", "status": "shipped", "hint": "Export ingest POST /api/usp/vendors/wiz/ingest — live API when WIZ_* set"},
+    {"id": "splunk", "name": "Splunk", "category": "siem", "status": "shipped", "hint": "HEC forward + export ingest /api/usp/vendors/splunk"},
+    {"id": "elastic", "name": "Elastic", "category": "siem", "status": "shipped", "hint": "Export ingest /api/usp/vendors/elastic — live when ELASTIC_* set"},
+    # Branded product scanners
+    {"id": "securaiq_secret_scanner", "name": "SecuraIQ Secret Scanner", "category": "secrets", "status": "shipped", "hint": "Facade over Gitleaks import"},
+    {"id": "securaiq_api_scanner", "name": "SecuraIQ API Scanner", "category": "dast", "status": "shipped", "hint": "Facade over Web/ZAP/Nuclei"},
+    {"id": "securaiq_config_scanner", "name": "SecuraIQ Config Scanner", "category": "iac", "status": "shipped", "hint": "Facade over Checkov/Trivy"},
+    {"id": "securaiq_sbom", "name": "SecuraIQ SBOM", "category": "sca", "status": "shipped", "hint": "GET /api/usp/sbom/export"},
     # Threat intel
     {"id": "mitre_attack", "name": "MITRE ATT&CK", "category": "intel", "status": "shipped", "hint": "Heuristics + knowledge"},
     {"id": "mitre_d3fend", "name": "MITRE D3FEND", "category": "intel", "status": "planned"},
