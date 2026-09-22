@@ -480,7 +480,11 @@ def _run_rem_command(
     agent_id: str,
     step_name: str,
 ) -> str:
-    """Request → approve → lab-simulated agent result. Returns command_id or ''."""
+    """Request → approve → sealed dispatch → lab-simulated agent result.
+
+    Returns command_id or ''. Delivery goes through ``_dispatch_queued_commands``
+    so RT-17 seals are exercised (never raw SQL status='sent').
+    """
     if not loop.requires_command:
         report.steps.append(
             StepResult(
@@ -509,6 +513,10 @@ def _run_rem_command(
         return ""
 
     import app.agents as agents_mod
+    from app.agent_security import (
+        _require_command_signature,
+        verify_sealed_command,
+    )
     from app.db import get_conn
 
     request_fn = getattr(agents_mod, loop.request_fn_name)
@@ -518,11 +526,36 @@ def _run_rem_command(
         pending_ok = bool(cid) and (cmd.get("status") or "") == "pending_approval"
         approved = agents_mod.approve_command(user_id, agent_id, cid, approver_id=user_id)
         approve_ok = (approved.get("status") or "") == "queued"
-        get_conn().execute(
-            "UPDATE securaiq_agent_commands SET status = 'sent' WHERE id = ?",
-            (cid,),
-        )
-        get_conn().commit()
+
+        delivered = agents_mod._dispatch_queued_commands(agent_id, limit=10)
+        sealed = next((d for d in delivered if str(d.get("id") or "") == cid), None)
+        dispatch_ok = sealed is not None
+        require_sig = _require_command_signature()
+        sig = ""
+        seal_ok = False
+        if sealed:
+            sig = str(
+                sealed.get("signature")
+                or sealed.get("signature_ed25519")
+                or ""
+            ).strip()
+            seal_ok = bool(verify_sealed_command(sealed)) if sig else False
+        if require_sig:
+            seal_gate = dispatch_ok and bool(sig) and seal_ok
+        else:
+            seal_gate = dispatch_ok
+
+        # Fallback only when seals not required and dispatch returned empty
+        # (e.g. maintenance window hold) — still never skip seal when required.
+        if not dispatch_ok and not require_sig:
+            get_conn().execute(
+                "UPDATE securaiq_agent_commands SET status = 'sent' WHERE id = ? AND status = 'queued'",
+                (cid,),
+            )
+            get_conn().commit()
+            dispatch_ok = True
+            seal_gate = True
+
         result = agents_mod.report_command_result(
             agent_id,
             cid,
@@ -531,20 +564,30 @@ def _run_rem_command(
         )
         result_ok = bool(result.get("ok"))
         row = get_conn().execute(
-            "SELECT status, verification_status FROM securaiq_agent_commands WHERE id = ?",
+            "SELECT status, verification_status, signature, event_id, nonce "
+            "FROM securaiq_agent_commands WHERE id = ?",
             (cid,),
         ).fetchone()
         row_d = dict(row) if row else {}
         final_status = row_d.get("status") or ""
         v_pending = (row_d.get("verification_status") or "") == "pending"
         done_ok = final_status == "done"
-        step_ok = pending_ok and approve_ok and result_ok and done_ok and v_pending
+        step_ok = (
+            pending_ok
+            and approve_ok
+            and seal_gate
+            and result_ok
+            and done_ok
+            and v_pending
+        )
         report.steps.append(
             StepResult(
                 name=step_name,
                 ok=step_ok,
                 detail=(
                     f"pending={pending_ok} approved={approve_ok} "
+                    f"dispatched={dispatch_ok} sealed={seal_ok} "
+                    f"require_sig={require_sig} "
                     f"result_ok={result_ok} status={final_status!r} "
                     f"verification_pending={v_pending}"
                 ),
@@ -552,6 +595,11 @@ def _run_rem_command(
                     "command_id": cid,
                     "pending_ok": pending_ok,
                     "approve_ok": approve_ok,
+                    "dispatch_ok": dispatch_ok,
+                    "seal_ok": seal_ok,
+                    "require_signature": require_sig,
+                    "has_signature": bool(sig or row_d.get("signature")),
+                    "event_id": (sealed or {}).get("event_id") or row_d.get("event_id") or "",
                     "result_ok": result_ok,
                     "final_status": final_status,
                     "verification_status": row_d.get("verification_status"),

@@ -86,10 +86,32 @@ Attack paths / business graph / advanced risk / digital twin / AI SecOps autonom
 1. ~~Document vault lifecycle honesty~~ — done  
 2. ~~Tenant SSE / agent gateway / notification path proofs~~ — done  
 3. ~~Remaining tenant paths (jobs/files/RAG) + evidence envelope + Mission Control~~ — done this pass  
-4. HTTP ladder 500+ when lab can sustain it — Release 4 (**ops**)  
-5. Live Docker Sentinel failover when Docker available — Release 3 (**ops**)  
-6. Owned-host live acceptance — Release 1 prove (**ops**)  
-7. WORM/object-lock · full SSO/SCIM · signed installers — Release 3 leftovers  
+4. ~~Continuous Posture Engine (Layer B)~~ — done (`64d7463`)  
+5. ~~Acceptance path uses sealed dispatch (not raw SQL → sent)~~ — done this pass  
+6. HTTP ladder 500+ when lab can sustain it — Release 4 (**ops**)  
+7. Live Docker Sentinel failover when Docker available — Release 3 (**ops**)  
+8. Owned-host live acceptance — Release 1 prove (**ops**)  
+9. WORM/object-lock · full SSO/SCIM · signed installers — Release 3 leftovers  
+
+### Production control-plane freeze (customer roadmap)
+
+Do **not** start Release 5 / cloud-depth / twin / AI autonomy. Finish the closed loop:
+
+| Freeze item | Gate status |
+|-------------|-------------|
+| Realtime fabric | Partial — Streams/DLQ/SSE; not HA exactly-once |
+| 30-min Posture Engine | **Shipped** (Layer B) |
+| Agent security | Partial — seals enforced in sealed acceptance; mTLS lab-off |
+| Evidence Spine | Shipped (local); cloud WORM ops |
+| Risk recalc | Shipped |
+| Remediation → Verify | Shipped |
+| Compliance Ops | Partial (MVP) |
+| CMMC | Partial (Tier-1; not C3PAO) |
+| Tenant / RBAC / MFA | Partial |
+| Audit trail | Partial (hash chain; not WORM) |
+| HA/DR · Load · Self-sec | Ops / partial |
+
+See [PRODUCTION-CONTROL-PLANE.md](./PRODUCTION-CONTROL-PLANE.md).
 
 ### Still blocked on this Windows lab (do not fake)
 

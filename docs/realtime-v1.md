@@ -426,9 +426,10 @@ Agent check-in payloads already include `firewall_status`, `defender_status`, an
 | **I** / **RT-19** | Automated chaos testing | **Partial** (soft harness; Redis kill manual) |
 | **H** / **RT-20** | 5K measured load test | **Partial** (ladder ≤1k; **do not claim 5k**) |
 
-**Later / not this slice:** per-tenant sequence authority, Redis Sentinel/Cluster HA,
-exactly-once beyond SQLite ledger + LRU, ops SLOs, forced Ed25519-only cutover,
-approved agent commands that enable firewall automatically.
+**Later / not this slice:** Redis Sentinel/Cluster HA,
+exactly-once beyond SQLite ledger + LRU, ops SLOs, forced Ed25519-only cutover.
+Per-tenant sequence authority foundations: `securaiq_agent_seq_authority` + contiguous ACK
+(see `tests/test_wave1_complete.py`); still not multi-node authority.
 
 **Out of scope for this track:** Task #144 Live Test UI (frozen).
 

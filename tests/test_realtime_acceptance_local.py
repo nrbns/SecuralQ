@@ -87,6 +87,43 @@ def test_realtime_acceptance_local_firewall_fail_then_pass(tmp_path, monkeypatch
     assert report.ok is True
 
 
+def test_realtime_acceptance_requires_command_seals(tmp_path, monkeypatch):
+    """Commercial seal path: AGENT_REQUIRE_COMMAND_SIGNATURE + dispatch via seal, not SQL."""
+    configure_isolated_settings(monkeypatch, tmp_path)
+    from app.audit_chain import verify_chain
+    from app.agents import enroll_agent
+    from app.auth import login, register_user
+    from app.config import settings
+    from app.tenancy import ensure_tenant_schema
+    from scripts.realtime_acceptance_demo import run_local_chain
+
+    monkeypatch.setattr(settings, "agent_require_command_signature", True, raising=False)
+    monkeypatch.setattr(settings, "agent_require_replay_protection", True, raising=False)
+    monkeypatch.setattr(settings, "agent_command_signing_alg", "hmac", raising=False)
+    monkeypatch.setenv("AGENT_REQUIRE_COMMAND_SIGNATURE", "true")
+
+    ensure_tenant_schema()
+    register_user("rt_accept_seals", "password123", role="admin")
+    user, _token = login("rt_accept_seals", "password123")
+    agent = enroll_agent(user.id, name="rt-accept-seals")
+    aid = agent["agent_id"]
+
+    report = run_local_chain(user.id, aid)
+    assert report.ok is True
+    by_name = {s.name: s for s in report.steps}
+    fw = by_name["6_enable_firewall_command"]
+    assert fw.data.get("require_signature") is True
+    assert fw.data.get("dispatch_ok") is True
+    assert fw.data.get("seal_ok") is True
+    assert fw.data.get("has_signature") is True
+    assert fw.data.get("event_id")
+    assert fw.data.get("verification_status") == "pending"
+
+    chain = verify_chain(limit=5000)
+    assert chain.get("ok") is True
+    assert int(chain.get("checked") or 0) >= 1
+
+
 def test_realtime_acceptance_local_triple_host_loops(tmp_path, monkeypatch):
     """RT-11 parity: firewall + Defender + SSH each close FAIL→approve→PASS→verified."""
     configure_isolated_settings(monkeypatch, tmp_path)
