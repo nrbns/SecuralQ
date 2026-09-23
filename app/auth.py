@@ -533,13 +533,25 @@ def resolve_user(
             return None
         return AuthUser(id=sess["id"], username=sess["username"], role=sess["role"])
 
-    # API key
+    # API key / service account
     key = c.execute(
-        "SELECT u.id, u.username, u.role FROM api_keys k "
+        "SELECT u.id, u.username, u.role, k.id AS key_id FROM api_keys k "
         "JOIN users u ON u.id = k.user_id WHERE k.key_hash = ?",
         (th,),
     ).fetchone()
     if key:
+        from app.db import table_columns
+
+        cols = table_columns(c, "api_keys")
+        if "revoked_at" in cols:
+            revoked = c.execute(
+                "SELECT revoked_at FROM api_keys WHERE id = ?", (key["key_id"],)
+            ).fetchone()
+            if revoked and revoked["revoked_at"]:
+                return None
+        if "last_used_at" in cols:
+            c.execute("UPDATE api_keys SET last_used_at = ? WHERE id = ?", (now(), key["key_id"]))
+            c.commit()
         return AuthUser(id=key["id"], username=key["username"], role=key["role"])
     return None
 

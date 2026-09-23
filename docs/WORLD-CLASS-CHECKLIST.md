@@ -48,20 +48,20 @@ Cross-links: [PRODUCTION-CONTROL-PLANE.md](./PRODUCTION-CONTROL-PLANE.md) · [RE
 | SSO/OIDC/SAML | **lab** | Facades + readiness; full IdP depth open |
 | SCIM | **lab** | Users + Groups; not full RFC depth |
 | API authentication | **done** | Sessions + bearer; agent keys |
-| Service accounts | **partial** | Agent identities; dedicated SA model thin |
+| Service accounts | **lab** | Named `sa_` keys with scopes + rotate/revoke; not cloud IAM |
 | Rate limiting | **done** | `RateLimitMiddleware` |
 | Audit logging | **lab** | Hash chain + sealed export; SQLite ≠ WORM |
 | Secrets management | **partial** | Envelope crypto; no KMS/HSM |
 | PostgreSQL HA | **ops** | Docs/scripts; operator-owned |
 | Redis HA | **lab** | Live Desktop inject measured (`docker exec` + optional lab assist); ≠ multi-AZ |
-| Backup + restore | **partial** | Scripts + runbooks |
+| Backup + restore | **lab** | SQLite drill (`scripts/backup_restore_drill.py`); Postgres restore ops |
 | Disaster recovery | **partial** | Documented; not automated product test |
 | Encryption at rest/in transit | **partial** | TLS scaffolding; at-rest = OS/volume |
 | Key rotation | **partial** | Agent certs rotate; app/KMS rotation thin |
 | Object storage | **lab** | Local + S3/MinIO path; org-keyed |
 | Immutable/WORM evidence | **lab** | Local FS readonly markers; cloud Object Lock still **ops** |
-| Data retention policies | **partial** | Retention module exists; deepen |
-| Data deletion workflows | **partial** | GDPR export/delete paths |
+| Data retention policies | **lab** | TTL purge module + admin path; deepen per-tenant policy UI |
+| Data deletion workflows | **lab** | GDPR export/erase APIs |
 
 ---
 
@@ -140,7 +140,7 @@ Cross-links: [PRODUCTION-CONTROL-PLANE.md](./PRODUCTION-CONTROL-PLANE.md) · [RE
 | Command authorization (allowlist) | **done** |
 | Agent policy | **partial** |
 | Secure update / signed packages / rollback | **lab** (sha256 + lab Authenticode; EV/SmartScreen **ops**) |
-| Tamper detection | **missing** |
+| Tamper detection | **lab** (audit hash-chain + FIM threats; not commercial EDR) |
 | Offline queue + bounded storage | **lab** |
 | Secure bootstrap | **partial** |
 
@@ -175,7 +175,7 @@ Cross-links: [PRODUCTION-CONTROL-PLANE.md](./PRODUCTION-CONTROL-PLANE.md) · [RE
 | Factor risk (criticality, exposure, KEV, controls, …) | **lab** |
 | Org / asset risk + explanation + simulation | **lab** |
 | Technical / business / compliance risk facets | **partial** |
-| Risk history / trend | **partial** |
+| Risk history / trend | **lab** (executive snapshots; null when no history) |
 | “Why did risk increase” narrative | **lab** (`/api/risk/why-increased`) |
 
 ---
@@ -195,7 +195,7 @@ Cross-links: [PRODUCTION-CONTROL-PLANE.md](./PRODUCTION-CONTROL-PLANE.md) · [RE
 |------|--------|
 | Universal envelope, SHA-256, source, collector, asset, agent, freshness, expiry | **done** |
 | Versioning / review / accept-reject | **lab** |
-| Lineage / access log | **partial** |
+| Lineage / access log | **lab** (`/api/evidence-spine/lineage`) |
 | WORM / object lock | **lab** (local FS markers); cloud Object Lock **ops** |
 | Conflict resolution / reconciliation | **lab** |
 
@@ -318,7 +318,7 @@ Live verify: `python scripts/live_lab_verify.py --server http://127.0.0.1:8080 -
 |------|--------|
 | Bandit / Semgrep / Gitleaks / Trivy / Checkov / ZAP / SBOM CI | **lab** |
 | Dogfood product report | **lab** |
-| Pentest / fuzz / Trust Center page | **partial** / missing public Trust Center |
+| Pentest / fuzz / Trust Center page | **lab** (`/trust.html` + `/api/trust`); third-party pentest **ops** |
 
 ---
 
@@ -336,10 +336,10 @@ Live verify: `python scripts/live_lab_verify.py --server http://127.0.0.1:8080 -
 
 | Area | Status |
 |------|--------|
-| Customer Trust Center | **missing** / thin docs |
+| Customer Trust Center | **lab** (`/trust.html`) — no SOC 2 / pentest attestation claimed |
 | Commercial (license, Stripe, trial, entitlements) | **lab** |
-| Killer onboarding (org → agent → asset → risk → top 5) | **partial** |
-| ROI metrics (exposure↓, MTTR↓, verified remediation↑) | **partial** |
+| Killer onboarding (org → agent → asset → risk → top 5) | **lab** (`/api/onboarding/progress`) |
+| ROI metrics (exposure↓, MTTR↓, verified remediation↑) | **lab** (`/api/roi`; nulls when unmeasured) |
 
 ---
 
@@ -373,8 +373,9 @@ This matches the product philosophy. **Phases 2–5 breadth stay gated** by Phas
 4. ~~Live lab verify harness~~ — **done** (`scripts/live_lab_verify.py`)  
 5. ~~Live Sentinel inject~~ — **done** (lab Desktop measure; `failover_forced` assist OK; ≠ commercial HA)  
 6. ~~Lab Authenticode + local FS WORM~~ — **done** (EV cert + cloud Object Lock still **ops**)  
-7. **Ops-only (do not fake):** EV Authenticode secrets, cloud WORM Object Lock, Postgres HA, IdP production.  
-8. **Do not** start Phase 5 twin / AI autonomy / cloud-module sprawl.  
-9. World-class sections 2–5 breadth remain a multi-phase product roadmap — sell the closed loop that is lab-production today.
+7. ~~Trust Center / service accounts / tamper / onboarding / ROI / lineage~~ — **done** (lab)  
+8. **Ops-only (do not fake):** EV Authenticode secrets, cloud WORM Object Lock, Postgres HA, IdP production, C3PAO, 5k–100k HTTP.  
+9. **Do not** start Phase 5 twin / AI autonomy / cloud-module sprawl.  
+10. World-class sections 2–5 scanner/IdP/cloud depth remain a multi-phase product roadmap — sell the closed loop that is lab-production today.
 
 *Snapshot aligned to main · 2026-09-22 · Phase-1 lab board green; commercial leftovers stay ops.*

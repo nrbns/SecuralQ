@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SecuraIQ Trust Center</title>
+  <style>
+    :root { --bg: #0f1419; --fg: #e7ecf1; --muted: #8b9aab; --ok: #3dd68c; --warn: #f5a524; --card: #1a222c; }
+    body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; background: var(--bg); color: var(--fg); }
+    main { max-width: 44rem; margin: 3rem auto; padding: 0 1.25rem 3rem; }
+    h1 { font-size: 1.75rem; font-weight: 600; letter-spacing: -0.02em; margin: 0 0 0.4rem; }
+    p, li { color: var(--muted); line-height: 1.55; }
+    .card { background: var(--card); border-radius: 8px; padding: 1rem 1.15rem; margin: 1rem 0; }
+    .row { display: flex; justify-content: space-between; gap: 1rem; padding: 0.45rem 0; border-bottom: 1px solid #243040; }
+    .row:last-child { border-bottom: 0; }
+    .ok { color: var(--ok); } .no { color: var(--warn); }
+    a { color: #7eb8ff; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>SecuraIQ Trust Center</h1>
+    <p>Public, honest security claims. Nothing here is marketed unless the product can prove it.</p>
+    <p>
+      <a href="/status.html">Status</a> ·
+      <a href="/.well-known/security.txt">security.txt</a> ·
+      <a href="/">Product</a>
+    </p>
+    <div class="card" id="claims">Loading…</div>
+    <div class="card">
+      <strong>Honesty</strong>
+      <ul id="honesty"></ul>
+    </div>
+  </main>
+  <script>
+    async function load() {
+      const r = await fetch("/api/trust");
+      const j = await r.json();
+      const el = document.getElementById("claims");
+      el.innerHTML = "";
+      const claims = j.claims || {};
+      for (const [k, v] of Object.entries(claims)) {
+        const row = document.createElement("div");
+        row.className = "row";
+        const yes = v === true || (typeof v === "number" && v > 0);
+        row.innerHTML = `<span>${k}</span><span class="${yes ? "ok" : "no"}">${v}</span>`;
+        el.appendChild(row);
+      }
+      const ul = document.getElementById("honesty");
+      for (const line of (j.honesty || [])) {
+        const li = document.createElement("li");
+        li.textContent = line;
+        ul.appendChild(li);
+      }
+    }
+    load().catch(() => {
+      document.getElementById("claims").textContent = "Trust Center unavailable";
+    });
+  </script>
+</body>
+</html>
