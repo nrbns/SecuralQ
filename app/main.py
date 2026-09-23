@@ -449,6 +449,7 @@ _PUBLIC_API_PREFIXES = (
     "/api/status/public",
     "/api/trust",
     "/api/phases",
+    "/api/checklists",
     "/.well-known/security.txt",
     "/api/auth/saml/metadata",
     "/api/auth/saml/acs",

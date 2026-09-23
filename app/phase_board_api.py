@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from app.auth import AuthUser
 from app.commercial_api import require_user
+from app.checklist_board import all_checklists_board
 from app.phase_board import all_phases_board
 from app.rbac import require_perm
 from app.service_impact import services_affected_by_vuln
@@ -25,6 +26,11 @@ class WhiteLabelIn(BaseModel):
 @router.get("/api/phases")
 async def api_phases():
     return all_phases_board()
+
+
+@router.get("/api/checklists")
+async def api_checklists():
+    return all_checklists_board()
 
 
 @router.get("/api/exposure/toxic")

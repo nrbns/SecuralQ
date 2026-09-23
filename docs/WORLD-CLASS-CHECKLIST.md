@@ -51,13 +51,13 @@ Cross-links: [PRODUCTION-CONTROL-PLANE.md](./PRODUCTION-CONTROL-PLANE.md) · [RE
 | Service accounts | **lab** | Named `sa_` keys with scopes + rotate/revoke; not cloud IAM |
 | Rate limiting | **done** | `RateLimitMiddleware` |
 | Audit logging | **lab** | Hash chain + sealed export; SQLite ≠ WORM |
-| Secrets management | **partial** | Envelope crypto; no KMS/HSM |
+| Secrets management | **lab** | Envelope + local KMS facade; AWS KMS **ops** |
 | PostgreSQL HA | **ops** | Docs/scripts; operator-owned |
 | Redis HA | **lab** | Live Desktop inject measured (`docker exec` + optional lab assist); ≠ multi-AZ |
 | Backup + restore | **lab** | SQLite drill (`scripts/backup_restore_drill.py`); Postgres restore ops |
-| Disaster recovery | **partial** | Documented; not automated product test |
+| Disaster recovery | **lab** | Backup drill automated; multi-AZ DR **ops** |
 | Encryption at rest/in transit | **partial** | TLS scaffolding; at-rest = OS/volume |
-| Key rotation | **partial** | Agent certs rotate; app/KMS rotation thin |
+| Key rotation | **lab** | Agent cert + service-account rotate; cloud KMS **ops** |
 | Object storage | **lab** | Local + S3/MinIO path; org-keyed |
 | Immutable/WORM evidence | **lab** | Local FS readonly markers; cloud Object Lock still **ops** |
 | Data retention policies | **lab** | TTL purge module + admin path; deepen per-tenant policy UI |
@@ -80,7 +80,7 @@ Cross-links: [PRODUCTION-CONTROL-PLANE.md](./PRODUCTION-CONTROL-PLANE.md) · [RE
 | DLQ | **lab** (+ soft recover) |
 | Retry | **lab** |
 | Backpressure | **lab** (soft shed) |
-| Event retention | **partial** |
+| Event retention | **lab** |
 | Tenant-aware streams | **partial** (SSE filter; stream key global) |
 | Worker pools | **partial** (processor + jobs) |
 | Queue monitoring | **lab** (Mission Control) |
@@ -135,14 +135,14 @@ Cross-links: [PRODUCTION-CONTROL-PLANE.md](./PRODUCTION-CONTROL-PLANE.md) · [RE
 | Item | Status |
 |------|--------|
 | mTLS + device identity + cert rotate/revoke | **lab** (flags off by default; commercial five-flag) |
-| Short-lived credentials | **partial** |
+| Short-lived credentials | **lab** |
 | Signed commands + expiry + nonce/replay | **lab** (`AGENT_LAB_SEALED_MODE`) |
 | Command authorization (allowlist) | **done** |
-| Agent policy | **partial** |
+| Agent policy | **lab** |
 | Secure update / signed packages / rollback | **lab** (sha256 + lab Authenticode; EV/SmartScreen **ops**) |
 | Tamper detection | **lab** (audit hash-chain + FIM threats; not commercial EDR) |
 | Offline queue + bounded storage | **lab** |
-| Secure bootstrap | **partial** |
+| Secure bootstrap | **lab** |
 
 ---
 
@@ -212,7 +212,7 @@ Cross-links: [PRODUCTION-CONTROL-PLANE.md](./PRODUCTION-CONTROL-PLANE.md) · [RE
 | CMMC Tier-1 (objectives, SSP, POA&M, examine/interview/test, CUI, affirmation, SPRS prep, audit pack) | **lab** — not C3PAO/SPRS submit |
 | CMMC L3 / determination statements verbatim | **partial** / honesty-bound |
 | Compliance Ops (calendar, tasks, escalation L1–L3, approvals, evidence gates) | **lab** |
-| Email/Teams/Slack/webhooks for ops | **partial** (notify + connectors) |
+| Email/Teams/Slack/webhooks for ops | **lab** (notify + connectors; live tenant **ops**) |
 
 ---
 
@@ -222,7 +222,7 @@ Cross-links: [PRODUCTION-CONTROL-PLANE.md](./PRODUCTION-CONTROL-PLANE.md) · [RE
 |------|--------|
 | Recommend → approve → campaign → agent → execute → verify | **lab** |
 | Safe allowlisted commands | **done** |
-| Rings / maintenance windows | **partial** |
+| Rings / maintenance windows | **lab** (canary rings + campaign windows) |
 | Rollback | **partial** |
 | Auto evidence on approve/execute | **lab** |
 
@@ -258,7 +258,7 @@ Cross-links: [PRODUCTION-CONTROL-PLANE.md](./PRODUCTION-CONTROL-PLANE.md) · [RE
 | Wazuh, Defender, CrowdStrike, SentinelOne, Sophos, cloud SCC | **lab** (live connectors) |
 | Splunk / Elastic | **lab** (export ingest + HEC forward; live when creds) |
 | Nessus / Tenable / Qualys / Rapid7 / Wiz / OpenVAS | **lab** (export ingest; live API when creds) |
-| Jira / ServiceNow | **partial** |
+| Jira / ServiceNow | **lab** (connectors; live tenant **ops**) |
 | Entra / Okta / Google IdP | **partial** (OIDC/SAML facades) |
 
 ---
@@ -269,7 +269,7 @@ Cross-links: [PRODUCTION-CONTROL-PLANE.md](./PRODUCTION-CONTROL-PLANE.md) · [RE
 |------|--------|
 | Multi-customer tenancy | **lab** (orgs) |
 | Delegated admin / white label / central SOC / cross-customer | **lab** (MSSP parent→child + `/api/mssp/{id}/central-soc`) |
-| Billing / portal | **partial** (Stripe path) |
+| Billing / portal | **lab** (Stripe path; live account **ops**) |
 
 ---
 

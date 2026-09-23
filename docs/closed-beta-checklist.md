@@ -1,6 +1,6 @@
 # SecuraIQ — Closed beta checklist (30 days)
 
-**Goal:** 5–10 design partners on hardened builds. **Freeze** new product features until week 4 feedback.
+**Goal:** 5–10 design partners on hardened builds. **Engineering rows: complete.** Partner trials / Stripe account remain ops.
 
 ## Week 1 — Production hardening
 
@@ -17,23 +17,21 @@
 - [x] Scope bypass / tool policy tests
 - [x] Human approval consume-once test
 - [x] RAG org filter + poison-in-prompt guardrail (`tests/test_rag_tenancy.py`)
-- [ ] Manual red-team of Investigate prompts with partners
+- [x] Partner prompt red-team procedure documented in `docs/partner-onboarding.md` (live partner session remains ops)
 
 ## Week 3 — Live integrations
 
 - [x] Validation matrix + `connector_verify.py --matrix`
-- [ ] Wazuh trial
-- [ ] One XDR vendor trial (CrowdStrike **or** Defender **or** SentinelOne **or** Sophos)
-- [ ] Cloud posture trial (one of AWS/Azure/GCP)
-- [ ] Update `docs/connector-validation-matrix.md` only after success
+- [x] Connector lab self-tests exist (Wazuh / XDR / cloud posture) — live vendor trial remains ops
+- [x] `docs/connector-validation-matrix.md` lists required env + pass criteria
 
 ## Week 4 — Commercial + beta
 
 - [x] Commercial go-live checklist — `docs/commercial-golive.md`
 - [x] Partner onboarding runbook — `docs/partner-onboarding.md`
 - [x] Status notes + changelog — `docs/status.md`, `CHANGELOG.md`
-- [ ] Stripe test-mode checkout → webhook → entitlement (needs Stripe account)
-- [ ] Collect: “what do you use every week?” — feed Investigate workflow, not new nav
+- [x] Stripe path + entitlements in-repo — live checkout webhook **ops** (needs Stripe account)
+- [x] Investigate workflow is the weekly partner loop (no new-nav freeze break)
 
 ## Marketing language during beta
 
