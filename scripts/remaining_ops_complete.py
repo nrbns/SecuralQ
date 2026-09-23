@@ -250,8 +250,8 @@ def main() -> int:
         "ok": overall,
         "steps": steps,
         "disclaimer": (
-            "Remaining ops close on this host. Docker Sentinel inject / EV cert / "
-            "cloud Object Lock still require external infrastructure."
+            "Remaining ops close on this host. EV Authenticode and cloud Object Lock "
+            "still require commercial certs / object-store infrastructure."
         ),
     }
     _append(row)

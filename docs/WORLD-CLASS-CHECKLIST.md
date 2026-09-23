@@ -53,13 +53,13 @@ Cross-links: [PRODUCTION-CONTROL-PLANE.md](./PRODUCTION-CONTROL-PLANE.md) · [RE
 | Audit logging | **lab** | Hash chain + sealed export; SQLite ≠ WORM |
 | Secrets management | **partial** | Envelope crypto; no KMS/HSM |
 | PostgreSQL HA | **ops** | Docs/scripts; operator-owned |
-| Redis HA | **ops** | CI self-test; live Sentinel inject blocked |
+| Redis HA | **lab** | Live Desktop inject measured (`docker exec` + optional lab assist); ≠ multi-AZ |
 | Backup + restore | **partial** | Scripts + runbooks |
 | Disaster recovery | **partial** | Documented; not automated product test |
 | Encryption at rest/in transit | **partial** | TLS scaffolding; at-rest = OS/volume |
 | Key rotation | **partial** | Agent certs rotate; app/KMS rotation thin |
 | Object storage | **lab** | Local + S3/MinIO path; org-keyed |
-| Immutable/WORM evidence | **partial** | Local markers; cloud object-lock ops |
+| Immutable/WORM evidence | **lab** | Local FS readonly markers; cloud Object Lock still **ops** |
 | Data retention policies | **partial** | Retention module exists; deepen |
 | Data deletion workflows | **partial** | GDPR export/delete paths |
 
@@ -139,7 +139,7 @@ Cross-links: [PRODUCTION-CONTROL-PLANE.md](./PRODUCTION-CONTROL-PLANE.md) · [RE
 | Signed commands + expiry + nonce/replay | **lab** (`AGENT_LAB_SEALED_MODE`) |
 | Command authorization (allowlist) | **done** |
 | Agent policy | **partial** |
-| Secure update / signed packages / rollback | **partial** (sha256; Authenticode ops) |
+| Secure update / signed packages / rollback | **lab** (sha256 + lab Authenticode; EV/SmartScreen **ops**) |
 | Tamper detection | **missing** |
 | Offline queue + bounded storage | **lab** |
 | Secure bootstrap | **partial** |
@@ -196,7 +196,7 @@ Cross-links: [PRODUCTION-CONTROL-PLANE.md](./PRODUCTION-CONTROL-PLANE.md) · [RE
 | Universal envelope, SHA-256, source, collector, asset, agent, freshness, expiry | **done** |
 | Versioning / review / accept-reject | **lab** |
 | Lineage / access log | **partial** |
-| WORM / object lock | **ops** (markers only without cloud lock) |
+| WORM / object lock | **lab** (local FS markers); cloud Object Lock **ops** |
 | Conflict resolution / reconciliation | **lab** |
 
 **Rule:** Finish this spine — do **not** build a second evidence system.
@@ -280,7 +280,7 @@ Cross-links: [PRODUCTION-CONTROL-PLANE.md](./PRODUCTION-CONTROL-PLANE.md) · [RE
 | SaaS / on-prem / Docker | **partial→lab** |
 | Kubernetes / Helm / air-gap | **partial** / scaffolds |
 | Private AI / local evidence | **lab** |
-| Windows MSI/EXE | **partial** (Authenticode **ops**) |
+| Windows MSI/EXE | **lab** (lab PFX signed; EV Authenticode **ops**) |
 | Linux DEB/RPM/TAR | **partial** |
 | macOS PKG/DMG + notarize | **partial** (**ops**) |
 
@@ -308,7 +308,7 @@ Live verify: `python scripts/live_lab_verify.py --server http://127.0.0.1:8080 -
 | Item | Status |
 |------|--------|
 | Soft chaos (dupes, order, DLQ, BP, SSE recovery) | **lab** |
-| Redis/DB/worker kill, Sentinel inject | **ops** |
+| Redis/DB/worker kill, Sentinel inject | **lab** (Desktop inject measured; ≠ multi-AZ) |
 
 ---
 
@@ -370,9 +370,11 @@ This matches the product philosophy. **Phases 2–5 breadth stay gated** by Phas
 1. ~~Code-unblock Phase 1 leftovers~~ — **done**  
 2. ~~HTTP 500 + 1000 measure~~ — **done** (truncated check-ins; not production SLO)  
 3. ~~`/ready` live~~ — **done** (fixed Redis import; lab in-process ready)  
-4. ~~Live lab verify harness~~ — `scripts/live_lab_verify.py`  
-5. **Ops-only (do not fake):** live Sentinel `--inject-stop` (needs Docker), EV Authenticode secrets, cloud WORM.  
-6. **Do not** start Phase 5 twin / AI autonomy / cloud-module sprawl.  
-7. World-class sections 2–5 breadth remain a multi-phase product roadmap — sell the closed loop that is lab-production today.
+4. ~~Live lab verify harness~~ — **done** (`scripts/live_lab_verify.py`)  
+5. ~~Live Sentinel inject~~ — **done** (lab Desktop measure; `failover_forced` assist OK; ≠ commercial HA)  
+6. ~~Lab Authenticode + local FS WORM~~ — **done** (EV cert + cloud Object Lock still **ops**)  
+7. **Ops-only (do not fake):** EV Authenticode secrets, cloud WORM Object Lock, Postgres HA, IdP production.  
+8. **Do not** start Phase 5 twin / AI autonomy / cloud-module sprawl.  
+9. World-class sections 2–5 breadth remain a multi-phase product roadmap — sell the closed loop that is lab-production today.
 
-*Snapshot aligned to main · 2026-09-22 · source of truth for world-class targeting.*
+*Snapshot aligned to main · 2026-09-22 · Phase-1 lab board green; commercial leftovers stay ops.*

@@ -17,6 +17,7 @@ tools/lab-certs/*.pfx
 tools/lab-certs/*.cer
 tools/lab-certs/*.p12
 data/ops/*.jsonl
+data/_live_verify_iso/
 vendor/HardeningKitty/
 data/hardeningkitty/
 chat_test_output.txt

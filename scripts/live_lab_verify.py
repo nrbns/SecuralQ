@@ -180,7 +180,7 @@ def step_acceptance_server(server: str, token: str) -> dict[str, Any]:
         "name": "acceptance_server_owned",
         "ok": proc.returncode == 0,
         "returncode": proc.returncode,
-        "tail": ((proc.stdout or "") + (proc.stderr or ""))[-600:],
+        "tail": ((proc.stdout or "") + (proc.stderr or ""))[-2500:],
     }
 
 
@@ -225,6 +225,48 @@ def step_phase1_complete() -> dict[str, Any]:
     }
 
 
+def _spawn_isolated_server() -> tuple[subprocess.Popen, str]:
+    """Start a dedicated lab server so dashboard poll storms cannot starve verify."""
+    import socket
+
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = int(sock.getsockname()[1])
+    sock.close()
+    data_dir = _ROOT / "data" / "_live_verify_iso"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    env["DATA_DIR"] = str(data_dir)
+    env["HOST"] = "127.0.0.1"
+    env["PORT"] = str(port)
+    env["AUTH_ENABLED"] = "false"
+    env["RAG_AUTO_INGEST"] = "false"
+    env["SECURAIQ_OPEN_BROWSER"] = "0"
+    env["XDR_NEAR_REALTIME_ENABLED"] = "false"
+    env["WORKSPACE_ZERO_START"] = "false"
+    env["UVICORN_RELOAD"] = "false"
+    proc = subprocess.Popen(
+        [sys.executable, str(_ROOT / "run.py")],
+        cwd=str(_ROOT),
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    server = f"http://127.0.0.1:{port}"
+    deadline = time.time() + 45
+    last_err = "not_ready"
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            raise RuntimeError(f"isolated server exited rc={proc.returncode}")
+        code, body = _http("GET", f"{server}/api/health", timeout=5.0)
+        if code == 200 and isinstance(body, dict) and body.get("status") == "ok":
+            return proc, server
+        last_err = f"http={code}"
+        time.sleep(0.8)
+    proc.terminate()
+    raise RuntimeError(f"isolated server health timeout ({last_err})")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--server", default="http://127.0.0.1:8080")
@@ -232,56 +274,73 @@ def main() -> int:
     ap.add_argument("--i-own-this-host", action="store_true")
     ap.add_argument("--http-1000", action="store_true")
     ap.add_argument("--skip-acceptance-server", action="store_true")
+    ap.add_argument("--spawn-isolated", action="store_true", help="Start a dedicated server (no UI poll storm)")
     ap.add_argument("--workers", type=int, default=8)
     args = ap.parse_args()
 
     if args.i_own_this_host:
         os.environ["SECURAIQ_OWNED_HOST"] = "1"
 
-    steps: list[dict[str, Any]] = []
-    print("=== LIVE LAB VERIFY ===", flush=True)
-    print(f"server={args.server} owned={bool(args.i_own_this_host)}", flush=True)
+    isolated: subprocess.Popen | None = None
+    try:
+        if args.spawn_isolated:
+            isolated, args.server = _spawn_isolated_server()
 
-    for fn in (
-        lambda: step_health(args.server),
-        lambda: step_ready(args.server),
-        lambda: step_enroll_checkin(args.server, args.token),
-        step_phase1_board,
-        step_acceptance_local,
-        step_phase1_complete,
-    ):
-        s = fn()
-        steps.append(s)
-        print(f"  [{'PASS' if s.get('ok') else 'FAIL'}] {s.get('name')}", flush=True)
+        steps: list[dict[str, Any]] = []
+        print("=== LIVE LAB VERIFY ===", flush=True)
+        print(
+            f"server={args.server} owned={bool(args.i_own_this_host)} isolated={bool(isolated)}",
+            flush=True,
+        )
 
-    if args.i_own_this_host and not args.skip_acceptance_server:
-        s = step_acceptance_server(args.server, args.token)
-        steps.append(s)
-        print(f"  [{'PASS' if s.get('ok') else 'FAIL'}] {s.get('name')}", flush=True)
+        for fn in (
+            lambda: step_health(args.server),
+            lambda: step_ready(args.server),
+            lambda: step_enroll_checkin(args.server, args.token),
+            step_phase1_board,
+            step_acceptance_local,
+            step_phase1_complete,
+        ):
+            s = fn()
+            steps.append(s)
+            print(f"  [{'PASS' if s.get('ok') else 'FAIL'}] {s.get('name')}", flush=True)
 
-    if args.http_1000:
-        s = step_http_ladder(args.server, args.token, 1000, args.workers)
-        steps.append(s)
-        print(f"  [{'PASS' if s.get('ok') else 'FAIL'}] {s.get('name')}", flush=True)
-        steps.append(step_phase1_board())
-        print(f"  [{'PASS' if steps[-1].get('ok') else 'FAIL'}] phase1_board_after_http", flush=True)
+        if args.i_own_this_host and not args.skip_acceptance_server:
+            s = step_acceptance_server(args.server, args.token)
+            steps.append(s)
+            print(f"  [{'PASS' if s.get('ok') else 'FAIL'}] {s.get('name')}", flush=True)
 
-    overall = all(bool(s.get("ok")) for s in steps)
-    row = {
-        "ts_utc": datetime.now(timezone.utc).isoformat(),
-        "ok": overall,
-        "server": args.server,
-        "owned_host": bool(args.i_own_this_host),
-        "steps": steps,
-        "disclaimer": (
-            "Live lab verify — not commercial HA/EV/WORM certification. "
-            "Docker Sentinel inject still requires Docker Desktop."
-        ),
-    }
-    _append(row)
-    print(json.dumps({k: v for k, v in row.items() if k != "steps"}, indent=2), flush=True)
-    print("RESULT:", "LIVE LAB GREEN" if overall else "LIVE LAB INCOMPLETE", flush=True)
-    return 0 if overall else 1
+        if args.http_1000:
+            s = step_http_ladder(args.server, args.token, 1000, args.workers)
+            steps.append(s)
+            print(f"  [{'PASS' if s.get('ok') else 'FAIL'}] {s.get('name')}", flush=True)
+            steps.append(step_phase1_board())
+            print(f"  [{'PASS' if steps[-1].get('ok') else 'FAIL'}] phase1_board_after_http", flush=True)
+
+        overall = all(bool(s.get("ok")) for s in steps)
+        row = {
+            "ts_utc": datetime.now(timezone.utc).isoformat(),
+            "ok": overall,
+            "server": args.server,
+            "owned_host": bool(args.i_own_this_host),
+            "isolated": bool(isolated),
+            "steps": steps,
+            "disclaimer": (
+                "Live lab verify — not commercial HA/EV/WORM certification. "
+                "Lab Sentinel inject measured via docker exec; EV cert + cloud Object Lock remain ops."
+            ),
+        }
+        _append(row)
+        print(json.dumps({k: v for k, v in row.items() if k != "steps"}, indent=2), flush=True)
+        print("RESULT:", "LIVE LAB GREEN" if overall else "LIVE LAB INCOMPLETE", flush=True)
+        return 0 if overall else 1
+    finally:
+        if isolated is not None:
+            isolated.terminate()
+            try:
+                isolated.wait(timeout=15)
+            except Exception:
+                isolated.kill()
 
 
 if __name__ == "__main__":

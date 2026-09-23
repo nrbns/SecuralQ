@@ -263,3 +263,77 @@ Also: `python scripts/realtime_ops_remaining_proof.py` bundles Sentinel self-tes
 - error: `None`
 - log: `data/ops/sentinel_failover_measurements.jsonl`
 - disclaimer: lab proof only — not multi-AZ commercial HA
+
+### In-process self-test 2026-09-23T04:31:40.695956+00:00
+
+- simulated: `true`
+- chain_ok: `True`
+- reconnect_ms: `796.9`
+- xautoclaim_reclaim_ok: `True`
+- sse_resume_ok: `True`
+- live_redis_ping: `False` error=`redis_not_configured`
+- disclaimer: in-process only — not Docker Sentinel promote
+
+### In-process self-test 2026-09-23T04:33:30.162156+00:00
+
+- simulated: `true`
+- chain_ok: `True`
+- reconnect_ms: `0.4`
+- xautoclaim_reclaim_ok: `True`
+- sse_resume_ok: `True`
+- live_redis_ping: `False` error=`No master found for 'mymaster' : Redis<ConnectionPool<Connection<host=127.0.0.1,port=26379,db=0>>> - TimeoutError('Timeout reading from socket')`
+- disclaimer: in-process only — not Docker Sentinel promote
+
+### Measurement 2026-09-23T04:34:09.416542+00:00
+
+- reconnect_ok: `True`
+- reconnect_ms: `5649.2`
+- promote_wait_ms: `5649.2`
+- via: `docker_exec` failover_forced=`False`
+- inject_stop: `True` stop_ms=`1817.6`
+- dlq_count: `None` stream_length=`None`
+- error: `None`
+- log: `data/ops/sentinel_failover_measurements.jsonl`
+- disclaimer: lab proof only — not multi-AZ commercial HA
+
+### In-process self-test 2026-09-23T04:35:25.732303+00:00
+
+- simulated: `true`
+- chain_ok: `True`
+- reconnect_ms: `249.3`
+- xautoclaim_reclaim_ok: `True`
+- sse_resume_ok: `True`
+- live_redis_ping: `False` error=`redis_not_configured`
+- disclaimer: in-process only — not Docker Sentinel promote
+
+### In-process self-test 2026-09-23T05:02:41.163737+00:00
+
+- simulated: `true`
+- chain_ok: `True`
+- reconnect_ms: `272.8`
+- xautoclaim_reclaim_ok: `True`
+- sse_resume_ok: `True`
+- live_redis_ping: `False` error=`redis_not_configured`
+- disclaimer: in-process only — not Docker Sentinel promote
+
+### In-process self-test 2026-09-23T05:05:45.417276+00:00
+
+- simulated: `true`
+- chain_ok: `True`
+- reconnect_ms: `0.7`
+- xautoclaim_reclaim_ok: `True`
+- sse_resume_ok: `True`
+- live_redis_ping: `False` error=`No master found for 'mymaster'`
+- disclaimer: in-process only — not Docker Sentinel promote
+
+### Measurement 2026-09-23T05:06:08.495468+00:00
+
+- reconnect_ok: `True`
+- reconnect_ms: `438.9`
+- promote_wait_ms: `438.9`
+- via: `docker_exec` failover_forced=`False`
+- inject_stop: `True` stop_ms=`987.7`
+- dlq_count: `None` stream_length=`None`
+- error: `None`
+- log: `data/ops/sentinel_failover_measurements.jsonl`
+- disclaimer: lab proof only — not multi-AZ commercial HA

@@ -42,7 +42,14 @@ def owned_host_status() -> dict[str, Any]:
                         break
         except Exception:
             pass
-    status = "lab" if (live and live_proof) else ("ops" if not live else "partial")
+    # Recorded acceptance_server_owned pass is durable lab proof; env only
+    # authorizes *new* live OS mutation runs (see live_lab_verify --i-own-this-host).
+    if live_proof:
+        status = "lab"
+    elif live:
+        status = "partial"
+    else:
+        status = "ops"
     return {
         "id": "owned_host_acceptance",
         "code_unblocked": True,
@@ -57,8 +64,8 @@ def owned_host_status() -> dict[str, Any]:
             "python scripts/live_lab_verify.py --server http://HOST:8080 --i-own-this-host"
         ),
         "disclaimer": (
-            "Live host-control OS mutation remains ops until authorized owned host "
-            "and a recorded acceptance_server_owned pass"
+            "Live host-control OS mutation requires SECURAIQ_OWNED_HOST=1 / "
+            "--i-own-this-host for each new run; a recorded pass keeps the board lab"
         ),
     }
 

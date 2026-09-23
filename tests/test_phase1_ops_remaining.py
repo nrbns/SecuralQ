@@ -28,6 +28,10 @@ def test_owned_host_gate(monkeypatch):
     assert owned_host_status()["live_mutation_authorized"] is False
     monkeypatch.setenv("SECURAIQ_OWNED_HOST", "1")
     assert owned_host_authorized() is True
+    st = owned_host_status()
+    # Recorded acceptance_server_owned pass keeps the board lab without env.
+    if st.get("live_server_acceptance_ok"):
+        assert st["status"] == "lab"
 
 
 def test_acceptance_server_requires_owned_host(monkeypatch):
