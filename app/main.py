@@ -112,6 +112,7 @@ from app.data_governance_api import router as data_governance_router
 from app.lifecycle_api import router as lifecycle_router
 from app.system_health_api import router as system_health_router
 from app.product_close_api import router as product_close_router
+from app.phase_board_api import router as phase_board_router
 from app.commercial_ext import ensure_org_schema
 from app.gap_analysis import ensure_gap_schema
 from app.db import init_schema
@@ -431,6 +432,7 @@ app.include_router(data_governance_router)
 app.include_router(lifecycle_router)
 app.include_router(system_health_router)
 app.include_router(product_close_router)
+app.include_router(phase_board_router)
 
 _PUBLIC_API_PREFIXES = (
     "/api/auth/login",
@@ -446,6 +448,7 @@ _PUBLIC_API_PREFIXES = (
     "/api/realtime",
     "/api/status/public",
     "/api/trust",
+    "/api/phases",
     "/.well-known/security.txt",
     "/api/auth/saml/metadata",
     "/api/auth/saml/acs",

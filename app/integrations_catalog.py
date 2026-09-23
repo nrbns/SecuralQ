@@ -399,7 +399,7 @@ def catalog_payload() -> dict[str, Any]:
             {"id": "automation", "name": "Workflow automation", "status": "shipped"},
             {"id": "prefect", "name": "Prefect orchestration", "status": "shipped"},
             {"id": "report_schedules", "name": "Report scheduling", "status": "planned"},
-            {"id": "white_label", "name": "White-labeling", "status": "planned"},
+            {"id": "white_label", "name": "White-labeling", "status": "shipped"},
             {"id": "orgs", "name": "Organization & projects", "status": "shipped"},
         )
     ]

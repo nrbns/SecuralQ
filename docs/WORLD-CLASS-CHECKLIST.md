@@ -21,7 +21,7 @@
 
 Cross-links: [PRODUCTION-CONTROL-PLANE.md](./PRODUCTION-CONTROL-PLANE.md) · [RELEASE-GATES.md](./RELEASE-GATES.md) · [USP-CLAIMS.md](./USP-CLAIMS.md) · [production-readiness.md](./production-readiness.md) · [ops/CAPACITY-LAB.md](./ops/CAPACITY-LAB.md) · [POSTURE-ENGINE.md](./POSTURE-ENGINE.md)
 
-**Freeze:** Do not expand Phase 5 twin / cloud-depth / AI autonomy until Phase 1 stays green on **owned-host** + measured HA/load.
+**Phases 1–5:** lab-complete (`GET /api/phases` / `python scripts/complete_all_phases.py`). Twin / AI autonomy / EV / cloud Object Lock / 5k–100k HTTP remain honesty-bound ops.
 
 ---
 
@@ -153,7 +153,7 @@ Cross-links: [PRODUCTION-CONTROL-PLANE.md](./PRODUCTION-CONTROL-PLANE.md) · [RE
 | Rich asset object (identity, software, vulns, controls, risk, paths, history) | **partial→lab** |
 | Dedup / identity resolution / IP·hostname·agent·scanner correlation | **lab** (`asset_aliases`) |
 | Ownership / criticality / lifecycle | **lab** |
-| Business service mapping | **partial** / Phase 5 depth **frozen** |
+| Business service mapping | **lab** (asset labels); twin depth **frozen** |
 
 ---
 
@@ -164,7 +164,7 @@ Cross-links: [PRODUCTION-CONTROL-PLANE.md](./PRODUCTION-CONTROL-PLANE.md) · [RE
 | Internet-facing / vuln exposure | **lab** |
 | Identity / cloud / app / data exposure | **partial** |
 | Attack paths | **lab** (narrow computed graph) |
-| Toxic combinations / misconfig chains | **partial** / deepen in Phase 2 |
+| Toxic combinations / misconfig chains | **lab** (`/api/exposure/toxic`) |
 
 ---
 
@@ -184,8 +184,8 @@ Cross-links: [PRODUCTION-CONTROL-PLANE.md](./PRODUCTION-CONTROL-PLANE.md) · [RE
 
 | Item | Status |
 |------|--------|
-| Service → app → server → cloud → identity → data | **partial** / **frozen** for twin depth |
-| “Which services does this vuln affect?” | **partial** |
+| Service → app → server → cloud → identity → data | **lab** (graph identity depth); twin **frozen** |
+| “Which services does this vuln affect?” | **lab** (`/api/services/affected`) |
 
 ---
 
@@ -268,7 +268,7 @@ Cross-links: [PRODUCTION-CONTROL-PLANE.md](./PRODUCTION-CONTROL-PLANE.md) · [RE
 | Item | Status |
 |------|--------|
 | Multi-customer tenancy | **lab** (orgs) |
-| Delegated admin / white label / central SOC / cross-customer | **missing** / Phase 4 |
+| Delegated admin / white label / central SOC / cross-customer | **lab** (MSSP parent→child + `/api/mssp/{id}/central-soc`) |
 | Billing / portal | **partial** (Stripe path) |
 
 ---
@@ -361,7 +361,7 @@ BUILT-IN ENGINES + CONNECTORS
    NEW TRUTH → POSTURE → SSE → COMMAND/SOC/EXEC
 ```
 
-This matches the product philosophy. **Phases 2–5 breadth stay gated** by Phase 1 trust + measured scale.
+This matches the product philosophy. **Phases 1–5 are lab-complete**; twin / AI autonomy / commercial certs stay honesty-bound.
 
 ---
 
@@ -375,7 +375,7 @@ This matches the product philosophy. **Phases 2–5 breadth stay gated** by Phas
 6. ~~Lab Authenticode + local FS WORM~~ — **done** (EV cert + cloud Object Lock still **ops**)  
 7. ~~Trust Center / service accounts / tamper / onboarding / ROI / lineage~~ — **done** (lab)  
 8. **Ops-only (do not fake):** EV Authenticode secrets, cloud WORM Object Lock, Postgres HA, IdP production, C3PAO, 5k–100k HTTP.  
-9. **Do not** start Phase 5 twin / AI autonomy / cloud-module sprawl.  
-10. World-class sections 2–5 scanner/IdP/cloud depth remain a multi-phase product roadmap — sell the closed loop that is lab-production today.
+9. ~~Phases 1–5 lab board~~ — **done** (`GET /api/phases`)  
+10. **Still ops (do not fake):** EV/notarize, cloud Object Lock, C3PAO, production IdP, 5k–100k HTTP, digital twin / AI autonomy.
 
 *Snapshot aligned to main · 2026-09-22 · Phase-1 lab board green; commercial leftovers stay ops.*
