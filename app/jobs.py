@@ -24,6 +24,7 @@ import json
 import os
 import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Awaitable, Callable
 
 from app.db import get_conn, new_id, now, row_to_dict
@@ -46,6 +47,11 @@ _pool_tasks: list[asyncio.Task] = []
 _queue: "asyncio.Queue[str] | None" = None
 _worker_task: asyncio.Task | None = None
 _scheduler_task: asyncio.Task | None = None
+# Dedicated pool — never the default asyncio executor. asyncio.to_thread(_run_one_sync)
+# deadlocks because _run_one itself uses to_thread. Scanner binaries are OS
+# subprocesses; this thread only keeps parse/upsert/SSE off uvicorn.
+_SCAN_EXEC = ThreadPoolExecutor(max_workers=2, thread_name_prefix="sq-scan-job")
+_SCAN_KINDS = frozenset({"scan_execute", "combo_assessment", "hardeningkitty_audit", "lan_inventory_audit"})
 
 
 def job_pool_for(kind: str) -> str:
@@ -84,7 +90,13 @@ def worker_pool_status() -> dict[str, Any]:
         "pools": out,
         "in_process": True,
         "separate_os_workers": False,
-        "disclaimer": "Named asyncio pools in one API process — not Celery/Redis workers or HA.",
+        "scan_jobs_off_event_loop": True,
+        "scanner_binaries_are_subprocesses": True,
+        "disclaimer": (
+            "Scan jobs run on a dedicated thread. Parse/normalize/PDF use sq-cpu. "
+            "Nmap/Nuclei are OS subprocesses. Not Celery/Redis workers or HA. "
+            "Default scan concurrency is 1 for the Monday lab."
+        ),
     }
 
 KEV_SYNC_INTERVAL_SEC = 6 * 3600  # matches the 12h KEV cache TTL with margin
@@ -237,6 +249,33 @@ def list_jobs(
     return out
 
 
+def live_scan_jobs(*, user_id: str | None = None, limit: int = 8) -> list[dict[str, Any]]:
+    """Pending/running scan jobs for the sticky HUD (browser refresh restore)."""
+    rows = list_jobs(limit=max(20, limit * 4), user_id=user_id)
+    live: list[dict[str, Any]] = []
+    for job in rows:
+        if str(job.get("kind") or "") not in _SCAN_KINDS:
+            continue
+        if str(job.get("status") or "") not in {"pending", "running"}:
+            continue
+        payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
+        live.append(
+            {
+                "id": job.get("id"),
+                "kind": job.get("kind"),
+                "status": job.get("status"),
+                "scanner": payload.get("scanner") or payload.get("scanner_id") or "",
+                "target": payload.get("target") or "",
+                "scan_id": payload.get("scan_id") or payload.get("_scan_id") or "",
+                "created_at": job.get("created_at"),
+                "started_at": job.get("started_at"),
+            }
+        )
+        if len(live) >= max(1, min(limit, 20)):
+            break
+    return live
+
+
 def get_job(job_id: str, *, user_id: str | None = None) -> dict[str, Any] | None:
     row = get_conn().execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
     d = row_to_dict(row)
@@ -356,8 +395,18 @@ async def _run_one(job_id: str) -> None:
 
 
 def _run_one_sync(job_id: str) -> None:
-    """Run a job on a worker thread so SQLite/scanner work cannot stall HTTP."""
+    """Run a job on the dedicated scan thread (own event loop — not default executor)."""
     asyncio.run(_run_one(job_id))
+
+
+def _worker_boot_delay(pool: str) -> float:
+    raw = (os.environ.get("WORKER_BOOT_DELAY_SEC") or "").strip()
+    if raw:
+        try:
+            return max(0.0, min(float(raw), 20.0))
+        except ValueError:
+            pass
+    return 0.25 if pool == "scan" else 2.0
 
 
 async def _worker_loop() -> None:
@@ -368,11 +417,15 @@ async def _worker_loop_for(pool: str) -> None:
     q = _pools.get(pool) or _queue
     if q is None:
         return
-    await asyncio.sleep(20)
+    await asyncio.sleep(_worker_boot_delay(pool))
+    loop = asyncio.get_running_loop()
     while True:
         job_id = await q.get()
         try:
-            await _run_one(job_id)
+            if pool == "scan":
+                await loop.run_in_executor(_SCAN_EXEC, _run_one_sync, job_id)
+            else:
+                await _run_one(job_id)
             await asyncio.sleep(0)
         finally:
             q.task_done()

@@ -1141,6 +1141,86 @@ async function pulseActiveScanFromPush(push) {
 }
 window.pulseActiveScanFromPush = pulseActiveScanFromPush;
 
+function hideScanJobHudSoon() {
+  clearTimeout(window.__securaiqScanHudHide);
+  window.__securaiqScanHudHide = setTimeout(() => {
+    const hud = document.getElementById("scanJobHud");
+    if (hud) hud.hidden = true;
+  }, 8000);
+}
+
+function updateScanJobHud(push) {
+  const hud = document.getElementById("scanJobHud");
+  if (!hud || !push) return;
+  const status = String(push.status || push.kind || "running").toLowerCase();
+  const terminal = ["completed", "done", "failed", "error", "blocked", "cancelled"].includes(status);
+  const queued = status === "pending" || status === "queued";
+  const scanner = String(push.scanner || push.kind || "scan").replace(/_/g, " ");
+  const step = String(push.step || push.phase || "").replace(/_/g, " ");
+  const findings = Number(push.findings || push.count || 0);
+  const assets = Number(push.assets || push.assets_discovered || 0);
+  const services = Number(push.services || 0);
+  const evidence = Number(push.evidence || 0);
+  const target = String(push.target || "");
+  window.__securaiqScanHudAccum = window.__securaiqScanHudAccum || { findings: 0, assets: 0 };
+  if (findings) window.__securaiqScanHudAccum.findings = Math.max(window.__securaiqScanHudAccum.findings, findings);
+  if (assets) window.__securaiqScanHudAccum.assets = Math.max(window.__securaiqScanHudAccum.assets, assets);
+  if (terminal || queued) window.__securaiqScanHudAccum = { findings: findings || 0, assets: assets || 0 };
+  let pct = Number(push.pct);
+  if (!Number.isFinite(pct)) {
+    pct = terminal ? 100 : queued ? 4 : 18;
+  }
+  pct = Math.max(0, Math.min(100, pct));
+  hud.hidden = false;
+  hud.classList.toggle("is-done", status === "completed" || status === "done");
+  hud.classList.toggle("is-error", status === "failed" || status === "error" || status === "blocked");
+  const stEl = document.getElementById("scanJobHudStatus");
+  const scEl = document.getElementById("scanJobHudScanner");
+  const fill = document.getElementById("scanJobHudFill");
+  const pctEl = document.getElementById("scanJobHudPct");
+  const meta = document.getElementById("scanJobHudMeta");
+  if (stEl) {
+    stEl.textContent = queued ? "SCAN QUEUED" : terminal ? `SCAN ${status.toUpperCase()}` : "SCAN RUNNING";
+  }
+  if (scEl) scEl.textContent = [target, scanner, step].filter(Boolean).join(" · ");
+  if (fill) fill.style.width = `${pct}%`;
+  if (pctEl) pctEl.textContent = `${Math.round(pct)}%`;
+  if (meta) {
+    const bits = [];
+    const a = window.__securaiqScanHudAccum.assets || assets;
+    const f = window.__securaiqScanHudAccum.findings || findings;
+    if (a) bits.push(`Assets ${a}`);
+    if (services) bits.push(`Services ${services}`);
+    if (f) bits.push(`Findings ${f}`);
+    if (push.controls_affected) bits.push(`Controls ${push.controls_affected}`);
+    if (evidence) bits.push(`Evidence ${evidence}`);
+    bits.push(terminal ? "Done" : queued ? "Waiting for worker" : "Processing");
+    meta.textContent = bits.join(" · ");
+  }
+  if (terminal) hideScanJobHudSoon();
+}
+window.updateScanJobHud = updateScanJobHud;
+
+async function restoreScanJobHud() {
+  try {
+    const res = await fetch("/api/jobs/live", { headers: typeof authHeaders === "function" ? authHeaders() : {} });
+    if (!res.ok) return;
+    const body = await res.json();
+    const active = body.active || (body.jobs || [])[0];
+    if (active) {
+      updateScanJobHud({
+        status: active.status,
+        scanner: active.scanner || active.kind,
+        scan_id: active.scan_id,
+        pct: active.status === "running" ? 20 : 6,
+      });
+    }
+  } catch {
+    /* ignore */
+  }
+}
+window.restoreScanJobHud = restoreScanJobHud;
+
 async function pollScanUntilDone(scanId) {
   watchScanRealtime(scanId);
   const progressEl = document.getElementById("newScanProgress");
@@ -2740,13 +2820,19 @@ function paintLiveDeck(state, phaseText, activity, data) {
   }
   const railText = document.getElementById("railLiveText");
   if (railText) {
+    const at = Number(mgr.lastEventAt || 0);
+    let ago = "";
+    if (at > 0) {
+      const sec = Math.max(0, (Date.now() - at) / 1000);
+      ago = sec < 1 ? " · last event <1s ago" : ` · last event ${sec.toFixed(1)}s ago`;
+    }
     railText.textContent =
       conn === "reconnecting"
         ? "Reconnecting"
         : state === "live-busy"
-          ? phaseText || "Pipeline"
+          ? (phaseText || "Pipeline") + ago
           : state === "live-on"
-            ? "Feed live"
+            ? "LIVE" + (ago || " · waiting")
             : "Feed hold";
   }
   const lastEvEl = document.getElementById("tickerLastEvent");
@@ -3359,6 +3445,7 @@ function startRealtimeFeed(opts) {
           rt.setConnState("connected", "Live", "");
           updateRtSseBanner("connected");
         }
+        if (typeof restoreScanJobHud === "function") restoreScanJobHud();
       } else if (!streaming) {
         setLiveState("live-on", "Live", "");
         updateRtSseBanner("connected");
@@ -3924,7 +4011,14 @@ function applyRealtimeWorkspaceRefresh(data, flags) {
       const cur = Number(el.textContent || 0);
       if (!Number.isNaN(cur)) el.textContent = String(cur + n);
     }
+    const hud = document.getElementById("scanJobHud");
+    if (hud && !hud.hidden && typeof updateScanJobHud === "function") {
+      updateScanJobHud({ status: "running", findings: n, step: "findings", pct: 80 });
+    }
     return;
+  }
+  if (pt === "scan" || pt === "job" || pt === "combo") {
+    if (typeof updateScanJobHud === "function" && data.push) updateScanJobHud(data.push);
   }
   if (pt === "scan") {
     if (typeof pulseVaScanFromPush === "function") pulseVaScanFromPush(data.push);
@@ -4456,7 +4550,12 @@ function renderNarrativeBlock(fields, opts) {
   const rows = [
     ["What", fields.what],
     ["Why", fields.why],
+    ["Observed", fields.observed],
+    ["Observed at", fields.observed_at],
+    ["Source", fields.source],
     ["Evidence", fields.evidence],
+    ["Freshness", fields.freshness],
+    ["Verification", fields.verification],
     ["Impact", fields.impact],
     ["Action", fields.action],
     ["Verify", fields.verify],

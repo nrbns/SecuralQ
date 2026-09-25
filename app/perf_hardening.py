@@ -54,9 +54,12 @@ def perf_hardening_board() -> dict[str, Any]:
             "scan_kinds": ["scan_execute", "combo_assessment"],
             "named_pools": True,
             "separate_os_workers": False,
+            "scan_jobs_off_event_loop": True,
             "sse_finding_batch": True,
             "critical_events_immediate": True,
+            "high_scan_findings_batched": True,
             "ai_not_in_scan_path": True,
+            "affected_controls_only": True,
         },
         "still_ops": [
             "postgres_ha",

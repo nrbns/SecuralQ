@@ -214,7 +214,14 @@ def _event_severity(payload: dict[str, Any]) -> str:
 def _is_immediate_event(payload: dict[str, Any]) -> bool:
     if _is_critical_event(payload):
         return True
-    if _event_severity(payload) in {"critical", "high"}:
+    sev = _event_severity(payload)
+    et = _event_type_of(payload)
+    # Scan findings (including high) batch — a Nuclei storm must not re-render
+    # every panel. Critical threats stay immediate. Agent/control/remediation
+    # already match _CRITICAL_PREFIXES.
+    if et in {"vuln", "vulnerability", "finding", "vuln_batch"}:
+        return sev == "critical"
+    if sev == "critical":
         return True
     return False
 

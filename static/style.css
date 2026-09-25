@@ -9621,3 +9621,50 @@ body[data-ui-mode="auditor"] .nav-group[aria-label="Security"] { display: none; 
   align-items: center;
 }
 .identity-card { display: grid; gap: 0.75rem; }
+
+.scan-job-hud {
+  position: fixed;
+  top: 0;
+  left: var(--sidebar-w);
+  right: 0;
+  z-index: 90;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.04);
+  font-family: var(--mono);
+  font-size: 0.74rem;
+}
+.scan-job-hud[hidden] { display: none !important; }
+.scan-job-hud-inner {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+  padding: 0.4rem 0.9rem;
+}
+.scan-job-hud-status {
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--status-warn, #b45309);
+}
+.scan-job-hud.is-done .scan-job-hud-status { color: var(--status-ok, #15803d); }
+.scan-job-hud.is-error .scan-job-hud-status { color: var(--danger); }
+.scan-job-hud-track {
+  flex: 1 1 8rem;
+  min-width: 7rem;
+  max-width: 16rem;
+  height: 7px;
+  border-radius: 99px;
+  background: var(--border);
+  overflow: hidden;
+}
+.scan-job-hud-track i {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--sidebar, #003a63);
+  transition: width 0.25s ease;
+}
+@media (max-width: 860px) {
+  .scan-job-hud { left: 0; }
+}

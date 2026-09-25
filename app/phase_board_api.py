@@ -201,6 +201,13 @@ async def api_perf_hardening(_user: Annotated[AuthUser, Depends(require_user)]):
     return perf_hardening_board()
 
 
+@router.get("/api/ops/monday-demo")
+async def api_monday_demo(_user: Annotated[AuthUser, Depends(require_user)]):
+    from app.monday_demo import monday_demo_board
+
+    return monday_demo_board()
+
+
 @router.get("/api/services/graph")
 async def api_service_graph(user: Annotated[AuthUser, Depends(require_user)]):
     from app.service_impact import service_graph

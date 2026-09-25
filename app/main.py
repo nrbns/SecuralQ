@@ -503,6 +503,8 @@ _PUBLIC_API_PREFIXES = (
     "/api/wazuh/webhook",
     "/api/install/customer-check",
     "/api/ops/perf-hardening",
+    "/api/ops/monday-demo",
+    "/api/jobs/live",
     "/api/agents/install-script",
     "/api/agents/checkin",
     "/api/agents/threat",
@@ -1572,6 +1574,27 @@ class JobEnqueueRequest(BaseModel):
     engine: Literal["auto", "local", "prefect"] = "auto"
 
 
+@app.get("/api/jobs/live")
+async def jobs_live(request: Request, limit: int = 8):
+    from app.jobs import live_scan_jobs
+
+    user = resolve_user(
+        request.headers.get("authorization"),
+        request.headers.get("x-securaiq-key") or request.headers.get("x-hackgpt-key"),
+    )
+    if settings.auth_enabled and not user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    scope_uid = user.id if (settings.auth_enabled and user) else None
+    jobs = live_scan_jobs(user_id=scope_uid, limit=limit)
+    active = jobs[0] if jobs else None
+    return {
+        "ok": True,
+        "running": bool(jobs),
+        "jobs": jobs,
+        "active": active,
+    }
+
+
 @app.get("/api/jobs")
 async def jobs_list(request: Request, limit: int = 50, kind: str | None = None):
     from app.jobs import list_jobs
@@ -2145,6 +2168,13 @@ async def realtime_feed(request: Request):
 
 @app.post("/api/chat")
 async def chat(req: ChatRequest, request: Request):
+    from app.ai_limits import demo_ai_blocked
+
+    blocked = demo_ai_blocked()
+    if blocked:
+        async def demo_off_stream():
+            yield blocked
+        return StreamingResponse(demo_off_stream(), media_type="text/plain; charset=utf-8")
     guard = check_request(req.message)
     if not guard.allowed:
         async def refusal_stream():

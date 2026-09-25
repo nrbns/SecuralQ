@@ -828,7 +828,7 @@ def checkin(agent_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     except Exception:
         pass
     if len(payload_json) > 200_000:
-        payload_json = json.dumps({
+        store_payload = {
             "hostname": payload.get("hostname", ""),
             "os": payload.get("os", ""),
             "os_version": payload.get("os_version", ""),
@@ -836,7 +836,8 @@ def checkin(agent_id: str, payload: dict[str, Any]) -> dict[str, Any]:
             "truncated": True,
             "reason": "Full telemetry payload exceeded the storage limit for this check-in and was dropped -- "
             "core fields only. Will be retried next check-in.",
-        })
+        }
+        payload_json = json.dumps(store_payload)
     # REALTIME Task D — optional client sequence + buffered flush recovery.
     seq_recovery: dict[str, Any] = {}
     try:

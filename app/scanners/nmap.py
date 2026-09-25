@@ -38,22 +38,40 @@ class NmapScanner(Scanner):
     id = "nmap"
     name = "Nmap"
     profiles = ("discovery", "web", "vulnerability", "full")
+    _avail_cache: dict[str, tuple[float, tuple[bool, str]]] = {}
 
-    def available(self) -> tuple[bool, str]:
-        path = shutil.which("nmap")
+    def _resolve_path(self) -> str:
+        path = shutil.which("nmap") or ""
+        if path:
+            return path
+        # Windows installer often lands here even when PATH is stale in the service process.
+        for candidate in (
+            r"C:\Program Files (x86)\Nmap\nmap.exe",
+            r"C:\Program Files\Nmap\nmap.exe",
+            "/usr/bin/nmap",
+            "/usr/local/bin/nmap",
+        ):
+            if Path(candidate).is_file():
+                return candidate
+        return ""
+
+    def available(self, *, probe: bool = False) -> tuple[bool, str]:
+        import time
+
+        key = "probe" if probe else "which"
+        now = time.monotonic()
+        hit = self._avail_cache.get(key)
+        if hit and now - hit[0] < 60.0:
+            return hit[1]
+        path = self._resolve_path()
         if not path:
-            # Windows installer often lands here even when PATH is stale in the service process.
-            for candidate in (
-                r"C:\Program Files (x86)\Nmap\nmap.exe",
-                r"C:\Program Files\Nmap\nmap.exe",
-                "/usr/bin/nmap",
-                "/usr/local/bin/nmap",
-            ):
-                if Path(candidate).is_file():
-                    path = candidate
-                    break
-        if not path:
-            return False, "nmap not found on PATH — install Nmap to run live scans"
+            result = (False, "nmap not found on PATH — install Nmap to run live scans")
+            self._avail_cache[key] = (now, result)
+            return result
+        if not probe:
+            result = (True, path)
+            self._avail_cache[key] = (now, result)
+            return result
         # Probe startup: a missing DLL on Windows (Npcap driver, or a VC++
         # runtime like MSVCP120.dll that nmap.exe itself links against) makes
         # the OS loader fail before nmap's own code runs, yielding
@@ -61,16 +79,16 @@ class NmapScanner(Scanner):
         try:
             import subprocess
 
-            probe = subprocess.run(
+            probe_run = subprocess.run(
                 [path, "--version"],
                 capture_output=True,
-                timeout=10,
+                timeout=3,
                 text=True,
                 errors="replace",
             )
-            code = int(probe.returncode or 0)
+            code = int(probe_run.returncode or 0)
             if code in (0xC0000135, 3221225781, -1073741515):
-                return (
+                result = (
                     False,
                     "nmap is installed but Windows can't load it — a required DLL is missing. "
                     "Usually either Npcap (https://npcap.com) or the Microsoft Visual C++ "
@@ -78,11 +96,19 @@ class NmapScanner(Scanner):
                     "https://aka.ms/highdpimfc2013x64enu for 64-bit nmap). Install whichever "
                     "is missing, then restart SecuraIQ.",
                 )
-            if code != 0 and not (probe.stdout or "").strip():
-                return False, f"nmap probe failed (exit {code}) — check Npcap / VC++ runtime / permissions"
+                self._avail_cache[key] = (now, result)
+                return result
+            if code != 0 and not (probe_run.stdout or "").strip():
+                result = (False, f"nmap probe failed (exit {code}) — check Npcap / VC++ runtime / permissions")
+                self._avail_cache[key] = (now, result)
+                return result
         except Exception as exc:
-            return False, f"nmap probe failed: {exc}"
-        return True, path
+            result = (False, f"nmap probe failed: {exc}")
+            self._avail_cache[key] = (now, result)
+            return result
+        result = (True, path)
+        self._avail_cache[key] = (now, result)
+        return result
 
     def validate_target(self, target: str) -> tuple[bool, str]:
         t = (target or "").strip()
@@ -103,7 +129,7 @@ class NmapScanner(Scanner):
         return False, f"target out of engagement scope ({reason})"
 
     def build_command(self, ctx: ScanContext) -> list[str]:
-        ok, detail = self.available()
+        ok, detail = self.available(probe=True)
         if not ok:
             raise RuntimeError(detail)
         binary = detail

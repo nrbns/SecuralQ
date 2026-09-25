@@ -390,6 +390,10 @@ class Settings(BaseSettings):
     # https://learn.microsoft.com/en-us/graph/api/security-security-runhuntingquery
     # https://learn.microsoft.com/en-us/defender-xdr/api-advanced-hunting
     defender_hunting_api: str = "auto"
+    # Monday demo: keep AI off the scan/dashboard path unless the script needs it.
+    demo_disable_ai: bool = False
+    ai_max_concurrency: int = 1
+    ai_timeout_sec: float = 20.0
 
 
 settings = Settings()

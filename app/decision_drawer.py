@@ -40,6 +40,43 @@ def build_decision_drawer(
 
         return explain_finding(user_id, target_id)
     if kind_l in {"compliance", "control", "live"}:
+        tid = (target_id or "").strip()
+        if ":" in tid or "/" in tid:
+            sep = ":" if ":" in tid else "/"
+            fw, cid = tid.split(sep, 1)
+            from app.control_truth import control_detail
+
+            detail = control_detail(user_id, fw.strip(), cid.strip())
+            if detail:
+                last = detail.get("last_evidence_at")
+                observed_at = ""
+                if last:
+                    try:
+                        import datetime
+
+                        observed_at = datetime.datetime.fromtimestamp(float(last)).strftime("%H:%M:%S")
+                    except Exception:
+                        observed_at = str(last)
+                why_list = detail.get("why") or []
+                return {
+                    "ok": True,
+                    "kind": "control",
+                    "title": f"{detail.get('control_id')} · {detail.get('status', '').upper()}",
+                    "what": f"{detail.get('title') or cid} · {str(detail.get('status') or 'unknown').upper()}",
+                    "why": "; ".join(str(w) for w in why_list) or detail.get("requirement") or "Last observation.",
+                    "observed": (why_list[0] if why_list else str(detail.get("status") or "unknown").upper()),
+                    "observed_at": observed_at,
+                    "source": "SecuraIQ Agent" if (detail.get("agents") or {}).get("agents") else "Last-result",
+                    "evidence": f"Freshness {detail.get('freshness')}. Offline PASS is never shown as PASS.",
+                    "freshness": str(detail.get("freshness") or "unknown").upper(),
+                    "verification": "Not yet verified" if str(detail.get("status") or "") != "pass" else "Independent last-result",
+                    "impact": f"Agents online {(detail.get('agents') or {}).get('online')}/{(detail.get('agents') or {}).get('agents')}",
+                    "action": (detail.get("action") or {}).get("label") or "Open remediations",
+                    "verify": detail.get("verify") or "Independent next check-in — execute is not PASS.",
+                    "simulate": False,
+                    "request_approval": True,
+                    "control": detail,
+                }
         from app.controls.live_compliance import explain_live_compliance
 
         live = explain_live_compliance(user_id)
@@ -50,6 +87,7 @@ def build_decision_drawer(
             "what": f"Live controls {live.get('live_percent')}% of decisive PASS/FAIL",
             "why": live.get("why") or live.get("narrative"),
             "evidence": live.get("evidence") or "Last-result rows only — not a certification score.",
+            "freshness": str((live.get("truth") or {}).get("label") or live.get("freshness") or "UNKNOWN"),
             "impact": f"Passing {live.get('passing')} · failing {live.get('failing')} · stale/unknown {live.get('unknown')}",
             "action": "Restore failed host controls, then wait for independent verify.",
             "verify": "Next agent check-in or scheduled control re-test.",

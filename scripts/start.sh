@@ -80,6 +80,10 @@ else
   set_env LAN_AUTO_SCAN false
 fi
 set_env AUTH_ALLOW_REGISTER false
+set_env AI_MAX_CONCURRENCY 1
+if ! grep -q "^DEMO_DISABLE_AI=" .env 2>/dev/null; then
+  set_env DEMO_DISABLE_AI true
+fi
 if command -v ollama >/dev/null 2>&1; then
   set_env MODEL_BACKEND ollama
 fi

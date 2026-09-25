@@ -69,4 +69,11 @@ def configure_isolated_settings(monkeypatch, data_dir, *, auth_enabled: bool = T
     ):
         monkeypatch.setattr(canonical, _flag, False, raising=False)
     db_mod.reset_conn_for_tests()
+    try:
+        db_mod.init_schema()
+        from app.commercial_ext import ensure_org_schema
+
+        ensure_org_schema()
+    except Exception:
+        pass
     return db_mod

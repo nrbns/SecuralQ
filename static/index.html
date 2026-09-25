@@ -33,10 +33,19 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/style.css?v=184" />
+  <link rel="stylesheet" href="/style.css?v=185" />
   <script src="/vendor/marked.min.js"></script>
 </head>
 <body>
+  <div id="scanJobHud" class="scan-job-hud" hidden aria-live="polite">
+    <div class="scan-job-hud-inner">
+      <span class="scan-job-hud-status" id="scanJobHudStatus">SCAN QUEUED</span>
+      <span class="scan-job-hud-scanner" id="scanJobHudScanner"></span>
+      <div class="scan-job-hud-track" aria-hidden="true"><i id="scanJobHudFill"></i></div>
+      <span class="scan-job-hud-pct" id="scanJobHudPct"></span>
+      <span class="scan-job-hud-meta" id="scanJobHudMeta"></span>
+    </div>
+  </div>
   <div class="shell">
     <aside class="sidebar" id="sidebar" aria-label="Security command center">
       <div class="sidebar-brand">
@@ -375,6 +384,7 @@
             <header class="mc-what-changed-head">
               <h3>What changed</h3>
               <button type="button" class="btn-ghost" id="mcWhyRiskBtn" data-drawer-kind="risk">Why?</button>
+              <button type="button" class="btn-ghost" id="mcWhyControlBtn" data-drawer-kind="control">Why control?</button>
             </header>
             <ul id="mcWhatChangedList" class="mc-ops-list">
               <li class="hint">Loading host and finding deltas…</li>
@@ -2585,7 +2595,7 @@
     </div>
   </aside>
 
-  <script src="/app.js?v=249"></script>
-  <script src="/workspace.js?v=249"></script>
+  <script src="/app.js?v=252"></script>
+  <script src="/workspace.js?v=252"></script>
 </body>
 </html>

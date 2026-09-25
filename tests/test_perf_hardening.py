@@ -59,6 +59,8 @@ def test_perf_hardening_http(tmp_path, monkeypatch):
     assert board["phase"] == "1-2"
     assert board["git_truth"]["named_pools"] is True
     assert board["git_truth"]["sse_finding_batch"] is True
+    assert board["git_truth"]["scan_jobs_off_event_loop"] is True
+    assert board["git_truth"]["affected_controls_only"] is True
     assert "postgres_ha" in board["still_ops"]
     assert "agent_100k_sim" in board["still_ops"]
     client = TestClient(app)

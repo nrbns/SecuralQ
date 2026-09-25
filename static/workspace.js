@@ -14991,7 +14991,9 @@
     const view = window.__securaiqWorkspaceView || "";
     if (!view || view === "chat") return;
     const force = !!(flags && (flags.pushRefresh || flags.jobsChanged || flags.kpisChanged));
-    const delay = force ? 220 : 4000;
+    const pt = String((flags && flags.pushType) || "");
+    const highVolume = /^(software|inventory|vuln|vulnerability|finding|scan|job)/i.test(pt);
+    const delay = force ? (highVolume ? 450 : 400) : 4000;
     clearTimeout(window.__securaiqViewRtTimer);
     window.__securaiqViewRtTimer = setTimeout(() => {
       // Hunt live owns SOC table refresh — avoid full SOC rebuild every tick
@@ -15003,7 +15005,7 @@
         return;
       }
       const runners = {
-        command: () => typeof loadCommandCenter === "function" && loadCommandCenter(),
+        command: () => typeof loadCommandCenter === "function" && loadCommandCenter({ lite: true }),
         assets: () => typeof renderAssetsPage === "function" && renderAssetsPage({ quiet: true }),
         software: () => typeof renderSoftwarePage === "function" && renderSoftwarePage({ quiet: true }),
         risks: () => typeof renderRisksPage === "function" && renderRisksPage(),
@@ -15096,11 +15098,12 @@
       refreshIntelStrip();
     }
     if (kinds.has("scan_execute") || kinds.has("combo_assessment")) {
-      if (typeof loadAssets === "function") loadAssets();
-      if (typeof loadVulns === "function") loadVulns();
+      if (typeof updateScanJobHud === "function") {
+        updateScanJobHud({ status: "running", scanner: [...kinds].join(" "), pct: 20 });
+      }
       if (view === "command" && typeof loadCommandCenter === "function") loadCommandCenter({ lite: true });
-      if (view === "vulns" && typeof renderVulnsPage === "function") renderVulnsPage();
-      if (view === "reports" && typeof renderReportsPage === "function") renderReportsPage();
+      else if (view === "vulns" && typeof renderVulnsPage === "function") renderVulnsPage({ quiet: true });
+      else if (view === "reports" && typeof renderReportsPage === "function") renderReportsPage();
     }
     if (view === "frameworks" && (kinds.has("hardeningkitty_audit") || data.hardeningkitty)) {
       renderHardeningPanel();

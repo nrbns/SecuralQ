@@ -81,6 +81,8 @@ cd SecuralQ
 
 Later: `.\start.cmd` (opens the browser right away) · **other phones/PCs:** `.\start_lan.cmd` or `.\install_customer.cmd` (never open localhost on the other device) · check: `python scripts/customer_install_check.py` · secure login: `.\scripts\enable_secure_mode.cmd`
 
+Monday demo: show **one** live loop (agent → control → fail → remediate → verify → agent offline). Do not claim a millisecond SLA. `start.cmd` sets `DEMO_DISABLE_AI=true` unless you already chose otherwise. Preflight: `python scripts/monday_preflight.py` (nmap / nuclei / `/api/alive`). A running scan shows **SCAN RUNNING** with target, %, findings — a frozen screen is a bug. Lab is one process + SQLite WAL, not enterprise HA.
+
 #### Linux / macOS
 
 ```bash

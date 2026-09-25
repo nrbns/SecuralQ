@@ -156,7 +156,8 @@ async def execute_scan(scan_id: str) -> dict[str, Any]:
                 status="running",
                 step="web_fetch",
                 scanner="securaiq_web",
-                pct=0,
+                findings=0,
+                pct=8,
             )
         except Exception:
             pass
@@ -174,19 +175,21 @@ async def execute_scan(scan_id: str) -> dict[str, Any]:
 
     update_scan(scan_id, status="parsing")
     set_progress(scan_id, "parsing", "active")
-    parsed = scanner.parse(raw, ctx)
+    from app.cpu_offload import run_cpu
+
+    parsed = await run_cpu(scanner.parse, raw, ctx)
     set_progress(scan_id, "parsing", "done")
 
     update_scan(scan_id, status="normalizing")
     set_progress(scan_id, "normalizing", "active")
-    normalized = scanner.normalize(parsed, ctx)
+    normalized = await run_cpu(scanner.normalize, parsed, ctx)
     set_progress(scan_id, "normalizing", "done")
     set_progress(scan_id, "risk", "active")
 
     user_id = scan["user_id"]
     from app.asset_names import canonical_vuln_asset_name, resolve_target_labels
 
-    labels = resolve_target_labels(t_detail, resolve_ptr=True)
+    labels = resolve_target_labels(t_detail, resolve_ptr=False)
     notes = json.dumps(
         {
             "ip": labels["ip"] or t_detail,
@@ -206,7 +209,7 @@ async def execute_scan(scan_id: str) -> dict[str, Any]:
         asset_type=normalized.asset_type or "host",
         engagement_id=scan.get("engagement_id"),
         org_id=scan.get("org_id"),
-        resolve_ptr=True,
+        resolve_ptr=False,
     )
     if asset and (asset or {}).get("id"):
         try:
@@ -219,12 +222,6 @@ async def execute_scan(scan_id: str) -> dict[str, Any]:
                 services=normalized.services or [],
                 scanner=scanner_id,
             )
-            try:
-                from app.software_inventory import publish_software_realtime
-
-                publish_software_realtime(user_id, {"scan_id": scan_id})
-            except Exception:
-                pass
         except Exception:
             pass
         try:
@@ -306,7 +303,7 @@ async def execute_scan(scan_id: str) -> dict[str, Any]:
                 "remediation": getattr(f, "remediation", None) or (f.raw or {}).get("remediation"),
             },
         }
-        row = upsert_vulnerability(user_id, item, emit_realtime=True)
+        row = upsert_vulnerability(user_id, item, emit_realtime=False)
         finding_rows.append(row or item)
         if (row or {}).get("_upsert") == "updated":
             updated += 1
@@ -322,7 +319,12 @@ async def execute_scan(scan_id: str) -> dict[str, Any]:
                     id=scan_id,
                     status="normalizing",
                     step="risk",
+                    scanner=scanner_id,
+                    target=t_detail,
                     findings=total,
+                    services=len(normalized.services or []),
+                    assets=1 if asset else 0,
+                    pct=min(90, 70 + total),
                 )
             except Exception:
                 pass
@@ -383,7 +385,10 @@ async def execute_scan(scan_id: str) -> dict[str, Any]:
     try:
         from app.commercial_ext import markdown_to_simple_pdf
 
-        pdf_bytes = markdown_to_simple_pdf(
+        from app.cpu_offload import run_cpu as _run_pdf
+
+        pdf_bytes = await _run_pdf(
+            markdown_to_simple_pdf,
             report_path.read_text(encoding="utf-8"),
             title=f"SecuraIQ VA Report — {t_detail}",
         )
@@ -461,7 +466,15 @@ async def execute_scan(scan_id: str) -> dict[str, Any]:
     try:
         from app.realtime_bus import publish
 
-        publish(type="scan", id=scan_id, status="completed", summary=summary)
+        publish(
+            type="scan",
+            id=scan_id,
+            status="completed",
+            scanner=scanner_id,
+            findings=created + updated,
+            pct=100,
+            summary=summary,
+        )
         if created:
             publish(
                 type="vuln_batch",
@@ -469,6 +482,12 @@ async def execute_scan(scan_id: str) -> dict[str, Any]:
                 count=created,
                 scan_id=scan_id,
             )
+        try:
+            from app.software_inventory import publish_software_realtime
+
+            publish_software_realtime(user_id, {"scan_id": scan_id})
+        except Exception:
+            pass
     except Exception:
         pass
     return {"ok": True, "scan_id": scan_id, "summary": summary}

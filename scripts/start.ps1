@@ -124,6 +124,10 @@ if (Get-Command ollama -ErrorAction SilentlyContinue) {
 }
 # Sensible zero-config defaults if missing from an old .env
 $lines = Set-EnvLine $lines "AUTH_ALLOW_REGISTER" "false"
+$lines = Set-EnvLine $lines "AI_MAX_CONCURRENCY" "1"
+if (-not ($lines | Where-Object { $_ -match "^DEMO_DISABLE_AI=" })) {
+    $lines = Set-EnvLine $lines "DEMO_DISABLE_AI" "true"
+}
 $utf8Bom = New-Object System.Text.UTF8Encoding $true
 [System.IO.File]::WriteAllLines((Join-Path (Get-Location) ".env"), $lines, $utf8Bom)
 

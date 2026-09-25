@@ -208,6 +208,12 @@ def reset_conn_for_tests() -> None:
         _backend = "sqlite"
         _schema_ready = False
         _tls.conn = None
+    try:
+        import app.commercial_ext as _ce
+
+        _ce._org_schema_ready = False
+    except Exception:
+        pass
 
 
 def init_schema(conn: Any | None = None) -> None:

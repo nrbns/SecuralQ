@@ -24,19 +24,10 @@ fi
 ensure_env
 
 if command -v ollama >/dev/null 2>&1; then
-  echo "Ollama found - configuring Ollama backend."
-  bash scripts/use_ollama.sh >/dev/null
-  if ollama list 2>/dev/null | grep -q "tinyllama"; then
-    echo "TinyLlama model ready."
-  else
-    echo "Pulling tinyllama model (one-time download)..."
-    ollama pull tinyllama || echo "Ollama pull skipped — app still starts; pick a model in Settings."
-  fi
+  echo "Ollama found — scans work without it. Chat stays optional (DEMO_DISABLE_AI in .env)."
+  bash scripts/use_ollama.sh >/dev/null || true
 else
-  echo "Ollama not found - using HuggingFace CPU model (Qwen2.5-0.5B)."
-  python -m pip install torch transformers accelerate -q
-  set_env_value MODEL_BACKEND huggingface
-  set_env_value HF_MODEL Qwen/Qwen2.5-0.5B-Instruct
+  echo "Ollama not found — leaving MODEL_BACKEND as in .env. Do not auto-install HuggingFace (laptop lag)."
 fi
 
 echo "Indexing RAG knowledge base (optional)..."
