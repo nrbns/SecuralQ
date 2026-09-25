@@ -24,10 +24,10 @@ from app.scanners.nuclei import _hostname_from_target, to_nuclei_url
 from app.services.tool_policy import target_in_scope
 
 _TIMEOUT = {
-    "discovery": 90.0,
-    "web": 180.0,
-    "vulnerability": 240.0,
-    "full": 360.0,
+    "discovery": 45.0,
+    "web": 75.0,
+    "vulnerability": 120.0,
+    "full": 180.0,
 }
 
 
@@ -277,6 +277,7 @@ class ZapScanner(Scanner):
         ]
 
     async def execute(self, ctx: ScanContext) -> RawScanResult:
+        """Worker-only. POST /api/scans returns a job_id; this never runs in the HTTP handler."""
         ctx.evidence_dir.mkdir(parents=True, exist_ok=True)
         ok_t, url = self.validate_target(ctx.target)
         if not ok_t:

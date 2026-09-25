@@ -32,8 +32,9 @@
   </script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/style.css?v=185" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" media="print" onload="this.media='all'" />
+  <noscript><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" /></noscript>
+  <link rel="stylesheet" href="/style.css?v=186" />
   <script src="/vendor/marked.min.js"></script>
 </head>
 <body>
@@ -1286,12 +1287,12 @@
                 <span>Auth</span>
               </label>
               <select id="toolsEngineScanner" class="tools-engine-select" title="Scan engine">
-                <option value="combo">Engine: Integrated VA</option>
-                <option value="securaiq">Engine: SecuraIQ only</option>
+                <option value="securaiq" selected>Engine: SecuraIQ (built-in)</option>
+                <option value="zap">Engine: SecuraIQ Web Scanner</option>
+                <option value="combo">Engine: Combo (Nmap/Nuclei if installed)</option>
                 <option value="all">Engine: all available</option>
                 <option value="nmap">Engine: Nmap</option>
                 <option value="nuclei">Engine: Nuclei</option>
-                <option value="zap">Engine: SecuraIQ Web Scanner</option>
                 <option value="none">Engine: off (tools only)</option>
               </select>
               <select id="toolsEngineProfile" class="tools-engine-select" title="Scan profile">
@@ -2522,7 +2523,7 @@
         <h2 id="newScanTitle">New scan</h2>
         <button type="button" class="btn-ghost" id="newScanClose" aria-label="Close">Close</button>
       </div>
-      <p class="hint">Pick <strong>Network</strong> (discovery/nmap/combo) or <strong>Web</strong> (public URL DAST) — they stay separate. AI interprets evidence afterward; it does not perform the scan.</p>
+      <p class="hint">Pick <strong>Network</strong> (built-in SecuraIQ) or <strong>Web</strong> (built-in DAST) — they stay separate. Combo/Nmap is optional. AI interprets evidence afterward; it does not perform the scan.</p>
       <form id="newScanForm" class="scan-form">
         <label>Target
           <input type="text" id="newScanTarget" required placeholder="hostname or IP you own" autocomplete="off" spellcheck="false" />
@@ -2548,12 +2549,12 @@
         </fieldset>
         <label class="scan-advanced-engines hidden" id="newScanScannerWrap">Scanner
           <select id="newScanScanner">
-            <option value="combo">Combo workflow (network → evidence → AI → triage)</option>
-            <option value="securaiq">SecuraIQ Scanner (built-in network)</option>
+            <option value="securaiq" selected>SecuraIQ Scanner (built-in network)</option>
+            <option value="zap">SecuraIQ Web Scanner (built-in DAST)</option>
+            <option value="combo">Combo workflow (only if Nmap/Nuclei installed)</option>
             <option value="all">All available scanners</option>
             <option value="nmap">Nmap (if installed)</option>
             <option value="nuclei">Nuclei (if installed)</option>
-            <option value="zap">SecuraIQ Web Scanner (built-in DAST)</option>
           </select>
         </label>
         <p class="hint" id="newScanScannerHint"></p>
@@ -2595,7 +2596,7 @@
     </div>
   </aside>
 
-  <script src="/app.js?v=252"></script>
-  <script src="/workspace.js?v=252"></script>
+  <script src="/app.js?v=255"></script>
+  <script src="/workspace.js?v=255"></script>
 </body>
 </html>

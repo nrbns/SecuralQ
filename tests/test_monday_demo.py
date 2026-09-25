@@ -6,13 +6,20 @@ from tests._http_test_utils import configure_isolated_settings
 
 
 def test_scan_jobs_use_dedicated_thread_not_default_executor():
-    from app.jobs import _SCAN_EXEC, _worker_boot_delay, job_pool_for, worker_pool_status
+    from app.jobs import _SCAN_EXEC, _HEAVY_EXEC, _worker_boot_delay, job_pool_for, job_runs_isolated, worker_pool_status
+
+    assert job_runs_isolated("scan_execute") is True
+    assert job_runs_isolated("report_export") is True
+    assert job_runs_isolated("software_sync_all") is True
+    assert job_runs_isolated("kev_sync") is False
+    assert _HEAVY_EXEC._max_workers >= 1
 
     assert job_pool_for("scan_execute") == "scan"
     assert _worker_boot_delay("scan") <= 1.0
     assert _SCAN_EXEC._max_workers >= 1
     status = worker_pool_status()
     assert status["scan_jobs_off_event_loop"] is True
+    assert status["heavy_jobs_off_event_loop"] is True
     assert status["scanner_binaries_are_subprocesses"] is True
     assert status["separate_os_workers"] is False
 
@@ -105,6 +112,56 @@ def test_offline_pass_is_unknown():
     )
     assert out["status"] == "unknown"
     assert "offline" in out["reason"].lower() or "unavailable" in out["reason"].lower()
+
+
+def test_nuclei_jsonl_line_and_stream_helper():
+    import asyncio
+    import sys
+
+    from app.scanners.nuclei import parse_nuclei_jsonl, parse_nuclei_jsonl_line
+    from app.scanners.stream import stream_subprocess
+
+    line = '{"info":{"name":"Exposed Redis","severity":"high"},"matched-at":"http://lab.local","template-id":"redis"}'
+    row = parse_nuclei_jsonl_line(line)
+    assert row and row["title"] == "Exposed Redis"
+    assert parse_nuclei_jsonl(line + "\nnot-json\n")[0]["severity"] == "high"
+
+    async def _echo():
+        code, out, _err = await stream_subprocess(
+            [sys.executable, "-c", "print('open-line')"],
+            timeout=8,
+            max_capture=2000,
+        )
+        assert code == 0
+        assert "open-line" in out
+
+    asyncio.run(_echo())
+
+
+def test_command_center_skips_full_reload_on_scan_findings():
+    from pathlib import Path
+
+    js = (Path(__file__).resolve().parents[1] / "static" / "app.js").read_text(encoding="utf-8")
+    assert "CC_SKIP_FULL_RELOAD" in js
+    assert "scheduleCommandCenterRefresh" in js
+    assert 'panels.add("command")' not in js.split("if (t.startsWith(\"software\")")[1][:400]
+
+
+def test_ui_defaults_to_builtin_not_combo():
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[1]
+    html = (repo / "static" / "index.html").read_text(encoding="utf-8")
+    js = (repo / "static" / "app.js").read_text(encoding="utf-8")
+    assert 'option value="securaiq" selected' in html
+    assert "preferCombo = true" not in js
+    assert 'sel.value = prefer ? prefer.id : "securaiq"' in js
+    assert 'engineSel.value = "combo"' not in js
+    assert 'prefer = "combo"' not in js
+    assert 'engineSel.value = "securaiq"' in js
+    assert 'document.getElementById("toolsEngineScanner")?.value || "securaiq"' in js
+    # Network profile fallback must be builtin, not combo.
+    assert 'sel.value = "securaiq"' in js
 
 
 def test_start_scripts_limit_ai():

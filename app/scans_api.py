@@ -7,6 +7,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import PlainTextResponse, Response
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from app.auth import AuthUser
 from app.commercial_api import require_user
@@ -100,6 +101,58 @@ def _queue_one(
         "target": target_or_err,
         "scope": scope,
         "auth_decision": scope_req_reason,
+    }
+
+
+def _queue_all(
+    *,
+    user: AuthUser,
+    oid: str | None,
+    target: str,
+    profile: str,
+    scope: list[str],
+    engagement_id: str | None,
+) -> dict[str, Any]:
+    queued: list[dict[str, Any]] = []
+    skipped: list[dict[str, str]] = []
+    for sid in _ALL_ORDER:
+        if sid not in ENGINE_ENABLED:
+            continue
+        try:
+            sc = get_scanner(sid)
+        except KeyError:
+            continue
+        ok, detail = sc.available()
+        if not ok:
+            skipped.append({"scanner": sid, "reason": detail})
+            continue
+        try:
+            queued.append(
+                _queue_one(
+                    user=user,
+                    oid=oid,
+                    target=target,
+                    scanner_id=sid,
+                    profile=profile,
+                    scope=scope,
+                    engagement_id=engagement_id,
+                )
+            )
+        except HTTPException as exc:
+            skipped.append({"scanner": sid, "reason": str(exc.detail)})
+    if not queued:
+        raise HTTPException(
+            status_code=503,
+            detail="No scanners available to run. Use securaiq, combo, or install nmap/nuclei on PATH.",
+        )
+    return {
+        "status": "queued",
+        "scanner": "all",
+        "profile": profile,
+        "scan_id": queued[0]["scan_id"],
+        "scans": queued,
+        "skipped": skipped,
+        "count": len(queued),
     }
 
 
@@ -331,7 +384,18 @@ async def scans_report_pdf(scan_id: str, user: Annotated[AuthUser, Depends(requi
                 write_scan_report(ev, scan, findings=findings)
             except Exception:
                 pass
-    pdf = markdown_to_simple_pdf(md, title=f"SecuraIQ VA Report — {scan.get('target') or scan_id[:8]}")
+    pdf_path = ev / "report.pdf" if ev else None
+    if pdf_path and pdf_path.is_file() and pdf_path.stat().st_size > 0:
+        return Response(
+            content=pdf_path.read_bytes(),
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="securaiq-va-{scan_id[:8]}.pdf"'},
+        )
+    from starlette.concurrency import run_in_threadpool
+
+    pdf = await run_in_threadpool(
+        markdown_to_simple_pdf, md, title=f"SecuraIQ VA Report — {scan.get('target') or scan_id[:8]}"
+    )
     # Also persist PDF next to markdown when possible
     if ev:
         try:
@@ -428,49 +492,18 @@ async def scans_create(
         scanner_id = "zap"
 
     if scanner_id == "all":
-        queued: list[dict[str, Any]] = []
-        skipped: list[dict[str, str]] = []
-        for sid in _ALL_ORDER:
-            if sid not in ENGINE_ENABLED:
-                continue
-            try:
-                sc = get_scanner(sid)
-            except KeyError:
-                continue
-            ok, detail = sc.available()
-            if not ok:
-                skipped.append({"scanner": sid, "reason": detail})
-                continue
-            try:
-                queued.append(
-                    _queue_one(
-                        user=user,
-                        oid=oid,
-                        target=req.target,
-                        scanner_id=sid,
-                        profile=profile,
-                        scope=scope,
-                        engagement_id=req.engagement_id,
-                    )
-                )
-            except HTTPException as exc:
-                skipped.append({"scanner": sid, "reason": str(exc.detail)})
-        if not queued:
-            raise HTTPException(
-                status_code=503,
-                detail="No scanners available to run. Use securaiq, combo, or install nmap/nuclei on PATH.",
-            )
-        return {
-            "status": "queued",
-            "scanner": "all",
-            "profile": profile,
-            "scan_id": queued[0]["scan_id"],
-            "scans": queued,
-            "skipped": skipped,
-            "count": len(queued),
-        }
+        return await run_in_threadpool(
+            _queue_all,
+            user=user,
+            oid=oid,
+            target=req.target,
+            profile=profile,
+            scope=scope,
+            engagement_id=req.engagement_id,
+        )
 
-    return _queue_one(
+    return await run_in_threadpool(
+        _queue_one,
         user=user,
         oid=oid,
         target=req.target,

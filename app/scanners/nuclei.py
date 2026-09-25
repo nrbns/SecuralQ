@@ -82,50 +82,55 @@ def to_nuclei_url(target: str) -> str:
     return f"https://{host}"
 
 
+def parse_nuclei_jsonl_line(line: str) -> dict[str, Any] | None:
+    """Parse one Nuclei JSONL line. Used while streaming so we do not wait for EOF."""
+    line = (line or "").strip()
+    if not line.startswith("{"):
+        return None
+    try:
+        row = json.loads(line)
+    except Exception:
+        return None
+    if not isinstance(row, dict):
+        return None
+    info = row.get("info") if isinstance(row.get("info"), dict) else {}
+    sev = str(info.get("severity") or row.get("severity") or "medium").lower()
+    title = (
+        info.get("name")
+        or row.get("template-id")
+        or row.get("template_id")
+        or "Nuclei finding"
+    )
+    cve = ""
+    classification = info.get("classification")
+    if isinstance(classification, dict):
+        cves = classification.get("cve-id") or classification.get("cve_id") or []
+        if isinstance(cves, list) and cves:
+            cve = str(cves[0]).upper()
+        elif isinstance(cves, str) and cves.upper().startswith("CVE-"):
+            cve = cves.upper()
+    if not cve:
+        for m in _CVE_RE.finditer(json.dumps(row)[:2000]):
+            cve = m.group(0).upper()
+            break
+    matched = row.get("matched-at") or row.get("host") or row.get("ip") or ""
+    return {
+        "title": str(title)[:300],
+        "severity": sev if sev in {"critical", "high", "medium", "low", "info"} else "medium",
+        "cve": cve[:40],
+        "asset_name": str(matched)[:200],
+        "template_id": str(row.get("template-id") or row.get("template_id") or ""),
+        "raw": row,
+    }
+
+
 def parse_nuclei_jsonl(text: str) -> list[dict[str, Any]]:
     """Parse Nuclei -jsonl / -json-export lines into intermediate finding dicts."""
     findings: list[dict[str, Any]] = []
     for line in (text or "").splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            row = json.loads(line)
-        except Exception:
-            continue
-        if not isinstance(row, dict):
-            continue
-        info = row.get("info") if isinstance(row.get("info"), dict) else {}
-        sev = str(info.get("severity") or row.get("severity") or "medium").lower()
-        title = (
-            info.get("name")
-            or row.get("template-id")
-            or row.get("template_id")
-            or "Nuclei finding"
-        )
-        cve = ""
-        classification = info.get("classification")
-        if isinstance(classification, dict):
-            cves = classification.get("cve-id") or classification.get("cve_id") or []
-            if isinstance(cves, list) and cves:
-                cve = str(cves[0]).upper()
-            elif isinstance(cves, str) and cves.upper().startswith("CVE-"):
-                cve = cves.upper()
-        if not cve:
-            for m in _CVE_RE.finditer(json.dumps(row)[:2000]):
-                cve = m.group(0).upper()
-                break
-        matched = row.get("matched-at") or row.get("host") or row.get("ip") or ""
-        findings.append(
-            {
-                "title": str(title)[:300],
-                "severity": sev if sev in {"critical", "high", "medium", "low", "info"} else "medium",
-                "cve": cve[:40],
-                "asset_name": str(matched)[:200],
-                "template_id": str(row.get("template-id") or row.get("template_id") or ""),
-                "raw": row,
-            }
-        )
+        row = parse_nuclei_jsonl_line(line)
+        if row:
+            findings.append(row)
     return findings[:120]
 
 
@@ -194,35 +199,47 @@ class NucleiScanner(Scanner):
         timeout = _TIMEOUT.get(profile, 180.0)
         out_path = ctx.evidence_dir / "nuclei.jsonl"
 
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-            code = int(proc.returncode or 0)
-        except asyncio.TimeoutError:
+        from app.scanners.stream import publish_scan_progress, stream_subprocess
+
+        found = {"n": 0}
+        jsonl_fp = out_path.open("a", encoding="utf-8")
+
+        def _on_line(which: str, text: str) -> None:
+            if which != "stdout":
+                return
+            row = parse_nuclei_jsonl_line(text)
+            if not row:
+                return
             try:
-                proc.kill()
+                jsonl_fp.write(text if text.endswith("\n") else text + "\n")
+                jsonl_fp.flush()
             except Exception:
                 pass
-            stdout_b, stderr_b = b"", b"nuclei timed out"
-            code = -1
+            found["n"] += 1
+            if found["n"] == 1 or found["n"] % 5 == 0:
+                publish_scan_progress(
+                    ctx,
+                    scanner="nuclei",
+                    step="templates",
+                    findings=found["n"],
+                    pct=min(75, 15 + found["n"] * 2),
+                )
 
-        stdout = (stdout_b or b"").decode("utf-8", errors="replace")
-        stderr = (stderr_b or b"").decode("utf-8", errors="replace")
-        # Nuclei often writes only to -o; also capture stdout if present
-        if stdout.strip() and (not out_path.exists() or out_path.stat().st_size == 0):
-            out_path.write_text(stdout, encoding="utf-8")
-        elif stdout.strip() and out_path.exists():
-            # Append any stdout lines not already in file (some versions dual-write)
-            existing = out_path.read_text(encoding="utf-8", errors="replace")
-            if stdout.strip() not in existing:
-                out_path.write_text(existing + ("\n" if existing and not existing.endswith("\n") else "") + stdout, encoding="utf-8")
-
-        (ctx.evidence_dir / "stdout.log").write_text(stdout, encoding="utf-8")
-        (ctx.evidence_dir / "stderr.log").write_text(stderr, encoding="utf-8")
+        try:
+            code, stdout, stderr = await stream_subprocess(
+                argv,
+                timeout=timeout,
+                stdout_path=ctx.evidence_dir / "stdout.log",
+                stderr_path=ctx.evidence_dir / "stderr.log",
+                on_line=_on_line,
+            )
+        finally:
+            try:
+                jsonl_fp.close()
+            except Exception:
+                pass
+        if code == -1 and not stderr:
+            stderr = "nuclei timed out"
         (ctx.evidence_dir / "command.txt").write_text(" ".join(argv), encoding="utf-8")
 
         artifacts = [

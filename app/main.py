@@ -239,10 +239,7 @@ async def lifespan(app: FastAPI):
                 if existing:
                     print(f"RAG: using existing index ({existing} docs).")
         else:
-            existing = rag_engine.document_count()
-            print(
-                f"RAG: auto-ingest off ({existing} docs on disk). Use Re-index when ready."
-            )
+            print("RAG: auto-ingest off. Use Re-index when ready — skip Chroma count on boot.")
     except Exception as exc:
         print(f"RAG ingest skipped: {exc}")
     if settings.model_backend == "huggingface":

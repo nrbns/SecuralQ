@@ -177,9 +177,13 @@ async function openNewScanModal() {
       if (sel && Array.isArray(data.scanners)) {
         const enabled = data.scanners.filter((s) => s.engine_enabled);
         const opts = [
-          '<option value="combo">Combo workflow (scan → evidence → AI → triage)</option>',
+          '<option value="securaiq">SecuraIQ Scanner (built-in network)</option>',
+          '<option value="zap">SecuraIQ Web Scanner (built-in DAST)</option>',
+          '<option value="combo">Combo workflow (only if Nmap/Nuclei installed)</option>',
           '<option value="all">All available scanners</option>',
-          ...enabled.map((s) => {
+          ...enabled
+            .filter((s) => s.id !== "securaiq" && s.id !== "zap")
+            .map((s) => {
             const builtIn = s.origin === "securaiq" || s.id === "zap" || s.id === "securaiq";
             const label = s.available
               ? s.name
@@ -191,19 +195,14 @@ async function openNewScanModal() {
           }),
         ];
         sel.innerHTML = opts.join("");
-        // Prefer combo for Network/Discovery; Web profile → SecuraIQ Web Scanner only.
-        const preferCombo = true;
-        if (preferCombo) {
-          sel.value = "combo";
-          const netProf = document.querySelector('input[name="scanProfile"][value="discovery"]');
-          if (netProf) netProf.checked = true;
-        } else {
-          const prefer =
-            enabled.find((s) => s.id === "nmap" && s.available) ||
-            enabled.find((s) => s.id === "securaiq" && s.available) ||
-            enabled.find((s) => s.available);
-          sel.value = prefer ? prefer.id : "all";
-        }
+        // Built-in engines first — do not default to combo (waits on nmap/nuclei).
+        const prefer =
+          enabled.find((s) => s.id === "securaiq" && s.available) ||
+          enabled.find((s) => s.id === "zap") ||
+          enabled.find((s) => s.available);
+        sel.value = prefer ? prefer.id : "securaiq";
+        const netProf = document.querySelector('input[name="scanProfile"][value="discovery"]');
+        if (netProf) netProf.checked = true;
         // If user already picked Web, force zap (built-in DAST) — never combo.
         const currentProf =
           document.querySelector('input[name="scanProfile"]:checked')?.value || "";
@@ -341,18 +340,18 @@ function syncNewScanProfileHint() {
     }
   } else if (profile === "discovery") {
     if (sel.value === "zap" || !sel.value || sel.options[sel.selectedIndex]?.hidden) {
-      sel.value = "combo";
+      sel.value = "securaiq";
     }
     if (targetEl) {
       targetEl.placeholder = "hostname, IP, or CIDR you own (network)";
     }
     if (hint && sel.value !== "combo") {
       hint.textContent =
-        "Network/Discovery → nmap, SecuraIQ builtin, or combo. Web apps use the Web profile separately.";
+        "Network/Discovery → SecuraIQ builtin (fast). Combo/Nmap only if those tools are installed. Web apps use the Web profile.";
     }
   } else {
     if (sel.value === "zap" || sel.options[sel.selectedIndex]?.hidden) {
-      sel.value = "combo";
+      sel.value = "securaiq";
     }
     if (targetEl) {
       targetEl.placeholder = "hostname or IP you own";
@@ -389,7 +388,7 @@ async function startLiveScan() {
   if (localToolsEl) localToolsEl.checked = true;
   selectedTools = LIVE_SCAN_DEFAULT_TOOLS.slice();
   const engineSel = document.getElementById("toolsEngineScanner");
-  if (engineSel) engineSel.value = "combo";
+  if (engineSel) engineSel.value = "securaiq";
   openToolsPalette(true);
   syncScanTargetFields(false);
   await renderToolsPalette();
@@ -412,7 +411,7 @@ function toolsHubTargetAuth() {
 async function queueEngineScanFromTools(opts = {}) {
   const { target, authorized } = toolsHubTargetAuth();
   const scanner =
-    opts.scanner || document.getElementById("toolsEngineScanner")?.value || "combo";
+    opts.scanner || document.getElementById("toolsEngineScanner")?.value || "securaiq";
   const profile =
     opts.profile || document.getElementById("toolsEngineProfile")?.value || "discovery";
   if (scanner === "none") {
@@ -727,7 +726,7 @@ async function ensurePtPackSelected() {
 }
 
 async function runAllFromTools() {
-  const engine = document.getElementById("toolsEngineScanner")?.value || "combo";
+  const engine = document.getElementById("toolsEngineScanner")?.value || "securaiq";
   await ensurePtPackSelected();
   if (engine === "combo") {
     showView("chat");
@@ -3113,7 +3112,7 @@ window.RealtimeManager = {
       privacy: () =>
         typeof window.renderPrivacyPage === "function" &&
         window.renderPrivacyPage({ quiet: true }),
-      command: () => typeof loadCommandCenter === "function" && loadCommandCenter(),
+      command: () => scheduleCommandCenterRefresh({ lite: true, delay: 1500 }),
       license: () => typeof window.renderAgentsLicensePanel === "function" && window.renderAgentsLicensePanel(),
       assets: () => typeof window.renderAssetsPage === "function" && window.renderAssetsPage({ quiet: true }),
       vulns: () => typeof window.renderVulnsPage === "function" && window.renderVulnsPage({ quiet: true }),
@@ -3168,9 +3167,9 @@ window.RealtimeManager = {
       clearTimeout(window.__securaiqCcRtTimer);
       window.__securaiqCcRtTimer = setTimeout(() => {
         if (typeof loadCommandCenter === "function" && window.__securaiqWorkspaceView === "command") {
-          loadCommandCenter();
+          loadCommandCenter({ lite: true });
         }
-      }, 1200);
+      }, 1500);
       if (view === "compliance_center") this.invalidate("compliance_center");
       if (view === "privacy") this.invalidate("privacy");
       if (view === "risks") this.invalidate("risks");
@@ -3189,9 +3188,9 @@ window.RealtimeManager = {
           window.loadContinuousPosturePanel({ quiet: true });
         }
         if (typeof loadCommandCenter === "function" && window.__securaiqWorkspaceView === "command") {
-          loadCommandCenter();
+          loadCommandCenter({ lite: true });
         }
-      }, 500);
+      }, 1500);
     }
     // SSE reconnect recovery / sequence gap honesty
     if (t === "recovery" || t === "sequence_gap" || String(t).startsWith("recovery.")) {
@@ -3983,13 +3982,40 @@ function realtimePanelsForType(type) {
   }
   if (t === "license.updated" || t === "agent.update.available") panels.add("license");
   if (t.startsWith("software") || t === "inventory" || t === "vuln" || t === "vuln_batch" || t === "asset") {
-    panels.add("command");
+    // Findings/assets: targeted panels only — never a full Command Center rebuild.
     panels.add("assets");
     if (t === "vuln" || t === "vuln_batch") panels.add("vulns");
   }
   return [...panels];
 }
 window.realtimePanelsForType = realtimePanelsForType;
+
+const CC_SKIP_FULL_RELOAD = new Set([
+  "scan",
+  "job",
+  "combo",
+  "vuln",
+  "vuln_batch",
+  "findings.batch",
+  "tool_progress",
+  "tool",
+  "inventory",
+  "asset",
+]);
+
+function scheduleCommandCenterRefresh(opts) {
+  const o = opts || {};
+  if (window.__securaiqWorkspaceView !== "command") return;
+  if (typeof loadCommandCenter !== "function") return;
+  const delay = Number(o.delay || 1500);
+  const lite = o.lite !== false;
+  clearTimeout(window.__securaiqCcRtTimer);
+  window.__securaiqCcRtTimer = setTimeout(() => {
+    if (window.__securaiqWorkspaceView !== "command") return;
+    loadCommandCenter({ lite });
+  }, Math.max(400, delay));
+}
+window.scheduleCommandCenterRefresh = scheduleCommandCenterRefresh;
 
 function applyRealtimeWorkspaceRefresh(data, flags) {
   const view =
@@ -4091,26 +4117,19 @@ function applyRealtimeWorkspaceRefresh(data, flags) {
     }
   }
   const incremental = isSoftwarePushType(pt) || isToolPushType(pt);
-  if (
-    flags.pushRefresh &&
-    !incremental &&
-    window.__securaiqWorkspaceView === "command" &&
-    typeof loadCommandCenter === "function"
-  ) {
-    clearTimeout(window.__securaiqCcAnyTimer);
-    window.__securaiqCcAnyTimer = setTimeout(() => loadCommandCenter({ lite: true }), 800);
+  const skipFullCc = incremental || CC_SKIP_FULL_RELOAD.has(pt);
+  if (flags.pushRefresh && !skipFullCc && window.__securaiqWorkspaceView === "command") {
+    scheduleCommandCenterRefresh({ lite: true, delay: 1500 });
   }
   if (flags.jobsChanged && typeof window.refreshAutomationPage === "function" && view === "automation") {
     window.refreshAutomationPage();
   }
   if (
-    (flags.kpisChanged || flags.pushRefresh || flags.heartbeat) &&
+    (flags.kpisChanged || flags.heartbeat) &&
     view === "command" &&
-    !incremental &&
-    typeof loadCommandCenter === "function"
+    !skipFullCc
   ) {
-    clearTimeout(window.__securaiqCcRtTimer);
-    window.__securaiqCcRtTimer = setTimeout(() => loadCommandCenter(), flags.pushRefresh ? 400 : 1200);
+    scheduleCommandCenterRefresh({ lite: true, delay: flags.heartbeat ? 2000 : 1500 });
   }
   if (flags.jobsChanged && typeof window.__securaiqOnJobPulse === "function") {
     window.__securaiqOnJobPulse(data);
@@ -4972,11 +4991,12 @@ async function renderToolsPalette() {
         const cur = engineSel.value || "securaiq";
         const enabled = scanners.filter((s) => s.engine_enabled);
         const opts = [
-          '<option value="combo">Engine: Integrated VA (all scanners)</option>',
-          '<option value="securaiq">Engine: SecuraIQ only</option>',
+          '<option value="securaiq">Engine: SecuraIQ (built-in)</option>',
+          '<option value="zap">Engine: SecuraIQ Web Scanner</option>',
+          '<option value="combo">Engine: Combo (Nmap/Nuclei if installed)</option>',
           '<option value="all">Engine: all available</option>',
           ...enabled
-            .filter((s) => s.id !== "securaiq")
+            .filter((s) => s.id !== "securaiq" && s.id !== "zap")
             .map((s) => {
               const label = s.available ? s.name : `${s.name} (fallback/PATH)`;
               return `<option value="${escapeHtml(s.id)}">Engine: ${escapeHtml(label)}</option>`;
@@ -4984,8 +5004,10 @@ async function renderToolsPalette() {
           '<option value="none">Engine: off (tools only)</option>',
         ];
         engineSel.innerHTML = opts.join("");
-        const prefer = "combo";
+        // Keep the user's pick; otherwise default to builtin (never force combo).
+        const prefer = cur && cur !== "combo" ? cur : "securaiq";
         if ([...engineSel.options].some((o) => o.value === prefer)) engineSel.value = prefer;
+        else if ([...engineSel.options].some((o) => o.value === "securaiq")) engineSel.value = "securaiq";
         else if ([...engineSel.options].some((o) => o.value === cur)) engineSel.value = cur;
       }
     }

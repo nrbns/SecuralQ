@@ -6,13 +6,19 @@ from tests._http_test_utils import configure_isolated_settings
 
 
 def test_job_pool_routing():
-    from app.jobs import job_pool_for
+    from app.jobs import job_pool_for, job_runs_isolated, _resolve_job_engine
 
+    assert _resolve_job_engine("auto") == "local"
+    assert _resolve_job_engine("local") == "local"
+
+    assert job_runs_isolated("scan_execute") is True
+    assert job_runs_isolated("report_export") is True
     assert job_pool_for("scan_execute") == "scan"
     assert job_pool_for("combo_assessment") == "scan"
     assert job_pool_for("compliance_ops_tick") == "control"
     assert job_pool_for("vault_expiry_tick") == "evidence"
     assert job_pool_for("report_export") == "report"
+    assert job_pool_for("software_sync_all") == "report"
     assert job_pool_for("kev_sync") == "default"
 
 

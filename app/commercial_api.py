@@ -552,9 +552,12 @@ async def files_upload(
     engagement_id: str | None = None,
     ingest: bool = True,
 ):
-    data = await file.read()
+    from app.uploads import save_upload_stream
+
     try:
-        return save_upload(user.id, file.filename or "upload.bin", data, engagement_id, ingest)
+        return await save_upload_stream(
+            user.id, file.filename or "upload.bin", file, engagement_id, ingest
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

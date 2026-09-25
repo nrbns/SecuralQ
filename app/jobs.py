@@ -38,7 +38,14 @@ _POOL_KINDS: dict[str, frozenset[str]] = {
     "scan": frozenset({"scan_execute", "combo_assessment", "hardeningkitty_audit", "lan_inventory_audit"}),
     "control": frozenset({"control_stale_tick", "compliance_ops_tick", "posture_refresh", "exception_expiry_tick"}),
     "evidence": frozenset({"vault_expiry_tick"}),
-    "report": frozenset({"report_export"}),
+    "report": frozenset(
+        {
+            "report_export",
+            "software_sync_all",
+            "software_version_refresh",
+            "software_advisory_refresh",
+        }
+    ),
     "ai": frozenset(),
 }
 _POOL_ORDER = ("scan", "control", "evidence", "report", "ai", "default")
@@ -51,7 +58,23 @@ _scheduler_task: asyncio.Task | None = None
 # deadlocks because _run_one itself uses to_thread. Scanner binaries are OS
 # subprocesses; this thread only keeps parse/upsert/SSE off uvicorn.
 _SCAN_EXEC = ThreadPoolExecutor(max_workers=2, thread_name_prefix="sq-scan-job")
+_HEAVY_EXEC = ThreadPoolExecutor(max_workers=2, thread_name_prefix="sq-heavy-job")
 _SCAN_KINDS = frozenset({"scan_execute", "combo_assessment", "hardeningkitty_audit", "lan_inventory_audit"})
+# CPU / filesystem work — isolate from uvicorn. Async HTTP connectors stay on the loop.
+_HEAVY_KINDS = frozenset(
+    {
+        "report_export",
+        "software_sync_all",
+        "software_version_refresh",
+        "software_advisory_refresh",
+    }
+)
+
+
+def job_runs_isolated(kind: str) -> bool:
+    """True when the worker must use _run_one_sync on a dedicated executor."""
+    k = (kind or "").strip()
+    return job_pool_for(k) == "scan" or k in _HEAVY_KINDS or job_pool_for(k) == "report"
 
 
 def job_pool_for(kind: str) -> str:
@@ -91,11 +114,12 @@ def worker_pool_status() -> dict[str, Any]:
         "in_process": True,
         "separate_os_workers": False,
         "scan_jobs_off_event_loop": True,
+        "heavy_jobs_off_event_loop": True,
         "scanner_binaries_are_subprocesses": True,
         "disclaimer": (
-            "Scan jobs run on a dedicated thread. Parse/normalize/PDF use sq-cpu. "
-            "Nmap/Nuclei are OS subprocesses. Not Celery/Redis workers or HA. "
-            "Default scan concurrency is 1 for the Monday lab."
+            "Scan + report/software jobs run on dedicated threads. "
+            "Parse/normalize/PDF use sq-cpu. Nmap/Nuclei are OS subprocesses. "
+            "Not Celery/Redis workers or HA. Default scan concurrency is 1 for the Monday lab."
         ),
     }
 
@@ -161,6 +185,25 @@ def register_job(kind: str):
     return _wrap
 
 
+def _resolve_job_engine(engine: str) -> str:
+    """Prefer in-process local workers. Prefect is opt-in and never imported unless enabled."""
+    eng = (engine or "auto").lower().strip()
+    if eng in ("local", "prefect"):
+        return eng
+    if eng != "auto":
+        raise ValueError("engine must be local, prefect, or auto")
+    try:
+        from app.config import settings
+
+        if not getattr(settings, "prefect_enabled", False):
+            return "local"
+        from app.prefect_bridge import prefect_status
+
+        return "prefect" if prefect_status().get("ready") else "local"
+    except Exception:
+        return "local"
+
+
 def enqueue_job(
     kind: str,
     payload: dict[str, Any] | None = None,
@@ -170,14 +213,7 @@ def enqueue_job(
     if kind not in JOB_HANDLERS:
         raise ValueError(f"Unknown job kind '{kind}'. Registered: {sorted(JOB_HANDLERS)}")
     body = dict(payload or {})
-    eng = (engine or "auto").lower().strip()
-    if eng == "auto":
-        try:
-            from app.prefect_bridge import prefect_status
-
-            eng = "prefect" if prefect_status().get("ready") else "local"
-        except Exception:
-            eng = "local"
+    eng = _resolve_job_engine(engine)
     if eng not in ("local", "prefect"):
         raise ValueError("engine must be local, prefect, or auto")
     body["_engine"] = eng
@@ -251,14 +287,30 @@ def list_jobs(
 
 def live_scan_jobs(*, user_id: str | None = None, limit: int = 8) -> list[dict[str, Any]]:
     """Pending/running scan jobs for the sticky HUD (browser refresh restore)."""
-    rows = list_jobs(limit=max(20, limit * 4), user_id=user_id)
+    kinds = tuple(_SCAN_KINDS)
+    placeholders = ",".join("?" * len(kinds))
+    cap = max(1, min(int(limit or 8), 20))
+    c = get_conn()
+    rows = c.execute(
+        f"SELECT id, kind, status, payload_json, created_at, started_at FROM jobs "
+        f"WHERE status IN ('pending','running') AND kind IN ({placeholders}) "
+        f"ORDER BY created_at DESC LIMIT ?",
+        (*kinds, cap * 4),
+    ).fetchall()
     live: list[dict[str, Any]] = []
-    for job in rows:
-        if str(job.get("kind") or "") not in _SCAN_KINDS:
-            continue
-        if str(job.get("status") or "") not in {"pending", "running"}:
-            continue
-        payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
+    for row in rows:
+        job = dict(row)
+        payload: dict[str, Any] = {}
+        try:
+            payload = json.loads(job.get("payload_json") or "{}")
+        except Exception:
+            payload = {}
+        if user_id and user_id != "local":
+            payload_uid = str(payload.get("user_id") or "").strip()
+            if payload_uid and payload_uid != user_id:
+                continue
+            if not payload_uid:
+                continue
         live.append(
             {
                 "id": job.get("id"),
@@ -271,7 +323,7 @@ def live_scan_jobs(*, user_id: str | None = None, limit: int = 8) -> list[dict[s
                 "started_at": job.get("started_at"),
             }
         )
-        if len(live) >= max(1, min(limit, 20)):
+        if len(live) >= cap:
             break
     return live
 
@@ -422,8 +474,12 @@ async def _worker_loop_for(pool: str) -> None:
     while True:
         job_id = await q.get()
         try:
+            # Route by pool only — never SELECT the job row on the uvicorn loop
+            # (SQLite busy_timeout would stall /api/alive).
             if pool == "scan":
                 await loop.run_in_executor(_SCAN_EXEC, _run_one_sync, job_id)
+            elif pool == "report":
+                await loop.run_in_executor(_HEAVY_EXEC, _run_one_sync, job_id)
             else:
                 await _run_one(job_id)
             await asyncio.sleep(0)
@@ -759,7 +815,7 @@ async def _job_xdr_sync(payload: dict[str, Any]) -> dict[str, Any]:
     t0 = time.time()
     uid = payload.get("user_id", "local")
     result = await sync_all(uid)
-    result["software_ingested"] = _refresh_software(uid, "xdr")
+    result["software_ingested"] = await asyncio.to_thread(_refresh_software, uid, "xdr")
     result["duration_sec"] = round(time.time() - t0, 2)
     return result
 
@@ -780,7 +836,7 @@ async def _job_wazuh_sync(payload: dict[str, Any]) -> dict[str, Any]:
     except Exception:
         pass
     result["syscollector_agents"] = syscol
-    result["software_ingested"] = _refresh_software(uid, "wazuh", "xdr")
+    result["software_ingested"] = await asyncio.to_thread(_refresh_software, uid, "wazuh", "xdr")
     result["duration_sec"] = round(time.time() - t0, 2)
     return result
 
@@ -793,7 +849,7 @@ async def _job_openaudit_sync(payload: dict[str, Any]) -> dict[str, Any]:
     t0 = time.time()
     uid = payload.get("user_id", "local")
     result = await openaudit_sync(uid)
-    result["software_ingested"] = _refresh_software(uid, "openaudit")
+    result["software_ingested"] = await asyncio.to_thread(_refresh_software, uid, "openaudit")
     result["duration_sec"] = round(time.time() - t0, 2)
     return result
 
@@ -846,7 +902,7 @@ async def _job_lan_inventory_audit(payload: dict[str, Any]) -> dict[str, Any]:
     live["discovery"] = discovery
     live["warm"] = warm_info
     live["hosts"] = len(hosts)
-    live["software_ingested"] = _refresh_software(user_id, "openaudit", "lan")
+    live["software_ingested"] = await asyncio.to_thread(_refresh_software, user_id, "openaudit", "lan")
     live["duration_sec"] = round(time.time() - t0, 2)
     return live
 
@@ -958,7 +1014,7 @@ async def _job_cloud_posture_sync(payload: dict[str, Any]) -> dict[str, Any]:
     except Exception as exc:
         _finish_report_scan(scan, ok=False, error=str(exc))
         raise
-    result["software_ingested"] = _refresh_software(uid, "vulns")
+    result["software_ingested"] = await asyncio.to_thread(_refresh_software, uid, "vulns")
     result["duration_sec"] = round(time.time() - t0, 2)
     # sync_all() returns {"vendors": {name: {"ok"/"skipped": ..., "count"/"error": ...}}, "imported": N}
     vendors = result.get("vendors") if isinstance(result.get("vendors"), dict) else {}
@@ -989,7 +1045,7 @@ async def _job_sonarqube_sync(payload: dict[str, Any]) -> dict[str, Any]:
     t0 = time.time()
     uid = payload.get("user_id", "local")
     result = await sonar_sync(uid)
-    result["software_ingested"] = _refresh_software(uid, "vulns")
+    result["software_ingested"] = await asyncio.to_thread(_refresh_software, uid, "vulns")
     result["duration_sec"] = round(time.time() - t0, 2)
     return result
 
@@ -1012,7 +1068,7 @@ async def _job_hardeningkitty_audit(payload: dict[str, Any]) -> dict[str, Any]:
     except Exception as exc:
         _finish_report_scan(scan, ok=False, error=str(exc))
         raise
-    result["software_ingested"] = _refresh_software(uid, "vulns")
+    result["software_ingested"] = await asyncio.to_thread(_refresh_software, uid, "vulns")
     result["duration_sec"] = round(time.time() - t0, 2)
     _finish_report_scan(
         scan,

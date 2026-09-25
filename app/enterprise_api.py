@@ -1323,8 +1323,10 @@ async def vulns_import(
 ):
     oid = resolve_request_org(user, header_org=x_securaiq_org)
     require_perm(user, "vuln.write", org_id=oid)
-    data = await file.read()
+    from app.uploads import read_upload_capped
+
     try:
+        data = await read_upload_capped(file, 8 * 1024 * 1024)
         return import_vulnerabilities(
             user.id,
             content=data,

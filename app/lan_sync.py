@@ -197,7 +197,8 @@ def refresh_lan_assets(user_id: str, *, queue_scan: bool = True) -> dict[str, An
 
     this_ip = host_scan_target()
     subnet = lan_subnet_hint()
-    neighbors = list_lan_neighbors()
+    # ARP/ping stay in lan_inventory_audit — never block the HTTP handler.
+    neighbors: list[dict[str, str]] = []
     upserted = 0
     from app.asset_names import resolve_target_labels
 

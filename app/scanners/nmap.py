@@ -129,7 +129,7 @@ class NmapScanner(Scanner):
         return False, f"target out of engagement scope ({reason})"
 
     def build_command(self, ctx: ScanContext) -> list[str]:
-        ok, detail = self.available(probe=True)
+        ok, detail = self.available(probe=False)
         if not ok:
             raise RuntimeError(detail)
         binary = detail
@@ -152,33 +152,41 @@ class NmapScanner(Scanner):
         timeout = {"discovery": 90.0, "web": 120.0, "vulnerability": 240.0, "full": 420.0}.get(
             (ctx.profile or "discovery").lower(), 90.0
         )
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        except asyncio.TimeoutError:
-            try:
-                proc.kill()
-            except Exception:
-                pass
-            stdout_b, stderr_b = b"", b"nmap timed out"
-            code = -1
-        else:
-            code = int(proc.returncode or 0)
+        from app.scanners.stream import publish_scan_progress, stream_subprocess
 
-        stdout = (stdout_b or b"").decode("utf-8", errors="replace")
-        stderr = (stderr_b or b"").decode("utf-8", errors="replace")
+        ports_seen = {"n": 0}
+
+        def _on_line(which: str, text: str) -> None:
+            if which != "stdout":
+                return
+            low = text.lower()
+            if "discovered open port" in low or "/tcp open" in low or "/udp open" in low:
+                ports_seen["n"] += 1
+                if ports_seen["n"] == 1 or ports_seen["n"] % 4 == 0:
+                    publish_scan_progress(
+                        ctx,
+                        scanner="nmap",
+                        step="port_scan",
+                        findings=ports_seen["n"],
+                        pct=min(70, 12 + ports_seen["n"] * 3),
+                    )
+
+        code, stdout, stderr = await stream_subprocess(
+            argv,
+            timeout=timeout,
+            stdout_path=ctx.evidence_dir / "stdout.log",
+            stderr_path=ctx.evidence_dir / "stderr.log",
+            on_line=_on_line,
+        )
+        if code == -1 and not stderr:
+            stderr = "nmap timed out"
         if code in (0xC0000135, 3221225781, -1073741515):
             stderr = (
                 (stderr + "\n" if stderr else "")
                 + "nmap failed to start (STATUS_DLL_NOT_FOUND). Install Npcap from https://npcap.com "
                 "and restart SecuraIQ."
             ).strip()
-        (ctx.evidence_dir / "stdout.log").write_text(stdout, encoding="utf-8")
-        (ctx.evidence_dir / "stderr.log").write_text(stderr, encoding="utf-8")
+            (ctx.evidence_dir / "stderr.log").write_text(stderr, encoding="utf-8")
         (ctx.evidence_dir / "command.txt").write_text(" ".join(argv), encoding="utf-8")
 
         artifacts = []

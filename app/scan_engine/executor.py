@@ -583,6 +583,6 @@ def enqueue_scan_job(scan_id: str) -> dict[str, Any]:
     import app.scan_engine.jobs  # noqa: F401 — ensure handler registered
     from app.jobs import enqueue_job
 
-    job = enqueue_job("scan_execute", {"scan_id": scan_id})
+    job = enqueue_job("scan_execute", {"scan_id": scan_id}, engine="local")
     update_scan(scan_id, job_id=job.get("id"))
     return job

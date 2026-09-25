@@ -36,6 +36,33 @@ def uploads_root() -> Path:
     return root
 
 
+async def read_upload_capped(file: Any, max_bytes: int, chunk_size: int = 65_536) -> bytes:
+    """Stream an UploadFile with a hard cap so a 500MB body never lands in RAM."""
+    chunks: list[bytes] = []
+    size = 0
+    while True:
+        piece = await file.read(chunk_size)
+        if not piece:
+            break
+        size += len(piece)
+        if size > max_bytes:
+            raise ValueError(f"File exceeds {max(1, max_bytes // (1024 * 1024))} MB limit")
+        chunks.append(piece)
+    return b"".join(chunks)
+
+
+async def save_upload_stream(
+    user_id: str,
+    filename: str,
+    file: Any,
+    engagement_id: str | None = None,
+    ingest: bool = True,
+) -> dict[str, Any]:
+    max_bytes = int(settings.upload_max_mb) * 1024 * 1024
+    data = await read_upload_capped(file, max_bytes)
+    return save_upload(user_id, filename, data, engagement_id, ingest)
+
+
 def save_upload(
     user_id: str,
     filename: str,

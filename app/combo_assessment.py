@@ -380,7 +380,7 @@ async def run_combo_assessment(
 
 def enqueue_combo_assessment(payload: dict[str, Any]) -> dict[str, Any]:
     """Queue combo_assessment on the background worker; returns the job row."""
-    return enqueue_job("combo_assessment", payload)
+    return enqueue_job("combo_assessment", payload, engine="local")
 
 
 @register_job("combo_assessment")

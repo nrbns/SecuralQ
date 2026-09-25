@@ -260,24 +260,16 @@ def parse_tool_request(
 
 async def _run_cmd(argv: list[str], timeout: float = 25.0) -> dict[str, Any]:
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.communicate()
+        from app.scanners.stream import stream_subprocess
+
+        code, text, err = await stream_subprocess(argv, timeout=timeout, max_capture=12_000)
+        if code == -1:
             return {"ok": False, "error": f"timed out after {timeout:.0f}s", "output": ""}
-        text = (stdout or b"").decode("utf-8", errors="replace")
-        err = (stderr or b"").decode("utf-8", errors="replace")
         return {
-            "ok": proc.returncode == 0 or bool(text.strip()),
+            "ok": code == 0 or bool(text.strip()),
             "output": (text or err)[-4500:],
             "stderr": err[-800:] if err and not text.strip() else "",
-            "returncode": proc.returncode,
+            "returncode": code,
         }
     except FileNotFoundError:
         return {"ok": False, "error": "binary not found", "output": ""}
@@ -1492,19 +1484,16 @@ async def _run_external(tool_id: str, target: str, ip: str, open_ports: list[int
     if tool_id == "openssl":
         # echo | openssl s_client -connect
         try:
-            proc = await asyncio.create_subprocess_exec(
-                binary, "s_client", "-connect", f"{ip}:443", "-servername", target,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
+            from app.scanners.stream import stream_subprocess
+
+            code, text, _err = await stream_subprocess(
+                [binary, "s_client", "-connect", f"{ip}:443", "-servername", target],
+                timeout=12,
+                input_bytes=b"Q\n",
+                max_capture=16_000,
             )
-            try:
-                stdout, _ = await asyncio.wait_for(proc.communicate(input=b"Q\n"), timeout=12)
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.communicate()
+            if code == -1:
                 return {"ok": False, "error": "timed out", "output": ""}
-            text = (stdout or b"").decode("utf-8", errors="replace")
             # keep certificate / protocol lines
             keep = [ln for ln in text.splitlines() if any(k in ln for k in ("Protocol", "Cipher", "subject=", "issuer=", "Verify"))]
             return {"ok": True, "output": "\n".join(keep)[:3000] or text[:2000]}
@@ -1927,28 +1916,29 @@ async def _tool_semgrep(
 
     await _emit(0, 0, 0)
     try:
-        proc = await asyncio.create_subprocess_exec(
-            binary,
-            "--config=auto",
-            "--json",
-            "--timeout",
-            "60",
-            "--max-target-bytes",
-            "2000000",
-            str(root),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        from app.scanners.stream import stream_subprocess
+
+        code, raw_text, err_text = await stream_subprocess(
+            [
+                binary,
+                "--config=auto",
+                "--json",
+                "--timeout",
+                "60",
+                "--max-target-bytes",
+                "2000000",
+                str(root),
+            ],
+            timeout=150,
+            max_capture=400_000,
         )
-        try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=150)
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.communicate()
+        if code == -1:
             return {"ok": False, "error": "semgrep timed out", "output": ""}
+        stderr = err_text.encode("utf-8", errors="replace")
+        proc_returncode = code
     except Exception as exc:
         return {"ok": False, "error": str(exc), "output": ""}
 
-    raw_text = (stdout or b"").decode("utf-8", errors="replace")
     # Found via live testing: semgrep can exit non-zero with EMPTY stdout (e.g.
     # its rule-registry fetch is blocked by a proxy/firewall) while still
     # writing a real error to stderr. Treating empty stdout as "{}" silently
@@ -1959,7 +1949,7 @@ async def _tool_semgrep(
         err_tail = (stderr or b"").decode("utf-8", errors="replace").strip()
         return {
             "ok": False,
-            "error": f"semgrep produced no output (exit code {proc.returncode})",
+            "error": f"semgrep produced no output (exit code {proc_returncode})",
             "output": err_tail[-1500:] if err_tail else "semgrep exited with no output and no error detail.",
         }
     try:

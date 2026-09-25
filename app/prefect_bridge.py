@@ -24,13 +24,22 @@ import sys
 from typing import Any
 
 
+_INSTALLED: bool | None = None
+_STATUS_CACHE: tuple[float, dict[str, Any]] | None = None
+_STATUS_TTL_SEC = 30.0
+
+
 def prefect_installed() -> bool:
+    global _INSTALLED
+    if _INSTALLED is not None:
+        return _INSTALLED
     try:
         import prefect  # noqa: F401
 
-        return True
+        _INSTALLED = True
     except Exception:
-        return False
+        _INSTALLED = False
+    return _INSTALLED
 
 
 def prefect_version() -> str:
@@ -43,6 +52,13 @@ def prefect_version() -> str:
 
 
 def prefect_status() -> dict[str, Any]:
+    import time
+
+    global _STATUS_CACHE
+    now = time.monotonic()
+    if _STATUS_CACHE and now - _STATUS_CACHE[0] < _STATUS_TTL_SEC:
+        return _STATUS_CACHE[1]
+
     from app.config import settings
 
     installed = prefect_installed()
@@ -52,7 +68,7 @@ def prefect_status() -> dict[str, Any]:
     ).strip()
     # "ready" means auto engine may choose Prefect; jobs can still force engine=prefect when installed.
     ready = installed and enabled
-    return {
+    payload = {
         "installed": installed,
         "enabled": enabled,
         "ready": ready,
@@ -69,6 +85,8 @@ def prefect_status() -> dict[str, Any]:
             )
         ),
     }
+    _STATUS_CACHE = (now, payload)
+    return payload
 
 
 def _parse_flow_stdout(raw: str) -> dict[str, Any]:
