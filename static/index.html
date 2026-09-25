@@ -33,7 +33,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/style.css?v=178" />
+  <link rel="stylesheet" href="/style.css?v=184" />
   <script src="/vendor/marked.min.js"></script>
 </head>
 <body>
@@ -60,6 +60,13 @@
           <span class="nav-ico" data-ico="rep" aria-hidden="true"></span>
           <span class="nav-item-label">Executive</span>
         </button>
+        <div class="mode-switch" role="tablist" aria-label="Workspace mode">
+          <button type="button" class="mode-btn is-active" data-ui-mode="exec" role="tab" aria-selected="true">Exec</button>
+          <button type="button" class="mode-btn" data-ui-mode="soc" role="tab" aria-selected="false">SOC</button>
+          <button type="button" class="mode-btn" data-ui-mode="compliance" role="tab" aria-selected="false">Compliance</button>
+          <button type="button" class="mode-btn" data-ui-mode="it" role="tab" aria-selected="false">IT</button>
+          <button type="button" class="mode-btn" data-ui-mode="auditor" role="tab" aria-selected="false">Auditor</button>
+        </div>
       </nav>
 
       <nav class="side-nav nav-group" aria-label="Security" data-nav-group>
@@ -323,7 +330,7 @@
                 <em class="mc-trend" id="ccScoreTrend"></em>
                 <span class="sq-stat-sub" id="ccScoreLevel">—</span>
               </button>
-              <button type="button" class="sq-stat sq-stat-risk" data-workspace="executive" title="Organizational exposure — open findings ranked by impact">
+              <button type="button" class="sq-stat sq-stat-risk" data-drawer-kind="risk" title="Organizational exposure — open findings ranked by impact">
                 <span class="sq-stat-label">Risk</span>
                 <strong id="ccOrgRisk">—</strong>
                 <em class="mc-trend" id="ccRiskTrend"></em>
@@ -335,7 +342,7 @@
                 <em class="mc-trend" id="ccCompTrend"></em>
                 <span class="sq-stat-sub" id="ccComplianceSub">not assessed</span>
               </button>
-              <button type="button" class="sq-stat sq-stat-live" data-workspace="compliance_center" title="Live operating-effectiveness from agent control PASS/FAIL — not blended into gap %">
+              <button type="button" class="sq-stat sq-stat-live" data-drawer-kind="compliance" title="Live operating-effectiveness from agent control PASS/FAIL — not blended into gap %">
                 <span class="sq-stat-label">Live controls</span>
                 <strong id="ccLivePercent">—</strong>
                 <em class="mc-trend" id="ccLiveTrend"></em>
@@ -364,6 +371,33 @@
 
 
           <!-- Always-on ops home: WHAT / WHY / DO / FIXED -->
+          <section class="mc-what-changed" id="mcWhatChanged" aria-label="What changed">
+            <header class="mc-what-changed-head">
+              <h3>What changed</h3>
+              <button type="button" class="btn-ghost" id="mcWhyRiskBtn" data-drawer-kind="risk">Why?</button>
+            </header>
+            <ul id="mcWhatChangedList" class="mc-ops-list">
+              <li class="hint">Loading host and finding deltas…</li>
+            </ul>
+            <ol id="mcTopDecisions" class="mc-ops-list" aria-label="Top decisions"></ol>
+          </section>
+
+          <section class="mc-truth-strip" id="mcTruthStrip" aria-label="Evidence truth">
+            <div class="truth-chip" id="mcTruthChip" data-state="unknown">
+              <span class="truth-dot" aria-hidden="true"></span>
+              <strong id="mcTruthLabel">UNKNOWN</strong>
+              <span id="mcTruthNote">No live observation yet.</span>
+            </div>
+            <div class="profile-bars" id="mcProfileBars">
+              <div class="profile-row"><span>Current</span><div class="profile-track"><i id="mcProfileCurrent" style="width:0%"></i></div><em id="mcProfileCurrentPct">—</em></div>
+              <div class="profile-row"><span>Target</span><div class="profile-track"><i id="mcProfileTarget" style="width:90%"></i></div><em id="mcProfileTargetPct">90%</em></div>
+              <p class="hint" id="mcProfileGap">Gap and NIST tiers are operator goals — not a certification score.</p>
+            </div>
+            <ul class="mc-stage-latency" id="mcStageLatency">
+              <li class="hint">Stage latency unmeasured in this process.</li>
+            </ul>
+          </section>
+
           <section class="mc-ops-home rt-always-on" id="mcOpsHome" aria-label="Command Center operations">
             <div class="mc-ops-grid">
               <article class="mc-ops-card mc-ops-action" id="mcActionRequired">
@@ -2483,14 +2517,26 @@
         <label>Target
           <input type="text" id="newScanTarget" required placeholder="hostname or IP you own" autocomplete="off" spellcheck="false" />
         </label>
-        <fieldset class="scan-profile-set">
-          <legend>Scan type</legend>
+        <fieldset class="scan-profile-set" id="scanIntentSet">
+          <legend>Scan intent</legend>
+          <label class="chip-toggle"><input type="radio" name="scanIntent" value="quick" checked /> <span>Quick Scan</span></label>
+          <label class="chip-toggle"><input type="radio" name="scanIntent" value="full" /> <span>Full Assessment</span></label>
+          <label class="chip-toggle"><input type="radio" name="scanIntent" value="easm" /> <span>External Attack Surface</span></label>
+          <label class="chip-toggle"><input type="radio" name="scanIntent" value="internal" /> <span>Internal Network</span></label>
+          <label class="chip-toggle"><input type="radio" name="scanIntent" value="web" /> <span>Web Application</span></label>
+          <label class="chip-toggle"><input type="radio" name="scanIntent" value="api" /> <span>API</span></label>
+          <label class="chip-toggle"><input type="radio" name="scanIntent" value="cloud" /> <span>Cloud</span></label>
+          <label class="chip-toggle"><input type="radio" name="scanIntent" value="endpoint" /> <span>Endpoint</span></label>
+          <label class="chip-toggle"><input type="radio" name="scanIntent" value="compliance" /> <span>Compliance</span></label>
+        </fieldset>
+        <fieldset class="scan-profile-set scan-advanced-engines hidden" id="scanEngineSet">
+          <legend>Scan type (engine)</legend>
           <label class="chip-toggle"><input type="radio" name="scanProfile" value="discovery" checked /> <span>Network</span></label>
           <label class="chip-toggle"><input type="radio" name="scanProfile" value="web" /> <span>Web</span></label>
           <label class="chip-toggle"><input type="radio" name="scanProfile" value="vulnerability" /> <span>Vulnerability</span></label>
           <label class="chip-toggle"><input type="radio" name="scanProfile" value="full" /> <span>Full</span></label>
         </fieldset>
-        <label>Scanner
+        <label class="scan-advanced-engines hidden" id="newScanScannerWrap">Scanner
           <select id="newScanScanner">
             <option value="combo">Combo workflow (network → evidence → AI → triage)</option>
             <option value="securaiq">SecuraIQ Scanner (built-in network)</option>
@@ -2525,7 +2571,21 @@
     </div>
   </div>
 
-  <script src="/app.js?v=232"></script>
-  <script src="/workspace.js?v=228"></script>
+  <aside id="decisionDrawer" class="decision-drawer hidden" hidden aria-label="Decision drawer">
+    <div class="decision-drawer-card">
+      <header class="decision-drawer-head">
+        <h2 id="decisionDrawerTitle">Decision</h2>
+        <button type="button" class="btn-ghost" id="decisionDrawerClose" aria-label="Close">Close</button>
+      </header>
+      <div id="decisionDrawerBody" class="decision-drawer-body"></div>
+      <footer class="decision-drawer-actions">
+        <button type="button" class="btn-secondary" id="decisionDrawerSimulate">Simulate</button>
+        <button type="button" class="btn-primary-cc" id="decisionDrawerApprove" data-workspace="playbooks">Request approval</button>
+      </footer>
+    </div>
+  </aside>
+
+  <script src="/app.js?v=249"></script>
+  <script src="/workspace.js?v=249"></script>
 </body>
 </html>

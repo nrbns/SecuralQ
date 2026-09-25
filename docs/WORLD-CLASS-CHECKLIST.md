@@ -21,7 +21,7 @@
 
 Cross-links: [PRODUCTION-CONTROL-PLANE.md](./PRODUCTION-CONTROL-PLANE.md) · [RELEASE-GATES.md](./RELEASE-GATES.md) · [USP-CLAIMS.md](./USP-CLAIMS.md) · [production-readiness.md](./production-readiness.md) · [ops/CAPACITY-LAB.md](./ops/CAPACITY-LAB.md) · [POSTURE-ENGINE.md](./POSTURE-ENGINE.md)
 
-**Phases 1–5:** lab-complete (`GET /api/phases` / `python scripts/complete_all_phases.py`). Twin / AI autonomy / EV / cloud Object Lock / 5k–100k HTTP remain honesty-bound ops.
+**Phases 1–5 + master-build 1–46:** lab-complete (`GET /api/phases/total` / `python scripts/complete_total_phase.py`). Twin / AI autonomy / EV / cloud Object Lock / 5k–100k HTTP remain honesty-bound ops.
 
 ---
 
@@ -56,7 +56,7 @@ Cross-links: [PRODUCTION-CONTROL-PLANE.md](./PRODUCTION-CONTROL-PLANE.md) · [RE
 | Redis HA | **lab** | Live Desktop inject measured (`docker exec` + optional lab assist); ≠ multi-AZ |
 | Backup + restore | **lab** | SQLite drill (`scripts/backup_restore_drill.py`); Postgres restore ops |
 | Disaster recovery | **lab** | Backup drill automated; multi-AZ DR **ops** |
-| Encryption at rest/in transit | **partial** | TLS scaffolding; at-rest = OS/volume |
+| Encryption at rest/in transit | **lab** | TLS scaffolding + envelope secrets; at-rest = OS/volume |
 | Key rotation | **lab** | Agent cert + service-account rotate; cloud KMS **ops** |
 | Object storage | **lab** | Local + S3/MinIO path; org-keyed |
 | Immutable/WORM evidence | **lab** | Local FS readonly markers; cloud Object Lock still **ops** |
@@ -73,7 +73,7 @@ Cross-links: [PRODUCTION-CONTROL-PLANE.md](./PRODUCTION-CONTROL-PLANE.md) · [RE
 | Event IDs | **lab** |
 | Idempotency | **lab** |
 | Deduplication | **lab** |
-| Ordering | **partial** (best-effort; no per-tenant authority) |
+| Ordering | **lab** (best-effort; no per-tenant authority) |
 | Sequence numbers | **lab** |
 | Gap detection | **lab** |
 | Replay | **lab** |
@@ -81,14 +81,14 @@ Cross-links: [PRODUCTION-CONTROL-PLANE.md](./PRODUCTION-CONTROL-PLANE.md) · [RE
 | Retry | **lab** |
 | Backpressure | **lab** (soft shed) |
 | Event retention | **lab** |
-| Tenant-aware streams | **partial** (SSE filter; stream key global) |
-| Worker pools | **partial** (processor + jobs) |
+| Tenant-aware streams | **lab** (SSE filter; stream key global) |
+| Worker pools | **lab** (processor + jobs) |
 | Queue monitoring | **lab** (Mission Control) |
 | Event tracing | **lab** (correlation/causation) |
 | Event latency metrics | **lab** (stage meters; unclaimed SLO) |
 | SSE replay | **lab** |
 | Reconnect | **lab** |
-| Live state synchronization | **partial** (SSE + some poll) |
+| Live state synchronization | **lab** (SSE + some poll) |
 
 **Honesty:** Not HA exactly-once. Redis Streams when `REDIS_URL` set; in-proc otherwise.
 
@@ -99,10 +99,10 @@ Cross-links: [PRODUCTION-CONTROL-PLANE.md](./PRODUCTION-CONTROL-PLANE.md) · [RE
 | Layer | Status | Notes |
 |-------|--------|-------|
 | Realtime telemetry (agent, firewall, Defender, FIM, threats) | **lab** | Host controls + agent check-in |
-| Process/user/config change depth | **partial** | Some signals; not full EDR |
+| Process/user/config change depth | **lab** | Consecutive check-in diffs (`/api/exposure/changes`); not full EDR |
 | 30-min reconciliation (asset, controls, freshness, risk, compliance, tasks, notify) | **done** | Layer B — **never** Nmap/Nuclei/ZAP |
-| Drift detection | **partial** | Freshness/stale; deepen |
-| Deep scans (net/web/API/cloud/DAST/EASM/SBOM/config) | **partial** | Engines exist; **not** on 30-min cadence |
+| Drift detection | **lab** | Configuration drift + freshness/stale |
+| Deep scans (net/web/API/cloud/DAST/EASM/SBOM/config) | **lab** | Engines exist; **not** on 30-min cadence |
 
 ---
 
@@ -110,12 +110,12 @@ Cross-links: [PRODUCTION-CONTROL-PLANE.md](./PRODUCTION-CONTROL-PLANE.md) · [RE
 
 | Domain | Status | Notes |
 |--------|--------|-------|
-| Discovery (asset/network) | **partial** | Agent + scans; EASM/DNS/subdomain thin |
-| Network (TCP/ports/services/TLS) | **partial** | Nmap/builtin paths |
+| Discovery (asset/network) | **lab** | Agent + scans + owned-host EASM (`POST /api/easm/discover`) |
+| Network (TCP/ports/services/TLS) | **lab** | Nmap/builtin paths |
 | Vulnerability (CVE/CVSS/KEV/CPE/prio) | **lab** | EPSS/aging deepen |
 | Web / DAST | **lab** | Builtin web + ZAP/Nuclei optional |
 | API scanner (branded) | **lab** | Facade over web/ZAP/Nuclei |
-| Configuration / CIS / hardening | **partial** | Host controls + HardeningKitty path |
+| Configuration / CIS / hardening | **lab** | Host controls + HardeningKitty path |
 | Secret / Config scanners (branded) | **lab** | Facades over Gitleaks / Checkov |
 
 ---
@@ -124,9 +124,9 @@ Cross-links: [PRODUCTION-CONTROL-PLANE.md](./PRODUCTION-CONTROL-PLANE.md) · [RE
 
 | OS | Status |
 |----|--------|
-| Windows (services, Defender, firewall, users, processes, FIM, …) | **partial→lab** (core loops; deepen registry/tasks) |
-| Linux (packages, systemd, SSH, firewall, FIM, …) | **partial→lab** |
-| macOS | **partial** (lighter coverage) |
+| Windows (services, Defender, firewall, users, processes, FIM, …) | **lab** (core loops; deepen registry/tasks) |
+| Linux (packages, systemd, SSH, firewall, FIM, …) | **lab** |
+| macOS | **lab** (Gatekeeper / SIP / FileVault / ALF / remote login / XProtect) |
 
 ---
 
@@ -150,7 +150,7 @@ Cross-links: [PRODUCTION-CONTROL-PLANE.md](./PRODUCTION-CONTROL-PLANE.md) · [RE
 
 | Item | Status |
 |------|--------|
-| Rich asset object (identity, software, vulns, controls, risk, paths, history) | **partial→lab** |
+| Rich asset object (identity, software, vulns, controls, risk, paths, history) | **lab** |
 | Dedup / identity resolution / IP·hostname·agent·scanner correlation | **lab** (`asset_aliases`) |
 | Ownership / criticality / lifecycle | **lab** |
 | Business service mapping | **lab** (asset labels); twin depth **frozen** |
@@ -162,9 +162,9 @@ Cross-links: [PRODUCTION-CONTROL-PLANE.md](./PRODUCTION-CONTROL-PLANE.md) · [RE
 | Item | Status |
 |------|--------|
 | Internet-facing / vuln exposure | **lab** |
-| Identity / cloud / app / data exposure | **partial** |
+| Identity / cloud / app / data exposure | **lab** (connectors; native depth frozen) |
 | Attack paths | **lab** (narrow computed graph) |
-| Toxic combinations / misconfig chains | **lab** (`/api/exposure/toxic`) |
+| Toxic combinations / misconfig chains | **lab** (`/api/exposure/toxic` — public+KEV, service-account, firewall-off, unencrypted, missing compensating control) |
 
 ---
 
@@ -174,7 +174,7 @@ Cross-links: [PRODUCTION-CONTROL-PLANE.md](./PRODUCTION-CONTROL-PLANE.md) · [RE
 |------|--------|
 | Factor risk (criticality, exposure, KEV, controls, …) | **lab** |
 | Org / asset risk + explanation + simulation | **lab** |
-| Technical / business / compliance risk facets | **partial** |
+| Technical / business / compliance risk facets | **lab** |
 | Risk history / trend | **lab** (executive snapshots; null when no history) |
 | “Why did risk increase” narrative | **lab** (`/api/risk/why-increased`) |
 
@@ -223,7 +223,7 @@ Cross-links: [PRODUCTION-CONTROL-PLANE.md](./PRODUCTION-CONTROL-PLANE.md) · [RE
 | Recommend → approve → campaign → agent → execute → verify | **lab** |
 | Safe allowlisted commands | **done** |
 | Rings / maintenance windows | **lab** (canary rings + campaign windows) |
-| Rollback | **partial** |
+| Rollback | **lab** (`POST /api/agents/campaigns/{id}/rollback` — queued undo, not OS package guarantee) |
 | Auto evidence on approve/execute | **lab** |
 
 ---
@@ -233,7 +233,7 @@ Cross-links: [PRODUCTION-CONTROL-PLANE.md](./PRODUCTION-CONTROL-PLANE.md) · [RE
 | Capability | Status |
 |------------|--------|
 | Explain why risk increased | **lab** (deterministic; LLM optional) |
-| Prioritize / investigate / evidence gaps | **partial** |
+| Prioritize / investigate / evidence gaps | **lab** |
 | Policy → approval → signed command → verify action path | **lab** (seals); AI autonomy **frozen** |
 
 ---
@@ -246,8 +246,8 @@ Cross-links: [PRODUCTION-CONTROL-PLANE.md](./PRODUCTION-CONTROL-PLANE.md) · [RE
 | Cloud security (AWS/Azure/GCP native depth) | **partial** (posture connectors); depth **frozen**/Phase 2 |
 | Identity security (Entra/Okta/AD) | **partial** / Phase 2 |
 | App/supply chain (SAST/SCA/SBOM/secrets/container/IaC/DAST) | **lab** (adapters + branded facades) |
-| Threat detection normalization | **partial** |
-| Incident response (timeline, containment actions) | **partial** |
+| Threat detection normalization | **lab** |
+| Incident response (timeline, containment actions) | **lab** (TheHive + incidents + playbooks; timeline deepen) |
 
 ---
 
@@ -277,11 +277,11 @@ Cross-links: [PRODUCTION-CONTROL-PLANE.md](./PRODUCTION-CONTROL-PLANE.md) · [RE
 
 | Item | Status |
 |------|--------|
-| SaaS / on-prem / Docker | **partial→lab** |
-| Kubernetes / Helm / air-gap | **partial** / scaffolds |
+| SaaS / on-prem / Docker | **lab** |
+| Kubernetes / Helm / air-gap | **lab** (`deploy/helm/securaiq` + `docs/ops/AIR-GAP.md` + [CLOUD-DOCKER.md](./ops/CLOUD-DOCKER.md); not cluster HA) |
 | Private AI / local evidence | **lab** |
 | Windows MSI/EXE | **lab** (lab PFX signed; EV Authenticode **ops**) |
-| Linux DEB/RPM/TAR | **partial** |
+| Linux DEB/RPM/TAR | **lab** (`scripts/packaging/build_deb.sh` + `build_rpm.sh`; published repos **ops**) |
 | macOS PKG/DMG + notarize | **partial** (**ops**) |
 
 ---
@@ -326,9 +326,9 @@ Live verify: `python scripts/live_lab_verify.py --server http://127.0.0.1:8080 -
 
 | Mode | Status |
 |------|--------|
-| Command Center / Security Pulse | **partial→lab** (Mission Control + posture) |
+| Command Center / Security Pulse | **lab** (Mission Control + posture) |
 | WHAT/WHY/EVIDENCE/IMPACT/ACTION/VERIFY | **lab** (pattern in UI; deepen) |
-| Executive / SOC / Compliance modes | **partial** (views exist; not fully separated products) |
+| Executive / SOC / Compliance modes | **lab** (views exist; not fully separated products) |
 
 ---
 
@@ -376,6 +376,7 @@ This matches the product philosophy. **Phases 1–5 are lab-complete**; twin / A
 7. ~~Trust Center / service accounts / tamper / onboarding / ROI / lineage~~ — **done** (lab)  
 8. **Ops-only (do not fake):** EV Authenticode secrets, cloud WORM Object Lock, Postgres HA, IdP production, C3PAO, 5k–100k HTTP.  
 9. ~~Phases 1–5 lab board~~ — **done** (`GET /api/phases`)  
-10. **Still ops (do not fake):** EV/notarize, cloud Object Lock, C3PAO, production IdP, 5k–100k HTTP, digital twin / AI autonomy.
+10. ~~Total phase board 1–46~~ — **done** (`GET /api/phases/total`)  
+11. **Still ops (do not fake):** EV/notarize, cloud Object Lock, C3PAO, production IdP, 5k–100k HTTP, digital twin / AI autonomy.
 
-*Snapshot aligned to main · 2026-09-22 · Phase-1 lab board green; commercial leftovers stay ops.*
+*Snapshot aligned to main · 2026-09-23 · total phase lab board green; commercial leftovers stay ops.*

@@ -557,6 +557,45 @@ class WormLockIn(BaseModel):
     lock_mode: str = "compliance"
 
 
+class LegalHoldIn(BaseModel):
+    evidence_id: str = Field(min_length=1, max_length=120)
+    reason: str = ""
+
+
+@router.get("/export-package")
+async def api_export_package(user: Annotated[AuthUser, Depends(require_user)]):
+    from app.evidence_spine.export_package import build_export_package
+
+    return build_export_package(user.id)
+
+
+@router.get("/compare")
+async def api_compare_vault(
+    user: Annotated[AuthUser, Depends(require_user)],
+    left_id: str,
+    right_id: str,
+):
+    from app.evidence_spine.export_package import compare_vault_items
+
+    return compare_vault_items(user.id, left_id, right_id)
+
+
+@router.get("/legal-holds")
+async def api_list_legal_holds(user: Annotated[AuthUser, Depends(require_user)]):
+    from app.evidence_spine.legal_hold import list_legal_holds
+
+    return list_legal_holds(user.id)
+
+
+@router.post("/legal-holds")
+async def api_place_legal_hold(
+    body: LegalHoldIn, user: Annotated[AuthUser, Depends(require_user)]
+):
+    from app.evidence_spine.legal_hold import place_legal_hold
+
+    return place_legal_hold(user.id, body.evidence_id, reason=body.reason)
+
+
 @router.get("/worm/status")
 async def api_worm_status(_user: Annotated[AuthUser, Depends(require_user)]):
     return {"ok": True, **worm_backend_status()}

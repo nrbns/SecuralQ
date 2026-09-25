@@ -7,6 +7,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from app.auth import AuthUser
 from app.commercial_api import require_user
@@ -47,6 +48,7 @@ from app.enterprise import (
     delete_playbook,
     delete_remediation,
     enterprise_dashboard,
+    enterprise_dashboard_lite,
     evidence_from_files,
     export_risk_markdown,
     export_vuln_markdown,
@@ -57,6 +59,7 @@ from app.enterprise import (
     update_playbook,
     update_remediation,
 )
+from app.fast_cache import cache_get, cache_set, run_fast
 from app.gap_analysis import ensure_gap_schema, run_gap_analysis
 
 router = APIRouter(prefix="/api", tags=["enterprise"])
@@ -214,11 +217,19 @@ async def software_posture(user: Annotated[AuthUser, Depends(require_user)]):
     require_perm(user, "asset.read")
     from app.software_inventory import empty_posture, inventory_api_payload, posture_summary
 
-    try:
-        posture = posture_summary(user.id, rebuild_if_empty=False)
-        return inventory_api_payload(user.id, inventory=[], posture=posture)
-    except Exception:
-        return inventory_api_payload(user.id, inventory=[], posture=empty_posture())
+    def _load():
+        try:
+            cached = cache_get(f"sw-posture:{user.id}")
+            if cached is not None:
+                posture = cached
+            else:
+                posture = posture_summary(user.id, rebuild_if_empty=False)
+                cache_set(f"sw-posture:{user.id}", posture, 20.0)
+            return inventory_api_payload(user.id, inventory=[], posture=posture)
+        except Exception:
+            return inventory_api_payload(user.id, inventory=[], posture=empty_posture())
+
+    return await run_in_threadpool(_load)
 
 
 @router.get("/software/summary")
@@ -227,23 +238,26 @@ async def software_summary(user: Annotated[AuthUser, Depends(require_user)]):
     require_perm(user, "asset.read")
     from app.software_inventory import empty_posture, inventory_api_payload, posture_summary
 
-    try:
-        posture = posture_summary(user.id, rebuild_if_empty=False)
-        payload = inventory_api_payload(user.id, inventory=[], posture=posture)
+    def _load():
         try:
-            from app.software.service import inventory_status, summary_for_user
+            posture = posture_summary(user.id, rebuild_if_empty=False)
+            payload = inventory_api_payload(user.id, inventory=[], posture=posture)
+            try:
+                from app.software.service import inventory_status, summary_for_user
 
-            engine = summary_for_user(user.id)
-            inv = inventory_status(user.id)
-            payload["engine"] = engine
-            payload["inventory_status"] = inv
-            if engine.get("total_installations"):
-                payload["total"] = int(engine.get("total_installations") or payload["total"])
+                engine = summary_for_user(user.id)
+                inv = inventory_status(user.id)
+                payload["engine"] = engine
+                payload["inventory_status"] = inv
+                if engine.get("total_installations"):
+                    payload["total"] = int(engine.get("total_installations") or payload["total"])
+            except Exception:
+                pass
+            return payload
         except Exception:
-            pass
-        return payload
-    except Exception:
-        return inventory_api_payload(user.id, inventory=[], posture=empty_posture())
+            return inventory_api_payload(user.id, inventory=[], posture=empty_posture())
+
+    return await run_in_threadpool(_load)
 
 
 @router.get("/inventory/status")
@@ -436,18 +450,56 @@ async def software_inventory_list(
     asset_id: str | None = None,
     status: str | None = None,
     source: str | None = None,
+    lite: bool = False,
 ):
     require_perm(user, "asset.read")
     from app.software_inventory import empty_posture, inventory_api_payload, list_software, posture_summary
 
-    try:
-        inventory = list_software(
-            user.id, limit=limit, asset_id=asset_id, status=status, source=source
-        )
-        posture = posture_summary(user.id, rebuild_if_empty=False)
-        return inventory_api_payload(user.id, inventory=inventory, posture=posture)
-    except Exception:
-        return inventory_api_payload(user.id, inventory=[], posture=empty_posture())
+    cap = min(max(1, int(limit or 80)), 80 if lite else 400)
+    if lite:
+        cached_inv = cache_get(f"sw-inv-lite:{user.id}:{cap}:{asset_id}:{status}:{source}")
+        if cached_inv is not None:
+            return cached_inv
+
+    def _load():
+        try:
+            inventory = list_software(
+                user.id, limit=cap, asset_id=asset_id, status=status, source=source
+            )
+            if lite:
+                keep = (
+                    "id",
+                    "product",
+                    "version",
+                    "vendor",
+                    "asset_name",
+                    "asset_id",
+                    "status",
+                    "status_label",
+                    "severity",
+                    "source",
+                    "source_label",
+                    "cve",
+                    "port",
+                )
+                inventory = [{k: r.get(k) for k in keep if r.get(k) not in (None, "")} for r in inventory]
+                cached = cache_get(f"sw-posture:{user.id}")
+                if cached is not None:
+                    posture = cached
+                else:
+                    posture = empty_posture()
+                    posture["total_products"] = len(inventory)
+            else:
+                posture = posture_summary(user.id, rebuild_if_empty=False)
+                cache_set(f"sw-posture:{user.id}", posture, 20.0)
+            return inventory_api_payload(user.id, inventory=inventory, posture=posture)
+        except Exception:
+            return inventory_api_payload(user.id, inventory=[], posture=empty_posture())
+
+    payload = await run_in_threadpool(_load)
+    if lite:
+        cache_set(f"sw-inv-lite:{user.id}:{cap}:{asset_id}:{status}:{source}", payload, 20.0)
+    return payload
 
 
 @router.post("/software/local-refresh")
@@ -610,17 +662,39 @@ async def software_remediation_create(
     return create_remediation(user.id, **draft)
 
 
+def _cached_dashboard(user_id: str) -> dict:
+    key = f"dash:{user_id}"
+    hit = cache_get(key)
+    if hit is not None:
+        return hit
+    ensure_gap_schema()
+    dash = enterprise_dashboard(user_id)
+    return cache_set(key, dash, 15.0)
+
+
+@router.get("/dashboard/lite")
+async def dashboard_lite(user: Annotated[AuthUser, Depends(require_user)]):
+    """First-paint KPIs — COUNT queries only, reserved fast pool."""
+    key = f"dash-lite:{user.id}"
+    hit = cache_get(key)
+    if hit is not None:
+        return hit
+    full = cache_get(f"dash:{user.id}")
+    if full is not None:
+        return {**full, "lite": True}
+    payload = await run_fast(enterprise_dashboard_lite, user.id)
+    return cache_set(key, payload, 8.0)
+
+
 @router.get("/dashboard")
 async def dashboard(user: Annotated[AuthUser, Depends(require_user)]):
-    ensure_gap_schema()
-    return enterprise_dashboard(user.id)
+    return await run_in_threadpool(_cached_dashboard, user.id)
 
 
 @router.get("/dashboard/brief")
 async def dashboard_brief(user: Annotated[AuthUser, Depends(require_user)]):
     """Morning Mission Control brief (fast rules engine; model optional later)."""
-    ensure_gap_schema()
-    dash = enterprise_dashboard(user.id)
+    dash = await run_in_threadpool(_cached_dashboard, user.id)
     brief = dash.get("morning_brief") or {}
     return {
         "user": user.username,
@@ -792,15 +866,21 @@ async def assets_list(
     user: Annotated[AuthUser, Depends(require_user)],
     engagement_id: str | None = None,
     org_id: str | None = None,
+    lite: bool = False,
     x_securaiq_org: str | None = Header(default=None, alias="X-SecuraIQ-Org"),
 ):
     oid = resolve_request_org(user, org_id=org_id, header_org=x_securaiq_org)
     require_perm(user, "asset.read", org_id=oid)
     from app.enterprise import enrich_assets_with_scans
 
-    raw = list_assets(user.id, engagement_id, org_id=oid)
-    assets, live_scans = enrich_assets_with_scans(user.id, raw)
-    return {"assets": assets, "live_scans": live_scans, "org_id": oid}
+    def _load():
+        raw = list_assets(user.id, engagement_id, org_id=oid)
+        if lite:
+            return raw, []
+        return enrich_assets_with_scans(user.id, raw)
+
+    assets, live_scans = await run_fast(_load) if lite else await run_in_threadpool(_load)
+    return {"assets": assets, "live_scans": live_scans, "org_id": oid, "lite": lite}
 
 
 class AssetResolveIn(BaseModel):
@@ -900,6 +980,22 @@ async def assets_register_alias(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True, "alias": row}
+
+
+@router.get("/assets/{asset_id}/identity-card")
+async def assets_identity_card(
+    asset_id: str,
+    user: Annotated[AuthUser, Depends(require_user)],
+    x_securaiq_org: str | None = Header(default=None, alias="X-SecuraIQ-Org"),
+):
+    oid = resolve_request_org(user, header_org=x_securaiq_org)
+    require_perm(user, "asset.read", org_id=oid)
+    from app.asset_identity_card import asset_identity_card
+
+    card = asset_identity_card(user.id, asset_id)
+    if not card:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    return {**card, "org_id": oid}
 
 
 @router.get("/assets/{asset_id}")
@@ -1153,7 +1249,10 @@ async def risks_list(
     x_securaiq_org: str | None = Header(default=None, alias="X-SecuraIQ-Org"),
 ):
     oid = resolve_request_org(user, org_id=org_id, header_org=x_securaiq_org)
-    return {"risks": list_risks(user.id, engagement_id=engagement_id, status=status, org_id=oid), "org_id": oid}
+    risks = await run_in_threadpool(
+        list_risks, user.id, engagement_id=engagement_id, status=status, org_id=oid
+    )
+    return {"risks": risks, "org_id": oid}
 
 
 @router.get("/risks/export")

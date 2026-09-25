@@ -1,8 +1,28 @@
 # HA / DR (Phase B foundations)
 
-**Honesty:** Documented targets and lab procedures — not a published enterprise SLO until measured restore drills exist.
+**Honesty:** SQLite file-copy RTO/RPO can be published from this host. Postgres restore and API/Redis/Postgres cluster-kill RTO stay ops. Never market the lab milliseconds as a control-plane SLO.
 
-## Targets (draft — revise after first restore drill)
+**Surface:** `GET /api/ops/measured` · `python scripts/backup_restore_drill.py --record`
+
+## Measured on this host (SQLite lab)
+
+**Date (UTC):** 2026-09-24 · **Operator:** local lab · **Source:** `python scripts/backup_restore_drill.py --record`
+
+| Metric | Value | Scope |
+|--------|-------|-------|
+| Backup | 3.727 ms | Closed SQLite file copy (8192 bytes) |
+| Restore | 10.694 ms | File copy into dest data dir |
+| Verify | 3.246 ms | Marker row present |
+| **RTO (restore + verify)** | **13.94 ms** | Usable lab DB — not control-plane SLO |
+| **RPO** | **0 ms** | Closed-file copy (no WAL mutation during backup) |
+| Restart reclaim | 172.814 ms | In-process running→pending (1 probe job) |
+| Postgres restore | unpublished | ops |
+| Cluster kill (API + Redis + DB) | unpublished | ops |
+| Process-kill @5k HTTP | unpublished | ops |
+
+Raw JSONL: `data/ops/ha_dr_measurements.jsonl`, `data/ops/restart_reclaim_measurements.jsonl` (gitignored).
+
+## Targets (draft — not replaced by the lab file-copy)
 
 | Metric | Draft lab target | Notes |
 |--------|------------------|-------|

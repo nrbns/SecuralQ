@@ -26,7 +26,7 @@ router = APIRouter(prefix="/api/canonical-controls", tags=["canonical-controls"]
 # Short TTL cache — soft-poll / Mission Control must not re-scan every assessment
 # on every tick (was blocking the asyncio event loop → false "Server offline").
 _STATUS_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
-_STATUS_TTL_SEC = 8.0
+_STATUS_TTL_SEC = 30.0
 
 
 def _cached_all_statuses(user_id: str) -> list[dict[str, Any]]:

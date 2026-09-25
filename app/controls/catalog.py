@@ -126,10 +126,20 @@ def get_control(framework_id: str, control_id: str) -> Control | None:
     fw = load_framework(framework_id)
     fid = str(fw.get("id") or framework_id)
     want = normalize_control_id(fid, control_id)
-    for row in fw.get("controls") or []:
-        rid = normalize_control_id(fid, str(row.get("id") or ""))
-        if rid == want or str(row.get("id") or "").strip().lower() == (control_id or "").strip().lower():
-            return _control_from_row(fid, row)
+    index = fw.get("_by_id")
+    if not isinstance(index, dict):
+        index = {}
+        for row in fw.get("controls") or []:
+            rid = normalize_control_id(fid, str(row.get("id") or ""))
+            raw = str(row.get("id") or "").strip()
+            if rid:
+                index[rid] = row
+            if raw:
+                index[raw.lower()] = row
+        fw["_by_id"] = index
+    row = index.get(want) or index.get((control_id or "").strip().lower())
+    if row:
+        return _control_from_row(fid, row)
     return None
 
 
@@ -148,6 +158,15 @@ def framework_meta(framework_id: str) -> Framework:
 def catalog_frameworks() -> list[dict[str, Any]]:
     """Thin pass-through of gap_analysis.list_frameworks()."""
     return list_frameworks()
+
+
+def _summary_truth(user_id: str) -> dict[str, Any]:
+    try:
+        from app.control_truth import truth_indicators
+
+        return truth_indicators(user_id)
+    except Exception:
+        return {"state": "unknown", "label": "UNKNOWN", "note": "Truth indicators unavailable."}
 
 
 def control_center_summary(user_id: str, framework_id: str = "cmmc_l2") -> dict[str, Any]:
@@ -223,6 +242,7 @@ def control_center_summary(user_id: str, framework_id: str = "cmmc_l2") -> dict[
         "evidence_coverage": evidence_coverage if evidence_coverage is not None else 0,
         "open_gaps": open_gaps,
         "last_test": last_test,
+        "truth": _summary_truth(user_id),
         "disclaimer": (
             "Live control tests are operating-effectiveness signals from SecuraIQ "
             "telemetry — not a CMMC certification, SPRS submission, or compliance "

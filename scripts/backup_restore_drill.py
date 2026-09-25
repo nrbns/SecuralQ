@@ -13,9 +13,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sqlite3
-import sys
 import tempfile
 import time
 from pathlib import Path
@@ -53,7 +53,25 @@ def _verify_restored(path: Path) -> str | None:
     return None
 
 
-def run_drill(*, keep: bool = False) -> dict:
+def _ops_log_dir() -> Path:
+    override = (os.environ.get("SECURAIQ_OPS_LOG_DIR") or "").strip()
+    if override:
+        return Path(override)
+    return Path(__file__).resolve().parents[1] / "data" / "ops"
+
+
+def _persist(row: dict) -> Path:
+    from datetime import datetime, timezone
+
+    log = _ops_log_dir() / "ha_dr_measurements.jsonl"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"ts_utc": datetime.now(timezone.utc).isoformat(), **row}
+    with log.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(payload, default=str) + "\n")
+    return log
+
+
+def run_drill(*, keep: bool = False, persist: bool = False) -> dict:
     root = Path(tempfile.mkdtemp(prefix="securaiq-drill-"))
     src_data = root / "src_data"
     backup = root / "backup"
@@ -63,22 +81,46 @@ def run_drill(*, keep: bool = False) -> dict:
     dest_data.mkdir(parents=True)
 
     _create_source_db(src_db)
+    src_bytes = int(src_db.stat().st_size)
+
+    t0 = time.perf_counter()
     # Backup = file copy (same as scripts/backup fallback without sqlite3 CLI)
     shutil.copy2(src_db, backup / "securaiq.db")
-    # Restore
-    shutil.copy2(backup / "securaiq.db", dest_data / "securaiq.db")
+    backup_ms = round((time.perf_counter() - t0) * 1000, 3)
 
+    t1 = time.perf_counter()
+    shutil.copy2(backup / "securaiq.db", dest_data / "securaiq.db")
+    restore_ms = round((time.perf_counter() - t1) * 1000, 3)
+
+    t2 = time.perf_counter()
     err = _verify_restored(dest_data / "securaiq.db")
+    verify_ms = round((time.perf_counter() - t2) * 1000, 3)
+
+    # RTO = restore + verify (usable DB). RPO = 0 for a closed-file copy.
+    rto_ms = round(restore_ms + verify_ms, 3)
+    rpo_ms = 0.0
     result = {
         "ok": err is None,
         "error": err,
         "marker": MARKER_VALUE,
+        "src_bytes": src_bytes,
+        "backup_ms": backup_ms,
+        "restore_ms": restore_ms,
+        "verify_ms": verify_ms,
+        "rto_ms": rto_ms,
+        "rpo_ms": rpo_ms,
         "src_db": str(src_db),
         "backup_db": str(backup / "securaiq.db"),
         "restored_db": str(dest_data / "securaiq.db"),
-        "disclaimer": "lab/CI drill for SQLite path — Postgres pg_dump restore remains ops-owned",
+        "disclaimer": (
+            "SQLite closed-file copy on this host. "
+            "RTO is restore+verify ms — not API/Redis/Postgres cluster kill. "
+            "Postgres pg_dump restore remains ops-owned."
+        ),
         "kept_dir": str(root) if keep else None,
     }
+    if persist:
+        result["recorded"] = str(_persist({k: v for k, v in result.items() if k != "kept_dir"}))
     if not keep:
         shutil.rmtree(root, ignore_errors=True)
     return result
@@ -87,8 +129,9 @@ def run_drill(*, keep: bool = False) -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--keep", action="store_true", help="Keep temp dirs after drill")
+    ap.add_argument("--record", action="store_true", help="Append timings to data/ops/ha_dr_measurements.jsonl")
     args = ap.parse_args()
-    result = run_drill(keep=args.keep)
+    result = run_drill(keep=args.keep, persist=args.record)
     print(json.dumps(result, indent=2))
     return 0 if result.get("ok") else 1
 

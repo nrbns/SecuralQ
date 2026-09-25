@@ -28,6 +28,7 @@ pub struct DeepSnapshot {
     pub disk_encryption_status: Value,
     pub defender_status: Value,
     pub ssh_config: Value,
+    pub macos_hardening: Value,
 }
 
 pub fn collect_deep() -> DeepSnapshot {

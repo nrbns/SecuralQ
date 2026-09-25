@@ -34,22 +34,22 @@ if (-not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Adm
     exit 1
 }
 
+$exeSrc = Join-Path $PSScriptRoot "SecuraIQ-Agent.exe"
+$scriptSrc = Join-Path $PSScriptRoot "securaiq_agent.py"
+$useExe = Test-Path $exeSrc
 $python = Get-Command python -ErrorAction SilentlyContinue
 if (-not $python) { $python = Get-Command python3 -ErrorAction SilentlyContinue }
-if (-not $python) {
-    Write-Error "python.exe not found on PATH. Install Python 3.8+ (tick 'Add python.exe to PATH') first."
+
+if (-not $useExe -and -not (Test-Path $scriptSrc)) {
+    Write-Error "Neither SecuraIQ-Agent.exe nor securaiq_agent.py is next to this installer. On the customer PC copy the Windows package from Agents (or dist/agent-packages), not only this .ps1."
     exit 1
 }
-
-$scriptSrc = Join-Path $PSScriptRoot "securaiq_agent.py"
-if (-not (Test-Path $scriptSrc)) {
-    Write-Error "Could not find securaiq_agent.py next to this installer at $scriptSrc. Download both files together:`n  curl -fsSL <server>/api/agents/install-script -o securaiq_agent.py`n  curl -fsSL <server>/api/agents/install-script/windows -o install_agent_windows.ps1"
+if (-not $useExe -and -not $python) {
+    Write-Error "This PC has no Python and no SecuraIQ-Agent.exe. Customer devices: download the Windows .exe/.zip from the SecuraIQ Agents page. Do not use http://127.0.0.1 as --server."
     exit 1
 }
 
 New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
-Copy-Item -Path $scriptSrc -Destination (Join-Path $InstallDir "securaiq_agent.py") -Force
-
 # Store the token in a file readable only by Administrators + SYSTEM, rather
 # than embedding it in the scheduled task's command line (visible to any
 # user via Task Scheduler / Get-ScheduledTask / process listings).
@@ -58,9 +58,17 @@ Set-Content -Path $tokenFile -Value $Token -NoNewline -Encoding ascii
 icacls $tokenFile /inheritance:r | Out-Null
 icacls $tokenFile /grant "SYSTEM:(R)" "*S-1-5-32-544:(R)" | Out-Null  # SYSTEM + Administrators only
 
-$agentScript = Join-Path $InstallDir "securaiq_agent.py"
-$action = New-ScheduledTaskAction -Execute $python.Source `
-    -Argument "`"$agentScript`" --server `"$Server`" --token-file `"$tokenFile`" --interval $IntervalSec --sentinel-interval $SentinelIntervalSec"
+if ($useExe) {
+    $exeDst = Join-Path $InstallDir "SecuraIQ-Agent.exe"
+    Copy-Item -Path $exeSrc -Destination $exeDst -Force
+    $action = New-ScheduledTaskAction -Execute $exeDst `
+        -Argument "--server `"$Server`" --token-file `"$tokenFile`" --interval $IntervalSec --sentinel-interval $SentinelIntervalSec"
+} else {
+    Copy-Item -Path $scriptSrc -Destination (Join-Path $InstallDir "securaiq_agent.py") -Force
+    $agentScript = Join-Path $InstallDir "securaiq_agent.py"
+    $action = New-ScheduledTaskAction -Execute $python.Source `
+        -Argument "`"$agentScript`" --server `"$Server`" --token-file `"$tokenFile`" --interval $IntervalSec --sentinel-interval $SentinelIntervalSec"
+}
 
 $trigger = New-ScheduledTaskTrigger -AtStartup
 $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest

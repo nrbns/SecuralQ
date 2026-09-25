@@ -216,6 +216,8 @@ class Settings(BaseSettings):
     # When true, startup refuses to boot unless all five agent-security flags + Ed25519
     # command signing are configured (SECURAIQ_COMMERCIAL_PROFILE=1). Lab default off.
     commercial_profile_enforce: bool = False
+    # Lab escape hatch: DEPLOYMENT_MODE=production will not auto-enforce commercial crypto.
+    allow_lab_insecure: bool = False
     # Soft-enable signature + replay without full mTLS (lab-production sealed path).
     agent_lab_sealed_mode: bool = False
     # production / DEPLOYMENT_MODE=production requires PostgreSQL (never SQLite for SaaS)

@@ -111,7 +111,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         if not path.startswith("/api/"):
             return await call_next(request)
-        if path in {"/api/health", "/api/realtime", "/api/status/public"}:
+        if path in {"/api/health", "/api/alive", "/api/realtime", "/api/status/public"}:
             return await call_next(request)
         client = request.client.host if request.client else "unknown"
         # Local lab: don't throttle this machine's own UI/scripts by IP

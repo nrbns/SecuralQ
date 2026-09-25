@@ -1,0 +1,47 @@
+# Keep `docker build` small on low-storage hosts. Do not send models or caches.
+.git
+.gitignore
+.venv
+.pytest_cache
+.ruff_cache
+.idea
+.vscode
+__pycache__
+**/__pycache__
+*.py[cod]
+*.log
+.env
+**/.env
+
+# Local data / models (runtime uses a volume)
+data/*
+!data/knowledge
+!data/knowledge/**
+!data/frameworks
+!data/frameworks/**
+data/_ui_audit
+data/ops
+data/chroma
+data/git_clones
+
+# Build artifacts
+dist
+build
+securaiq-agent/target
+*.exe
+*.exe.bak*
+
+# Dev-only
+tests
+docs
+tools
+vendor
+.github
+*.md
+!README.md
+
+# One-off leftover scripts never belong in the image
+data/_*.py
+data/_*.txt
+data/_*.json
+data/_*.pdf

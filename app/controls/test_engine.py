@@ -259,6 +259,28 @@ def get_control_with_live_results(
             }
         )
 
+    try:
+        from app.control_truth import agent_availability, resolve_result_truth
+
+        avail = agent_availability(user_id)
+        permit_pass = bool(avail["any_online"] or avail["agents"] == 0)
+        for item in live_results:
+            truth = resolve_result_truth(
+                {
+                    "status": item.get("status"),
+                    "test_name": item.get("test"),
+                    "tested_at": item.get("tested_at"),
+                    "summary": item.get("summary"),
+                    "detail": item.get("detail"),
+                },
+                agents_online=permit_pass,
+            )
+            item["effective_status"] = truth["status"]
+            item["freshness"] = truth["freshness"]
+            item["truth_reason"] = truth["reason"]
+    except Exception:
+        pass
+
     return {
         **ctrl.to_dict(),
         "live_results": live_results,

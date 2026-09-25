@@ -183,6 +183,8 @@ def _rollup_status(statuses: list[str]) -> str:
         return "unknown"
     if any(s == "fail" for s in normalized):
         return "fail"
+    if any(s == "expired" for s in normalized):
+        return "expired"
     if any(s == "partial" for s in normalized):
         return "partial"
     if any(s == "unknown" for s in normalized) and not all(s == "pass" for s in normalized):
@@ -200,14 +202,35 @@ def _rollup_status(statuses: list[str]) -> str:
     return normalized[0]
 
 
-def aggregate_control_statuses(user_id: str, framework_id: str) -> dict[str, Any]:
-    """Counts of controls by rolled-up last-result status. Honest zeros if empty."""
+def aggregate_control_statuses(
+    user_id: str, framework_id: str, *, apply_truth: bool = True
+) -> dict[str, Any]:
+    """Counts of controls by rolled-up last-result status. Honest zeros if empty.
+
+    When apply_truth is True, enrolled-but-offline agents cannot contribute PASS.
+    """
     rows = list_results_for_framework(user_id, framework_id)
+    permit_pass = True
+    if apply_truth:
+        try:
+            from app.control_truth import agents_permit_pass
+
+            permit_pass = agents_permit_pass(user_id)
+        except Exception:
+            permit_pass = True
     by_control: dict[str, list[str]] = {}
     last_test: float | None = None
     for r in rows:
         cid = r.get("control_id") or ""
-        by_control.setdefault(cid, []).append(str(r.get("status") or "unknown"))
+        st = str(r.get("status") or "unknown")
+        if apply_truth:
+            try:
+                from app.control_truth import resolve_result_truth
+
+                st = resolve_result_truth(r, agents_online=permit_pass)["status"]
+            except Exception:
+                pass
+        by_control.setdefault(cid, []).append(st)
         ta = r.get("tested_at")
         if ta is not None:
             try:
@@ -220,6 +243,9 @@ def aggregate_control_statuses(user_id: str, framework_id: str) -> dict[str, Any
     passing = failing = unknown = na = 0
     for statuses in by_control.values():
         rolled = _rollup_status(statuses)
+        if rolled == "expired":
+            unknown += 1
+            continue
         if rolled == "pass":
             passing += 1
         elif rolled == "fail":

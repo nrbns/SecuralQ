@@ -11,9 +11,13 @@ from app.config import settings
 from app.db import audit, get_conn, new_id, now, row_to_dict
 
 ROLES = ("admin", "analyst", "viewer", "client")
+_org_schema_ready = False
 
 
 def ensure_org_schema() -> None:
+    global _org_schema_ready
+    if _org_schema_ready:
+        return
     c = get_conn()
     c.executescript(
         """
@@ -64,6 +68,7 @@ def ensure_org_schema() -> None:
             "ALTER TABLE engagements ADD COLUMN cmmc_enclave_architecture TEXT NOT NULL DEFAULT ''"
         )
     c.commit()
+    _org_schema_ready = True
 
 
 def _slugify(name: str) -> str:

@@ -70,6 +70,38 @@ async def api_get_control(
     return result
 
 
+def _control_detail_payload(user_id: str, framework_id: str, control_id: str) -> dict:
+    from app.control_truth import control_detail
+
+    try:
+        row = control_detail(user_id, framework_id, control_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if not row:
+        raise HTTPException(status_code=404, detail="Control not found")
+    return row
+
+
+@router.get("/why")
+async def api_control_why(
+    user: Annotated[AuthUser, Depends(require_user)],
+    framework_id: str = Query(...),
+    control_id: str = Query(...),
+):
+    """Control detail card via query params — IDs with dots stay unambiguous."""
+    return _control_detail_payload(user.id, framework_id, control_id)
+
+
+@router.get("/catalog/{framework_id}/{control_id}/detail")
+async def api_control_detail(
+    framework_id: str,
+    control_id: str,
+    user: Annotated[AuthUser, Depends(require_user)],
+):
+    """Control detail card — requirement, truth, why, evidence, action, verify."""
+    return _control_detail_payload(user.id, framework_id, control_id)
+
+
 @router.post("/test/{framework_id}/{control_id}")
 async def api_run_control_test(
     framework_id: str,

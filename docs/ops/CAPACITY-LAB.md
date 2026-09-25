@@ -120,7 +120,7 @@ python -c "from app.capacity_soft import soft_checkin_ladder; print(soft_checkin
 
 When HTTP measured, copy numbers from the harness JSON / jsonl — **never invent**.
 
-Raw JSON: `data/_capacity_extended.json` (in-proc); HTTP rows in `data/ops/capacity_measurements.jsonl` (gitignored).
+HTTP rows: `data/ops/capacity_measurements.jsonl` (gitignored). Never invent rungs.
 
 Phase-1 leftovers board: `GET /api/admin/ops/phase1-remaining` · one-shot: `python scripts/phase1_ops_complete_lab.py`
 

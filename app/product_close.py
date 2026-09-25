@@ -68,15 +68,23 @@ def onboarding_progress(user_id: str) -> dict[str, Any]:
     except Exception:
         risk_ok = False
 
-    steps.append({"id": "org", "ok": org_n > 0, "detail": f"orgs={org_n}"})
-    steps.append({"id": "agent", "ok": agent_n > 0, "detail": f"agents={agent_n}"})
-    steps.append({"id": "asset", "ok": asset_n > 0, "detail": f"assets={asset_n}"})
-    steps.append({"id": "risk", "ok": risk_ok, "detail": "org risk computed" if risk_ok else "no risk yet"})
+    fw_n = 0
+    if "securaiq_control_test_results" in tables:
+        fw_n = _count(
+            "SELECT COUNT(DISTINCT framework_id) AS n FROM securaiq_control_test_results WHERE user_id = ?",
+            (user_id,),
+        )
+    steps.append({"id": "org", "ok": org_n > 0, "detail": f"orgs={org_n}", "workspace": "orgs"})
+    steps.append({"id": "agent", "ok": agent_n > 0, "detail": f"agents={agent_n}", "workspace": "agents"})
+    steps.append({"id": "asset", "ok": asset_n > 0, "detail": f"assets={asset_n}", "workspace": "assets"})
+    steps.append({"id": "frameworks", "ok": fw_n > 0 or risk_ok, "detail": f"frameworks_with_results={fw_n}", "workspace": "compliance_center"})
+    steps.append({"id": "risk", "ok": risk_ok, "detail": "org risk computed" if risk_ok else "no risk yet", "workspace": "risks"})
     steps.append(
         {
-            "id": "top5",
+            "id": "pulse",
             "ok": risk_ok and asset_n > 0,
-            "detail": "Command Center / risk why-increased is the next operator view",
+            "detail": "Command Center pulse / what-changed is the next operator view",
+            "view": "command",
         }
     )
     done = sum(1 for s in steps if s["ok"])

@@ -10,6 +10,51 @@
     return h;
   }
 
+  function fetchTimed(url, opts, ms) {
+    const wait = Number(ms) > 0 ? Number(ms) : 20000;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), wait);
+    const outer = opts && opts.signal;
+    if (outer) {
+      if (outer.aborted) ctrl.abort();
+      else outer.addEventListener("abort", () => ctrl.abort(), { once: true });
+    }
+    return fetch(url, Object.assign({}, opts || {}, { signal: ctrl.signal }))
+      .catch((err) => {
+        if (err && err.name === "AbortError") {
+          const e = new Error("Timed out (server busy)");
+          e.name = "AbortError";
+          throw e;
+        }
+        throw err;
+      })
+      .finally(() => clearTimeout(timer));
+  }
+
+  function fetchFailMsg(err, label) {
+    if (err && (err.name === "AbortError" || /timed out|aborted/i.test(err.message || ""))) {
+      return `Timed out loading ${label} (server busy). Retry in a moment.`;
+    }
+    const m = (err && err.message) || String(err || "");
+    if (/failed to fetch|networkerror/i.test(m)) return `Could not reach the API for ${label}.`;
+    return m;
+  }
+
+  function retryHtml(msg, btnId) {
+    if (!window.__securaiqAutoRetry) window.__securaiqAutoRetry = {};
+    if (!window.__securaiqAutoRetry[btnId]) {
+      window.__securaiqAutoRetry[btnId] = true;
+      setTimeout(() => {
+        document.getElementById(btnId)?.click();
+        setTimeout(() => {
+          if (window.__securaiqAutoRetry) window.__securaiqAutoRetry[btnId] = false;
+        }, 10000);
+      }, 2000);
+    }
+    return `<p class="hint">${escapeHtml(msg)}</p>
+      <button type="button" class="btn-secondary" id="${btnId}">Retry</button>`;
+  }
+
   function escapeHtml(s) {
     return String(s ?? "")
       .replace(/&/g, "&amp;")
@@ -266,12 +311,12 @@
     if (!body) return;
     body.innerHTML = '<p class="hint">Loading…</p>';
     const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
-    const timer = ctrl ? setTimeout(() => ctrl.abort(), 20000) : null;
+    const timer = ctrl ? setTimeout(() => ctrl.abort(), 30000) : null;
     try {
-      const res = await fetch("/api/canonical-controls/status", {
+      const res = await fetchTimed("/api/canonical-controls/status", {
         headers: authHeaders(),
         signal: ctrl ? ctrl.signal : undefined,
-      });
+      }, 30000);
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error((data && data.detail) || `HTTP ${res.status}`);
       const statuses = data.statuses || [];
@@ -304,9 +349,7 @@
         card.addEventListener("click", () => card.classList.toggle("is-expanded"));
       });
     } catch (err) {
-      const msg = err && err.name === "AbortError" ? "Timed out waiting for Impact status (server busy)." : err.message || String(err);
-      body.innerHTML = `<p class="hint">Could not load cross-framework impact: ${escapeHtml(msg)}</p>
-        <button type="button" class="btn-secondary" id="impactRetryBtn">Retry</button>`;
+      body.innerHTML = retryHtml(`Could not load cross-framework impact: ${fetchFailMsg(err, "impact")}`, "impactRetryBtn");
       body.querySelector("#impactRetryBtn")?.addEventListener("click", () => renderImpactPage());
     } finally {
       if (timer) clearTimeout(timer);
@@ -319,7 +362,7 @@
     const subEl = qs("ccImpactSub");
     if (!strongEl && !subEl) return;
     try {
-      const res = await fetch("/api/canonical-controls/status", { headers: authHeaders() });
+      const res = await fetchTimed("/api/canonical-controls/status", { headers: authHeaders() }, 8000);
       const data = await res.json().catch(() => ({}));
       if (!res.ok) return;
       const statuses = data.statuses || [];
@@ -430,8 +473,9 @@
       title.textContent = labels[view] || "SecuraIQ";
     }
     window.__securaiqWorkspaceView = view;
-    if (view === "command" && typeof loadCommandCenter === "function") loadCommandCenter();
-    if (view === "command") loadImpactHeroStat();
+    if (view === "command" && typeof loadCommandCenter === "function") {
+      loadCommandCenter({ lite: !window.__securaiqCcPainted });
+    }
     if (view === "chat" && typeof syncEmptyState === "function") syncEmptyState();
     if (view === "assets") renderAssetsPage();
     if (view === "asset_detail") renderAssetDetailPage(window.__securaiqSelectedAssetId);
@@ -451,7 +495,6 @@
     if (view === "evidence") renderEvidencePage();
     if (view === "orgs") renderOrgsPage();
     if (view === "frameworks") {
-      renderHardeningPanel();
       renderFrameworksPage();
     }
     if (view === "compliance_center") renderComplianceCenterPage();
@@ -858,15 +901,26 @@
     let swPosture = {};
     let cmmcScope = null;
     let enclaveBoundary = null;
+    const full = !!(opts && opts.full);
     try {
       const [res, invRes, stRes, jobsRes, swRes, cmmcRes, enclaveRes] = await Promise.all([
-        fetch("/api/assets", { headers: authHeaders() }),
-        fetch("/api/openaudit/devices?limit=500", { headers: authHeaders() }).catch(() => null),
-        fetch("/api/openaudit/status", { headers: authHeaders() }).catch(() => null),
-        fetch("/api/jobs?limit=20", { headers: authHeaders() }).catch(() => null),
-        fetch("/api/software/posture", { headers: authHeaders() }).catch(() => null),
-        fetch("/api/assets/cmmc-scope-summary", { headers: authHeaders() }).catch(() => null),
-        fetch("/api/assets/cmmc-enclave-boundary", { headers: authHeaders() }).catch(() => null),
+        fetchTimed(full ? "/api/assets" : "/api/assets?lite=1", { headers: authHeaders() }, 12000),
+        full
+          ? fetchTimed("/api/openaudit/devices?limit=200", { headers: authHeaders() }, 8000).catch(() => null)
+          : Promise.resolve(null),
+        full
+          ? fetchTimed("/api/openaudit/status", { headers: authHeaders() }, 8000).catch(() => null)
+          : Promise.resolve(null),
+        full ? fetchTimed("/api/jobs?limit=20", { headers: authHeaders() }, 8000).catch(() => null) : Promise.resolve(null),
+        full
+          ? fetchTimed("/api/software/posture", { headers: authHeaders() }, 8000).catch(() => null)
+          : Promise.resolve(null),
+        full
+          ? fetchTimed("/api/assets/cmmc-scope-summary", { headers: authHeaders() }, 8000).catch(() => null)
+          : Promise.resolve(null),
+        full
+          ? fetchTimed("/api/assets/cmmc-enclave-boundary", { headers: authHeaders() }, 8000).catch(() => null)
+          : Promise.resolve(null),
       ]);
       data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.detail || `Assets failed (${res.status})`);
@@ -877,7 +931,8 @@
       cmmcScope = cmmcRes && cmmcRes.ok ? await cmmcRes.json().catch(() => null) : null;
       enclaveBoundary = enclaveRes && enclaveRes.ok ? await enclaveRes.json().catch(() => null) : null;
     } catch (err) {
-      el.innerHTML = `<p class="hint">Could not load assets: ${escapeHtml(err.message || String(err))}</p>`;
+      el.innerHTML = retryHtml(`Could not load assets: ${fetchFailMsg(err, "inventory")}`, "assetsRetryBtn");
+      el.querySelector("#assetsRetryBtn")?.addEventListener("click", () => renderAssetsPage());
       return;
     }
     const assets = data.assets || [];
@@ -1113,6 +1168,11 @@
         }
       });
     });
+    if (!full && window.__securaiqWorkspaceView === "assets") {
+      setTimeout(() => {
+        if (window.__securaiqWorkspaceView === "assets") renderAssetsPage({ quiet: true, full: true });
+      }, 400);
+    }
   }
   window.renderAssetsPage = renderAssetsPage;
 
@@ -1657,18 +1717,22 @@
     const el = qs("softwarePageBody");
     if (!el) return;
     const quiet = !!(opts && opts.quiet);
+    const full = !!(opts && opts.full);
     if (!quiet) el.innerHTML = `<p class="hint" aria-live="polite">Loading software inventory…</p>`;
     let data = {};
     let invStatus = null;
     try {
-      const params = new URLSearchParams({ limit: "500" });
+      const params = new URLSearchParams({ limit: full ? "200" : "80" });
+      if (!full) params.set("lite", "1");
       if (_softwareFilters.status) params.set("status", _softwareFilters.status);
       if (_softwareFilters.source) params.set("source", _softwareFilters.source);
       const assetFilter = window.__softwareAssetFilter || "";
       if (assetFilter.id) params.set("asset_id", assetFilter.id);
       const [res, statusRes] = await Promise.all([
-        fetch(`/api/software/inventory?${params}`, { headers: authHeaders() }),
-        fetch("/api/inventory/status", { headers: authHeaders() }).catch(() => null),
+        fetchTimed(`/api/software/inventory?${params}`, { headers: authHeaders() }, full ? 25000 : 12000),
+        full
+          ? fetchTimed("/api/inventory/status", { headers: authHeaders() }, 8000).catch(() => null)
+          : Promise.resolve(null),
       ]);
       data = await res.json().catch(() => ({}));
       if (statusRes && statusRes.ok) invStatus = await statusRes.json().catch(() => null);
@@ -1688,6 +1752,16 @@
           <button type="button" class="btn-secondary" data-workspace="integrations">Connect sources</button>
         </div></div>`;
       qs("softwareRetryLoad")?.addEventListener("click", () => renderSoftwarePage());
+      if (!window.__securaiqAutoRetry) window.__securaiqAutoRetry = {};
+      if (!window.__securaiqAutoRetry.softwareRetryLoad) {
+        window.__securaiqAutoRetry.softwareRetryLoad = true;
+        setTimeout(() => {
+          document.getElementById("softwareRetryLoad")?.click();
+          setTimeout(() => {
+            if (window.__securaiqAutoRetry) window.__securaiqAutoRetry.softwareRetryLoad = false;
+          }, 10000);
+        }, 2000);
+      }
       qs("softwareSyncEmpty")?.addEventListener("click", () => {
         if (typeof window.runSoftwareSyncAll === "function") window.runSoftwareSyncAll();
         else if (typeof window.syncAllAndRebuildSoftware === "function") window.syncAllAndRebuildSoftware({});
@@ -2014,7 +2088,7 @@
       window.refreshLocalWindowsHost(true).then(() => renderSoftwarePage({ quiet: true })).catch(() => {});
     }
     // Background latest-version refresh once per session when the page is opened
-    if (!quiet && !window.__securaiqSwVersionsTried && totalProducts > 0) {
+    if (full && !window.__securaiqSwVersionsTried && totalProducts > 0) {
       window.__securaiqSwVersionsTried = true;
       fetch("/api/software/versions/refresh", { method: "POST", headers: authHeaders() })
         .then((r) => r.json().catch(() => ({})))
@@ -2023,18 +2097,28 @@
         })
         .catch(() => {});
     }
+    if (!full && window.__securaiqWorkspaceView === "software") {
+      setTimeout(() => {
+        if (window.__securaiqWorkspaceView === "software") renderSoftwarePage({ quiet: true, full: true });
+      }, 500);
+    }
   }
   window.renderSoftwarePage = renderSoftwarePage;
 
   async function renderRisksPage() {
+    const host = qs("risksPageBody");
+    if (host) host.innerHTML = `<p class="hint">Loading risks…</p>`;
     let data = {};
     try {
-      const res = await fetch("/api/risks", { headers: authHeaders() });
+      const res = await fetchTimed("/api/risks", { headers: authHeaders() }, 8000);
       data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
     } catch (err) {
       const el = qs("risksPageBody");
-      if (el) el.innerHTML = `<p class="hint">Could not load risks: ${escapeHtml(err.message || String(err))}</p>`;
+      if (el) {
+        el.innerHTML = retryHtml(`Could not load risks: ${fetchFailMsg(err, "risks")}`, "risksRetryBtn");
+        el.querySelector("#risksRetryBtn")?.addEventListener("click", () => renderRisksPage());
+      }
       return;
     }
     const rows = (data.risks || [])
@@ -2183,6 +2267,7 @@
       <section class="entity-section">
         <h3>AI actions</h3>
         <div class="cc-action-row entity-ai-actions">
+          <button type="button" class="btn-secondary" data-drawer-kind="finding" data-drawer-id="${escapeHtml(v.id || "")}">Why should I care?</button>
           <button type="button" class="btn-primary-cc ws-ask-ai" data-kind="vuln" data-json="${escapeHtml(
             JSON.stringify({
               id: v.id,
@@ -5686,7 +5771,7 @@
   async function renderAgentPackagesHub(el) {
     if (!el) return;
     try {
-      const res = await fetch("/api/agents/packages", { headers: authHeaders() });
+      const res = await fetchTimed("/api/agents/packages", { headers: authHeaders() }, 20000);
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
       const byOs = data.by_os || {};
@@ -5777,9 +5862,30 @@
         : `<div class="agents-roadmap-badges"><span>MSI soon</span><span>DEB/RPM soon</span><span>Notarized DMG soon</span></div>`;
       const allScripts = (byOs.all || []).map(itemBtn).join("");
       const notes = (data.notes || []).map((n) => `<li>${escapeHtml(n)}</li>`).join("");
+      let custBoard = null;
+      try {
+        const cr = await fetchTimed("/api/install/customer-check", { headers: authHeaders() }, 8000);
+        if (cr.ok) custBoard = await cr.json();
+      } catch (_) {
+        custBoard = null;
+      }
+      const fnChips = (custBoard?.functions || [])
+        .map((f) => {
+          const ok = !!f.ok;
+          return `<span class="cust-fn ${ok ? "ok" : "bad"}" title="${escapeHtml(f.note || "")}">${escapeHtml(f.id)} ${ok ? "ok" : "fail"}</span>`;
+        })
+        .join("");
+      const custOpen = (custBoard?.other_device && custBoard.other_device.open) || custBoard?.server_url || serverUrl;
+      const custBlock = custBoard
+        ? `<div class="customer-install-check" style="margin:0 0 0.75rem;padding:0.65rem 0.75rem;border:1px solid var(--border,#d4d4d8);border-radius:6px">
+            <strong>Customer / other-device functions</strong>
+            <p class="hint" style="margin:0.35rem 0 0">On phones and other PCs open <code>${escapeHtml(custOpen || "")}</code> — never localhost on that device.</p>
+            <div class="cust-fn-row" style="display:flex;flex-wrap:wrap;gap:0.35rem;margin-top:0.5rem">${fnChips}</div>
+          </div>`
+        : "";
       const reachBanner = reachable
-        ? `<p class="hint" style="margin:0 0 0.75rem">Agents on other machines must use <code>${escapeHtml(serverUrl)}</code> — not localhost.</p>`
-        : `<div class="cc-callout" style="margin:0 0 0.75rem;padding:0.65rem 0.75rem;border:1px solid var(--danger-border,#fca5a5);background:color-mix(in srgb,#ef4444 8%,transparent);border-radius:6px">
+        ? `${custBlock}<p class="hint" style="margin:0 0 0.75rem">Agents on other machines must use <code>${escapeHtml(serverUrl)}</code> — not localhost.</p>`
+        : `${custBlock}<div class="cc-callout" style="margin:0 0 0.75rem;padding:0.65rem 0.75rem;border:1px solid var(--danger-border,#fca5a5);background:color-mix(in srgb,#ef4444 8%,transparent);border-radius:6px">
             <strong>Other PCs cannot reach this server</strong>
             <p class="hint" style="margin:0.35rem 0 0">${escapeHtml(deploy.warning || "SecuraIQ is bound to localhost, or the install URL is 127.0.0.1. Restart with LAN mode and use a LAN IP as --server.")}</p>
             <ol class="hint" style="margin:0.5rem 0 0;padding-left:1.2rem">
@@ -5849,7 +5955,8 @@
         }
       });
     } catch (err) {
-      el.innerHTML = `<p class="hint">Couldn't load package catalog. <span class="hint-sub">(${escapeHtml(err.message || String(err))})</span></p>`;
+      el.innerHTML = retryHtml(`Couldn't load package catalog: ${fetchFailMsg(err, "packages")}`, "agentsPkgRetryBtn");
+      el.querySelector("#agentsPkgRetryBtn")?.addEventListener("click", () => renderAgentPackagesHub(el));
     }
   }
   window.renderAgentPackagesHub = renderAgentPackagesHub;
@@ -5859,12 +5966,12 @@
     if (!el) return;
     try {
       const [valRes, comRes, prodRes] = await Promise.all([
-        fetch("/api/licenses/validate", {
+        fetchTimed("/api/licenses/validate", {
           method: "POST",
           headers: authHeaders({ "Content-Type": "application/json" }),
-        }),
-        fetch("/api/licenses/commercial-status", { headers: authHeaders() }).catch(() => null),
-        fetch("/api/controls/production-profile", { headers: authHeaders() }).catch(() => null),
+        }, 20000),
+        fetchTimed("/api/licenses/commercial-status", { headers: authHeaders() }).catch(() => null),
+        fetchTimed("/api/controls/production-profile", { headers: authHeaders() }).catch(() => null),
       ]);
       const data = await valRes.json().catch(() => ({}));
       if (!valRes.ok) throw new Error(data.detail || `HTTP ${valRes.status}`);
@@ -5965,7 +6072,8 @@
         }
       });
     } catch (err) {
-      el.innerHTML = `<p class="hint">Couldn't validate license. <span class="hint-sub">(${escapeHtml(err.message || String(err))})</span></p>`;
+      el.innerHTML = retryHtml(`Couldn't validate license: ${fetchFailMsg(err, "license")}`, "agentsLicRetryBtn");
+      el.querySelector("#agentsLicRetryBtn")?.addEventListener("click", () => renderAgentsLicensePanel());
     }
   }
   window.renderAgentsLicensePanel = renderAgentsLicensePanel;
@@ -6064,6 +6172,90 @@
   }
   window.openAssetDetail = openAssetDetail;
 
+  async function fetchControlWhy(fwId, cid) {
+    const qs = `framework_id=${encodeURIComponent(fwId)}&control_id=${encodeURIComponent(cid)}`;
+    const urls = [
+      `/api/controls/why?${qs}`,
+      `/api/controls/catalog/${encodeURIComponent(fwId)}/${encodeURIComponent(cid)}/detail`,
+    ];
+    let lastErr = null;
+    for (const url of urls) {
+      try {
+        const r = await fetch(url, { headers: authHeaders() });
+        const d = await r.json().catch(() => ({}));
+        if (r.ok && (d.ok || d.status || d.title)) return d;
+        lastErr = new Error((d && d.detail) || `HTTP ${r.status}`);
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+    throw lastErr || new Error("Control detail unavailable");
+  }
+
+  async function openControlDetail(fwId, cid, mountId) {
+    const mount = document.getElementById(mountId || "ccControlDetailCard");
+    if (!mount || !fwId || !cid) return;
+    mount.hidden = false;
+    mount.innerHTML = `<p class="hint">Loading ${escapeHtml(cid)}…</p>`;
+    try {
+      const d = await fetchControlWhy(fwId, cid);
+      const ev = (d.evidence || d.live_results || [])
+        .map(
+          (e) =>
+            `<li><strong>${escapeHtml(e.status || e.effective_status || "")}</strong> ${escapeHtml(
+              e.test_name || e.test || ""
+            )} — ${escapeHtml(e.reason || e.truth_reason || e.summary || "")}</li>`
+        )
+        .join("");
+      const why = (d.why || d.why_failing || []).map((w) => `<li>${escapeHtml(String(w))}</li>`).join("");
+      const agents = d.agents || {};
+      const action = d.action || { label: "Investigate", workspace: "evidence" };
+      mount.innerHTML = `
+        <header class="cc-detail-head">
+          <h2>${escapeHtml(d.control_id || cid)} · ${escapeHtml(d.title || "")}</h2>
+          <span class="auto-job-status">${escapeHtml(String(d.status || "unknown").toUpperCase())}</span>
+        </header>
+        <p class="hint">${escapeHtml(d.freshness || "")} · agents ${agents.online || 0}/${agents.agents || 0} online</p>
+        <dl class="mc-ops-flow">
+          <div><dt>Document</dt><dd>${escapeHtml(
+            ((d.document && d.document.text) || d.requirement || d.description || "").slice(0, 400) || "—"
+          )}
+            <div class="hint">${escapeHtml(
+              (d.document && d.document.disclaimer) || "Catalog / policy text is not PASS."
+            )}</div></dd></div>
+          <div><dt>Observation</dt><dd>${escapeHtml(
+            String((d.observation && d.observation.status) || d.status || "unknown").toUpperCase()
+          )} · ${escapeHtml((d.observation && d.observation.freshness) || d.freshness || "")}
+            <div class="hint">${escapeHtml(
+              (d.observation && d.observation.disclaimer) ||
+                "Last agent/control test. Offline PASS is not PASS."
+            )}</div></dd></div>
+          <div><dt>Why</dt><dd>${why ? `<ul>${why}</ul>` : "—"}</dd></div>
+          <div><dt>Evidence</dt><dd>${ev ? `<ul>${ev}</ul>` : "No last-results."}</dd></div>
+          <div><dt>Action</dt><dd>${escapeHtml(action.label || "Investigate")}</dd></div>
+          <div><dt>Verify</dt><dd>${escapeHtml(
+            d.verify ||
+              "Independent re-read of the same control after execution — execute alone is not PASS."
+          )}</dd></div>
+        </dl>
+        <div class="cc-action-row">
+          <button type="button" class="btn-secondary" data-workspace="${escapeHtml(
+            action.workspace || "evidence"
+          )}">${escapeHtml(action.label || "Investigate")}</button>
+        </div>
+        <p class="hint">${escapeHtml(d.disclaimer || "")}</p>`;
+      mount.querySelectorAll("[data-workspace]").forEach((el) => {
+        el.addEventListener("click", (e) => {
+          e.preventDefault();
+          showWorkspace(el.getAttribute("data-workspace"));
+        });
+      });
+    } catch (err) {
+      mount.innerHTML = `<p class="hint">Control detail failed: ${escapeHtml(err.message || String(err))}</p>`;
+    }
+  }
+  window.openControlDetail = openControlDetail;
+
   async function renderAssetDetailPage(assetId) {
     const body = qs("assetDetailBody");
     const titleEl = qs("assetDetailTitle");
@@ -6081,6 +6273,7 @@
     let software = [];
     let deps = [];
     let vulns = [];
+    let card = {};
     try {
       const [aRes, sRes, dRes, vRes] = await Promise.all([
         fetch(`/api/assets/${encodeURIComponent(id)}`, { headers: authHeaders() }),
@@ -6104,6 +6297,15 @@
         const all = vd.vulnerabilities || vd.items || [];
         vulns = all.filter((v) => String(v.asset_id || "") === String(id) || String(v.asset_name || "") === String(asset.name || ""));
       }
+      try {
+        const cardP = fetch(`/api/assets/${encodeURIComponent(id)}/identity-card`, {
+          headers: authHeaders(),
+        }).then((r) => (r.ok ? r.json() : {}));
+        const timeout = new Promise((resolve) => setTimeout(() => resolve({}), 2500));
+        card = await Promise.race([cardP, timeout]);
+      } catch {
+        card = {};
+      }
     } catch (err) {
       body.innerHTML = `<p class="hint">Could not load asset: ${escapeHtml(err.message || String(err))}</p>`;
       return;
@@ -6117,6 +6319,7 @@
     }
     if (actionsEl) {
       actionsEl.innerHTML = `
+        <button type="button" class="btn-secondary" data-drawer-kind="asset" data-drawer-id="${escapeHtml(id)}">Why?</button>
         <button type="button" class="btn-secondary" id="assetDetailScan" data-target="${escapeHtml(asset.ip || asset.name || "")}">Scan</button>
         <button type="button" class="btn-secondary" data-workspace="agents">Agents</button>
         <button type="button" class="btn-secondary" data-workspace="vulns">Findings</button>`;
@@ -6139,37 +6342,50 @@
       ["deps", "Dependencies"],
       ["activity", "Activity"],
     ];
-    const crit = vulns.filter((v) => /critical|high/i.test(v.severity || "")).length;
+    const exp = card.exposure || {};
+    const crit = Number(exp.critical_cves || 0) + Number(exp.high_cves || 0) || vulns.filter((v) => /critical|high/i.test(v.severity || "")).length;
     const narrative =
       typeof window.renderNarrativeBlock === "function"
         ? window.renderNarrativeBlock({
-            what: label,
-            why: `${asset.criticality || "medium"} criticality · ${asset.asset_type || "asset"}`,
-            evidence: `${software.length} software · ${vulns.length} findings`,
-            impact: crit ? `${crit} critical/high open` : "No critical/high on this host",
-            action: "Scan / patch via Agents / open remediations",
-            verify: "Retest after remediation",
+            what: card.display_name || label,
+            why: `${card.risk_band || asset.criticality || "medium"} risk · ${exp.scope || "unknown"} scope · owner ${card.owner || asset.owner || "unassigned"}`,
+            evidence: `${exp.open_findings != null ? exp.open_findings : vulns.length} findings · ${exp.failed_controls || 0} failed controls`,
+            impact: card.business_service
+              ? `Service ${card.business_service}`
+              : crit
+                ? `${crit} critical/high open`
+                : "No critical/high on this host",
+            action: "Fix highest risk / investigate / simulate",
+            verify: "Independent next check-in — execute is not verified",
           })
         : "";
 
     let pane = "";
     if (tab === "overview") {
       pane = `
+        <div class="identity-card" id="assetIdentityCard">
         <div class="cc-kpi-grid" style="margin:0 0 0.75rem">
-          <article class="cc-kpi"><span>Risk / criticality</span><strong>${escapeHtml(asset.criticality || "—")}</strong></article>
-          <article class="cc-kpi"><span>Findings</span><strong>${vulns.length}</strong></article>
-          <article class="cc-kpi"><span>Critical/High</span><strong>${crit}</strong></article>
-          <article class="cc-kpi"><span>Software</span><strong>${software.length}</strong></article>
-          <article class="cc-kpi"><span>Last scan</span><strong>${escapeHtml(asset.last_scan_status || "—")}</strong></article>
+          <article class="cc-kpi"><span>Online</span><strong>${card.online == null ? "—" : card.online ? "yes" : "no"}</strong></article>
+          <article class="cc-kpi"><span>Risk band</span><strong>${escapeHtml(card.risk_band || asset.criticality || "—")}</strong></article>
+          <article class="cc-kpi"><span>Findings</span><strong>${exp.open_findings != null ? exp.open_findings : vulns.length}</strong></article>
+          <article class="cc-kpi"><span>Failed controls</span><strong>${exp.failed_controls || 0}</strong></article>
+          <article class="cc-kpi"><span>Exposure</span><strong>${escapeHtml(exp.scope || "—")}</strong></article>
         </div>
         ${narrative}
+        <div class="cc-action-row">
+          <button type="button" class="btn-primary-cc" data-drawer-kind="asset" data-drawer-id="${escapeHtml(id)}">Fix highest risk</button>
+          <button type="button" class="btn-secondary" data-workspace="intel">Investigate</button>
+          <button type="button" class="btn-secondary" data-workspace="risks">Simulate</button>
+        </div>
         <ul class="cc-list">
-          <li>Owner — <strong>${escapeHtml(asset.owner || "unassigned")}</strong></li>
+          <li>Owner — <strong>${escapeHtml(card.owner || asset.owner || "unassigned")}</strong></li>
+          <li>Service — <strong>${escapeHtml(card.business_service || "unmapped")}</strong></li>
           <li>IP — <strong>${escapeHtml(asset.ip || "—")}</strong></li>
           <li>OS — <strong>${escapeHtml(asset.os || "—")}</strong></li>
           <li>MAC — <strong>${escapeHtml(asset.mac || "—")}</strong></li>
           <li>CMMC scope — <strong>${escapeHtml(asset.cmmc_asset_category || "not classified")}</strong></li>
-        </ul>`;
+        </ul>
+        </div>`;
     } else if (tab === "software") {
       pane = software.length
         ? `<div class="data-table-wrap"><table class="data-table"><thead><tr><th>Product</th><th>Version</th><th>Status</th></tr></thead><tbody>${software
@@ -7337,7 +7553,9 @@
   }
   window.renderAgentsPage = renderAgentsPage;
 
-  async function renderAgentsPanel() {
+  async function renderAgentsPanel(opts) {
+    opts = opts || {};
+    const full = !!opts.full;
     const el =
       (window.__securaiqWorkspaceView === "agents" && qs("agentsFleetBody")) ||
       qs("agentsPanelBody") ||
@@ -7345,10 +7563,16 @@
     if (!el) return;
     try {
       const [res, threatsRes, pendingRes, campaignsRes] = await Promise.all([
-        fetch("/api/agents", { headers: authHeaders() }),
-        fetch("/api/agents/threats?limit=50", { headers: authHeaders() }).catch(() => null),
-        fetch("/api/agents/commands/pending?limit=100", { headers: authHeaders() }).catch(() => null),
-        fetch("/api/agents/campaigns?limit=50", { headers: authHeaders() }).catch(() => null),
+        fetchTimed("/api/agents", { headers: authHeaders() }, 15000),
+        full
+          ? fetchTimed("/api/agents/threats?limit=50", { headers: authHeaders() }, 8000).catch(() => null)
+          : Promise.resolve(null),
+        full
+          ? fetchTimed("/api/agents/commands/pending?limit=100", { headers: authHeaders() }, 8000).catch(() => null)
+          : Promise.resolve(null),
+        full
+          ? fetchTimed("/api/agents/campaigns?limit=50", { headers: authHeaders() }, 8000).catch(() => null)
+          : Promise.resolve(null),
       ]);
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
@@ -7699,7 +7923,13 @@
         });
       });
     } catch (err) {
-      el.innerHTML = `<p class="hint">Couldn't load agents right now — try refreshing this page. <span class="hint-sub">(${escapeHtml(err.message || String(err))})</span></p>`;
+      el.innerHTML = retryHtml(`Couldn't load agents: ${fetchFailMsg(err, "fleet")}`, "agentsFleetRetryBtn");
+      el.querySelector("#agentsFleetRetryBtn")?.addEventListener("click", () => renderAgentsPanel());
+    }
+    if (!full && window.__securaiqWorkspaceView === "agents") {
+      setTimeout(() => {
+        if (window.__securaiqWorkspaceView === "agents") renderAgentsPanel({ full: true });
+      }, 600);
     }
   }
   window.renderAgentsPanel = renderAgentsPanel;
@@ -7953,7 +8183,7 @@
     const el = qs("webscanHistoryBody");
     if (!el) return;
     try {
-      const res = await fetch("/api/scans?limit=25", { headers: authHeaders() });
+      const res = await fetchTimed("/api/scans?limit=25", { headers: authHeaders() });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
       const rows = (data.scans || []).filter((s) => s.scanner === "zap");
@@ -8020,7 +8250,8 @@
         });
       });
     } catch (err) {
-      el.innerHTML = `<p class="hint">Could not load web scan history: ${escapeHtml(err.message || String(err))}</p>`;
+      el.innerHTML = retryHtml(`Could not load web scan history: ${fetchFailMsg(err, "web scans")}`, "webscanHistRetryBtn");
+      el.querySelector("#webscanHistRetryBtn")?.addEventListener("click", () => refreshWebScanHistory());
     }
   }
 
@@ -8216,6 +8447,7 @@
                       <button type="button" class="btn-secondary ws-ask-ai" data-kind="incident" data-json="${escapeHtml(
                         JSON.stringify({ id: i.id, title: i.title, severity: i.severity })
                       )}">Ask AI</button>
+                      <button type="button" class="btn-secondary ws-inc-timeline" data-id="${i.id}">Timeline</button>
                       <button type="button" class="btn-secondary ws-close-inc" data-id="${i.id}">Close</button>
                       <button type="button" class="btn-secondary ws-del-inc" data-id="${i.id}">Delete</button></li>`
                   )
@@ -8511,6 +8743,29 @@
       renderSocPage();
     });
     wireAskAiButtons("socPageBody");
+    body.querySelectorAll(".ws-inc-timeline").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const id = btn.getAttribute("data-id") || "";
+        const res = await fetch(`/api/incidents/${encodeURIComponent(id)}/timeline`, { headers: authHeaders() });
+        const data = await res.json().catch(() => ({}));
+        const lines = (data.events || [])
+          .map((e) => `${e.kind || "event"} · ${e.source || ""} · ${e.summary || ""}`)
+          .join("\n");
+        if (typeof window.openDecisionDrawer === "function") {
+          window.openDecisionDrawer("risk", "");
+        }
+        if (typeof notifyUser === "function") {
+          notifyUser(`**Incident timeline** (${data.title || id})\n${lines || "No events"}`);
+        }
+        const host = document.getElementById("socIncidentsList");
+        if (host) {
+          const box = document.createElement("li");
+          box.className = "hint";
+          box.textContent = lines || data.note || "No timeline events";
+          host.appendChild(box);
+        }
+      });
+    });
     body.querySelectorAll(".ws-close-inc").forEach((btn) => {
       btn.addEventListener("click", async () => {
         await fetch(`/api/incidents/${btn.getAttribute("data-id")}`, {
@@ -9620,13 +9875,55 @@
   }
   window.openComplianceDocEditor = openComplianceDocEditor;
 
+  let _orgsGen = 0;
   async function renderOrgsPage() {
     const body = qs("orgsPageBody");
     if (!body) return;
-    const res = await fetch("/api/orgs", { headers: authHeaders() });
-    const data = await res.json().catch(() => ({}));
+    const gen = ++_orgsGen;
+    const roles = ["admin", "analyst", "viewer", "client"];
+    body.innerHTML = `
+      <div class="ws-grid-2">
+        <section class="cc-panel">
+          <header><h2>Your organizations</h2></header>
+          <ul class="cc-list" id="orgsList"><li class="hint">Loading organizations…</li></ul>
+          <form id="orgCreateForm" class="inline-form">
+            <input id="orgName" placeholder="Organization name" required />
+            <button type="submit">Create</button>
+          </form>
+        </section>
+        <section class="cc-panel">
+          <header><h2>Members</h2></header>
+          <div id="orgMembersBody"><p class="hint">Select an organization</p></div>
+        </section>
+      </div>
+      <p class="hint" style="margin-top:1rem">Roles: admin · analyst · viewer · client. MFA (TOTP) and OIDC SSO available in Settings → Enterprise auth.</p>`;
+    qs("orgCreateForm")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const name = qs("orgName")?.value?.trim();
+      if (!name) return;
+      await fetch("/api/orgs", {
+        method: "POST",
+        headers: authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ name }),
+      });
+      renderOrgsPage();
+    });
+    let data = {};
+    try {
+      const res = await fetchTimed("/api/orgs", { headers: authHeaders() }, 8000);
+      data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+      if (gen !== _orgsGen) return;
+    } catch (err) {
+      const list = qs("orgsList");
+      if (list) {
+        list.innerHTML = retryHtml(fetchFailMsg(err, "organizations"), "orgsRetryBtn");
+        list.querySelector("#orgsRetryBtn")?.addEventListener("click", () => renderOrgsPage());
+      }
+      return;
+    }
     const orgs = data.organizations || [];
-    const roles = data.roles || ["admin", "analyst", "viewer", "client"];
+    const rolesLive = data.roles || roles;
     body.innerHTML = `
       <div class="ws-grid-2">
         <section class="cc-panel">
@@ -9723,8 +10020,8 @@
     if (!el) return;
     try {
       const [stRes, listRes] = await Promise.all([
-        fetch("/api/hardeningkitty/status", { headers: authHeaders() }),
-        fetch("/api/hardeningkitty/lists", { headers: authHeaders() }),
+        fetchTimed("/api/hardeningkitty/status", { headers: authHeaders() }),
+        fetchTimed("/api/hardeningkitty/lists", { headers: authHeaders() }),
       ]);
       const st = await stRes.json().catch(() => ({}));
       const listsPayload = await listRes.json().catch(() => ({}));
@@ -9810,7 +10107,8 @@
         e.target.value = "";
       });
     } catch (err) {
-      el.innerHTML = `<p class="hint">Couldn't load the hardening panel — try refreshing. <span class="hint-sub">(${escapeHtml(err.message)})</span></p>`;
+      el.innerHTML = retryHtml(`Couldn't load the hardening panel: ${fetchFailMsg(err, "hardening")}`, "hkRetryBtn");
+      el.querySelector("#hkRetryBtn")?.addEventListener("click", () => renderHardeningPanel());
     }
   }
 
@@ -9874,30 +10172,41 @@
   }
   window.runHardeningKittyAudit = runHardeningKittyAudit;
 
-  async function renderFrameworksPage() {
+  async function renderFrameworksPage(opts) {
+    opts = opts || {};
+    const full = !!opts.full;
     const body = qs("frameworksPageBody");
     if (!body) return;
-    const [fwRes, dashRes, remRes, evRes, reqRes] = await Promise.all([
-      fetch("/api/frameworks", { headers: authHeaders() }),
-      fetch("/api/dashboard", { headers: authHeaders() }),
-      fetch("/api/gap/remediations", { headers: authHeaders() }),
-      fetch("/api/evidence", { headers: authHeaders() }),
-      fetch("/api/controls/requirements", { headers: authHeaders() }),
-    ]);
-    const fwData = await fwRes.json().catch(() => ({}));
-    const dash = await dashRes.json().catch(() => ({}));
-    const remData = await remRes.json().catch(() => ({}));
-    const evData = await evRes.json().catch(() => ({}));
-    const reqData = await reqRes.json().catch(() => ({}));
-    const apiErrors = [];
-    if (!fwRes.ok) apiErrors.push(`frameworks ${fwRes.status}`);
-    if (!dashRes.ok) apiErrors.push(`dashboard ${dashRes.status}`);
-    if (!remRes.ok) apiErrors.push(`remediations ${remRes.status}`);
-    if (!evRes.ok) apiErrors.push(`evidence ${evRes.status}`);
-    if (!reqRes.ok) apiErrors.push(`requirements ${reqRes.status}`);
-    if (apiErrors.length && typeof notifyUser === "function") {
-      notifyUser(`**Frameworks page:** ${apiErrors.join(" · ")}`);
+    if (!opts.quiet) body.innerHTML = `<p class="hint">Loading frameworks…</p>`;
+    let fwData = {};
+    let dash = {};
+    let remData = {};
+    let evData = {};
+    let reqData = {};
+    try {
+      const [fwRes, remRes, evRes, reqRes, dashRes] = await Promise.all([
+        fetchTimed("/api/frameworks", { headers: authHeaders() }, 12000),
+        full
+          ? fetchTimed("/api/gap/remediations", { headers: authHeaders() }, 12000).catch(() => null)
+          : Promise.resolve(null),
+        full ? fetchTimed("/api/evidence", { headers: authHeaders() }, 12000).catch(() => null) : Promise.resolve(null),
+        full
+          ? fetchTimed("/api/controls/requirements", { headers: authHeaders() }, 12000).catch(() => null)
+          : Promise.resolve(null),
+        full ? fetchTimed("/api/dashboard", { headers: authHeaders() }, 20000).catch(() => null) : Promise.resolve(null),
+      ]);
+      fwData = fwRes ? await fwRes.json().catch(() => ({})) : {};
+      if (!fwRes || !fwRes.ok) throw new Error((fwData && fwData.detail) || (fwRes ? `HTTP ${fwRes.status}` : "Timed out"));
+      remData = remRes && remRes.ok ? await remRes.json().catch(() => ({})) : {};
+      evData = evRes && evRes.ok ? await evRes.json().catch(() => ({})) : {};
+      reqData = reqRes && reqRes.ok ? await reqRes.json().catch(() => ({})) : {};
+      dash = dashRes && dashRes.ok ? await dashRes.json().catch(() => ({})) : {};
+    } catch (err) {
+      body.innerHTML = retryHtml(`Could not load frameworks: ${fetchFailMsg(err, "frameworks")}`, "fwRetryBtn");
+      body.querySelector("#fwRetryBtn")?.addEventListener("click", () => renderFrameworksPage());
+      return;
     }
+    const apiErrors = [];
     const fws = fwData.frameworks || [];
     const rems = remData.remediations || [];
     const evidence = evData.evidence || [];
@@ -10677,6 +10986,18 @@
             : `<p class="hint">No frameworks loaded.</p>`
         }
       </div>`;
+    try {
+      const profRes = await fetch("/api/compliance/profile", { headers: authHeaders() });
+      if (profRes.ok) {
+        const prof = await profRes.json();
+        body.insertAdjacentHTML(
+          "afterbegin",
+          `<div class="fw-truth-card"><strong>Current ${prof.current_percent == null ? "—" : prof.current_percent + "%"}</strong> vs target ${prof.target_percent}% · gap ${prof.gap_percent == null ? "—" : prof.gap_percent + "%"}<p class="hint">${escapeHtml((prof.disclaimer || "").slice(0, 220))}</p></div>`
+        );
+      }
+    } catch {
+      /* optional */
+    }
     body.querySelectorAll(".fw-open-controls").forEach((btn) => {
       btn.addEventListener("click", () =>
         openControlCenter(btn.getAttribute("data-id"), btn.getAttribute("data-aid") || "")
@@ -10687,16 +11008,30 @@
         if (typeof openGap === "function") openGap(btn.getAttribute("data-id"));
       });
     });
+    if (!full && window.__securaiqWorkspaceView === "frameworks") {
+      setTimeout(() => {
+        if (window.__securaiqWorkspaceView === "frameworks") {
+          renderFrameworksPage({ full: true, quiet: true });
+          if (typeof renderHardeningPanel === "function") renderHardeningPanel();
+        }
+      }, 700);
+    }
   }
   window.renderFrameworksPage = renderFrameworksPage;
 
   async function renderComplianceCenterPage() {
     const body = qs("complianceCenterPageBody");
     if (!body) return;
-    const res = await fetch("/api/compliance/overview", { headers: authHeaders() });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      body.innerHTML = `<p class="hint">Could not load compliance overview (${res.status})</p>`;
+    body.innerHTML = `<p class="hint">Loading compliance…</p>`;
+    let res;
+    let data = {};
+    try {
+      res = await fetchTimed("/api/compliance/overview", { headers: authHeaders() }, 20000);
+      data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error((data && data.detail) || `HTTP ${res.status}`);
+    } catch (err) {
+      body.innerHTML = retryHtml(`Could not load compliance overview: ${fetchFailMsg(err, "compliance")}`, "compRetryBtn");
+      body.querySelector("#compRetryBtn")?.addEventListener("click", () => renderComplianceCenterPage());
       return;
     }
     const fws = data.frameworks || [];
@@ -10812,6 +11147,9 @@
                       <div class="hint">${escapeHtml(f.test || "")}</div></td>
                     <td class="hint">${escapeHtml((f.summary || "").slice(0, 140))}</td>
                     <td class="ws-actions">
+                      <button type="button" class="btn-secondary cc-ctrl-detail"
+                        data-fw="${escapeHtml(f.framework_id || "")}"
+                        data-cid="${escapeHtml(f.control_id || "")}">Why / evidence</button>
                       <button type="button" class="btn-secondary cc-live-open"
                         data-ws="${escapeHtml(f.workspace || "frameworks")}"
                         data-fw="${escapeHtml(f.framework_id || "")}">Open</button>
@@ -10821,6 +11159,9 @@
                 .join("")}</tbody></table></div>`
             : `<p class="hint">No live fails/partials on curated tests right now — run tests after inventory, vulns, or patch data changes.</p>`
         }
+        <article class="cc-panel cc-ctrl-detail-card" id="ccComplianceDetailCard" hidden>
+          <p class="hint">Open Why / evidence on a live fail to load the control card.</p>
+        </article>
       </div>
       <div class="cc-action-row" style="margin:0.75rem 0;flex-wrap:wrap;gap:0.5rem">
         ${
@@ -11048,6 +11389,14 @@
         if (btn) btn.disabled = false;
       }
     });
+    body.querySelectorAll(".cc-ctrl-detail").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const cid = btn.getAttribute("data-cid") || "";
+        const fw = btn.getAttribute("data-fw") || "";
+        if (!cid || !fw) return;
+        openControlDetail(fw, cid, "ccComplianceDetailCard");
+      });
+    });
     body.querySelectorAll(".cc-live-open").forEach((btn) => {
       btn.addEventListener("click", () => {
         const ws = btn.getAttribute("data-ws") || "frameworks";
@@ -11096,16 +11445,23 @@
     const now = new Date();
     const y = now.getUTCFullYear();
     const m = now.getUTCMonth() + 1;
-    const fetches = [
-      fetch("/api/compliance-ops/summary", { headers: authHeaders() }),
-      fetch("/api/compliance-ops/my-work", { headers: authHeaders() }),
-      fetch(`/api/compliance-ops/calendar?year=${y}&month=${m}`, { headers: authHeaders() }),
-      fetch("/api/compliance-ops/tasks?limit=100", { headers: authHeaders() }),
-    ];
-    if (tab === "board") {
-      fetches.push(fetch("/api/compliance-ops/board", { headers: authHeaders() }));
+    let results;
+    try {
+      const fetches = [
+        fetchTimed("/api/compliance-ops/summary", { headers: authHeaders() }),
+        fetchTimed("/api/compliance-ops/my-work", { headers: authHeaders() }),
+        fetchTimed(`/api/compliance-ops/calendar?year=${y}&month=${m}`, { headers: authHeaders() }),
+        fetchTimed("/api/compliance-ops/tasks?limit=100", { headers: authHeaders() }),
+      ];
+      if (tab === "board") {
+        fetches.push(fetchTimed("/api/compliance-ops/board", { headers: authHeaders() }));
+      }
+      results = await Promise.all(fetches);
+    } catch (err) {
+      body.innerHTML = retryHtml(`Could not load Compliance Operations: ${fetchFailMsg(err, "compliance ops")}`, "coRetryBtn");
+      body.querySelector("#coRetryBtn")?.addEventListener("click", () => renderComplianceOpsPage());
+      return;
     }
-    const results = await Promise.all(fetches);
     const [sumRes, workRes, calRes, taskRes] = results;
     const boardRes = tab === "board" ? results[4] : null;
     const summary = sumRes.ok ? await sumRes.json().catch(() => ({})) : {};
@@ -11501,10 +11857,16 @@
   async function renderPrivacyPage() {
     const body = qs("privacyPageBody");
     if (!body) return;
-    const res = await fetch("/api/data-governance/dpdp-overview", { headers: authHeaders() });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      body.innerHTML = `<p class="hint">Could not load DPDP overview (${res.status})</p>`;
+    body.innerHTML = `<p class="hint">Loading India DPDP…</p>`;
+    let res;
+    let data = {};
+    try {
+      res = await fetchTimed("/api/data-governance/dpdp-overview", { headers: authHeaders() }, 20000);
+      data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error((data && data.detail) || `HTTP ${res.status}`);
+    } catch (err) {
+      body.innerHTML = retryHtml(`Could not load DPDP overview: ${fetchFailMsg(err, "DPDP")}`, "dpdpRetryBtn");
+      body.querySelector("#dpdpRetryBtn")?.addEventListener("click", () => renderPrivacyPage());
       return;
     }
     const posture = data.inventory_posture || {};
@@ -11797,22 +12159,34 @@
     const fwId = "cmmc_l2";
     const tab = _controlCenterTab || "controls";
 
-    const [sumRes, driftRes, overviewRes, catalogRes, gapLiveRes] = await Promise.all([
-      fetch(`/api/controls/summary?framework_id=${encodeURIComponent(fwId)}`, {
-        headers: authHeaders(),
-      }),
-      fetch("/api/configuration/drift?limit=50", { headers: authHeaders() }),
-      fetch("/api/compliance/overview", { headers: authHeaders() }).catch(() => null),
-      fetch(`/api/controls/catalog/${encodeURIComponent(fwId)}`, {
-        headers: authHeaders(),
-      }).catch(() => null),
-      fetch(`/api/gap/live-tests/${encodeURIComponent(fwId)}`, {
-        headers: authHeaders(),
-      }).catch(() => null),
-    ]);
+    if (!opts.quiet) body.innerHTML = `<p class="hint">Loading Control Center…</p>`;
+    let sumRes;
+    let driftRes;
+    let overviewRes;
+    let catalogRes;
+    let gapLiveRes;
+    try {
+      [sumRes, driftRes, overviewRes, catalogRes, gapLiveRes] = await Promise.all([
+        fetchTimed(`/api/controls/summary?framework_id=${encodeURIComponent(fwId)}`, {
+          headers: authHeaders(),
+        }, 20000),
+        fetchTimed("/api/configuration/drift?limit=50", { headers: authHeaders() }, 12000).catch(() => null),
+        fetchTimed("/api/compliance/overview", { headers: authHeaders() }, 20000).catch(() => null),
+        fetchTimed(`/api/controls/catalog/${encodeURIComponent(fwId)}`, {
+          headers: authHeaders(),
+        }, 20000).catch(() => null),
+        fetchTimed(`/api/gap/live-tests/${encodeURIComponent(fwId)}`, {
+          headers: authHeaders(),
+        }, 12000).catch(() => null),
+      ]);
+    } catch (err) {
+      body.innerHTML = retryHtml(`Could not load Control Center: ${fetchFailMsg(err, "control center")}`, "ctrlRetryBtn");
+      body.querySelector("#ctrlRetryBtn")?.addEventListener("click", () => renderControlCenterPage());
+      return;
+    }
 
-    let summary = await sumRes.json().catch(() => ({}));
-    if (!sumRes.ok) {
+    let summary = sumRes ? await sumRes.json().catch(() => ({})) : {};
+    if (!sumRes || !sumRes.ok) {
       summary = {
         controls_total: 0,
         passing: 0,
@@ -11827,7 +12201,7 @@
         disclaimer: "Summary unavailable — showing gap live failures when present.",
       };
     }
-    const driftData = driftRes.ok ? await driftRes.json().catch(() => ({})) : {};
+    const driftData = driftRes && driftRes.ok ? await driftRes.json().catch(() => ({})) : {};
     const driftRows = driftData.drift || [];
     const driftCount = driftData.count != null ? driftData.count : driftRows.length;
 
@@ -12030,6 +12404,8 @@
                     <div class="hint">${escapeHtml(f.test || "")}</div></td>
                   <td class="hint">${escapeHtml((f.summary || "").slice(0, 140))}</td>
                   <td class="ws-actions">
+                    <button type="button" class="btn-secondary cc-ctrl-detail"
+                      data-cid="${escapeHtml(f.control_id || "")}">Why / evidence</button>
                     <button type="button" class="btn-secondary cc-ctrl-test"
                       data-cid="${escapeHtml(f.control_id || "")}">Retest</button>
                     ${remediations.join("")}
@@ -12057,6 +12433,8 @@
                     <td><span class="hint">${escapeHtml(c.verifiability || "")}</span></td>
                     <td class="hint">${escapeHtml(tests.join(", "))}</td>
                     <td class="ws-actions">
+                      <button type="button" class="btn-secondary cc-ctrl-detail"
+                        data-cid="${escapeHtml(c.id || "")}">Why / evidence</button>
                       <button type="button" class="btn-secondary cc-ctrl-test"
                         data-cid="${escapeHtml(c.id || "")}">Test now</button>
                     </td>
@@ -12132,8 +12510,15 @@
         </div>`;
     }
 
+    const truth = summary.truth || {};
+    const truthStrip = `<div class="truth-chip" data-state="${escapeHtml(truth.state || "unknown")}">
+        <span class="truth-dot" aria-hidden="true"></span>
+        <strong>${escapeHtml(truth.label || "UNKNOWN")}</strong>
+        <span>${escapeHtml(truth.note || "Last PASS is not current without an online agent.")}</span>
+      </div>`;
     body.innerHTML = `
       <p class="hint" style="margin:0 0 0.75rem">Operating-effectiveness signals from agent telemetry — not CMMC certification or SPRS submission.</p>
+      ${truthStrip}
       <div class="cc-kpi-grid" style="margin:0 0 0.85rem">
         <article class="cc-kpi"><span>Controls</span><strong>${summary.controls_total ?? 0}</strong>
           <em class="hint">${escapeHtml(summary.framework_name || fwId)}</em></article>
@@ -12153,6 +12538,9 @@
       </div>
       ${tabBar}
       ${panelHtml}
+      <article class="cc-panel cc-ctrl-detail-card" id="ccControlDetailCard" hidden>
+        <p class="hint">Open Why / evidence on a control to load requirement, last-results, and verify.</p>
+      </article>
       <p class="hint" style="margin:0.85rem 0 0">${escapeHtml(
         summary.disclaimer ||
           "Live control tests are operating-effectiveness signals — not a CMMC certification or SPRS submission."
@@ -12191,6 +12579,13 @@
         if (typeof notifyUser === "function") notifyUser(`Live tests failed: ${err.message || err}`);
         if (btn) btn.disabled = false;
       }
+    });
+    body.querySelectorAll(".cc-ctrl-detail").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const cid = btn.getAttribute("data-cid") || "";
+        if (!cid) return;
+        openControlDetail(fwId, cid, "ccControlDetailCard");
+      });
     });
     body.querySelectorAll(".cc-ctrl-test").forEach((btn) => {
       btn.addEventListener("click", async () => {
@@ -12338,10 +12733,16 @@
   async function renderAuditCenterPage() {
     const body = qs("auditCenterPageBody");
     if (!body) return;
-    const res = await fetch("/api/compliance/audit-center", { headers: authHeaders() });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      body.innerHTML = `<p class="hint">Could not load audit center (${res.status})</p>`;
+    body.innerHTML = `<p class="hint">Loading…</p>`;
+    let res;
+    let data = {};
+    try {
+      res = await fetchTimed("/api/compliance/audit-center", { headers: authHeaders() });
+      data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    } catch (err) {
+      body.innerHTML = retryHtml(`Could not load audit center: ${fetchFailMsg(err, "audit center")}`, "auditRetryBtn");
+      body.querySelector("#auditRetryBtn")?.addEventListener("click", () => renderAuditCenterPage());
       return;
     }
     const fws = data.frameworks || [];
@@ -14681,8 +15082,9 @@
       if (view === "intel" && !window.__securaiqIntelLookupBusy && typeof renderIntelPage === "function") {
         renderIntelPage();
       }
-      if (typeof loadCommandCenter === "function") loadCommandCenter();
-      if (typeof syncLiveWorkspace === "function") syncLiveWorkspace({ pushType: "tool" });
+      if (view === "command" && typeof loadCommandCenter === "function") {
+        loadCommandCenter({ lite: true });
+      }
     }
     if (view === "assets" && (kinds.has("openaudit_sync") || kinds.has("scan_execute") || data.inventory)) {
       renderAssetsPage({ quiet: true });
@@ -14696,7 +15098,7 @@
     if (kinds.has("scan_execute") || kinds.has("combo_assessment")) {
       if (typeof loadAssets === "function") loadAssets();
       if (typeof loadVulns === "function") loadVulns();
-      if (typeof loadCommandCenter === "function") loadCommandCenter();
+      if (view === "command" && typeof loadCommandCenter === "function") loadCommandCenter({ lite: true });
       if (view === "vulns" && typeof renderVulnsPage === "function") renderVulnsPage();
       if (view === "reports" && typeof renderReportsPage === "function") renderReportsPage();
     }

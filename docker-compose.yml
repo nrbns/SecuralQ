@@ -25,7 +25,8 @@ services:
       BOOTSTRAP_ADMIN_PASSWORD: "${BOOTSTRAP_ADMIN_PASSWORD:?Set BOOTSTRAP_ADMIN_PASSWORD in .env}"
       MFA_REQUIRED_FOR_ADMIN: "${MFA_REQUIRED_FOR_ADMIN:-true}"
       MODEL_BACKEND: "${MODEL_BACKEND:-ollama}"
-      OLLAMA_BASE_URL: "${OLLAMA_BASE_URL:-http://host.docker.internal:11434}"
+      OLLAMA_BASE_URL: "${OLLAMA_BASE_URL:-http://ollama:11434}"
+      OLLAMA_MODEL: "${OLLAMA_MODEL:-tinyllama}"
       DATA_DIR: "/data"
       CHROMA_PERSIST_DIR: "/data/chroma"
       QDRANT_URL: "${QDRANT_URL:-}"
@@ -225,12 +226,46 @@ services:
       DATA_DIR: "/data"
       CHROMA_PERSIST_DIR: "/data/chroma"
       MODEL_BACKEND: "${MODEL_BACKEND:-ollama}"
-      OLLAMA_BASE_URL: "${OLLAMA_BASE_URL:-http://host.docker.internal:11434}"
+      OLLAMA_BASE_URL: "${OLLAMA_BASE_URL:-http://ollama:11434}"
     volumes:
       - securaiq-data:/data
     networks:
       - securaiq-internal
     restart: unless-stopped
+
+  # AI in Docker — no host HuggingFace download.
+  # docker compose --profile ai up -d
+  # Low-storage cloud stack: docker compose -f docker-compose.cloud.yml up -d
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["ai", "cloud"]
+    expose:
+      - "11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    networks:
+      - securaiq-internal
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  ollama-pull:
+    image: ollama/ollama:latest
+    profiles: ["ai", "cloud"]
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["sh", "-c"]
+    command: "ollama pull ${OLLAMA_MODEL:-tinyllama}"
+    networks:
+      - securaiq-internal
+    restart: "no"
 
   # TLS reverse proxy — docker compose --profile saas --profile proxy up -d
   caddy:
@@ -255,3 +290,4 @@ volumes:
   qdrant-data:
   caddy-data:
   caddy-config:
+  ollama-data:

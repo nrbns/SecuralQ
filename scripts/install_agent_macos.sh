@@ -20,7 +20,9 @@ SENTINEL_INTERVAL=10
 LABEL="com.securaiq.agent"
 INSTALL_DIR="/usr/local/securaiq/agent"
 PLIST="/Library/LaunchDaemons/${LABEL}.plist"
-SCRIPT_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/securaiq_agent.py"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_SRC="$HERE/securaiq_agent.py"
+BIN_SRC="$HERE/SecuraIQ-Agent"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -46,18 +48,38 @@ case "$SERVER" in
     echo "Use the SecuraIQ LAN IP (e.g. http://192.168.x.x:8080) and start the console with LAN bind." >&2
     ;;
 esac
-if [ ! -f "$SCRIPT_SRC" ]; then
-  echo "Could not find securaiq_agent.py next to this installer at $SCRIPT_SRC" >&2
-  echo "Download both files together, e.g.:" >&2
-  echo "  curl -fsSL <server>/api/agents/install-script -o securaiq_agent.py" >&2
-  echo "  curl -fsSL <server>/api/agents/install-script/macos -o install_agent_macos.sh" >&2
+USE_BIN=0
+if [ -x "$BIN_SRC" ] || [ -f "$BIN_SRC" ]; then
+  USE_BIN=1
+elif [ ! -f "$SCRIPT_SRC" ]; then
+  echo "Neither SecuraIQ-Agent nor securaiq_agent.py is next to this installer." >&2
+  echo "On the customer Mac copy the macOS package from Agents, not only this .sh." >&2
   exit 1
 fi
 PY3="$(command -v python3 || true)"
-[ -n "$PY3" ] || { echo "python3 not found on PATH — install Python 3.8+ (e.g. via Xcode CLT or Homebrew) first." >&2; exit 1; }
+if [ "$USE_BIN" -eq 0 ] && [ -z "$PY3" ]; then
+  echo "python3 not found and no SecuraIQ-Agent binary. Install Python 3.8+ or use the packaged .tar.gz/.dmg." >&2
+  exit 1
+fi
 
 mkdir -p "$INSTALL_DIR"
-install -m 0755 "$SCRIPT_SRC" "$INSTALL_DIR/securaiq_agent.py"
+if [ "$USE_BIN" -eq 1 ]; then
+  install -m 0755 "$BIN_SRC" "$INSTALL_DIR/SecuraIQ-Agent"
+  PROG="$INSTALL_DIR/SecuraIQ-Agent"
+  ARG1=""
+else
+  install -m 0755 "$SCRIPT_SRC" "$INSTALL_DIR/securaiq_agent.py"
+  PROG="$PY3"
+  ARG1="$INSTALL_DIR/securaiq_agent.py"
+fi
+
+# launchd needs a static argv; include the python script only when not using the binary.
+if [ -n "${ARG1}" ]; then
+  PROG_ARGS="        <string>${PROG}</string>
+        <string>${ARG1}</string>"
+else
+  PROG_ARGS="        <string>${PROG}</string>"
+fi
 
 cat > "$PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -68,8 +90,7 @@ cat > "$PLIST" <<EOF
     <string>${LABEL}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>${PY3}</string>
-        <string>${INSTALL_DIR}/securaiq_agent.py</string>
+${PROG_ARGS}
         <string>--interval</string>
         <string>${INTERVAL}</string>
         <string>--sentinel-interval</string>

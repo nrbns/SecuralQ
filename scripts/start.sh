@@ -71,7 +71,7 @@ if [ "$LAN" -eq 1 ]; then
   set_env CORS_ORIGINS "*"
   set_env WORKSPACE_ZERO_START false
   set_env ALLOW_OPEN_LAN true
-  set_env LAN_AUTO_SCAN true
+  set_env LAN_AUTO_SCAN false
 else
   set_env HOST 127.0.0.1
   set_env CORS_ORIGINS "http://127.0.0.1:8080,http://localhost:8080"
@@ -94,11 +94,17 @@ from app.platform_info import platform_info
 for u in platform_info().get('lan_urls') or []:
     print('  Phone/other:', u)
 " 2>/dev/null || true
-  echo "  Live share:  same assets/scans on every device; this host auto-scans on start"
+  echo "  Live share:  same assets/scans on every device. Start a scan from the UI — boot auto-scan is off."
 else
   echo "Starting SecuraIQ (localhost)"
   echo "  Open:  http://127.0.0.1:8080"
   echo "  LAN:   ./start_lan.sh   or   ./scripts/start.sh --lan"
 fi
 echo "No .env editing required. Optional keys: Settings in the UI."
-.venv/bin/python run.py
+# Open the UI as soon as /api/alive answers — do not wait on /api/health.
+(.venv/bin/python scripts/wait_open.py --url "http://127.0.0.1:8080" --timeout 12 --open-after 1.5 || true) &
+if [ "$LAN" -eq 1 ]; then
+  .venv/bin/python run.py --lan
+else
+  .venv/bin/python run.py
+fi

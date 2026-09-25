@@ -12,11 +12,26 @@ def _env_truthy(name: str) -> bool:
     return (os.environ.get(name) or "").strip().lower() in ("1", "true", "yes", "on")
 
 
+def _allow_lab_insecure() -> bool:
+    return _env_truthy("SECURAIQ_ALLOW_LAB_INSECURE") or bool(
+        getattr(settings, "allow_lab_insecure", False)
+    )
+
+
 def commercial_profile_enforced() -> bool:
-    """True when SECURAIQ_COMMERCIAL_PROFILE / settings demand commercial crypto."""
+    """True when commercial crypto is required.
+
+    Explicit flags always win. ``deployment_mode=production`` also enforces
+    unless ``SECURAIQ_ALLOW_LAB_INSECURE`` is set (lab escape hatch only).
+    """
     if bool(getattr(settings, "commercial_profile_enforce", False)):
         return True
-    return _env_truthy("SECURAIQ_COMMERCIAL_PROFILE") or _env_truthy("COMMERCIAL_PROFILE_ENFORCE")
+    if _env_truthy("SECURAIQ_COMMERCIAL_PROFILE") or _env_truthy("COMMERCIAL_PROFILE_ENFORCE"):
+        return True
+    mode = str(getattr(settings, "deployment_mode", "lab") or "lab").strip().lower()
+    if mode in {"production", "prod", "commercial", "saas", "cloud"}:
+        return not _allow_lab_insecure()
+    return False
 
 
 def lab_sealed_mode() -> bool:
@@ -164,6 +179,7 @@ def production_profile_status() -> dict[str, Any]:
             "AGENT_ED25519_PRIVATE_KEY=…",
             "AGENT_ED25519_PUBLIC_KEY=…",
             "SECURAIQ_COMMERCIAL_PROFILE=1",
+            "SECURAIQ_ALLOW_LAB_INSECURE=1",
         ],
         "disclaimer": (
             "Lab-production agent security is code-ready (allowlist/seals/mTLS APIs). "
@@ -171,7 +187,8 @@ def production_profile_status() -> dict[str, Any]:
             "Enable AGENT_LAB_SEALED_MODE or signature+replay flags for sealed lab demos. "
             "Enable all five agent-security flags behind a terminating proxy before commercial claims. "
             "Commercial builds should set AGENT_COMMAND_SIGNING_ALG=ed25519 (HMAC remains lab-friendly). "
-            "Set SECURAIQ_COMMERCIAL_PROFILE=1 to refuse boot without the full commercial crypto set. "
+            "DEPLOYMENT_MODE=production (or SECURAIQ_COMMERCIAL_PROFILE=1) refuses boot without "
+            "the full commercial crypto set. SECURAIQ_ALLOW_LAB_INSECURE is the lab escape hatch only. "
             "Agents present issued client certs (agent.crt/agent.key); never ship the signing private key."
         ),
     }
@@ -180,8 +197,9 @@ def production_profile_status() -> dict[str, Any]:
 def assert_commercial_profile() -> None:
     """Refuse startup when commercial profile is enforced but not ready.
 
-    Lab default: no-op. Enable via SECURAIQ_COMMERCIAL_PROFILE=1 or
-    COMMERCIAL_PROFILE_ENFORCE=true / settings.commercial_profile_enforce.
+    Lab default: no-op. Enable via SECURAIQ_COMMERCIAL_PROFILE=1,
+    COMMERCIAL_PROFILE_ENFORCE=true, settings.commercial_profile_enforce,
+    or DEPLOYMENT_MODE=production (unless SECURAIQ_ALLOW_LAB_INSECURE).
     """
     if not commercial_profile_enforced():
         return

@@ -1,0 +1,59 @@
+# Low-storage cloud/lab image — no ZAP, no baked Nuclei templates, no local HF models.
+# AI runs in the Ollama container (see docker-compose.cloud.yml).
+FROM python:3.11-slim
+
+WORKDIR /app
+
+ARG NUCLEI_VERSION=3.11.1
+ARG TARGETARCH
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    nmap \
+    unzip \
+    && ARCH="${TARGETARCH:-amd64}" \
+    && case "$ARCH" in \
+         amd64|x86_64) NARCH=amd64 ;; \
+         arm64|aarch64) NARCH=arm64 ;; \
+         *) NARCH=amd64 ;; \
+       esac \
+    && curl -fsSL \
+         "https://github.com/projectdiscovery/nuclei/releases/download/v${NUCLEI_VERSION}/nuclei_${NUCLEI_VERSION}_linux_${NARCH}.zip" \
+         -o /tmp/nuclei.zip \
+    && unzip -o /tmp/nuclei.zip -d /tmp/nuclei \
+    && install -m 0755 /tmp/nuclei/nuclei /usr/local/bin/nuclei \
+    && rm -rf /tmp/nuclei /tmp/nuclei.zip /var/lib/apt/lists/* \
+    && nmap --version | head -n 1 \
+    && nuclei -version
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir 'psycopg[binary]>=3.1.0' 'alembic>=1.13.0' 'sqlalchemy>=2.0.0' 'redis>=5.0.0'
+
+COPY app ./app
+COPY static ./static
+COPY data/knowledge ./data/knowledge
+COPY data/frameworks ./data/frameworks
+COPY alembic ./alembic
+COPY alembic.ini .
+COPY run.py .
+COPY scripts/db_migrate_and_run.py ./scripts/db_migrate_and_run.py
+COPY .env.example .
+
+ENV HOST=0.0.0.0
+ENV PORT=8080
+ENV AUTH_ENABLED=true
+ENV DATA_DIR=/data
+ENV CHROMA_PERSIST_DIR=/data/chroma
+ENV HOME=/root
+ENV UVICORN_RELOAD=0
+ENV DEPLOYMENT_MODE=production
+ENV MODEL_BACKEND=ollama
+ENV OLLAMA_BASE_URL=http://ollama:11434
+ENV OLLAMA_MODEL=tinyllama
+
+VOLUME ["/data"]
+EXPOSE 8080
+
+CMD ["python", "scripts/db_migrate_and_run.py"]

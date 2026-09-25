@@ -1,6 +1,8 @@
 # SecuraIQ — Master Execution Plan
 
 **Source of truth for build order from current `main`.**  
+Launch board: [LAUNCH-PLAN.md](./LAUNCH-PLAN.md) (`GET /api/launch/plan` · `GET /api/launch/complete`).  
+File-by-file launch queue: [P0-LAUNCH-BACKLOG.md](./P0-LAUNCH-BACKLOG.md) (P0-01 → P0-50).  
 Phases 1–46 detail: [master-build-plan.md](./master-build-plan.md).  
 Honesty: [production-readiness.md](./production-readiness.md).
 
@@ -33,14 +35,14 @@ Rust Agent → Agent Gateway → FastAPI → Redis Streams → Workers
 | # | Task | Status on main |
 |---|------|----------------|
 | 1 | Owned-host / lab acceptance loop (detect→risk→evidence→approve→remediate→verify→SSE timeline) | **CI green** — `realtime_acceptance_demo.py --local` + step 12 timeline; live OS mutation still ops/owned-host |
-| 2 | Measure Redis Sentinel failover | **CI in-process green** — reconnect + XAUTOCLAIM + SSE resume via `--pipeline-self-test`; live Docker `--inject-stop --record` still ops (Docker absent on this Windows lab) |
+| 2 | Measure Redis Sentinel failover | **Lab measured** — live Docker inject recorded; multi-AZ HA remains ops |
 | 3 | Remove unnecessary polling → RealtimeManager only when SSE live | **Done** — soft-poll + notif badge only when SSE offline/stalled; stall force-reconnect |
 | 4 | Telemetry → controls → evidence → compliance (beyond firewall) | **Improved** — configurable registry fields + `host_risky_listeners` + disk encryption / risky-listener acceptance loops |
 | 5 | Remediation → agent → independent verification (never “fixed” from execute alone) | Done for host remediations in acceptance |
 | 6 | Requirements first-class | **Shipped** — domain Requirement model + `/api/controls/requirements*` + Frameworks UI strip (not legal text) |
 | 7 | DPDP Privacy Center | **Deepened** — data_map activities/requests/retention + Privacy Center sections (not a DPDP compliance claim) |
 | 8 | Command Center UX (WHAT→WHY→EVIDENCE→IMPACT→ACTION→VERIFY) | **Shipped** — ops decision card + `renderNarrativeBlock` on remediations/assets/agents/evidence/findings |
-| 9 | Measure scale ladder 100→100K | **In-proc to 100K + HTTP wave to 100** — see [ops/CAPACITY-LAB.md](./ops/CAPACITY-LAB.md); HTTP 500/1k and Redis path still TBD |
+| 9 | Measure scale ladder 100→100K | **HTTP ≤1k measured** — see [ops/CAPACITY-LAB.md](./ops/CAPACITY-LAB.md); 5k–100k unpublished |
 | 10 | Then Cloud / Identity / AppSec / SBOM / K8s | **Frozen** until 1–5 stay green |
 
 ### Compliance Operations (new module — after Immediate loop)

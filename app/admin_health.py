@@ -145,11 +145,25 @@ def collect_admin_health() -> dict[str, Any]:
     else:
         components["ai_gateway"] = _status(True, f"backend={backend}", degraded=True)
 
-    # Workers — Prefect optional
+    # Workers — Prefect optional; named in-process pools are lab isolation only
+    try:
+        from app.jobs import worker_pool_status
+
+        pools = worker_pool_status()
+        pool_bits = ",".join(
+            f"{n}={(p or {}).get('queued', 0)}q/{(p or {}).get('workers', 0)}w"
+            for n, p in (pools.get("pools") or {}).items()
+        )
+    except Exception:
+        pool_bits = ""
     if settings.prefect_enabled:
-        components["workers"] = _status(True, "prefect enabled", degraded=True)
+        components["workers"] = _status(True, f"prefect enabled {pool_bits}".strip(), degraded=True)
     else:
-        components["workers"] = _status(True, "local asyncio jobs", degraded=True)
+        components["workers"] = _status(
+            True,
+            f"named asyncio pools {pool_bits}".strip() or "local asyncio jobs",
+            degraded=True,
+        )
 
     # Integrations — configured count only
     configured = 0

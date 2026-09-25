@@ -82,6 +82,7 @@ from app.license_api import router as license_router
 from app.license_api import entitlements_router, admin_licenses_router
 from app.xdr_api import router as xdr_router
 from app.agents_api import router as agents_router
+from app.customer_install import router as customer_install_router
 from app.agent_gateway import router as agent_gateway_router
 from app.evidence_api import router as evidence_router
 from app.evidence_spine.api import router as evidence_spine_router
@@ -121,7 +122,7 @@ from app.automation import ensure_webhook_schema
 from app.intel_feeds import ensure_intel_cache_schema
 from app.jobs import start_background_jobs, stop_background_jobs
 from app.error_reporting import init_error_reporting
-from app.metrics import incr, incr_status, render_prometheus
+from app.metrics import incr, incr_status, observe_stage, render_prometheus
 from app.env_persist import update_env_value
 from app.fine_tune.job import finetune_job, launch_unsloth_job
 from app.hermes_client import fetch_hermes_status
@@ -257,15 +258,32 @@ async def lifespan(app: FastAPI):
         from app.lan_sync import is_lan_bind, maybe_queue_lan_auto_scan, refresh_lan_assets
 
         if is_lan_bind():
-            lan = refresh_lan_assets("local", queue_scan=False)
-            print(
-                f"LAN inventory: host {lan.get('this_host')} · {len(lan.get('neighbors') or [])} ARP neighbors · {lan.get('assets_upserted') or 0} assets"
-            )
-        auto = maybe_queue_lan_auto_scan()
-        if auto.get("ok"):
-            print(f"LAN auto-scan: queued {auto.get('target')} -> assets load on every device")
-        elif auto.get("skipped") not in {None, "not_lan_bind", "lan_auto_scan_off"}:
-            print(f"LAN auto-scan: skipped ({auto.get('skipped')})")
+            async def _lan_warm() -> None:
+                await asyncio.sleep(90)
+                try:
+                    lan = await asyncio.to_thread(
+                        lambda: refresh_lan_assets("local", queue_scan=False)
+                    )
+                    print(
+                        f"LAN inventory: host {lan.get('this_host')} · {len(lan.get('neighbors') or [])} ARP neighbors · {lan.get('assets_upserted') or 0} assets"
+                    )
+                except Exception as exc:
+                    print(f"LAN inventory warm skipped: {exc}")
+                try:
+                    auto = maybe_queue_lan_auto_scan()
+                    if auto.get("ok"):
+                        print(f"LAN auto-scan: queued {auto.get('target')} (delayed)")
+                except Exception:
+                    pass
+
+            asyncio.create_task(_lan_warm())
+            print("LAN inventory: warming after 90s so the first page can load")
+        else:
+            auto = maybe_queue_lan_auto_scan()
+            if auto.get("ok"):
+                print(f"LAN auto-scan: queued {auto.get('target')} -> assets load on every device")
+            elif auto.get("skipped") not in {None, "not_lan_bind", "lan_auto_scan_off"}:
+                print(f"LAN auto-scan: skipped ({auto.get('skipped')})")
     except Exception as exc:
         print(f"LAN auto-scan skipped: {exc}")
     try:
@@ -330,6 +348,9 @@ app.add_middleware(ApiV1AliasMiddleware)
 
 @app.middleware("http")
 async def metrics_middleware(request, call_next):
+    import time as _time
+
+    t0 = _time.perf_counter()
     response = await call_next(request)
     route = request.url.path
     if route.startswith("/api/"):
@@ -338,11 +359,30 @@ async def metrics_middleware(request, call_next):
         collapsed = "/".join(p for p in parts[:3])
         incr(collapsed)
         incr_status(response.status_code)
+        if route not in {"/api/health", "/api/alive", "/api/realtime", "/api/metrics"}:
+            observe_stage("api", (_time.perf_counter() - t0) * 1000.0)
     return response
 
 
 @app.middleware("http")
 async def security_headers(request, call_next):
+    lan_bind = (settings.host or "").strip() in {"0.0.0.0", "::", "[::]"}
+    if (
+        lan_bind
+        and request.method == "OPTIONS"
+        and (request.headers.get("access-control-request-private-network") or "").lower() == "true"
+    ):
+        from starlette.responses import Response
+
+        pre = Response(status_code=204)
+        origin = request.headers.get("origin") or "*"
+        pre.headers["Access-Control-Allow-Origin"] = origin
+        pre.headers["Access-Control-Allow-Methods"] = "*"
+        pre.headers["Access-Control-Allow-Headers"] = request.headers.get(
+            "access-control-request-headers", "*"
+        )
+        pre.headers["Access-Control-Allow-Private-Network"] = "true"
+        return pre
     response = await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
@@ -365,7 +405,9 @@ async def security_headers(request, call_next):
     # When bound to all interfaces (LAN / Docker), relax connect-src so phones
     # and other PCs on Wi‑Fi can use SSE + fetch against this host. CSP does not
     # support CIDR wildcards reliably — use scheme allowlists for lab LAN only.
-    lan_bind = (settings.host or "").strip() in {"0.0.0.0", "::", "[::]"}
+    if lan_bind:
+        # Chrome / Edge on phones: Private Network Access preflight to the LAN IP.
+        response.headers.setdefault("Access-Control-Allow-Private-Network", "true")
     connect_src = (
         "'self' http: https: ws: wss:"
         if lan_bind and not prod
@@ -433,6 +475,7 @@ app.include_router(lifecycle_router)
 app.include_router(system_health_router)
 app.include_router(product_close_router)
 app.include_router(phase_board_router)
+app.include_router(customer_install_router)
 
 _PUBLIC_API_PREFIXES = (
     "/api/auth/login",
@@ -445,10 +488,12 @@ _PUBLIC_API_PREFIXES = (
     "/api/integrations/gitlab/webhook",
     "/api/billing/webhook",
     "/api/health",
+    "/api/alive",
     "/api/realtime",
     "/api/status/public",
     "/api/trust",
     "/api/phases",
+    "/api/phases/total",
     "/api/checklists",
     "/.well-known/security.txt",
     "/api/auth/saml/metadata",
@@ -456,6 +501,8 @@ _PUBLIC_API_PREFIXES = (
     "/api/export/pptx",
     "/api/siem/webhook",
     "/api/wazuh/webhook",
+    "/api/install/customer-check",
+    "/api/ops/perf-hardening",
     "/api/agents/install-script",
     "/api/agents/checkin",
     "/api/agents/threat",
@@ -984,17 +1031,29 @@ async def security_txt():
     return PlainTextResponse(body, media_type="text/plain; charset=utf-8")
 
 
+@app.get("/api/alive")
+async def alive():
+    """Cheap liveness — must stay on the event loop (not the shared thread pool)."""
+    return {"ok": True, "status": "ok"}
+
+
 @app.get("/api/health")
 async def health():
     installed: list[str] = []
     # Short TTL cache — /api/realtime and UI poll this often
     cache = getattr(health, "_cache", None)
     now_t = asyncio.get_event_loop().time()
-    if cache and (now_t - cache.get("ts", 0)) < 12:
+    if cache and (now_t - cache.get("ts", 0)) < 30:
         return cache["payload"]
 
+    async def _wait(coro, default, sec: float = 1.2):
+        try:
+            return await asyncio.wait_for(coro, timeout=sec)
+        except Exception:
+            return default
+
     if settings.model_backend == "ollama":
-        backend_ready, installed = await fetch_ollama_tags()
+        backend_ready, installed = await _wait(fetch_ollama_tags(), (False, []))
         current = settings.ollama_model
         backend_status = "ready" if backend_ready and installed else "needs_model" if backend_ready else "offline"
     elif settings.model_backend in {
@@ -1009,7 +1068,7 @@ async def health():
         from app.model_router import resolve_openai_compat_endpoint
 
         if settings.model_backend == "openai_compat":
-            backend_ready = await openai_compat_reachable()
+            backend_ready = await _wait(openai_compat_reachable(), False)
             current = settings.openai_compat_model
             backend_status = "ready" if backend_ready else "offline"
         else:
@@ -1017,7 +1076,7 @@ async def health():
             backend_ready = bool(key)
             backend_status = "ready" if backend_ready else "needs_key"
     elif settings.model_backend == "hermes":
-        backend_ready = await hermes_reachable()
+        backend_ready = await _wait(hermes_reachable(), False)
         current = settings.hermes_model
         backend_status = "ready" if backend_ready else "offline"
     elif settings.model_backend == "unsloth":
@@ -1040,8 +1099,8 @@ async def health():
         "installed_models": installed,
         "ollama_connected": backend_ready if settings.model_backend == "ollama" else None,
         "ollama_has_models": bool(installed) if settings.model_backend == "ollama" else None,
-        "rag_documents": rag_engine.document_count(),
-        "finetune": finetune_job.snapshot(),
+        "rag_documents": None,
+        "finetune": {},
         "integrations": {
             "hermes": True,
             "unsloth": True,

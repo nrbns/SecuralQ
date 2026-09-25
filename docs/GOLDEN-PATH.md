@@ -29,6 +29,8 @@ NEW EVIDENCE → RISK + COMPLIANCE RECALC → SSE → UI
 
 ## Related docs
 
+- [LAUNCH-PLAN.md](./LAUNCH-PLAN.md) — single board (`GET /api/launch/plan` · `GET /api/launch/complete`)
+- [P0-LAUNCH-BACKLOG.md](./P0-LAUNCH-BACKLOG.md) — file-by-file P0-01 → P0-50
 - [MASTER-EXECUTION-PLAN.md](./MASTER-EXECUTION-PLAN.md)
 - [RELEASE-GATES.md](./RELEASE-GATES.md) — prove closes; Release 0→4 before breadth
 - [PRODUCTION-CONTROL-PLANE.md](./PRODUCTION-CONTROL-PLANE.md) — freeze map vs customer P0 roadmap

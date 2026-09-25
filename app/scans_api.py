@@ -29,6 +29,7 @@ class ScanCreate(BaseModel):
     target: str = Field(min_length=1, max_length=500)
     scanner: str = "securaiq"  # securaiq|nmap|nuclei|zap|all
     profile: str = Field(default="discovery", pattern="^(discovery|web|vulnerability|full)$")
+    intent: str = ""
     scope: list[str] | str | None = None
     engagement_id: str | None = None
     org_id: str | None = None
@@ -105,11 +106,22 @@ def _queue_one(
 @router.get("/scanners")
 async def scanners_catalog(user: Annotated[AuthUser, Depends(require_user)]):
     _ = user
+    from app.scan_intents import list_scan_intents
+
     return {
         "scanners": list_scanners(),
         "profiles": ["discovery", "web", "vulnerability", "full"],
         "batch": ["all"],
+        "intents": list_scan_intents().get("intents") or [],
     }
+
+
+@router.get("/intents")
+async def scans_intents(user: Annotated[AuthUser, Depends(require_user)]):
+    _ = user
+    from app.scan_intents import list_scan_intents
+
+    return list_scan_intents()
 
 
 @router.get("")
@@ -376,6 +388,32 @@ async def scans_create(
     scope = _resolve_scope(user, req)
     scanner_id = (req.scanner or "securaiq").lower().strip()
     profile = (req.profile or "discovery").lower().strip()
+    intent_meta = None
+    if req.intent:
+        from app.scan_intents import resolve_scan_intent
+
+        try:
+            intent_meta = resolve_scan_intent(req.intent)
+        except KeyError as exc:
+            raise HTTPException(status_code=400, detail=f"Unknown scan intent: {req.intent}") from exc
+        kind = str(intent_meta.get("kind") or "scan")
+        if kind == "discover":
+            from app.easm import discover_attack_surface
+
+            return discover_attack_surface(user.id, extra_seeds=[req.target])
+        if kind == "agent":
+            return {
+                "ok": True,
+                "intent": intent_meta,
+                "status": "agent",
+                "note": "Endpoint posture is collected by enrolled agents — enroll or wait for the next check-in.",
+            }
+        if kind == "controls":
+            from app.controls.live_compliance import explain_live_compliance
+
+            return {"ok": True, "intent": intent_meta, "status": "controls", **explain_live_compliance(user.id)}
+        scanner_id = str(intent_meta.get("scanner") or scanner_id)
+        profile = str(intent_meta.get("profile") or profile)
 
     # Keep Web ≠ Network: web profile always routes to built-in DAST only.
     if profile == "web":

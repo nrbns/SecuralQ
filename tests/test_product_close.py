@@ -40,7 +40,15 @@ def test_trust_center_and_service_account(tmp_path, monkeypatch):
     tamper = tamper_status(u.id)
     assert "audit_chain_ok" in tamper
     onboard = onboarding_progress(u.id)
-    assert onboard["total"] == 5
+    assert onboard["total"] == 6
+    assert {s["id"] for s in onboard["steps"]} == {
+        "org",
+        "agent",
+        "asset",
+        "frameworks",
+        "risk",
+        "pulse",
+    }
     roi = roi_metrics(u.id)
     assert roi["ok"] is True
     assert "disclaimer" in roi

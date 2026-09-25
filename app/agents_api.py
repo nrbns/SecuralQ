@@ -12,6 +12,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel, Field, ValidationError
+from starlette.concurrency import run_in_threadpool
 
 from app.agent_auth import parse_agent_bearer, verify_replay_and_signature
 from app.agents import (
@@ -39,6 +40,7 @@ from app.agents import (
     report_command_result,
     request_agent_uninstall,
     request_agent_upgrade,
+    request_campaign_rollback,
     request_command,
     request_enable_defender_command,
     request_enable_firewall_command,
@@ -804,7 +806,14 @@ async def api_list_agents(
 ):
     oid = _org_for(user, header_org)
     require_perm(user, "agent.read", org_id=oid)
-    return {"agents": list_agents(user.id, org_id=oid)}
+    agents = await run_in_threadpool(list_agents, user.id, org_id=oid)
+    slim = []
+    for a in agents or []:
+        row = dict(a)
+        row.pop("last_payload", None)
+        row.pop("last_payload_json", None)
+        slim.append(row)
+    return {"agents": slim, "lite": True}
 
 
 @router.get("/threats")
@@ -921,6 +930,21 @@ async def api_reject_campaign(
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return result
+
+
+@router.post("/campaigns/{campaign_id}/rollback")
+async def api_rollback_campaign(
+    campaign_id: str,
+    user: Annotated[AuthUser, Depends(require_user)],
+    header_org: Annotated[str | None, Depends(optional_org_header)] = None,
+):
+    """Queue allowlisted rollback commands for campaign agents (lab undo)."""
+    oid = _org_for(user, header_org)
+    require_perm(user, "agent.command", org_id=oid)
+    try:
+        return request_campaign_rollback(user.id, campaign_id, requested_by=user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("/{agent_id}")

@@ -47,7 +47,7 @@ if [ "$LAN" -eq 1 ]; then
   set_env_value CORS_ORIGINS "*"
   set_env_value WORKSPACE_ZERO_START false
   set_env_value ALLOW_OPEN_LAN true
-  set_env_value LAN_AUTO_SCAN true
+  set_env_value LAN_AUTO_SCAN false
 else
   set_env_value HOST 127.0.0.1
   set_env_value CORS_ORIGINS "http://127.0.0.1:8080,http://localhost:8080"
@@ -66,4 +66,9 @@ else
   echo "Starting SecuraIQ (secure — localhost) at http://127.0.0.1:8080"
   echo "For phones: ./start_lan.sh"
 fi
-python run.py
+# Same opening path as start.sh (wait for /api/alive, then open the browser).
+if [ "$LAN" -eq 1 ]; then
+  exec bash scripts/start.sh --lan
+else
+  exec bash scripts/start.sh
+fi

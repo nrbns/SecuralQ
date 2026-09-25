@@ -1051,6 +1051,27 @@ def _defender_status() -> dict:
         return {"collected": False, "reason": "Could not parse Get-MpComputerStatus output", "enabled": None}
 
 
+def _macos_hardening() -> dict:
+    """Gatekeeper / SIP / remote login / XProtect — Darwin only."""
+    try:
+        from app.macos_hardening import collect_macos_hardening
+
+        return collect_macos_hardening(runner=lambda cmd, timeout=8: _run(cmd, timeout=timeout))
+    except Exception:
+        system = platform.system().lower()
+        if system != "darwin":
+            return {"collected": False, "reason": f"Not applicable on {system}", "os": system}
+        gk_ok, gk_out = _run(["spctl", "--status"], timeout=8)
+        sip_ok, sip_out = _run(["csrutil", "status"], timeout=8)
+        return {
+            "collected": True,
+            "reason": "",
+            "os": "darwin",
+            "gatekeeper_enabled": "enabled" in gk_out.lower() if gk_ok else None,
+            "sip_enabled": "enabled" in sip_out.lower() if sip_ok else None,
+        }
+
+
 def _startup_apps() -> dict:
     """Real boot/login-time autostart entries -- systemd-enabled services on
     Linux, LaunchAgents/LaunchDaemons on macOS, Win32_StartupCommand on
@@ -2019,6 +2040,7 @@ def collect_snapshot() -> dict:
         "defender_status": _collect_safe(_defender_status, {"collected": False, "enabled": None}),
         "startup_apps": _collect_safe(_startup_apps, {"collected": False, "items": []}),
         "ssh_config": _collect_safe(_ssh_config, {"collected": False, "settings": {}}),
+        "macos_hardening": _collect_safe(_macos_hardening, {"collected": False, "os": platform.system().lower()}),
     }
 
 

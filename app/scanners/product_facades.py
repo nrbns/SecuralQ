@@ -31,6 +31,13 @@ PRODUCTS: dict[str, dict[str, Any]] = {
         "category": "iac",
         "import_hint": "POST /api/vulnerabilities/import with Checkov/Trivy JSON",
     },
+    "easm_scanner": {
+        "name": "SecuraIQ EASM",
+        "adapters": ["securaiq"],
+        "primary": "securaiq",
+        "category": "easm",
+        "import_hint": "POST /api/easm/discover — owned-host DNS + TLS SAN",
+    },
 }
 
 
@@ -88,7 +95,7 @@ def catalog() -> dict[str, Any]:
         "lab_production": True,
         "products": products,
         "note": (
-            "SecuraIQ Secret / API / Config Scanners are branded product surfaces "
-            "over existing import + scan-engine adapters."
+            "SecuraIQ Secret / API / Config / EASM scanners are branded product surfaces "
+            "over existing import + scan-engine + owned-host DNS adapters."
         ),
     }

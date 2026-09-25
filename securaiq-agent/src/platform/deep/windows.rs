@@ -28,6 +28,11 @@ pub fn collect() -> DeepSnapshot {
             "reason": "SSH config not applicable as primary Windows signal",
             "settings": {}
         }),
+        macos_hardening: json!({
+            "collected": false,
+            "reason": "Not applicable on Windows",
+            "os": "windows"
+        }),
     }
 }
 

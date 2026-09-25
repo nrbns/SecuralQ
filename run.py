@@ -59,8 +59,60 @@ def _open_browser(url: str, delay: float = 1.4) -> None:
     threading.Thread(target=_go, daemon=True).start()
 
 
+def _apply_lan_mode() -> None:
+    """Bind for phones / other PCs. Safe for lab LAN — not a public-internet expose."""
+    os.environ["HOST"] = "0.0.0.0"
+    os.environ["CORS_ORIGINS"] = "*"
+    os.environ["ALLOW_OPEN_LAN"] = "true"
+    os.environ["LAN_AUTO_SCAN"] = "false"
+    os.environ["WORKSPACE_ZERO_START"] = "false"
+    try:
+        settings.host = "0.0.0.0"
+        settings.cors_origins = "*"
+        settings.allow_open_lan = True
+        settings.lan_auto_scan = False
+        settings.workspace_zero_start = False
+    except Exception:
+        pass
+    try:
+        from app.platform_info import clear_platform_cache
+
+        clear_platform_cache()
+    except Exception:
+        pass
+    env_path = ROOT / ".env"
+    if env_path.is_file():
+        try:
+            lines = env_path.read_text(encoding="utf-8").splitlines()
+            updates = {
+                "HOST": "0.0.0.0",
+                "CORS_ORIGINS": "*",
+                "ALLOW_OPEN_LAN": "true",
+                "LAN_AUTO_SCAN": "false",
+                "WORKSPACE_ZERO_START": "false",
+            }
+            seen: set[str] = set()
+            out: list[str] = []
+            for line in lines:
+                key = line.split("=", 1)[0] if "=" in line and not line.lstrip().startswith("#") else ""
+                if key in updates:
+                    out.append(f"{key}={updates[key]}")
+                    seen.add(key)
+                else:
+                    out.append(line)
+            for key, val in updates.items():
+                if key not in seen:
+                    out.append(f"{key}={val}")
+            env_path.write_text("\n".join(out) + "\n", encoding="utf-8")
+        except Exception:
+            pass
+
+
 if __name__ == "__main__":
     multiprocessing.freeze_support()
+    if any(a in {"--lan", "-Lan", "-lan"} for a in sys.argv[1:]):
+        _apply_lan_mode()
+        print("LAN mode: other devices use the printed LAN URL — never localhost on the other device.")
     try:
         from app.bootstrap import bootstrap
 

@@ -76,7 +76,30 @@ _CRITICAL_PREFIXES = (
     "compliance",
     "sequence_gap",
     "recovery",
+    "agent.offline",
+    "agent.disconnected",
 )
+_BATCHABLE_TYPES = frozenset(
+    {
+        "vuln",
+        "vulnerability",
+        "finding",
+        "vuln_batch",
+        "software.inventory.updated",
+        "software.vulnerability.changed",
+        "software.installed",
+        "software.removed",
+        "software.updated",
+    }
+)
+_THROTTLE_TYPES = frozenset({"scan"})
+_batch_lock = threading.Lock()
+_batch_buf: list[dict[str, Any]] = []
+_throttle_last: dict[str, dict[str, Any]] = {}
+_batch_timer: threading.Timer | None = None
+_BATCH_BUFFERED = 0
+_BATCH_FLUSHED = 0
+_BATCH_EMITTED = 0
 
 
 def bind_loop(loop: asyncio.AbstractEventLoop | None = None) -> None:
@@ -178,6 +201,71 @@ def _is_sheddable_event(payload: dict[str, Any]) -> bool:
     return any(et == p or et.startswith(p) for p in _SHEDDABLE_PREFIXES)
 
 
+def _event_severity(payload: dict[str, Any]) -> str:
+    sev = str(payload.get("severity") or "").strip().lower()
+    if sev:
+        return sev
+    data = payload.get("data")
+    if isinstance(data, dict):
+        return str(data.get("severity") or "").strip().lower()
+    return ""
+
+
+def _is_immediate_event(payload: dict[str, Any]) -> bool:
+    if _is_critical_event(payload):
+        return True
+    if _event_severity(payload) in {"critical", "high"}:
+        return True
+    return False
+
+
+def _sse_batch_ms() -> int:
+    raw = (os.environ.get("SSE_BATCH_MS") or "").strip()
+    if raw == "0":
+        return 0
+    if not raw and os.environ.get("PYTEST_CURRENT_TEST"):
+        return 0
+    try:
+        return max(50, min(int(raw or "350"), 2000))
+    except ValueError:
+        return 350
+
+
+def _is_batchable_event(payload: dict[str, Any]) -> bool:
+    if _sse_batch_ms() <= 0:
+        return False
+    if _is_immediate_event(payload):
+        return False
+    et = _event_type_of(payload)
+    if et in _BATCHABLE_TYPES or et.startswith("software."):
+        return True
+    return False
+
+
+def _is_throttled_event(payload: dict[str, Any]) -> bool:
+    if _sse_batch_ms() <= 0:
+        return False
+    if _is_immediate_event(payload):
+        return False
+    return _event_type_of(payload) in _THROTTLE_TYPES
+
+
+def sse_batch_stats() -> dict[str, Any]:
+    with _batch_lock:
+        return {
+            "buffered": _BATCH_BUFFERED,
+            "flushed": _BATCH_FLUSHED,
+            "emitted": _BATCH_EMITTED,
+            "pending": len(_batch_buf) + len(_throttle_last),
+            "window_ms": _sse_batch_ms(),
+        }
+
+
+def flush_sse_batches() -> int:
+    """Test/ops helper — flush the findings batch window now."""
+    return _flush_batches()
+
+
 def _note_shed() -> None:
     global _BACKPRESSURE_SHED
     with _lock:
@@ -235,6 +323,13 @@ def _stream_key() -> str:
         return (getattr(settings, "redis_stream_key", "") or _DEFAULT_STREAM_KEY).strip() or _DEFAULT_STREAM_KEY
     except Exception:
         return _DEFAULT_STREAM_KEY
+
+
+def tenant_stream_key(org_id: str | None = None) -> str:
+    """Tenant-suffixed stream key. Empty org keeps the global lab stream."""
+    base = _stream_key()
+    oid = "".join(ch for ch in str(org_id or "").strip() if ch.isalnum() or ch in "-_")[:64]
+    return f"{base}:{oid}" if oid else base
 
 
 def _stream_maxlen() -> int:
@@ -360,6 +455,18 @@ def _xadd_stream(payload: dict[str, Any], url: str) -> None:
                 maxlen=_stream_maxlen(),
                 approximate=True,
             )
+            org = str(payload.get("org_id") or payload.get("organization_id") or "").strip()
+            tenant_key = tenant_stream_key(org) if org else ""
+            if tenant_key and tenant_key != key:
+                try:
+                    r.xadd(
+                        tenant_key,
+                        {"payload": json.dumps(payload, default=str)},
+                        maxlen=_stream_maxlen(),
+                        approximate=True,
+                    )
+                except Exception:
+                    pass
         finally:
             try:
                 r.close()
@@ -389,12 +496,96 @@ def _pubsub_publish(payload: dict[str, Any], url: str) -> None:
         _log.debug("pubsub publish skipped: %s", exc)
 
 
+def _deliver_event(payload: dict[str, Any]) -> None:
+    """Fan-out a already-normalized event (local SSE + optional Redis)."""
+    if not _remember_event(payload):
+        _note_publish(duplicate=True)
+        return
+    _note_publish(duplicate=False)
+    _fanout_local(payload)
+    try:
+        from app.event_processor import on_local_publish
+
+        on_local_publish(payload)
+    except Exception:
+        pass
+    url = _redis_url()
+    if not _redis_ready():
+        return
+    _xadd_stream(payload, url)
+    if not _streams_fanout_enabled():
+        _pubsub_publish(payload, url)
+
+
+def _schedule_flush() -> None:
+    global _batch_timer
+    with _batch_lock:
+        if _batch_timer is not None:
+            return
+        _batch_timer = threading.Timer(_sse_batch_ms() / 1000.0, _flush_batches)
+        _batch_timer.daemon = True
+        _batch_timer.start()
+
+
+def _flush_batches() -> int:
+    global _batch_timer, _BATCH_FLUSHED, _BATCH_EMITTED
+    with _batch_lock:
+        _batch_timer = None
+        items = list(_batch_buf)
+        _batch_buf.clear()
+        throttled = list(_throttle_last.values())
+        _throttle_last.clear()
+        _BATCH_FLUSHED += 1
+    n = 0
+    if items:
+        try:
+            from app.realtime_events import normalize_event
+
+            batch = normalize_event(
+                {
+                    "type": "findings.batch",
+                    "event_type": "findings.batch",
+                    "count": len(items),
+                    "findings": [
+                        {
+                            "id": ev.get("id"),
+                            "type": ev.get("type") or ev.get("event_type"),
+                            "severity": ev.get("severity"),
+                        }
+                        for ev in items[:200]
+                    ],
+                    "batched": True,
+                }
+            )
+        except Exception:
+            batch = {
+                "type": "findings.batch",
+                "event_type": "findings.batch",
+                "count": len(items),
+                "findings": items[:200],
+                "batched": True,
+                "ts": time.time(),
+                "event_id": uuid.uuid4().hex,
+            }
+        batch["_pid"] = _PID
+        _deliver_event(batch)
+        n += 1
+        with _batch_lock:
+            _BATCH_EMITTED += 1
+    for payload in throttled:
+        _deliver_event(payload)
+        n += 1
+    return n
+
+
 def publish(event: dict[str, Any] | None = None, **kwargs: Any) -> None:
     """Broadcast an event to local SSE subscribers (+ Redis when configured).
 
     Payloads are normalized to the REALTIME v1 contract (event_id, event_type,
     sequence, timestamps, data, …) while preserving legacy ``type`` / ``seq`` /
     ``org_id`` and top-level domain fields for existing SSE consumers.
+    Normal findings are buffered (SSE_BATCH_MS) into ``findings.batch``.
+    Critical / agent-offline / remediation events stay immediate.
     """
     t0 = time.perf_counter()
     payload = dict(event or {})
@@ -429,36 +620,28 @@ def publish(event: dict[str, Any] | None = None, **kwargs: Any) -> None:
             pass
         return
 
-    if not _remember_event(payload):
-        _note_publish(duplicate=True)
-        return
-
-    _note_publish(duplicate=False)
     try:
         from app.metrics import observe_stage
 
         observe_stage("ingest", (time.perf_counter() - t0) * 1000.0)
     except Exception:
         pass
-    _fanout_local(payload)
 
-    # Lab path: sync processor hooks when Redis Streams consumer is not running.
-    try:
-        from app.event_processor import on_local_publish
-
-        on_local_publish(payload)
-    except Exception:
-        pass
-
-    url = _redis_url()
-    if not _redis_ready():
+    if _is_batchable_event(payload):
+        global _BATCH_BUFFERED
+        with _batch_lock:
+            _batch_buf.append(payload)
+            _BATCH_BUFFERED += 1
+        _schedule_flush()
         return
-    # Durable log first — Streams are the SoT when Redis is configured.
-    _xadd_stream(payload, url)
-    # Default: Streams fan-out consumers deliver to local SSE (no pub/sub).
-    # Transitional: REALTIME_STREAMS_FANOUT=false keeps Redis pub/sub notify.
-    if not _streams_fanout_enabled():
-        _pubsub_publish(payload, url)
+    if _is_throttled_event(payload):
+        key = f"{_event_type_of(payload)}:{payload.get('id') or payload.get('scan_id') or '_'}"
+        with _batch_lock:
+            _throttle_last[key] = payload
+        _schedule_flush()
+        return
+
+    _deliver_event(payload)
 
 
 def _payload_from_stream_fields(fields: Any) -> dict[str, Any] | None:

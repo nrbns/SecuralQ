@@ -62,6 +62,15 @@ async def get_why_risk_increased(
     return explain_risk_increase(user.id, limit_findings=limit, use_llm=use_llm)
 
 
+@router.get("/finding/{finding_id}/why")
+async def get_finding_why(
+    finding_id: str, user: Annotated[AuthUser, Depends(require_user)]
+):
+    from app.services.risk_narrative import explain_finding
+
+    return explain_finding(user.id, finding_id)
+
+
 @router.get("/simulate")
 async def get_risk_simulation(user: Annotated[AuthUser, Depends(require_user)], limit: int = 10):
     """"If you fix these, here's the estimated impact" — grouped findings

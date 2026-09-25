@@ -24,7 +24,9 @@ SENTINEL_INTERVAL=10
 INSTALL_DIR="/opt/securaiq/agent"
 ENV_FILE="/etc/securaiq/agent.env"
 UNIT_FILE="/etc/systemd/system/securaiq-agent.service"
-SCRIPT_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/securaiq_agent.py"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_SRC="$HERE/securaiq_agent.py"
+BIN_SRC="$HERE/SecuraIQ-Agent"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -50,17 +52,26 @@ case "$SERVER" in
     echo "Use the SecuraIQ LAN IP (e.g. http://192.168.x.x:8080) and start the console with LAN bind." >&2
     ;;
 esac
-if [ ! -f "$SCRIPT_SRC" ]; then
-  echo "Could not find securaiq_agent.py next to this installer at $SCRIPT_SRC" >&2
-  echo "Download both files together, e.g.:" >&2
-  echo "  curl -fsSL <server>/api/agents/install-script -o securaiq_agent.py" >&2
-  echo "  curl -fsSL <server>/api/agents/install-script/linux -o install_agent_linux.sh" >&2
+USE_BIN=0
+if [ -x "$BIN_SRC" ] || [ -f "$BIN_SRC" ]; then
+  USE_BIN=1
+elif [ ! -f "$SCRIPT_SRC" ]; then
+  echo "Neither SecuraIQ-Agent nor securaiq_agent.py is next to this installer." >&2
+  echo "On the customer host copy the Linux package from Agents, not only this .sh." >&2
   exit 1
 fi
-command -v python3 >/dev/null 2>&1 || { echo "python3 not found on PATH — install Python 3.8+ first." >&2; exit 1; }
+if [ "$USE_BIN" -eq 0 ]; then
+  command -v python3 >/dev/null 2>&1 || { echo "python3 not found and no SecuraIQ-Agent binary. Install Python 3.8+ or use the packaged tarball." >&2; exit 1; }
+fi
 
 mkdir -p "$INSTALL_DIR"
-install -m 0755 "$SCRIPT_SRC" "$INSTALL_DIR/securaiq_agent.py"
+if [ "$USE_BIN" -eq 1 ]; then
+  install -m 0755 "$BIN_SRC" "$INSTALL_DIR/SecuraIQ-Agent"
+  EXEC_START="$INSTALL_DIR/SecuraIQ-Agent --interval $INTERVAL --sentinel-interval $SENTINEL_INTERVAL"
+else
+  install -m 0755 "$SCRIPT_SRC" "$INSTALL_DIR/securaiq_agent.py"
+  EXEC_START="$(command -v python3) $INSTALL_DIR/securaiq_agent.py --interval $INTERVAL --sentinel-interval $SENTINEL_INTERVAL"
+fi
 
 mkdir -p "$(dirname "$ENV_FILE")"
 umask 077
@@ -79,7 +90,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=$ENV_FILE
-ExecStart=$(command -v python3) $INSTALL_DIR/securaiq_agent.py --interval $INTERVAL --sentinel-interval $SENTINEL_INTERVAL
+ExecStart=$EXEC_START
 Restart=always
 RestartSec=10
 User=root

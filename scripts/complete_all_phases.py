@@ -28,6 +28,7 @@ def main() -> int:
             "pytest",
             "-q",
             "tests/test_all_phases.py",
+            "tests/test_total_phase.py",
             "tests/test_product_close.py",
             "tests/test_phase1_ops_remaining.py",
             "tests/test_master_checklist_phases.py",

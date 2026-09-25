@@ -147,6 +147,94 @@ def explain_risk_increase(
     }
 
 
+def explain_finding(user_id: str, finding_id: str) -> dict[str, Any]:
+    """Why this finding matters + what-if-I-fix delta. Never invents paths."""
+    from app.enterprise import get_vulnerability
+    from app.exposure import network_scope
+    from app.service_impact import services_affected_by_vuln
+    from app.services.risk_priority import compute_risk_simulation
+
+    v = {}
+    try:
+        v = get_vulnerability(user_id, finding_id) or {}
+    except Exception:
+        v = {}
+    if not v:
+        return {
+            "ok": False,
+            "kind": "vuln",
+            "title": "Finding not found",
+            "what": finding_id,
+            "why": "No tenant-visible finding with this id.",
+            "evidence": "",
+            "impact": "",
+            "action": "",
+            "verify": "",
+            "simulate": True,
+            "request_approval": False,
+        }
+    sim = {}
+    try:
+        sim = compute_risk_simulation(user_id, limit=12)
+    except Exception:
+        sim = {}
+    impact = {}
+    try:
+        impact = services_affected_by_vuln(user_id, vuln_id=finding_id)
+    except Exception:
+        impact = {}
+    asset_name = str(v.get("asset_name") or v.get("asset_id") or "")
+    scope = network_scope(asset_name, v.get("ip"))
+    kev = bool(v.get("kev") or v.get("known_exploited") or (v.get("raw") or {}).get("kev"))
+    group_hit = None
+    vid = str(v.get("id") or finding_id)
+    cve = str(v.get("cve") or "")
+    for g in sim.get("groups") or []:
+        ids = {str(x) for x in (g.get("vuln_ids") or g.get("finding_ids") or [])}
+        if vid in ids or (cve and str(g.get("key") or "") == f"cve:{cve}"):
+            group_hit = g
+            break
+    reduction = None
+    if group_hit:
+        reduction = group_hit.get("reduction") or group_hit.get("estimated_reduction")
+    services = impact.get("services") or []
+    return {
+        "ok": True,
+        "kind": "vuln",
+        "title": v.get("title") or "Why does this finding matter?",
+        "what": v.get("title") or finding_id,
+        "why": (
+            f"Severity {v.get('severity')} on {asset_name or 'asset'} · CVE {cve or 'n/a'}"
+            + (" · KEV/actively exploited" if kev else "")
+            + f" · exposure {scope}"
+        ),
+        "evidence": "Finding raw + linked observations. Show evidence from the vault; do not trust execute.",
+        "impact": (
+            f"Services affected: {len(services) if isinstance(services, list) else 0}. "
+            f"If this class is fixed, estimated org-risk reduction: {reduction if reduction is not None else 'n/a'}."
+        ),
+        "action": "Patch / compensate / exception — never mark fixed from ticket close alone.",
+        "verify": "Inventory refresh or host control re-test.",
+        "expected": sim.get("disclaimer")
+        or "Simulator recomputes the same org score with this CVE group excluded.",
+        "simulate": True,
+        "request_approval": True,
+        "finding": {
+            k: v.get(k)
+            for k in ("id", "title", "severity", "cve", "asset_name", "asset_id", "status")
+            if v
+        },
+        "kev": kev,
+        "exposure": scope,
+        "services": services[:8] if isinstance(services, list) else [],
+        "simulation": {
+            "baseline_score": sim.get("baseline_score"),
+            "reduction": reduction,
+            "group": group_hit,
+        },
+    }
+
+
 def _optional_llm_polish(user_id: str, narrative: str, drivers: list[dict[str, Any]]) -> str | None:
     """Best-effort short rewrite — skipped if backend not ready."""
     from app.config import settings

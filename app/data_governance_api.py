@@ -6,6 +6,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from app.auth import AuthUser
 from app.commercial_api import require_user
@@ -136,7 +137,7 @@ async def api_dpdp_overview(
     as_of: str | None = None,
 ):
     """India DPDP dashboard: inventory posture, phased Rules commencement, gap scores."""
-    return dpdp_overview(user.id, as_of=as_of)
+    return await run_in_threadpool(dpdp_overview, user.id, as_of=as_of)
 
 
 @router.get("/data-map")

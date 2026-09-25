@@ -1668,6 +1668,95 @@ def evidence_from_files(user_id: str, file_ids: list[str]) -> str:
     return "\n\n".join(chunks)
 
 
+def _sql_count(sql: str, args: tuple[Any, ...] = ()) -> int:
+    try:
+        row = get_conn().execute(sql, args).fetchone()
+        if row is None:
+            return 0
+        return int(row[0] if not hasattr(row, "keys") else (row["n"] if "n" in row.keys() else row[0]))
+    except Exception:
+        return 0
+
+
+def enterprise_dashboard_lite(user_id: str) -> dict[str, Any]:
+    """COUNT + latest gap scores only — first paint for Command Center."""
+    from app.gap_analysis import dashboard_scores
+
+    gap = dashboard_scores(user_id, lite=True)
+    assets_total = _sql_count("SELECT COUNT(*) AS n FROM assets WHERE user_id = ?", (user_id,))
+    risks_open = _sql_count(
+        "SELECT COUNT(*) AS n FROM risks WHERE user_id = ? AND IFNULL(status,'open') = 'open'",
+        (user_id,),
+    )
+    risks_total = _sql_count("SELECT COUNT(*) AS n FROM risks WHERE user_id = ?", (user_id,))
+    vulns_open = _sql_count(
+        "SELECT COUNT(*) AS n FROM vulnerabilities WHERE user_id = ? AND IFNULL(status,'open') = 'open'",
+        (user_id,),
+    )
+    vulns_crit = _sql_count(
+        """SELECT COUNT(*) AS n FROM vulnerabilities
+           WHERE user_id = ? AND IFNULL(status,'open') = 'open'
+             AND LOWER(IFNULL(severity,'')) IN ('critical','high')""",
+        (user_id,),
+    )
+    vulns_total = _sql_count("SELECT COUNT(*) AS n FROM vulnerabilities WHERE user_id = ?", (user_id,))
+    rems_open = _sql_count(
+        "SELECT COUNT(*) AS n FROM gap_remediations WHERE user_id = ? AND IFNULL(status,'open') != 'done'",
+        (user_id,),
+    )
+    incidents_open = _sql_count(
+        "SELECT COUNT(*) AS n FROM incidents WHERE user_id = ? AND IFNULL(status,'open') = 'open'",
+        (user_id,),
+    )
+    compliance = float(gap.get("compliance_score") or 0)
+    assessment_count = int(gap.get("assessment_count") or 0)
+    is_empty = not assets_total and not vulns_total and not risks_total and not assessment_count
+    if is_empty:
+        security_index = 0
+    elif assessment_count <= 0:
+        security_index = max(
+            0,
+            min(
+                100,
+                round(
+                    max(0, 100 - risks_open * 4) * 0.4
+                    + max(0, 100 - vulns_crit * 8) * 0.35
+                    + max(0, 100 - rems_open * 2) * 0.25
+                ),
+            ),
+        )
+    else:
+        security_index = max(
+            0,
+            min(
+                100,
+                round(compliance * 0.45 + max(0, 100 - vulns_crit * 8) * 0.3 + max(0, 100 - risks_open * 4) * 0.25),
+            ),
+        )
+    return {
+        **gap,
+        "lite": True,
+        "is_empty": is_empty,
+        "security_index": security_index,
+        "risks_open": risks_open,
+        "risks_total": risks_total,
+        "vulnerabilities_open": vulns_open,
+        "vulnerabilities_critical_high": vulns_crit,
+        "vulnerabilities_total": vulns_total,
+        "remediations_open": rems_open,
+        "assets_total": assets_total,
+        "incidents_open": incidents_open,
+        "mission_control": {
+            "security_score": security_index,
+            "security_score_note": "Lite counts — full dashboard hydrates next",
+        },
+        "morning_brief": {},
+        "work_queue": [],
+        "top_risks": [],
+        "findings": {"critical_high": vulns_crit},
+    }
+
+
 def enterprise_dashboard(user_id: str) -> dict[str, Any]:
     from app.gap_analysis import dashboard_scores, get_assessment
     from app.ops import list_incidents, list_intel_watch, purge_demo_seed

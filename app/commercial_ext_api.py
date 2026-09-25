@@ -7,6 +7,9 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
+
+from app.fast_cache import run_fast
 
 from app.auth import AuthUser
 from app.commercial_api import require_user
@@ -76,7 +79,8 @@ class ServiceNowIncidentCreate(BaseModel):
 @router.get("/orgs")
 async def orgs_list(user: Annotated[AuthUser, Depends(require_user)]):
     ensure_org_schema()
-    return {"organizations": list_orgs(user.id), "roles": list(ROLES)}
+    orgs = await run_fast(list_orgs, user.id)
+    return {"organizations": orgs, "roles": list(ROLES)}
 
 
 @router.post("/orgs")

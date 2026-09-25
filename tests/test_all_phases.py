@@ -48,6 +48,9 @@ def test_toxic_and_service_impact(tmp_path, monkeypatch):
     )
     toxic = compute_toxic_combinations(u.id)
     assert toxic["ok"] is True
+    assert "internet_facing_high_vuln" in toxic.get("supported_kinds") or "public_risky_port" in toxic.get(
+        "supported_kinds"
+    )
     impact = services_affected_by_vuln(u.id)
     assert impact["ok"] is True
 

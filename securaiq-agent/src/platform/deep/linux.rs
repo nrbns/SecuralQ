@@ -29,6 +29,11 @@ pub fn collect() -> DeepSnapshot {
             "enabled": null
         }),
         ssh_config: ssh_config(),
+        macos_hardening: json!({
+            "collected": false,
+            "reason": "Not applicable on linux",
+            "os": "linux"
+        }),
     }
 }
 

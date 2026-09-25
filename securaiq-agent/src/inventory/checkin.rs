@@ -30,6 +30,7 @@ pub fn collect_checkin_payload() -> Value {
         "defender_status": deep.defender_status,
         "startup_apps": deep.startup_apps,
         "ssh_config": deep.ssh_config,
+        "macos_hardening": deep.macos_hardening,
         "security_logs": security_logs,
     })
 }

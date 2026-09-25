@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
+from threading import Lock
 from typing import Any, Literal
 
 from app.db import audit, get_conn, new_id, now, row_to_dict
@@ -28,6 +30,28 @@ _FRAMEWORK_ALIASES = {
     "dpdp_rules": "dpdp_rules_2025",
 }
 
+_fw_lock = Lock()
+_fw_cache: dict[str, tuple[float, int, dict[str, Any]]] = {}
+
+
+def clear_framework_cache() -> None:
+    with _fw_lock:
+        _fw_cache.clear()
+
+
+def _read_framework_json(path: Path) -> dict[str, Any]:
+    st = path.stat()
+    key = str(path.resolve())
+    with _fw_lock:
+        hit = _fw_cache.get(key)
+        if hit and hit[0] == st.st_mtime and hit[1] == st.st_size:
+            return hit[2]
+    data = json.loads(path.read_text(encoding="utf-8"))
+    with _fw_lock:
+        _fw_cache[key] = (st.st_mtime, st.st_size, data)
+    return data
+
+
 _STATUS_SCORE = {
     "implemented": 1.0,
     "partial": 0.5,
@@ -39,7 +63,7 @@ _STATUS_SCORE = {
 def list_frameworks() -> list[dict[str, Any]]:
     out = []
     for path in sorted(_FRAMEWORKS_DIR.glob("*.json")):
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = _read_framework_json(path)
         row = {
             "id": data["id"],
             "name": data["name"],
@@ -65,11 +89,11 @@ def load_framework(framework_id: str) -> dict[str, Any]:
     path = _FRAMEWORKS_DIR / f"{fid}.json"
     if not path.exists():
         for p in _FRAMEWORKS_DIR.glob("*.json"):
-            data = json.loads(p.read_text(encoding="utf-8"))
+            data = _read_framework_json(p)
             if data.get("id") == fid or data.get("id") == framework_id:
                 return data
         raise ValueError(f"Unknown framework: {framework_id}")
-    return json.loads(path.read_text(encoding="utf-8"))
+    return _read_framework_json(path)
 
 
 def _normalize(text: str) -> str:
@@ -357,7 +381,7 @@ def list_assessments(user_id: str, engagement_id: str | None = None) -> list[dic
     return [row_to_dict(r) for r in rows]
 
 
-def dashboard_scores(user_id: str) -> dict[str, Any]:
+def dashboard_scores(user_id: str, *, lite: bool = False) -> dict[str, Any]:
     c = get_conn()
     rows = c.execute(
         """
@@ -379,6 +403,15 @@ def dashboard_scores(user_id: str) -> dict[str, Any]:
     )
 
     recommendations: list[str] = []
+    if lite:
+        return {
+            "security_score": overall,
+            "compliance_score": overall,
+            "frameworks": scores,
+            "assessment_count": len(rows),
+            "methodology": SCORING_METHODOLOGY,
+            "recommendations": [],
+        }
     if scores:
         # Build tips from real missing/partial controls in the newest assessment
         try:

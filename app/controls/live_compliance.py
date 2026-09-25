@@ -81,8 +81,35 @@ def compute_live_compliance(user_id: str) -> dict[str, Any]:
         "last_test": last_test,
         "disclaimer": (
             "Live operating-effectiveness from agent/control last-results only — "
-            "not a certification score and not blended into gap-analysis %."
+            "not a certification score and not blended into gap-analysis %. "
+            "Enrolled-but-offline agents cannot contribute PASS."
         ),
+    }
+
+
+def explain_live_compliance(user_id: str) -> dict[str, Any]:
+    """P0-45 — expand live % into PASS/FAIL/STALE contributions."""
+    snap = compute_live_compliance(user_id)
+    fw = snap.get("frameworks") or []
+    parts = []
+    for row in fw[:8]:
+        parts.append(
+            f"{row.get('framework_id')}: {row.get('passing')} PASS / "
+            f"{row.get('failing')} FAIL / {row.get('unknown')} unknown "
+            f"({row.get('live_percent')}%)"
+        )
+    why = (
+        f"{snap.get('passing')} PASS, {snap.get('failing')} FAIL, "
+        f"{snap.get('unknown')} unknown across {snap.get('decisive_controls')} decisive controls."
+    )
+    if parts:
+        why = why + " " + "; ".join(parts)
+    return {
+        **snap,
+        "why": why,
+        "narrative": why,
+        "evidence": snap.get("disclaimer"),
+        "contributions": fw,
     }
 
 

@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-api
+  labels:
+    app: securaiq
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: securaiq
+  template:
+    metadata:
+      labels:
+        app: securaiq
+    spec:
+      containers:
+        - name: api
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.service.port }}
+          env:
+            - name: HOST
+              value: "0.0.0.0"
+            - name: MODEL_BACKEND
+              value: {{ .Values.ai.backend | default "ollama" | quote }}
+            - name: OLLAMA_BASE_URL
+              value: {{ .Values.ai.ollamaBaseUrl | default "http://ollama:11434" | quote }}
+            - name: OLLAMA_MODEL
+              value: {{ .Values.ai.ollamaModel | default "tinyllama" | quote }}

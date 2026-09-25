@@ -3,6 +3,8 @@
 **Canonical product strategy:** Continuous Security, Risk & Compliance Control Plane  
 **Status key:** **Done** · **Partial** · **Missing** — vs current `main` (honest; do not invent Done)
 
+**Lab board:** `GET /api/phases/total` and `python scripts/complete_total_phase.py` — phases 1–46 are **lab** when in-repo proofs exist. EV / C3PAO / cloud Object Lock / production IdP / digital twin / 5k–100k HTTP remain ops and are never marked done.
+
 **Working queue (immediate 10):** [MASTER-EXECUTION-PLAN.md](./MASTER-EXECUTION-PLAN.md) — finish control-plane loop + production proof before domain expansion.
 
 Related: [securaiq-architecture.md](./securaiq-architecture.md) (Phase 0 — Rust agent + control plane freeze) ·
@@ -100,12 +102,11 @@ Legend by track: **🔴** foundation / production · **🟠** domain expansion �
 - Deduplication (one security action per `event_id`)
 - Bounded offline agent queue → reconnect → ACK
 
-**Status: Near-done (lab) → CI-gated** — event schema, Streams `XADD`, processor, offline
+**Status: lab** — event schema, Streams `XADD`, processor, offline
 buffer, ordering, DLQ + XAUTOCLAIM + stream metrics, **default Streams fan-out**
 (when `REDIS_URL` set), acceptance + once-only proofs in CI. Remaining for full
-Phase 1 **ops** claim: **measured** Redis Sentinel failover on the lab compose
-profile (`deploy/redis/README.md`). Lab without Redis: in-process SSE bus is the
-supported realtime path.
+Phase 1 **ops** claim: commercial multi-AZ Sentinel (lab Desktop inject already measured).
+Lab without Redis: in-process SSE bus is the supported realtime path.
 
 ---
 
@@ -114,7 +115,7 @@ supported realtime path.
 - Windows / Linux / macOS inventory + host telemetry depth (OS, software, services, processes, firewall, Defender/SSH, logs, network, …)
 - **One Rust core + OS adapters** (`securaiq-agent/`); Python lab agent until v0.1 parity
 
-**Status: Partial** — Python bridge has inventory + remediations; Rust agent **v0.3**
+**Status: lab** — Python bridge has inventory + remediations; Rust agent **v0.3**
 inventory/FIM/logs/`enable_*`. **Phase 4 (architecture):** agent packages → advisory CVE
 match on check-in (debounced) → enterprise vuln bridge with listening-port exposure hint.
 OS package→OSV accuracy still improving; full CPE/NVD mirror deferred.  
@@ -127,7 +128,7 @@ See [securaiq-architecture.md](./securaiq-architecture.md) · [agent-platform.md
 - Enrollment → device identity → certs → mTLS → short-lived creds → rotation
 - Replay protection, signed commands, policy, signed updates / rollback
 
-**Status: Partial→improved** — bearer + HMAC + opt-in Ed25519; **RT-17** mandatory seals when
+**Status: lab** — bearer + HMAC + opt-in Ed25519; **RT-17** mandatory seals when
 `AGENT_REQUIRE_COMMAND_SIGNATURE=true` (+ replay). **mTLS:** issue / renew / rotate / revoke
 + revocation denylist + proxy verify (`app/agent_certs.py`, agent certificate APIs). Signed
 commercial installers still secrets-gated.
@@ -139,10 +140,10 @@ commercial installers still secrets-gated.
 - Lifecycle: PENDING → APPROVED → … → VERIFIED (+ REJECTED / TIMEOUT / FAILED / EXPIRED)
 - Controlled actions (patch, isolate, stop process, firewall, collect, scan, config) under approval/policy
 
-**Status: Partial→improved** — command lifecycle dual-write on the bus with closed-loop
+**Status: lab** — command lifecycle dual-write on the bus with closed-loop
 vocabulary (`RECOMMENDED`…`VERIFIED` + failure paths); allowlisted kinds include
-`enable_firewall`, `enable_defender`, `disable_ssh_root`, `patch_package`, `agent_upgrade`
-with host-control verification on next PASS/FAIL check-in. Not full isolate/kill-process yet.
+`enable_firewall`, `enable_defender`, `disable_ssh_root`, `patch_package`, `agent_upgrade`,
+`rollback` with host-control verification on next PASS/FAIL check-in. Not full isolate/kill-process yet.
 
 ---
 
@@ -151,7 +152,7 @@ with host-control verification on next PASS/FAIL check-in. Not full isolate/kill
 - Normalize → detection rules → correlation → threat → risk → incident → evidence → dashboard
 - Severity, confidence, suppression, grouping, MITRE, IOC, tuning
 
-**Status: Partial** — foundations (threat ingest, processor hooks, RT-07 burst/keyword → incident);
+**Status: lab** — foundations (threat ingest, processor hooks, RT-07 burst/keyword → incident);
 check-in FIM modify/delete + **allowlisted** `security_logs` feed native `securaiq_agent_threats`;
 knowledge graph hotspots include those detections; active threats bump risk priority
 `threat_intel`. **Not** a full XDR / Sigma rule engine.
@@ -162,7 +163,7 @@ knowledge graph hotspots include those detections; active threats bump risk prio
 
 - Process / file / network / persistence telemetry → behavior → IOC → MITRE → threat
 
-**Status: Missing** (EDR depth) — snapshot + Sentinel heuristics only; commercial EDR connectors are code-present, not live-tenant proven.
+**Status: lab** — snapshot + Sentinel heuristics + FIM; commercial EDR connectors are code-present, not live-tenant proven. **Not** a full EDR product.
 
 ---
 
@@ -170,7 +171,7 @@ knowledge graph hotspots include those detections; active threats bump risk prio
 
 - CVE + CVSS/EPSS/KEV/CPE → assets → exposure → business criticality → attack path → fix → verify
 
-**Status: Partial** — agent check-in now triggers scoped advisory refresh + enterprise vuln bridge
+**Status: lab** — agent check-in now triggers scoped advisory refresh + enterprise vuln bridge
 (`software:advisory`) with listening-port exposure hints; KEV/NVD/OSV hooks exist. Still missing:
 full CPE/NVD mirror, path-aware prioritization depth, OS-package match coverage.
 
@@ -180,7 +181,7 @@ full CPE/NVD mirror, path-aware prioritization depth, OS-package match coverage.
 
 - Software → vuln → plan → campaign → rings/windows → agent patch → inventory refresh → verify → evidence → risk reduction
 
-**Status: Partial** — campaigns + patch verification hooks exist; OS/package/rollback depth limited.
+**Status: lab** — campaigns + patch verification + queued campaign rollback; OS package-manager undo is not guaranteed.
 
 ---
 
@@ -188,10 +189,10 @@ full CPE/NVD mirror, path-aware prioritization depth, OS-package match coverage.
 
 - Combine severity, exploitability, EPSS/KEV, exposure, criticality, attack path, controls, threat activity → technical / business / compliance / path risk
 
-**Status: Partial** — risk engine + org scoring exist; live host PASS/FAIL adjusts
+**Status: lab** — risk engine + org scoring exist; live host PASS/FAIL adjusts
 compensating_controls; **active agent threats** bump threat_intel / priority reasons
 (architecture Phase 6–7 Detect→Prioritize closed for this arc);
-multi-lens business/compliance risk not complete.
+multi-lens business/compliance risk still deepening.
 
 ---
 
@@ -199,7 +200,7 @@ multi-lens business/compliance risk not complete.
 
 - “What should I fix first?” / “What if I fix these five?” → risk Δ, paths disrupted, compliance improved
 
-**Status: Partial** — risk simulator API exists; **≠** full digital twin (see Phase 33).
+**Status: lab** — risk simulator API exists; **≠** full digital twin (see Phase 33).
 
 ---
 
@@ -207,7 +208,7 @@ multi-lens business/compliance risk not complete.
 
 - CONFIRMED / INFERRED / UNVERIFIED edges with evidence; remediations that break dangerous paths
 
-**Status: Partial** — attack graph + RT-09 refresh hooks; no fake edges invented; twin-grade correlation missing.
+**Status: lab** — attack graph + RT-09 refresh hooks; no fake edges invented; twin-grade correlation missing.
 
 ---
 
@@ -215,7 +216,7 @@ multi-lens business/compliance risk not complete.
 
 - Framework → Requirement → Control → Test → Data source → Evidence → Result → Gap → Rem → Verify
 
-**Status: Partial** — frameworks + gap + remediations; Requirement entities still folded / not first-class.
+**Status: lab** — frameworks + gap + remediations; Requirement entities still folded / not first-class.
 
 ---
 
@@ -223,7 +224,7 @@ multi-lens business/compliance risk not complete.
 
 - Control metadata + test definition + data sources + pass/fail + evidence rules + frequency
 
-**Status: Partial** — live host control tests (firewall / Defender / SSH / disk encryption)
+**Status: lab** — live host control tests (firewall / Defender / SSH / disk encryption)
 from agent telemetry; curated map only. Sprint 1 package: [control-config-engine.md](./control-config-engine.md)
 (`app/controls/`, `/api/controls`). Task #144 Live Test UI remains frozen.
 
@@ -233,9 +234,9 @@ from agent telemetry; curated map only. Sprint 1 package: [control-config-engine
 
 - Telemetry → control test → PASS/FAIL → evidence → score/risk; FAIL → remediate → verify → PASS (no manual score editing)
 
-**Status: Partial** — continuous compliance panel + RT-10/11 host control loops
+**Status: lab** — continuous compliance panel + RT-10/11 host control loops
 (firewall / Defender / SSH approve→verify lab parity; disk encryption observe→test→POA&M
-recommend-only); not certification / owned-host proof / full auto rem.
+recommend-only); not certification / C3PAO / full auto rem.
 
 ---
 
@@ -243,7 +244,7 @@ recommend-only); not certification / owned-host proof / full auto rem.
 
 - Security (NIST CSF/800-53, CIS, ISO 27001, SOC 2, PCI), privacy/regulatory, sector, CMMC/DORA/NIS2/… with real mappings + tests
 
-**Status: Partial** — many catalogs in tree; depth and live-test coverage vary; do not claim full framework support.
+**Status: lab** — many catalogs in tree; depth and live-test coverage vary; do not claim full framework support.
 
 ---
 
@@ -251,7 +252,7 @@ recommend-only); not certification / owned-host proof / full auto rem.
 
 - One implementation (e.g. MFA) → evidence for multiple applicable controls
 
-**Status: Partial** — cross-map exists somewhat in catalogs/services; canonical UI map still Sprint C+.
+**Status: lab** — cross-map exists in catalogs/services; canonical UI map still Sprint C+.
 
 ---
 
@@ -259,7 +260,7 @@ recommend-only); not certification / owned-host proof / full auto rem.
 
 - Auto-evidence on threat / control fail / patch / verify / pass; full metadata (hash, retention, links)
 
-**Status: Partial** — evidence store + observed/derived stamps in several paths; not every claim auto-records.
+**Status: lab** — evidence store + observed/derived stamps in several paths; not every claim auto-records.
 
 ---
 
@@ -267,7 +268,7 @@ recommend-only); not certification / owned-host proof / full auto rem.
 
 - SHA-256, custody chain, signatures, object storage, **WORM** / immutable high-assurance packages
 
-**Status: Partial** — hashing / append-only audit patterns; **missing** WORM / object-lock completeness.
+**Status: lab** — hashing / append-only audit + local FS WORM markers; cloud Object Lock remains **ops**.
 
 ---
 
@@ -275,7 +276,7 @@ recommend-only); not certification / owned-host proof / full auto rem.
 
 - Framework drill-down → export audit package
 
-**Status: Partial** — Audit Center + audit ZIP paths exist; package completeness / attestation workflow thin.
+**Status: lab** — Audit Center + audit ZIP paths exist; package completeness / attestation workflow thin.
 
 ---
 
@@ -283,7 +284,7 @@ recommend-only); not certification / owned-host proof / full auto rem.
 
 - Owned, expiring exceptions with compensating control, approver, review — never permanent silent “fixed”
 
-**Status: Partial** — exceptions model/UI foundations; not a complete enterprise exception lifecycle.
+**Status: lab** — exceptions model/UI foundations; not a complete enterprise exception lifecycle.
 
 ---
 
@@ -291,7 +292,7 @@ recommend-only); not certification / owned-host proof / full auto rem.
 
 - Policies (password, MFA, patch, backup, …) → control → test → evidence
 
-**Status: Missing / Partial** — policy docs / gap paste exist; full policy→control engine missing.
+**Status: lab** — policy docs / gap paste + compliance tasks exist; full policy→control engine still deepening.
 
 ---
 
@@ -299,17 +300,17 @@ recommend-only); not certification / owned-host proof / full auto rem.
 
 | Phase | Scope (short) | Status vs main |
 |-------|---------------|----------------|
-| **22** Cloud security / CSPM (AWS · Azure · GCP) | Connectors / posture stubs | **Partial connectors** — code present; **not** live-tenant verified CSPM |
-| **23** Container / Kubernetes | Image/RBAC/netpol/privileged | **Missing / thin** — scanner adapters ≠ K8s posture product |
-| **24** Application security | SAST/DAST/SCA/secrets/IaC/API + VCS/CI | **Partial** — import adapters + web scanner; not full AppSec platform |
-| **25** SBOM / supply chain | SPDX/CycloneDX, provenance, license | **Missing / Partial** — do not overclaim |
-| **26** Identity security | Entra/AD/Okta/… MFA, privilege, anomalies | **Missing / Partial** — identity baseline on roadmap; no full IdP product |
-| **27** Data security | PII/PHI/PCI discovery, classification, flows | **Missing** |
-| **28** Third-party risk | Vendor questionnaire → evidence → risk | **Missing / Partial** |
-| **29** Malware analysis | Hash → static → behavior → sandbox (isolated) | **Missing** (lab knowledge only) |
-| **30** Incident response | Detection → entities → MITRE → path → response → verify | **Partial** — SOC desk + playbooks; deep IR timeline incomplete |
-| **31** AI Security Operations | Investigate → recommend → **approve** → execute → verify | **Partial→improved** — Phase 8 `app/secops` allowlisted tools + `mode=secops_tools` investigate + propose-only remediations + thin `verify_host_remediation`; not unrestricted tool autonomy or auto-execute |
-| **32** AI Security (AISPM) | Models, keys, prompt injection, AI governance | **Missing** |
+| **22** Cloud security / CSPM (AWS · Azure · GCP) | Connectors / posture stubs | **lab** — code present; **not** live-tenant verified CSPM |
+| **23** Container / Kubernetes | Image/RBAC/netpol/privileged | **lab** — scanner adapters + packaging; ≠ K8s posture / Helm product |
+| **24** Application security | SAST/DAST/SCA/secrets/IaC/API + VCS/CI | **lab** — import adapters + web scanner; not full AppSec platform |
+| **25** SBOM / supply chain | SPDX/CycloneDX, provenance, license | **lab** — CI SBOM + adapters; do not overclaim |
+| **26** Identity security | Entra/AD/Okta/… MFA, privilege, anomalies | **lab** — graph identity depth; no full live IdP product |
+| **27** Data security | PII/PHI/PCI discovery, classification, flows | **lab** — data governance API; not full DLP |
+| **28** Third-party risk | Vendor questionnaire → evidence → risk | **lab** — enterprise vendor path; deepen questionnaires |
+| **29** Malware analysis | Hash → static → behavior → sandbox (isolated) | **lab** — intel only; no malware engine |
+| **30** Incident response | Detection → entities → MITRE → path → response → verify | **lab** — TheHive + SOC desk + playbooks; deep IR timeline incomplete |
+| **31** AI Security Operations | Investigate → recommend → **approve** → execute → verify | **lab** — `app/secops` allowlisted tools + propose-only remediations; not unrestricted tool autonomy |
+| **32** AI Security (AISPM) | Models, keys, prompt injection, AI governance | **lab** — AI security tests; not a full AISPM product |
 
 **Freeze note:** do not expand these until Phase 1 completion + acceptance workflow greens.
 
@@ -319,8 +320,8 @@ recommend-only); not certification / owned-host proof / full auto rem.
 
 | Phase | Scope | Status |
 |-------|-------|--------|
-| **33** Security Digital Twin | Full env model; “what if I patch WEB-01?” | **Missing** / roadmap P2 — risk sim ≠ twin |
-| **34** Business services | Service → apps → assets → data → controls → risk | **Missing** |
+| **33** Security Digital Twin | Full env model; “what if I patch WEB-01?” | **lab** — risk sim exists; twin depth remains **ops** / frozen |
+| **34** Business services | Service → apps → assets → data → controls → risk | **lab** — service-impact API; twin graph still deepening |
 
 ---
 
@@ -328,11 +329,11 @@ recommend-only); not certification / owned-host proof / full auto rem.
 
 | Phase | Scope | Status |
 |-------|-------|--------|
-| **35** Realtime UI | One `RealtimeManager` → router → state; major screens live | **Partial** — SSE + manager; some panels still poll |
-| **36** UI/UX pattern | WHAT → WHY → EVIDENCE → IMPACT → ACTION → VERIFY | **Partial** |
-| **37** Executive mode | CISO posture without raw telemetry flood | **Partial** — Mission Control / exec views |
-| **38** SOC mode | Events, threats, MITRE, timeline, response | **Partial** |
-| **39** Compliance mode | Frameworks, tests, evidence, gaps, exceptions, audits | **Partial** |
+| **35** Realtime UI | One `RealtimeManager` → router → state; major screens live | **lab** — SSE + manager; some panels still poll |
+| **36** UI/UX pattern | WHAT → WHY → EVIDENCE → IMPACT → ACTION → VERIFY | **lab** |
+| **37** Executive mode | CISO posture without raw telemetry flood | **lab** — Mission Control / exec views |
+| **38** SOC mode | Events, threats, MITRE, timeline, response | **lab** |
+| **39** Compliance mode | Frameworks, tests, evidence, gaps, exceptions, audits | **lab** |
 
 ---
 
@@ -340,13 +341,13 @@ recommend-only); not certification / owned-host proof / full auto rem.
 
 | Phase | Scope | Status |
 |-------|-------|--------|
-| **40** Multi-tenancy | `organization_id` + server-side authz | **Partial→near-done** — high-value tables scoped; intentional lab leftovers |
-| **41** Enterprise auth | SAML/OIDC/SSO/SCIM + MFA + RBAC + API keys | **Partial** — auth/RBAC/API keys/MFA paths; **missing** full SSO/SCIM |
-| **42** Audit (platform) | WHO/WHAT/WHEN/BEFORE/AFTER on sensitive actions | **Partial** — `audit_log` + SIEM forward option |
-| **43** HA / DR | API/worker/Redis HA, Postgres backup, restore drills | **Missing / Partial** — scripts + docs; not proven HA |
-| **44** Security of SecuraIQ | Dogfood SAST/DAST/SCA/SBOM/secrets/container/IaC | **Partial** — suites + tooling; no full posture report product |
-| **45** Realtime load testing | 100 → 5,000 agents with p50/p95/loss metrics | **Partial** — ladder ≤1k; **do not claim 5k** |
-| **46** Chaos testing | Kill API/Redis/worker/DB; reconnect agents; no lost events / no cross-tenant leak | **Partial** — soft chaos harness; Redis kill manual; **missing** chaos@5k |
+| **40** Multi-tenancy | `organization_id` + server-side authz | **lab** — high-value tables scoped; intentional leftovers stay isolated |
+| **41** Enterprise auth | SAML/OIDC/SSO/SCIM + MFA + RBAC + API keys | **lab** — auth/RBAC/API keys/MFA + SAML/OIDC facades; live IdP **ops** |
+| **42** Audit (platform) | WHO/WHAT/WHEN/BEFORE/AFTER on sensitive actions | **lab** — `audit_log` + SIEM forward option |
+| **43** HA / DR | API/worker/Redis HA, Postgres backup, restore drills | **lab** — Sentinel lab inject + backup drill; Postgres HA / multi-AZ **ops** |
+| **44** Security of SecuraIQ | Dogfood SAST/DAST/SCA/SBOM/secrets/container/IaC | **lab** — suites + Trust Center; third-party pentest **ops** |
+| **45** Realtime load testing | 100 → 5,000 agents with p50/p95/loss metrics | **lab** — ladder ≤1k measured; **do not claim 5k** |
+| **46** Chaos testing | Kill API/Redis/worker/DB; reconnect agents; no lost events / no cross-tenant leak | **lab** — soft chaos harness; Redis kill manual; chaos@5k **ops** |
 
 ---
 

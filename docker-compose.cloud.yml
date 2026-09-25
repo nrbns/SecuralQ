@@ -1,0 +1,119 @@
+# Low-storage cloud stack: app + Postgres + Redis + Ollama.
+# AI stays in Docker — do not set MODEL_BACKEND=huggingface (that downloads GB on the host).
+#
+#   copy .env.example .env
+#   set BOOTSTRAP_ADMIN_PASSWORD and POSTGRES_PASSWORD
+#   docker compose -f docker-compose.cloud.yml up -d
+#
+# First boot pulls tinyllama into the ollama volume (~0.6 GB), not a 17 GB HF cache.
+name: securaiq-cloud
+
+networks:
+  securaiq-internal:
+    driver: bridge
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: securaiq
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}"
+      POSTGRES_DB: securaiq
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    expose:
+      - "5432"
+    networks:
+      - securaiq-internal
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U securaiq -d securaiq"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    expose:
+      - "6379"
+    networks:
+      - securaiq-internal
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  ollama:
+    image: ollama/ollama:latest
+    expose:
+      - "11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    networks:
+      - securaiq-internal
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  ollama-pull:
+    image: ollama/ollama:latest
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["sh", "-c"]
+    command: "ollama pull ${OLLAMA_MODEL:-tinyllama}"
+    networks:
+      - securaiq-internal
+    restart: "no"
+
+  securaiq:
+    build:
+      context: .
+      dockerfile: Dockerfile.slim
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "8080"
+      DEPLOYMENT_MODE: "${DEPLOYMENT_MODE:-production}"
+      AUTH_ENABLED: "true"
+      AUTH_ALLOW_REGISTER: "false"
+      CORS_ORIGINS: "${CORS_ORIGINS:-*}"
+      ALLOW_OPEN_LAN: "${ALLOW_OPEN_LAN:-true}"
+      PUBLIC_BASE_URL: "${PUBLIC_BASE_URL:-}"
+      BOOTSTRAP_ADMIN_USERNAME: "${BOOTSTRAP_ADMIN_USERNAME:-admin}"
+      BOOTSTRAP_ADMIN_PASSWORD: "${BOOTSTRAP_ADMIN_PASSWORD:?Set BOOTSTRAP_ADMIN_PASSWORD in .env}"
+      MFA_REQUIRED_FOR_ADMIN: "${MFA_REQUIRED_FOR_ADMIN:-true}"
+      REQUIRE_POSTGRES_IN_PRODUCTION: "true"
+      DATABASE_URL: "postgresql://securaiq:${POSTGRES_PASSWORD}@postgres:5432/securaiq"
+      REDIS_URL: "redis://redis:6379/0"
+      DATA_DIR: "/data"
+      CHROMA_PERSIST_DIR: "/data/chroma"
+      MODEL_BACKEND: "ollama"
+      OLLAMA_BASE_URL: "http://ollama:11434"
+      OLLAMA_MODEL: "${OLLAMA_MODEL:-tinyllama}"
+    volumes:
+      - securaiq-data:/data
+    networks:
+      - securaiq-internal
+    restart: unless-stopped
+
+volumes:
+  securaiq-data:
+  postgres-data:
+  ollama-data:

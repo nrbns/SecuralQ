@@ -79,7 +79,7 @@ cd SecuralQ
 .\run_proper.cmd
 ```
 
-Later: `.\start.cmd` · LAN: `.\start_lan.cmd` · secure login: `.\scripts\enable_secure_mode.cmd`
+Later: `.\start.cmd` (opens the browser right away) · **other phones/PCs:** `.\start_lan.cmd` or `.\install_customer.cmd` (never open localhost on the other device) · check: `python scripts/customer_install_check.py` · secure login: `.\scripts\enable_secure_mode.cmd`
 
 #### Linux / macOS
 
@@ -180,6 +180,11 @@ Enroll in **Agents** → set `SECURAIQ_SERVER` + `SECURAIQ_TOKEN` → start pack
 ```powershell
 .\.venv\Scripts\python scripts\smoke_test.py
 .\.venv\Scripts\python scripts\check_openapi_gets.py
+.\.venv\Scripts\python -c "from app.perf_hardening import perf_hardening_board; print(perf_hardening_board()['phase'])"
+```
+
+Platform isolation (lab): named in-process job pools + batched SSE findings. Check `GET /api/ops/perf-hardening`. PostgreSQL + Redis workers + 100k load remain Server ops.
+
 ```
 
 API docs: http://127.0.0.1:8080/docs

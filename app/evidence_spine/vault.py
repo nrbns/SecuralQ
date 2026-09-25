@@ -576,7 +576,17 @@ def run_vault_expiry_tick(*, limit: int = 200) -> dict[str, Any]:
         (t, max(1, min(limit, 1000))),
     ).fetchall()
     marked = 0
+    held = 0
     for r in rows:
+        eid = str(r["current_evidence_id"] or "")
+        try:
+            from app.evidence_spine.legal_hold import is_on_legal_hold
+
+            if eid and is_on_legal_hold(str(r["user_id"]), eid):
+                held += 1
+                continue
+        except Exception:
+            pass
         get_conn().execute(
             "UPDATE evidence_vault SET review_status = 'expired', updated_at = ? WHERE id = ?",
             (t, r["id"]),
@@ -601,7 +611,7 @@ def run_vault_expiry_tick(*, limit: int = 200) -> dict[str, Any]:
             pass
     if marked:
         get_conn().commit()
-    return {"ok": True, "expired": marked, "scanned_cap": limit}
+    return {"ok": True, "expired": marked, "held": held, "scanned_cap": limit}
 
 
 def log_access(

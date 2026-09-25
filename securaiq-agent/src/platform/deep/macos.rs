@@ -29,6 +29,7 @@ pub fn collect() -> DeepSnapshot {
             "enabled": null
         }),
         ssh_config: ssh_config(),
+        macos_hardening: macos_hardening(),
     }
 }
 
@@ -282,6 +283,36 @@ fn disk_encryption() -> Value {
         "reason": "",
         "backend": "FileVault",
         "encrypted": out.to_lowercase().contains("filevault is on")
+    })
+}
+
+fn macos_hardening() -> Value {
+    let gk = run_cmd("spctl", &["--status"], 8).unwrap_or_default();
+    let sip = run_cmd("csrutil", &["status"], 8).unwrap_or_default();
+    let remote = run_cmd("systemsetup", &["-getremotelogin"], 8).unwrap_or_default();
+    let xp = run_cmd(
+        "defaults",
+        &[
+            "read",
+            "/Library/Apple/System/Library/CoreServices/XProtect.bundle/Contents/Info",
+            "CFBundleShortVersionString",
+        ],
+        8,
+    )
+    .unwrap_or_default();
+    let gk_l = gk.to_lowercase();
+    let sip_l = sip.to_lowercase();
+    let remote_l = remote.to_lowercase();
+    json!({
+        "collected": true,
+        "reason": "",
+        "os": "darwin",
+        "gatekeeper_enabled": gk_l.contains("enabled"),
+        "sip_enabled": sip_l.contains("enabled"),
+        "remote_login": remote_l.contains("on") || remote_l.contains("enabled"),
+        "xprotect_version": xp.trim(),
+        "filevault": "see disk_encryption_status",
+        "application_firewall": "see firewall_status",
     })
 }
 

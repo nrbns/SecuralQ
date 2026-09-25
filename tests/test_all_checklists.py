@@ -19,7 +19,7 @@ def test_all_checklists_board(tmp_path, monkeypatch):
     assert board["ok"] is True
     assert board["all_complete"] is True
     ids = {c["id"] for c in board["checklists"]}
-    assert ids == {"master", "world_class", "priority", "closed_beta"}
+    assert ids == {"master", "world_class", "priority", "closed_beta", "total_phase", "launch"}
     for c in board["checklists"]:
         assert c["complete"] is True, c
         assert c["engineering_complete"] is True
@@ -33,5 +33,8 @@ def test_checklist_docs_exist():
         "docs/WORLD-CLASS-CHECKLIST.md",
         "docs/priority-checklist.md",
         "docs/closed-beta-checklist.md",
+        "docs/master-build-plan.md",
+        "docs/LAUNCH-PLAN.md",
+        "docs/P0-LAUNCH-BACKLOG.md",
     ):
         assert (root / rel).is_file()

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 import traceback
 from typing import Any, Awaitable, Callable
@@ -30,9 +31,61 @@ from app.db import get_conn, new_id, now, row_to_dict
 JobHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 
 JOB_HANDLERS: dict[str, JobHandler] = {}
+# Named pools so a ZAP/Nuclei job cannot starve compliance or reports.
+# Still in-process (lab). Separate OS workers + Redis queues remain Server ops.
+_POOL_KINDS: dict[str, frozenset[str]] = {
+    "scan": frozenset({"scan_execute", "combo_assessment", "hardeningkitty_audit", "lan_inventory_audit"}),
+    "control": frozenset({"control_stale_tick", "compliance_ops_tick", "posture_refresh", "exception_expiry_tick"}),
+    "evidence": frozenset({"vault_expiry_tick"}),
+    "report": frozenset({"report_export"}),
+    "ai": frozenset(),
+}
+_POOL_ORDER = ("scan", "control", "evidence", "report", "ai", "default")
+_pools: dict[str, "asyncio.Queue[str]"] = {}
+_pool_tasks: list[asyncio.Task] = []
 _queue: "asyncio.Queue[str] | None" = None
 _worker_task: asyncio.Task | None = None
 _scheduler_task: asyncio.Task | None = None
+
+
+def job_pool_for(kind: str) -> str:
+    k = (kind or "").strip()
+    for name, kinds in _POOL_KINDS.items():
+        if k in kinds:
+            return name
+    return "default"
+
+
+def _pool_concurrency(name: str) -> int:
+    raw = (os.environ.get(f"WORKER_POOL_{name.upper()}") or "").strip()
+    if raw.isdigit():
+        return max(1, min(int(raw), 8))
+    return 1
+
+
+def _enqueue_to_pool(kind: str, jid: str) -> None:
+    name = job_pool_for(kind)
+    q = _pools.get(name) or _queue
+    if q is not None:
+        q.put_nowait(jid)
+
+
+def worker_pool_status() -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for name in _POOL_ORDER:
+        q = _pools.get(name)
+        kinds = _POOL_KINDS.get(name)
+        out[name] = {
+            "queued": int(q.qsize()) if q is not None else 0,
+            "workers": _pool_concurrency(name) if _pools else 0,
+            "kinds": sorted(kinds) if kinds else ["*"],
+        }
+    return {
+        "pools": out,
+        "in_process": True,
+        "separate_os_workers": False,
+        "disclaimer": "Named asyncio pools in one API process — not Celery/Redis workers or HA.",
+    }
 
 KEV_SYNC_INTERVAL_SEC = 6 * 3600  # matches the 12h KEV cache TTL with margin
 _SCHEDULER_TICK_SEC = 60  # wake scheduled syncs quickly for near-realtime connectors
@@ -124,8 +177,7 @@ def enqueue_job(
         (jid, kind, json.dumps(body), now()),
     )
     c.commit()
-    if _queue is not None:
-        _queue.put_nowait(jid)
+    _enqueue_to_pool(kind, jid)
     try:
         from app.realtime_bus import publish
 
@@ -303,14 +355,27 @@ async def _run_one(job_id: str) -> None:
             pass
 
 
+def _run_one_sync(job_id: str) -> None:
+    """Run a job on a worker thread so SQLite/scanner work cannot stall HTTP."""
+    asyncio.run(_run_one(job_id))
+
+
 async def _worker_loop() -> None:
-    assert _queue is not None
+    await _worker_loop_for("default")
+
+
+async def _worker_loop_for(pool: str) -> None:
+    q = _pools.get(pool) or _queue
+    if q is None:
+        return
+    await asyncio.sleep(20)
     while True:
-        job_id = await _queue.get()
+        job_id = await q.get()
         try:
             await _run_one(job_id)
+            await asyncio.sleep(0)
         finally:
-            _queue.task_done()
+            q.task_done()
 
 
 async def _scheduler_loop() -> None:
@@ -513,21 +578,45 @@ async def _scheduler_loop() -> None:
         await asyncio.sleep(_SCHEDULER_TICK_SEC)
 
 
+def reclaim_running_jobs(
+    *,
+    enqueue_pending: bool = False,
+    limit: int = 100,
+    job_id: str | None = None,
+) -> dict[str, Any]:
+    """Flip leftover running jobs to pending. Optionally enqueue if the worker is up."""
+    c = get_conn()
+    if job_id:
+        cur = c.execute(
+            "UPDATE jobs SET status='pending', started_at=NULL WHERE status='running' AND id=?",
+            (job_id,),
+        )
+    else:
+        cur = c.execute("UPDATE jobs SET status='pending', started_at=NULL WHERE status='running'")
+    c.commit()
+    reclaimed = int(cur.rowcount if cur.rowcount is not None and cur.rowcount >= 0 else 0)
+    enqueued = 0
+    if enqueue_pending and (_pools or _queue is not None):
+        for row in c.execute(
+            "SELECT id, kind FROM jobs WHERE status='pending' ORDER BY created_at ASC LIMIT ?",
+            (int(limit),),
+        ).fetchall():
+            _enqueue_to_pool(str(row["kind"] or ""), str(row["id"]))
+            enqueued += 1
+    return {"ok": True, "reclaimed": reclaimed, "enqueued": enqueued}
+
+
 def start_background_jobs() -> None:
     """Call once from the FastAPI lifespan startup."""
-    global _queue, _worker_task, _scheduler_task
+    global _queue, _worker_task, _scheduler_task, _pools, _pool_tasks
     if _queue is not None:
         return  # already started (e.g. lifespan re-entered under --reload)
-    _queue = asyncio.Queue()
+    _pools = {name: asyncio.Queue() for name in _POOL_ORDER}
+    _queue = _pools["default"]
 
-    # Requeue anything left pending/running from a previous process that died mid-job.
-    c = get_conn()
-    c.execute("UPDATE jobs SET status='pending', started_at=NULL WHERE status='running'")
-    c.commit()
-    for row in c.execute(
-        "SELECT id FROM jobs WHERE status='pending' ORDER BY created_at ASC LIMIT 100"
-    ).fetchall():
-        _queue.put_nowait(row["id"])
+    # Reclaim leftover running rows. Do not auto-enqueue them — leftover
+    # scan/LAN jobs starve HTTP and make every page look like it is not loading.
+    reclaim_running_jobs(enqueue_pending=False, limit=100)
 
     # Self-heal any scan left stuck at a non-terminal status by a job that
     # already errored out or vanished in a previous process (see
@@ -539,13 +628,22 @@ def start_background_jobs() -> None:
     except Exception:
         pass
 
-    _worker_task = asyncio.create_task(_worker_loop())
+    _pool_tasks = []
+    for name in _POOL_ORDER:
+        for _i in range(_pool_concurrency(name)):
+            _pool_tasks.append(asyncio.create_task(_worker_loop_for(name)))
+    _worker_task = _pool_tasks[0] if _pool_tasks else None
     _scheduler_task = asyncio.create_task(_scheduler_loop())
 
 
 async def stop_background_jobs() -> None:
-    global _worker_task, _scheduler_task
-    for task in (_worker_task, _scheduler_task):
+    global _worker_task, _scheduler_task, _pool_tasks, _queue, _pools
+    tasks = list(_pool_tasks)
+    if _scheduler_task:
+        tasks.append(_scheduler_task)
+    if _worker_task and _worker_task not in tasks:
+        tasks.append(_worker_task)
+    for task in tasks:
         if task:
             task.cancel()
             try:
@@ -554,6 +652,9 @@ async def stop_background_jobs() -> None:
                 pass
     _worker_task = None
     _scheduler_task = None
+    _pool_tasks = []
+    _queue = None
+    _pools = {}
 
 
 # --- Built-in job handlers ---------------------------------------------------

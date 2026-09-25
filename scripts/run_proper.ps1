@@ -118,7 +118,7 @@ if ($Lan) {
     $envLines = Set-EnvLine $envLines "CORS_ORIGINS" "*"
     $envLines = Set-EnvLine $envLines "WORKSPACE_ZERO_START" "false"
     $envLines = Set-EnvLine $envLines "ALLOW_OPEN_LAN" "true"
-    $envLines = Set-EnvLine $envLines "LAN_AUTO_SCAN" "true"
+    $envLines = Set-EnvLine $envLines "LAN_AUTO_SCAN" "false"
 } else {
     $envLines = Set-EnvLine $envLines "HOST" "127.0.0.1"
     $envLines = Set-EnvLine $envLines "CORS_ORIGINS" "http://127.0.0.1:8080,http://localhost:8080"
@@ -151,4 +151,8 @@ if ($Lan) {
     Write-Host "  For phones: .\start_lan.cmd"
 }
 Write-Host "No .env editing required. Optional keys: Settings in the UI."
-& .\.venv\Scripts\python.exe run.py
+if ($Lan) {
+    & "$PSScriptRoot\start.ps1" -Lan
+} else {
+    & "$PSScriptRoot\start.ps1"
+}

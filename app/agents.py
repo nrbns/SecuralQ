@@ -601,6 +601,26 @@ def list_agents(user_id: str, *, limit: int = 200, org_id: str | None = None) ->
             (user_id, lim),
         ).fetchall()
     out = []
+    ids = [str(r["id"]) for r in rows if r and r["id"]]
+    latest_by_id: dict[str, dict[str, Any]] = {}
+    if ids:
+        placeholders = ",".join("?" * len(ids))
+        try:
+            cmd_rows = get_conn().execute(
+                f"""SELECT c.agent_id, c.kind, c.status
+                    FROM securaiq_agent_commands c
+                    JOIN (
+                      SELECT agent_id, MAX(created_at) AS mx
+                      FROM securaiq_agent_commands
+                      WHERE agent_id IN ({placeholders})
+                      GROUP BY agent_id
+                    ) t ON t.agent_id = c.agent_id AND t.mx = c.created_at""",
+                ids,
+            ).fetchall()
+            for cr in cmd_rows:
+                latest_by_id[str(cr["agent_id"])] = {"kind": cr["kind"], "status": cr["status"]}
+        except Exception:
+            latest_by_id = {}
     for r in rows:
         d = dict(r)
         try:
@@ -608,7 +628,7 @@ def list_agents(user_id: str, *, limit: int = 200, org_id: str | None = None) ->
         except Exception:
             d["last_payload"] = {}
         _strip_agent_secrets(d)
-        d["status"] = _row_status(d, latest_command=_latest_command_for_agent(d["id"]))
+        d["status"] = _row_status(d, latest_command=latest_by_id.get(str(d.get("id") or "")))
         out.append(d)
     return out
 
@@ -796,6 +816,17 @@ def checkin(agent_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         )
     }
     payload_json = json.dumps(store_payload)
+    try:
+        from app.host_change import record_checkin_changes
+
+        record_checkin_changes(
+            agent.get("user_id") or "local",
+            agent_id,
+            agent.get("last_payload") if isinstance(agent.get("last_payload"), dict) else {},
+            store_payload,
+        )
+    except Exception:
+        pass
     if len(payload_json) > 200_000:
         payload_json = json.dumps({
             "hostname": payload.get("hostname", ""),
@@ -832,6 +863,18 @@ def checkin(agent_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         seq_recovery = {}
     new_last_seq = int(seq_recovery.get("last_acked_seq") or agent.get("last_telemetry_seq") or 0)
 
+    try:
+        from app.host_change import record_checkin_changes
+
+        prev_snap = agent.get("last_payload") if isinstance(agent.get("last_payload"), dict) else {}
+        record_checkin_changes(
+            agent.get("user_id") or "local",
+            agent_id,
+            prev_snap,
+            store_payload,
+        )
+    except Exception:
+        pass
     c = get_conn()
     c.execute(
         """
@@ -1817,6 +1860,7 @@ SUPPORTED_COMMAND_KINDS = {
     "enable_defender",
     "disable_ssh_root",
     "agent_uninstall",
+    "rollback",
 }
 COMMAND_STATUSES = {"pending_approval", "queued", "sent", "acked", "done", "error", "rejected", "timeout"}
 
@@ -2096,6 +2140,48 @@ def request_agent_upgrade(user_id: str, agent_id: str, *, requested_by: str = ""
         payload=payload,
         requested_by=requested_by,
     )
+
+
+def request_campaign_rollback(
+    user_id: str,
+    campaign_id: str,
+    *,
+    requested_by: str = "",
+) -> dict[str, Any]:
+    """Queue allowlisted rollback commands for agents in a campaign.
+
+    Lab remediation rollback — not an OS package manager undo guarantee.
+    """
+    camp = get_campaign(user_id, campaign_id)
+    if not camp:
+        raise ValueError("campaign not found")
+    created: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in camp.get("items") or []:
+        aid = str(item.get("agent_id") or "")
+        if not aid or aid in seen:
+            continue
+        seen.add(aid)
+        prev = (item.get("payload") or {}).get("previous_sha256") or ""
+        cmd = request_command(
+            user_id,
+            aid,
+            kind="rollback",
+            payload={
+                "campaign_id": campaign_id,
+                "previous_sha256": prev,
+                "reason": "operator_rollback",
+            },
+            requested_by=requested_by or user_id,
+            campaign_id=campaign_id,
+        )
+        created.append({"agent_id": aid, "command_id": cmd.get("id"), "status": cmd.get("status")})
+    return {
+        "ok": True,
+        "campaign_id": campaign_id,
+        "commands": created,
+        "disclaimer": "Queued rollback commands — verify on next check-in; not a guaranteed OS undo",
+    }
 
 
 def create_upgrade_canary_campaign(

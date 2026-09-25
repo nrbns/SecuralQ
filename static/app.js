@@ -608,11 +608,17 @@ async function syncAllAndRebuildSoftware(opts) {
     if (typeof notifyUser === "function") {
       notifyUser(`**Software inventory synced** — ${parts.join(" · ")}`);
     }
-    if (typeof window.renderSoftwarePage === "function") window.renderSoftwarePage({ quiet: !!opts.quiet });
+    if (typeof window.renderSoftwarePage === "function" && window.__securaiqWorkspaceView === "software") {
+      window.renderSoftwarePage({ quiet: !!opts.quiet });
+    }
     if (typeof refreshMcSoftwareFromPush === "function") {
       refreshMcSoftwareFromPush(data.posture || {});
-    } else if (typeof loadCommandCenter === "function") loadCommandCenter();
-    if (typeof window.renderAssetsPage === "function") window.renderAssetsPage({ quiet: true });
+    } else if (window.__securaiqWorkspaceView === "command" && typeof loadCommandCenter === "function") {
+      loadCommandCenter({ lite: true });
+    }
+    if (typeof window.renderAssetsPage === "function" && window.__securaiqWorkspaceView === "assets") {
+      window.renderAssetsPage({ quiet: true });
+    }
     if (typeof window.pulseSoftwareFromPush === "function") {
       const p = data.posture || {};
       window.pulseSoftwareFromPush({
@@ -1408,9 +1414,12 @@ async function submitNewScan(ev) {
     if (targetEl && target) targetEl.value = target;
   }
   const authorized = !!authEl?.checked;
+  const intent = document.querySelector('input[name="scanIntent"]:checked')?.value || "";
+  const enginesVisible = !document.getElementById("scanEngineSet")?.classList.contains("hidden");
   let scanner = document.getElementById("newScanScanner")?.value || "securaiq";
   const profile =
-    document.querySelector('input[name="scanProfile"]:checked')?.value || "discovery";
+    document.querySelector('input[name="scanProfile"]:checked')?.value ||
+    (intent === "web" || intent === "api" ? "web" : intent === "full" ? "full" : "discovery");
   const scope = scopeRaw
     .split(/[\n,;]+/)
     .map((s) => s.trim())
@@ -1470,7 +1479,7 @@ async function submitNewScan(ev) {
     scopeEl?.focus();
     return;
   }
-  if (scanner === "combo") {
+  if (scanner === "combo" && (!intent || enginesVisible)) {
     const form = document.getElementById("newScanForm");
     const progressEl = document.getElementById("newScanProgress");
     if (form) form.classList.add("hidden");
@@ -1495,6 +1504,7 @@ async function submitNewScan(ev) {
       profile,
       authorized: true,
       scope,
+      intent: intent && !enginesVisible ? intent : "",
       engagement_id: engagementSelectEl?.value || null,
     };
     const res = await fetch("/api/scans", {
@@ -1511,6 +1521,12 @@ async function submitNewScan(ev) {
           "Scan API not loaded (Method Not Allowed). Restart the SecuraIQ server (python run.py), then hard-refresh the page.";
       }
       throw new Error(detail);
+    }
+    if (data.status === "agent" || data.status === "controls" || (data.hosts && !data.scan_id)) {
+      if (statusLabel) statusLabel.textContent = (data.status || "ready").toUpperCase();
+      if (summaryEl) summaryEl.textContent = data.note || data.disclaimer || "Intent completed without a scanner job.";
+      if (btn) btn.disabled = false;
+      return;
     }
     const scanIds = Array.isArray(data.scans)
       ? data.scans.map((s) => s.scan_id).filter(Boolean)
@@ -1551,8 +1567,7 @@ function bindNewScanModal() {
   });
   on(document.getElementById("newScanForm"), "submit", submitNewScan);
   on(document.getElementById("newScanAdvanced"), "click", () => {
-    modal.classList.add("hidden");
-    startLiveScan();
+    document.querySelectorAll(".scan-advanced-engines").forEach((el) => el.classList.toggle("hidden"));
   });
 }
 
@@ -3066,7 +3081,7 @@ window.RealtimeManager = {
       // Debounced full CC refresh (SSE primary; avoid stampede)
       clearTimeout(window.__securaiqCcRtTimer);
       window.__securaiqCcRtTimer = setTimeout(() => {
-        if (typeof loadCommandCenter === "function" && (window.__securaiqCurrentView === "command" || typeof currentView !== "undefined" && currentView === "command")) {
+        if (typeof loadCommandCenter === "function" && window.__securaiqWorkspaceView === "command") {
           loadCommandCenter();
         }
       }, 1200);
@@ -3087,11 +3102,7 @@ window.RealtimeManager = {
         if (typeof window.loadContinuousPosturePanel === "function") {
           window.loadContinuousPosturePanel({ quiet: true });
         }
-        if (
-          typeof loadCommandCenter === "function" &&
-          (window.__securaiqCurrentView === "command" ||
-            (typeof currentView !== "undefined" && currentView === "command"))
-        ) {
+        if (typeof loadCommandCenter === "function" && window.__securaiqWorkspaceView === "command") {
           loadCommandCenter();
         }
       }, 500);
@@ -3648,6 +3659,7 @@ const REALTIME_LIVE_TYPES = new Set([
   "asset",
   "vuln",
   "vuln_batch",
+  "findings.batch",
   "inventory",
   "software_inventory",
   "software.inventory.updated",
@@ -3904,6 +3916,16 @@ function applyRealtimeWorkspaceRefresh(data, flags) {
       if (typeof syncLiveWorkspace === "function") syncLiveWorkspace({ pushType: pt, push: data.push });
     }, 180);
   }
+  if (pt === "findings.batch") {
+    const batch = data.push || {};
+    const n = Number(batch.count || (batch.findings || []).length || 0);
+    const el = document.getElementById("ccVulns") || document.getElementById("ccFindings");
+    if (el && n > 0) {
+      const cur = Number(el.textContent || 0);
+      if (!Number.isNaN(cur)) el.textContent = String(cur + n);
+    }
+    return;
+  }
   if (pt === "scan") {
     if (typeof pulseVaScanFromPush === "function") pulseVaScanFromPush(data.push);
     if (typeof pulseActiveScanFromPush === "function" && data.push) pulseActiveScanFromPush(data.push);
@@ -3975,9 +3997,14 @@ function applyRealtimeWorkspaceRefresh(data, flags) {
     }
   }
   const incremental = isSoftwarePushType(pt) || isToolPushType(pt);
-  if (flags.pushRefresh && !incremental && typeof loadCommandCenter === "function") {
+  if (
+    flags.pushRefresh &&
+    !incremental &&
+    window.__securaiqWorkspaceView === "command" &&
+    typeof loadCommandCenter === "function"
+  ) {
     clearTimeout(window.__securaiqCcAnyTimer);
-    window.__securaiqCcAnyTimer = setTimeout(() => loadCommandCenter(), 320);
+    window.__securaiqCcAnyTimer = setTimeout(() => loadCommandCenter({ lite: true }), 800);
   }
   if (flags.jobsChanged && typeof window.refreshAutomationPage === "function" && view === "automation") {
     window.refreshAutomationPage();
@@ -4446,6 +4473,106 @@ function renderNarrativeBlock(fields, opts) {
     .join("")}</dl>`;
 }
 window.renderNarrativeBlock = renderNarrativeBlock;
+
+function setWorkspaceMode(mode) {
+  const allowed = { exec: 1, soc: 1, compliance: 1, it: 1, auditor: 1 };
+  const m = allowed[mode] ? mode : "exec";
+  document.body.setAttribute("data-ui-mode", m);
+  try {
+    localStorage.setItem("securaiq.uiMode", m);
+  } catch {
+    /* ignore */
+  }
+  document.querySelectorAll(".mode-btn").forEach((btn) => {
+    const on = btn.getAttribute("data-ui-mode") === m;
+    btn.classList.toggle("is-active", on);
+    btn.setAttribute("aria-selected", on ? "true" : "false");
+  });
+  if (m === "exec" && typeof showView === "function") showView("executive");
+  else if (m === "soc" && typeof showView === "function") showView("command");
+  else if (m === "compliance" && typeof window.showWorkspace === "function") {
+    window.showWorkspace("compliance_center");
+  } else if (m === "it" && typeof window.showWorkspace === "function") {
+    window.showWorkspace("assets");
+  } else if (m === "auditor" && typeof window.showWorkspace === "function") {
+    window.showWorkspace("evidence");
+  }
+}
+window.setWorkspaceMode = setWorkspaceMode;
+
+function closeDecisionDrawer() {
+  const el = document.getElementById("decisionDrawer");
+  if (!el) return;
+  el.hidden = true;
+  el.classList.add("hidden");
+}
+
+async function openDecisionDrawer(kind, targetId) {
+  const el = document.getElementById("decisionDrawer");
+  const body = document.getElementById("decisionDrawerBody");
+  const title = document.getElementById("decisionDrawerTitle");
+  if (!el || !body) return;
+  el.hidden = false;
+  el.classList.remove("hidden");
+  body.innerHTML = `<p class="hint">Loading decision…</p>`;
+  const params = new URLSearchParams({ kind: kind || "risk", target_id: targetId || "" });
+  try {
+    const res = await fetch(`/api/decisions/drawer?${params}`, { headers: authHeaders() });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    if (title) title.textContent = data.title || "Decision";
+    body.innerHTML = renderNarrativeBlock({
+      what: data.what,
+      why: data.why,
+      evidence: typeof data.evidence === "string" ? data.evidence : JSON.stringify(data.evidence || ""),
+      impact: typeof data.impact === "string" ? data.impact : JSON.stringify(data.impact || ""),
+      action: data.action,
+      verify: typeof data.verify === "string" ? data.verify : JSON.stringify(data.verify || ""),
+    });
+    el.dataset.kind = data.kind || kind || "risk";
+    el.dataset.targetId = targetId || "";
+  } catch (err) {
+    body.innerHTML = `<p class="hint">Could not load decision: ${escapeHtml(err.message || String(err))}</p>`;
+  }
+}
+window.openDecisionDrawer = openDecisionDrawer;
+
+function wireDecisionDrawerOnce() {
+  if (window.__securaiqDrawerWired) return;
+  window.__securaiqDrawerWired = true;
+  document.getElementById("decisionDrawerClose")?.addEventListener("click", closeDecisionDrawer);
+  document.getElementById("decisionDrawer")?.addEventListener("click", (e) => {
+    if (e.target && e.target.id === "decisionDrawer") closeDecisionDrawer();
+  });
+  document.getElementById("decisionDrawerSimulate")?.addEventListener("click", () => {
+    if (typeof showWorkspace === "function") showWorkspace("risks");
+    closeDecisionDrawer();
+  });
+  document.querySelectorAll(".mode-btn").forEach((btn) => {
+    btn.addEventListener("click", () => setWorkspaceMode(btn.getAttribute("data-ui-mode")));
+  });
+  try {
+    const saved = localStorage.getItem("securaiq.uiMode");
+    if (saved) document.body.setAttribute("data-ui-mode", saved);
+    document.querySelectorAll(".mode-btn").forEach((b) => {
+      const on = b.getAttribute("data-ui-mode") === (saved || "exec");
+      b.classList.toggle("is-active", on);
+    });
+  } catch {
+    /* ignore */
+  }
+  document.addEventListener("click", (e) => {
+    const t = e.target && e.target.closest ? e.target.closest("[data-drawer-kind]") : null;
+    if (!t) return;
+    e.preventDefault();
+    openDecisionDrawer(t.getAttribute("data-drawer-kind"), t.getAttribute("data-drawer-id") || "");
+  });
+}
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", wireDecisionDrawerOnce);
+} else {
+  wireDecisionDrawerOnce();
+}
 
 function formatApiDetail(detail, fallback) {
   if (detail == null || detail === "") return fallback || "Request failed";
@@ -5251,7 +5378,8 @@ function showView(view, opts = {}) {
     topbarChatTitleEl.textContent = currentView === "command" ? "Security dashboard" : (getCurrentChat()?.title || "Assistant");
   }
   if (currentView === "command") {
-    loadCommandCenter();
+    loadCommandCenter({ lite: !window.__securaiqCcPainted });
+    window.__securaiqCcPainted = true;
   } else {
     syncEmptyState();
     if (!opts.skipFocus) inputEl?.focus();
@@ -5298,16 +5426,25 @@ function refreshMcProdProfileBanner(prod) {
     });
 }
 
-async function loadCommandCenter() {
+async function loadCommandCenter(opts) {
+  opts = opts || {};
+  const view = window.__securaiqWorkspaceView || "";
+  if (view && view !== "command") return;
+  const now = Date.now();
+  if (!opts.force && window.__securaiqCcLastAt && now - window.__securaiqCcLastAt < 12000) {
+    window.__securaiqCcReloadQueued = true;
+    return;
+  }
   if (window.__securaiqCcLoading) {
     window.__securaiqCcReloadQueued = true;
     return;
   }
   window.__securaiqCcLoading = true;
   window.__securaiqCcReloadQueued = false;
+  window.__securaiqCcLastAt = now;
   // Don't wait on the heavy dashboard for Lab/Production banner or impact tile
   refreshMcProdProfileBanner();
-  if (typeof window.loadImpactHeroStat === "function") window.loadImpactHeroStat();
+  if (!opts.lite && typeof window.loadImpactHeroStat === "function") window.loadImpactHeroStat();
   clearTimeout(window.__securaiqCcLockTimer);
   window.__securaiqCcLockTimer = setTimeout(() => {
     if (window.__securaiqCcLoading) {
@@ -5329,18 +5466,110 @@ async function loadCommandCenter() {
   const riskListEl = document.getElementById("ccTopRisks");
   const vulnListEl = document.getElementById("ccTopVulns");
   try {
-    const [res, briefRes, scansRes] = await Promise.all([
-      fetch("/api/dashboard", { headers: authHeaders() }),
-      fetch("/api/dashboard/brief", { headers: authHeaders() }).catch(() => null),
-      fetch("/api/scans?limit=6", { headers: authHeaders() }).catch(() => null),
+    const dashCtrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+    const dashTimer = dashCtrl ? setTimeout(() => dashCtrl.abort(), 25000) : null;
+    const timed = (url) =>
+      fetch(url, { headers: authHeaders(), signal: dashCtrl ? dashCtrl.signal : undefined }).catch(() => null);
+    const dashUrl = opts.lite ? "/api/dashboard/lite" : "/api/dashboard";
+    const [res, briefRes, scansRes, pulseRes] = await Promise.all([
+      timed(dashUrl),
+      Promise.resolve(null),
+      opts.lite ? Promise.resolve(null) : timed("/api/scans?limit=6"),
+      opts.lite ? Promise.resolve(null) : timed("/api/command-center/pulse"),
     ]);
+    if (dashTimer) clearTimeout(dashTimer);
+    if (!res) throw new Error("Dashboard timed out (server busy)");
+    if (!res.ok) throw new Error(`Dashboard failed (${res.status})`);
     wireRealtimeHealthRefresh();
     refreshRealtimeHealthPanel();
-    const data = await res.json();
+    const data = await res.json().catch(() => ({}));
     const briefData = briefRes && briefRes.ok ? await briefRes.json().catch(() => ({})) : {};
     const scansData = scansRes && scansRes.ok ? await scansRes.json().catch(() => ({})) : {};
+    const pulseData = pulseRes && pulseRes.ok ? await pulseRes.json().catch(() => ({})) : {};
     const recentScans = scansData.scans || [];
     window.__securaiqRecentScans = recentScans;
+    try {
+      const changedEl = document.getElementById("mcWhatChangedList");
+      const decEl = document.getElementById("mcTopDecisions");
+      const deltas = (pulseData.what_changed && pulseData.what_changed.changes) || [];
+      if (changedEl) {
+        changedEl.innerHTML = deltas.length
+          ? deltas
+              .slice(0, 6)
+              .map((c) => {
+                const ch = c.changes || {};
+                const bits = [
+                  (ch.ports_opened || []).length ? `ports +${(ch.ports_opened || []).length}` : "",
+                  (ch.users_added || []).length ? `users +${(ch.users_added || []).length}` : "",
+                  Object.keys(ch.config_changed || {}).length
+                    ? `config ${Object.keys(ch.config_changed || {}).length}`
+                    : "",
+                ].filter(Boolean);
+                return `<li>${escapeHtml(c.agent_id || "host")} · ${escapeHtml(bits.join(" · ") || "host delta")}</li>`;
+              })
+              .join("")
+          : `<li class="hint">${escapeHtml((pulseData.risk_why && pulseData.risk_why.narrative) || "No host deltas since last refresh.")}</li>`;
+      }
+      if (decEl) {
+        const decs = pulseData.top_decisions || [];
+        decEl.innerHTML = decs.length
+          ? decs
+              .map(
+                (d) =>
+                  `<li><button type="button" class="btn-ghost" data-drawer-kind="${escapeHtml(
+                    d.kind || "finding"
+                  )}" data-drawer-id="${escapeHtml(d.target_id || "")}">${escapeHtml(
+                    d.title || "Decision"
+                  )}</button></li>`
+              )
+              .join("")
+          : `<li class="hint">No open decisions yet.</li>`;
+      }
+      const chip = document.getElementById("mcTruthChip");
+      const label = document.getElementById("mcTruthLabel");
+      const note = document.getElementById("mcTruthNote");
+      const truth = pulseData.truth || {};
+      if (chip && label) {
+        chip.setAttribute("data-state", truth.state || "unknown");
+        label.textContent = truth.label || "UNKNOWN";
+        if (note) note.textContent = truth.note || "";
+      }
+      const prof = pulseData.profile || {};
+      const cur = prof.current_percent;
+      const tgt = prof.target_percent;
+      const curBar = document.getElementById("mcProfileCurrent");
+      const tgtBar = document.getElementById("mcProfileTarget");
+      const curPct = document.getElementById("mcProfileCurrentPct");
+      const tgtPct = document.getElementById("mcProfileTargetPct");
+      const gapEl = document.getElementById("mcProfileGap");
+      if (curBar) curBar.style.width = `${Math.max(0, Math.min(100, Number(cur) || 0))}%`;
+      if (tgtBar) tgtBar.style.width = `${Math.max(0, Math.min(100, Number(tgt) || 0))}%`;
+      if (curPct) curPct.textContent = cur == null ? "—" : `${cur}%`;
+      if (tgtPct) tgtPct.textContent = tgt == null ? "—" : `${tgt}%`;
+      if (gapEl) {
+        const tiers = prof.tiers || {};
+        const ct = (tiers.current && tiers.current.name) || "—";
+        const tt = (tiers.target && tiers.target.name) || "—";
+        gapEl.textContent = `Gap ${prof.gap_percent == null ? "—" : prof.gap_percent + "%"} · NIST tiers ${ct} → ${tt} (declared, not a score)`;
+      }
+      const latEl = document.getElementById("mcStageLatency");
+      if (latEl) {
+        const sl = pulseData.stage_latency || {};
+        const rows = Object.entries(sl)
+          .filter(([k, v]) => k !== "disclaimer" && v && typeof v === "object")
+          .map(([k, v]) => {
+            const n = Number(v.count || 0);
+            const p95 = v.p95_ms;
+            return `<li><span>${escapeHtml(k)}</span><strong>${
+              n ? `${escapeHtml(String(p95))} ms p95 (${n})` : "unmeasured"
+            }</strong></li>`;
+          });
+        latEl.innerHTML =
+          rows.join("") || `<li class="hint">Stage latency unmeasured in this process.</li>`;
+      }
+    } catch {
+      /* pulse is optional */
+    }
     if (!res.ok) throw new Error(formatApiDetail(data.detail, `HTTP ${res.status}`));
 
     // Render software posture immediately — do not wait on later Mission Control sections.
@@ -5723,12 +5952,14 @@ async function loadCommandCenter() {
       renderMcAssetInventory(0, {});
       renderMcHardeningPanel(data.hardening || {});
       wireMcToolUpdatesOnce();
-      refreshMcToolUpdates();
+      if (!opts.lite) refreshMcToolUpdates();
       renderAttentionDashboard(data, recentScans);
-      try {
-        await renderRiskHeatMap();
-      } catch {
-        /* heat map is optional on first-run */
+      if (!opts.lite) {
+        try {
+          await renderRiskHeatMap();
+        } catch {
+          /* heat map is optional on first-run */
+        }
       }
       return;
     }
@@ -5759,10 +5990,10 @@ async function loadCommandCenter() {
     renderMcDecisionPanel(data);
     renderMcCharts(data);
     renderAttentionDashboard(data, recentScans);
-    refreshMcIntegrations();
+    if (!opts.lite) refreshMcIntegrations();
     const displayCompliance = assessedPct == null ? 0 : Math.round(assessedPct);
     renderSqPostureBars(data, index, displayCompliance);
-    if (typeof window.loadContinuousPosturePanel === "function") {
+    if (!opts.lite && typeof window.loadContinuousPosturePanel === "function") {
       window.loadContinuousPosturePanel({ quiet: true });
     }
     const postureNote = document.getElementById("sqPostureNote");
@@ -5918,12 +6149,10 @@ async function loadCommandCenter() {
     );
     renderMcHardeningPanel(data.hardening || {});
     wireMcToolUpdatesOnce();
-    refreshMcToolUpdates();
+    if (!opts.lite) refreshMcToolUpdates();
     // software panel already rendered above
-
-    if (Number(data.assets_total || 0) > 0 && typeof window.renderAssetsPage === "function") {
-      window.renderAssetsPage();
-    }
+    // Do not call renderAssetsPage() here — that 7-call inventory fetch
+    // starved every other page (Agents / Orgs / Risks looked "not loading").
 
     // Timeline (Wazuh-style security events — optional legacy target)
     const tlEl = document.getElementById("ccTimeline");
@@ -5998,16 +6227,25 @@ async function loadCommandCenter() {
         data.assessment_count || 0
       } assessments · Mission Control`;
     }
-    await renderRiskHeatMap();
+    if (!opts.lite) await renderRiskHeatMap();
   } catch (err) {
     if (scoreEl) scoreEl.textContent = "--";
     if (fwEl) fwEl.innerHTML = `<li class="hint">Couldn't load the dashboard — try refreshing. <span class="hint-sub">(${escapeHtml(err.message)})</span></li>`;
   } finally {
     clearTimeout(window.__securaiqCcLockTimer);
     window.__securaiqCcLoading = false;
-    if (window.__securaiqCcReloadQueued) {
+    if (opts.lite && !window.__securaiqCcHydrating) {
+      window.__securaiqCcHydrating = true;
+      setTimeout(() => {
+        window.__securaiqCcHydrating = false;
+        if (window.__securaiqWorkspaceView === "command") {
+          loadCommandCenter({ force: true });
+          if (typeof window.loadImpactHeroStat === "function") window.loadImpactHeroStat();
+        }
+      }, 1200);
+    } else if (window.__securaiqCcReloadQueued) {
       window.__securaiqCcReloadQueued = false;
-      setTimeout(() => loadCommandCenter(), 50);
+      setTimeout(() => loadCommandCenter(), 8000);
     }
   }
 }
@@ -9182,11 +9420,7 @@ function syncLiveWorkspace(opts) {
   const isToolPush = typeof isToolPushType === "function" ? isToolPushType(pushType) : pushType === "tool" || pushType === "tool_progress";
   const isLivePush = REALTIME_LIVE_TYPES.has(pushType) || pushType === "job";
   try {
-    if (isLivePush && !isSwPush && !isToolPush) {
-      if (typeof loadAssets === "function") loadAssets();
-      if (typeof loadVulns === "function") loadVulns();
-      if (typeof loadCommandCenter === "function") loadCommandCenter();
-    } else if (isSwPush) {
+    if (isSwPush) {
       if (typeof refreshMcSoftwareFromPush === "function") refreshMcSoftwareFromPush(opts.push || {});
       if (typeof window.refreshSoftwareFromPush === "function") {
         window.refreshSoftwareFromPush(opts.push || {}, { partial: true });
@@ -9210,11 +9444,11 @@ function syncLiveWorkspace(opts) {
     }
   };
   try {
-    if (isLivePush || view === "assets") rt(window.renderAssetsPage);
-    if ((isLivePush || view === "software") && !isSwPush) rt(window.renderSoftwarePage);
-    if (isLivePush || view === "vulns") rt(window.renderVulnsPage);
-    if (isLivePush || view === "soc") rt(window.renderSocPage);
-    if (isLivePush || view === "agents") rt(window.renderAgentsPage);
+    if (view === "assets") rt(window.renderAssetsPage);
+    if (view === "software" && !isSwPush) rt(window.renderSoftwarePage);
+    if (view === "vulns") rt(window.renderVulnsPage);
+    if (view === "soc") rt(window.renderSocPage);
+    if (view === "agents") rt(window.renderAgentsPage);
     if (view === "agent_detail" || pushType === "agent" || pushType === "agent_command") {
       const push = opts.push || {};
       const selected = window.__securaiqSelectedAgentId;
@@ -9228,24 +9462,24 @@ function syncLiveWorkspace(opts) {
         rt(() => window.renderAgentDetailPage(selected, { quiet: true, pushType }));
       }
     }
-    if (isLivePush || view === "intel") rt(window.renderIntelPage);
-    if (isLivePush || view === "risks") rt(window.renderRisksPage);
-    if (isLivePush || view === "remediations") rt(window.renderRemsPage);
-    if (isLivePush || view === "playbooks") rt(window.renderPlaybooksPage);
-    if (isLivePush || view === "campaigns") rt(window.renderCampaignsPage);
-    if (isLivePush || view === "evidence") rt(window.renderEvidencePage);
-    if (isLivePush || view === "compliance_center") rt(window.renderComplianceCenterPage);
-    if (isLivePush || view === "privacy") rt(window.renderPrivacyPage);
-    if (isLivePush || view === "control_center") rt(window.renderControlCenterPage);
-    if (isLivePush || view === "graph") rt(window.renderGraphPage);
-    if (isLivePush || view === "integrations") rt(window.renderIntegrationsPage);
-    if (isLivePush || view === "automation") rt(window.refreshAutomationPage);
-    if (isLivePush || view === "frameworks") {
+    if (view === "intel") rt(window.renderIntelPage);
+    if (view === "risks") rt(window.renderRisksPage);
+    if (view === "remediations") rt(window.renderRemsPage);
+    if (view === "playbooks") rt(window.renderPlaybooksPage);
+    if (view === "campaigns") rt(window.renderCampaignsPage);
+    if (view === "evidence") rt(window.renderEvidencePage);
+    if (view === "compliance_center") rt(window.renderComplianceCenterPage);
+    if (view === "privacy") rt(window.renderPrivacyPage);
+    if (view === "control_center") rt(window.renderControlCenterPage);
+    if (view === "graph") rt(window.renderGraphPage);
+    if (view === "integrations") rt(window.renderIntegrationsPage);
+    if (view === "automation") rt(window.refreshAutomationPage);
+    if (view === "frameworks") {
       rt(window.renderFrameworksPage);
       if (typeof window.renderHardeningPanel === "function") window.renderHardeningPanel();
     }
-    if (isLivePush || view === "reports") rt(window.renderReportsPage);
-    if (isLivePush || view === "command") rt(loadCommandCenter);
+    if (view === "reports") rt(window.renderReportsPage);
+    if (view === "command") rt(loadCommandCenter);
     if (isLivePush && typeof window.renderWazuhDashboard === "function" && view === "command") {
       /* loadCommandCenter calls renderWazuhDashboard */
     }
@@ -9993,20 +10227,75 @@ async function ensureWorkingBackend(healthData) {
 let lastHealthData = null;
 
 async function checkHealth() {
+  // The SPA was served by this origin — treat the API as up unless /api/alive fails repeatedly.
+  window.__securaiqServerOnline = window.__securaiqServerOnline !== false;
   try {
+    const aliveCtrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+    const aliveTimer = aliveCtrl ? setTimeout(() => aliveCtrl.abort(), 4000) : null;
+    const alive = await fetch("/api/alive", { signal: aliveCtrl ? aliveCtrl.signal : undefined });
+    if (aliveTimer) clearTimeout(aliveTimer);
+    if (alive.ok) {
+      window.__securaiqAliveFails = 0;
+      window.__securaiqServerOnline = true;
+      if (setupPanelEl && setupPanelEl.dataset.tone === "error" && /server offline/i.test(setupTitleEl?.textContent || "")) {
+        hideSetupPanel();
+      }
+    } else {
+      throw new Error(`alive ${alive.status}`);
+    }
+  } catch (_) {
+    window.__securaiqAliveFails = (window.__securaiqAliveFails || 0) + 1;
+  }
+
+  const attempt = async () => {
     const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
-    const timer = ctrl ? setTimeout(() => ctrl.abort(), 10000) : null;
-    let res;
+    const timer = ctrl ? setTimeout(() => ctrl.abort(), 8000) : null;
     try {
-      res = await fetch("/api/health", {
+      const res = await fetch("/api/health", {
         headers: authHeaders(),
         signal: ctrl ? ctrl.signal : undefined,
       });
+      if (!res.ok) throw new Error(`health ${res.status}`);
+      return await res.json();
     } finally {
       if (timer) clearTimeout(timer);
     }
-    if (!res.ok) throw new Error(`health ${res.status}`);
-    const data = await res.json();
+  };
+
+  let data = null;
+  let lastErr = null;
+  for (let i = 0; i < 2; i++) {
+    try {
+      data = await attempt();
+      lastErr = null;
+      break;
+    } catch (err) {
+      lastErr = err;
+      await new Promise((r) => setTimeout(r, 300 * (i + 1)));
+    }
+  }
+
+  if (!data) {
+    if ((window.__securaiqAliveFails || 0) < 8) {
+      window.__securaiqServerOnline = true;
+      return;
+    }
+    window.__securaiqServerOnline = false;
+    backendReady = false;
+    if (sendBtn) sendBtn.disabled = true;
+    if (statusEl) {
+      statusEl.textContent = "Offline";
+      statusEl.className = "status err";
+    }
+    showSetupPanel(
+      "Server offline",
+      "Start the backend with .\\scripts\\start.ps1 (Windows) or bash scripts/start.sh (Linux/macOS).",
+      { command: ".\\scripts\\start.ps1", action: "copy", tone: "error" }
+    );
+    return;
+  }
+
+  try {
     lastHealthData = data;
     window.__securaiqServerOnline = true;
     // Clear sticky offline banner once health recovers
@@ -10063,7 +10352,7 @@ async function checkHealth() {
           { command: "ollama pull tinyllama", action: "copy", tone: "warn" }
         );
       } else {
-        statusEl.textContent = `${backend} · ${data.model}${rag}`;
+        statusEl.textContent = `${backend} - ${data.model}${rag}`;
         statusEl.className = "status ok";
         hideSetupPanel();
       }
@@ -10082,7 +10371,7 @@ async function checkHealth() {
             { action: "settings", tone: "error" }
           );
         } else {
-          statusEl.textContent = `${backend} · ${data.model}${rag}`;
+          statusEl.textContent = `${backend} - ${data.model}${rag}`;
           statusEl.className = "status ok";
           hideSetupPanel();
         }
@@ -10097,8 +10386,8 @@ async function checkHealth() {
             { command: "hermes gateway", action: "copy", tone: "error" }
           );
         } else {
-          const sid = hermesSessionId ? ` · sess:${hermesSessionId.slice(0, 8)}…` : "";
-          statusEl.textContent = `${backend} · ${data.model}${sid}${rag}`;
+          const sid = hermesSessionId ? ` - sess:${hermesSessionId.slice(0, 8)}...` : "";
+          statusEl.textContent = `${backend} - ${data.model}${sid}${rag}`;
           statusEl.className = "status ok";
           hideSetupPanel();
         }
@@ -10106,13 +10395,12 @@ async function checkHealth() {
         trainBtn.classList.remove("hidden");
         preloadBtn.classList.remove("hidden");
         if (data.unsloth_model_loaded) {
-          statusEl.textContent = `${backend} · ${data.model}${rag}`;
+          statusEl.textContent = `${backend} - ${data.model}${rag}`;
           statusEl.className = "status ok";
           hideSetupPanel();
         } else {
-          statusEl.textContent = `${backend} · ${data.model}${statusSuffix}${rag}`;
+          statusEl.textContent = `${backend} - ${data.model}${statusSuffix}${rag}`;
           statusEl.className = "status ok";
-          // Ready to chat — soft tip only, not an error
           const tip = data.hf_token_set
             ? "Unsloth will load on first chat. You can also Preload now."
             : "Unsloth will load on first chat. Add an HF token in Settings only for gated models.";
@@ -10127,11 +10415,11 @@ async function checkHealth() {
         const speedTip =
           "For much faster replies: install Ollama, pull a model (e.g. mistral), then set Backend → Ollama in Settings.";
         if (data.hf_model_loaded) {
-          statusEl.textContent = `${backend} · ${data.model}${rag}`;
+          statusEl.textContent = `${backend} - ${data.model}${rag}`;
           statusEl.className = "status ok";
           showSetupPanel("Speed tip", speedTip, { action: "settings", tone: "info", key: "hf-speed" });
         } else {
-          statusEl.textContent = `${backend} · ${data.model}${statusSuffix}${rag}`;
+          statusEl.textContent = `${backend} - ${data.model}${statusSuffix}${rag}`;
           statusEl.className = "status ok";
           showSetupPanel(
             "Hugging Face (slower on CPU)",
@@ -10140,7 +10428,7 @@ async function checkHealth() {
           );
         }
       } else {
-        statusEl.textContent = `${backend} · ${data.model}${rag}`;
+        statusEl.textContent = `${backend} - ${data.model}${rag}`;
         statusEl.className = data.backend_ready ? "status ok" : "status err";
         if (!data.backend_ready) {
           showSetupPanel(
@@ -10154,18 +10442,8 @@ async function checkHealth() {
       }
     }
   } catch (err) {
-    window.__securaiqServerOnline = false;
-    backendReady = false;
-    if (sendBtn) sendBtn.disabled = true;
-    if (statusEl) {
-      statusEl.textContent = "Offline";
-      statusEl.className = "status err";
-    }
-    showSetupPanel(
-      "Server offline",
-      "Start the backend with .\\scripts\\start.ps1 (Windows) or bash scripts/start.sh (Linux/macOS).",
-      { command: ".\\scripts\\start.ps1", action: "copy", tone: "error" }
-    );
+    // Should be rare - data already fetched; treat as soft UI failure, not offline.
+    console.warn("checkHealth UI update failed", err || lastErr);
   }
 }
 
@@ -11060,7 +11338,7 @@ function _sseRealtimeLive(opts) {
 }
 window.__securaiqSseLive = _sseRealtimeLive;
 setInterval(() => {
-  if (currentView === "command" && !_sseRealtimeLive()) loadCommandCenter();
+  if (window.__securaiqWorkspaceView === "command" && !_sseRealtimeLive()) loadCommandCenter();
 }, 120000);
 // Fallback live refresh if SSE offline/stalled — keep open workspace panels warm.
 setInterval(() => {

@@ -6,6 +6,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse, Response
+from starlette.concurrency import run_in_threadpool
 
 from app.auth import AuthUser
 from app.commercial_api import require_user
@@ -230,7 +231,14 @@ async def compliance_overview_route(
     gap_assessments/evidence_links/securaiq_exceptions rows, never
     hardcoded, and never counting an unassessed framework toward the
     percentage."""
-    return compliance_overview(user.id, org_id=org_id)
+    from app.fast_cache import cache_get, cache_set
+
+    key = f"comp-ov:{user.id}:{org_id or ''}"
+    hit = cache_get(key)
+    if hit is not None:
+        return hit
+    payload = await run_in_threadpool(compliance_overview, user.id, org_id=org_id)
+    return cache_set(key, payload, 12.0)
 
 
 @router.get("/compliance/live-score")

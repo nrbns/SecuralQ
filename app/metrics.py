@@ -26,7 +26,7 @@ _status_counters: dict[str, int] = defaultdict(int)
 # Process-local stage latency samples (ms) — not a multi-node SLO claim.
 _stage_samples: dict[str, list[float]] = defaultdict(list)
 _STAGE_MAX = 256
-_STAGE_NAMES = frozenset({"ingest", "detect", "process", "risk", "sse"})
+_STAGE_NAMES = frozenset({"ingest", "detect", "process", "risk", "sse", "api"})
 
 
 def incr(name: str, amount: int = 1) -> None:

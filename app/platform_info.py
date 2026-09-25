@@ -19,6 +19,13 @@ _VIRTUAL_PREFIXES = (
     "192.168.64.",
     "198.18.",
 )
+_DOCKER_BRIDGE_PREFIXES = ("172.17.", "172.18.", "172.19.", "172.20.", "172.21.")
+
+
+def clear_platform_cache() -> None:
+    global _PLATFORM_CACHE, _PLATFORM_CACHE_TS
+    _PLATFORM_CACHE = None
+    _PLATFORM_CACHE_TS = 0.0
 
 
 def rank_lan_ips(ips: list[str], *, preferred: str = "") -> list[str]:
@@ -37,6 +44,8 @@ def rank_lan_ips(ips: list[str], *, preferred: str = "") -> list[str]:
             return (8, ip)
         if any(ip.startswith(p) for p in _VIRTUAL_PREFIXES):
             return (5, ip)
+        if any(ip.startswith(p) for p in _DOCKER_BRIDGE_PREFIXES):
+            return (4, ip)
         return (1, ip)
 
     return sorted(seen, key=_key)

@@ -1,0 +1,18 @@
+# Lab defaults — operator must set image, ingress host, and secrets.
+replicaCount: 1
+image:
+  repository: securaiq
+  tag: lab
+  pullPolicy: IfNotPresent
+service:
+  type: ClusterIP
+  port: 8080
+resources: {}
+airGap:
+  enabled: false
+  note: "Load images with docker load / ctr images import. Do not claim cluster HA."
+ai:
+  backend: ollama
+  ollamaBaseUrl: http://ollama:11434
+  ollamaModel: tinyllama
+  note: "Run Ollama in-cluster or sidecar. Do not mount a host HuggingFace cache."

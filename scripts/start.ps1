@@ -111,7 +111,7 @@ if ($Lan) {
     $lines = Set-EnvLine $lines "CORS_ORIGINS" "*"
     $lines = Set-EnvLine $lines "WORKSPACE_ZERO_START" "false"
     $lines = Set-EnvLine $lines "ALLOW_OPEN_LAN" "true"
-    $lines = Set-EnvLine $lines "LAN_AUTO_SCAN" "true"
+    $lines = Set-EnvLine $lines "LAN_AUTO_SCAN" "false"
 } else {
     $lines = Set-EnvLine $lines "HOST" "127.0.0.1"
     $lines = Set-EnvLine $lines "CORS_ORIGINS" "http://127.0.0.1:8080,http://localhost:8080"
@@ -154,7 +154,9 @@ if ($Lan) {
     } catch {
         Write-Host "  Firewall:    if phones cannot connect, allow TCP $port in Windows Defender Firewall" -ForegroundColor DarkYellow
     }
-    Write-Host "  Live share:  same assets/scans on every device; this host auto-scans on start" -ForegroundColor DarkGray
+    Write-Host "  Live share:  same assets/scans on every device. Start a scan from the UI - boot auto-scan is off so phones are not blocked." -ForegroundColor DarkGray
+    Write-Host "  Check:       .\.venv\Scripts\python.exe scripts\customer_install_check.py" -ForegroundColor DarkGray
+    Write-Host "  Other PC:    open the Phone/other URL above - never http://127.0.0.1 on that device" -ForegroundColor DarkGray
 } else {
     Write-Host "Starting SecuraIQ (localhost)" -ForegroundColor Green
     Write-Host "  LAN / phone: .\start_lan.cmd   or   .\start.cmd -Lan"
@@ -162,25 +164,32 @@ if ($Lan) {
 Write-Host "No .env editing required. Optional keys: Settings in the UI."
 
 $rootAbs = (Resolve-Path ".").Path
-$proc = Start-Process -FilePath (Join-Path $rootAbs ".venv\Scripts\python.exe") -ArgumentList "-u", "run.py" -WorkingDirectory $rootAbs -PassThru -NoNewWindow
-$ready = $false
-for ($i = 0; $i -lt 45; $i++) {
-    try {
-        $health = Invoke-WebRequest -Uri "$appUrl/api/health" -UseBasicParsing -TimeoutSec 3
-        if ($health.StatusCode -eq 200) {
-            $ready = $true
-            break
+$pyExe = Join-Path $rootAbs ".venv\Scripts\python.exe"
+# Free a leftover python/uvicorn on this port so double-click start.cmd works.
+try {
+    Get-NetTCPConnection -LocalPort $port -ErrorAction SilentlyContinue |
+        Where-Object { $_.State -eq "Listen" } |
+        ForEach-Object {
+            $procOnPort = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue
+            if ($procOnPort -and ($procOnPort.ProcessName -match "python|uvicorn")) {
+                Write-Host "  Stopping leftover $($procOnPort.ProcessName) on port $port" -ForegroundColor DarkGray
+                Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue
+            }
         }
-    } catch {
-        Start-Sleep -Seconds 2
-    }
-}
-if ($ready) {
+} catch { }
+$runArgs = @("-u", "run.py")
+if ($Lan) { $runArgs += "--lan" }
+$proc = Start-Process -FilePath $pyExe -ArgumentList $runArgs -WorkingDirectory $rootAbs -PassThru -NoNewWindow
+$waitArgs = @((Join-Path $rootAbs "scripts\wait_open.py"), "--url", $appUrl, "--timeout", "12", "--open-after", "1.5")
+if ($NoBrowser) { $waitArgs += "--no-browser" }
+& $pyExe @waitArgs
+$waitCode = $LASTEXITCODE
+if ($waitCode -eq 0) {
     Write-Host "  Ready: $appUrl" -ForegroundColor Green
-    if (-not $NoBrowser) {
-        Start-Process $appUrl
-    }
 } else {
-    Write-Host "  Server starting - open $appUrl when ready" -ForegroundColor Yellow
+    Write-Host "  Opened $appUrl - refresh if the page is still starting" -ForegroundColor Yellow
+}
+if ($Lan) {
+    Write-Host "  Other phones/PCs: use a Phone/other URL above, never localhost." -ForegroundColor DarkGray
 }
 Wait-Process -Id $proc.Id

@@ -16,6 +16,17 @@ from app.config import settings
 _lock = threading.Lock()
 _conn: Any = None
 _backend: str = "sqlite"  # sqlite | postgres
+_tls = threading.local()
+_schema_ready = False
+
+
+def _open_sqlite() -> sqlite3.Connection:
+    conn = sqlite3.connect(str(_db_path()), check_same_thread=False, timeout=8.0)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA busy_timeout=8000;")
+    conn.execute("PRAGMA foreign_keys=ON;")
+    return conn
 
 
 def _db_path() -> Path:
@@ -147,10 +158,16 @@ def table_columns(conn: Any, table: str) -> set[str]:
 
 
 def get_conn() -> Any:
-    global _conn, _backend
+    global _conn, _backend, _schema_ready
+    existing = getattr(_tls, "conn", None)
+    if existing is not None:
+        return existing
     with _lock:
-        if _conn is None:
-            if using_postgres():
+        existing = getattr(_tls, "conn", None)
+        if existing is not None:
+            return existing
+        if using_postgres():
+            if _conn is None:
                 try:
                     import psycopg
                     from psycopg.rows import dict_row
@@ -163,19 +180,24 @@ def get_conn() -> Any:
                 _conn = _PgConn(raw)
                 _backend = "postgres"
                 init_schema(_conn)
-            else:
-                _conn = sqlite3.connect(str(_db_path()), check_same_thread=False)
-                _conn.row_factory = sqlite3.Row
-                _conn.execute("PRAGMA journal_mode=WAL;")
-                _conn.execute("PRAGMA foreign_keys=ON;")
-                _backend = "sqlite"
-                init_schema(_conn)
-        return _conn
+                _schema_ready = True
+            _tls.conn = _conn
+            return _conn
+        if _conn is None:
+            _conn = _open_sqlite()
+            _backend = "sqlite"
+            init_schema(_conn)
+            _schema_ready = True
+            _tls.conn = _conn
+            return _conn
+        conn = _open_sqlite()
+        _tls.conn = conn
+        return conn
 
 
 def reset_conn_for_tests() -> None:
     """Drop cached connection (tests that change DATA_DIR / DATABASE_URL)."""
-    global _conn, _backend
+    global _conn, _backend, _schema_ready
     with _lock:
         if _conn is not None:
             try:
@@ -184,6 +206,8 @@ def reset_conn_for_tests() -> None:
                 pass
         _conn = None
         _backend = "sqlite"
+        _schema_ready = False
+        _tls.conn = None
 
 
 def init_schema(conn: Any | None = None) -> None:
